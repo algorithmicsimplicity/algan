@@ -162,6 +162,9 @@ class Light(Mob):
         be a finite number of at least ``0.0``. Defaults to ``1.0``. The
         constructor argument is the light's initial value and is not animated;
         animate with assignment after spawn -- see `Animation` below.
+    *args, **kwargs
+        Passed to :class:`~.Mob` -- notably ``location``, the light's position
+        in world units, and ``color``.
 
     Raises
     ------
@@ -243,7 +246,27 @@ class Light(Mob):
         return super().set_animated_attribute(attr, value, recursive=recursive)
 
     def spawn(self, animate: bool = True):
-        """Spawn this light and register it with its owning scene exactly once."""
+        """Switch the light on, adding it to its Scene's lighting.
+
+        A light lights nothing until it is spawned. Spawning it again, or
+        spawning a light that is already registered, adds it only once.
+
+        Animation
+        ---------
+        As :meth:`~.Animatable.spawn`: recorded as a fade-in over the current
+        context's runtime (1 second by default), so the light comes up
+        gradually. ``spawn(animate=False)`` switches it on immediately.
+
+        Parameters
+        ----------
+        animate
+            Whether to fade the light in. Defaults to True.
+
+        Returns
+        -------
+        :class:`~.Light`
+            This light, so calls can be chained.
+        """
         result = super().spawn(animate=animate)
         if not hasattr(self.scene, "light_sources"):
             self.scene.light_sources = []
@@ -333,13 +356,24 @@ class PointLight(Light):
         color, animatable like any Mob attribute. Defaults to ``1.0``.
     decay
         Distance falloff exponent (0 = none -- the legacy Algan default;
-        2 = physically correct inverse-square).
+        2 = physically correct inverse-square). Must be finite and at least
+        ``0``. Defaults to ``0``.
     distance
-        Maximum range of the light (0 = unlimited). When set, the light
-        fades out smoothly toward this distance.
+        Maximum range of the light, in world units (0 = unlimited). When set,
+        the light fades out smoothly toward this distance. Must be finite and
+        at least ``0``. Defaults to ``0``.
     shadow_radius
         World-space radius of the emitting disk used for soft shadows
-        (0 = sharp/hard shadows).
+        (0 = sharp/hard shadows). Must be finite and at least ``0``. Defaults
+        to ``0``.
+    *args, **kwargs
+        Passed to :class:`~.Light` -- notably ``location`` and ``color``.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``intensity``, ``decay``, ``distance`` or ``shadow_radius`` is not a
+        finite number of at least ``0``.
     """
 
     light_type = LIGHT_POINT
@@ -431,10 +465,21 @@ class DirectionalLight(_TargetedLight):
     Parameters
     ----------
     target
-        World point the light shines toward (default: the origin).
+        World point the light shines toward, or a Mob, whose location at the
+        time of the call is used. Defaults to ``ORIGIN``.
     shadow_angle
         Angular size of the emitter in degrees (like the sun's ~0.5); when
-        non-zero, shadows get soft edges.
+        non-zero, shadows get soft edges. Must be at least ``0`` and less than
+        ``180``. Defaults to ``0``, for hard shadows.
+    *args, **kwargs
+        Passed to :class:`~.Light` -- notably ``location``, which with
+        ``target`` sets the direction of the rays, and ``color``.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``shadow_angle`` is outside ``[0, 180)``, or ``intensity`` is not a
+        finite number of at least ``0``.
     """
 
     light_type = LIGHT_DIRECTIONAL
@@ -469,7 +514,14 @@ class DirectionalLight(_TargetedLight):
 
 
 class AmbientLight(Light):
-    """Uniform, direction-less illumination applied to every surface."""
+    """Uniform, direction-less illumination applied to every surface.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed to :class:`~.Light` -- notably ``color`` and ``intensity``.
+        ``location`` has no effect on the lighting and defaults to ``ORIGIN``.
+    """
 
     light_type = LIGHT_AMBIENT
 
@@ -486,9 +538,16 @@ class HemisphereLight(Light):
     Parameters
     ----------
     ground_color
-        Color of the illumination coming from below.
+        Color of the illumination coming from below, as an RGB triple in
+        ``[0, 1]`` or a color constant such as ``DARK_BROWN``. Defaults to
+        ``None``, meaning black: no light from below.
     up
-        The sky direction (default ``UP``).
+        The sky direction, shape ``(3,)``: surfaces facing it receive the full
+        ``color``. Defaults to ``UP``.
+    *args, **kwargs
+        Passed to :class:`~.Light` -- notably ``color``, the sky's color, and
+        ``intensity``. ``location`` has no effect on the lighting and defaults
+        to ``ORIGIN``.
     """
 
     light_type = LIGHT_HEMISPHERE
@@ -547,18 +606,36 @@ class SpotLight(_TargetedLight):
     Parameters
     ----------
     target
-        World point the cone is aimed at.
+        World point the cone is aimed at, or a Mob, whose location at the time
+        of the call is used. Defaults to ``ORIGIN``.
     cone_angle
-        Half-angle of the cone, in degrees unless ``degrees`` is False
-        (default 30).
+        Half-angle of the cone, in degrees unless ``degrees`` is False. Must be
+        greater than 0 and at most 90 degrees. Defaults to ``30``.
+    penumbra
+        Portion ``[0, 1]`` of the cone over which the light fades to zero
+        at the edge (0 = hard edge). Defaults to ``0``.
+    decay
+        Distance falloff exponent, as on :class:`~.PointLight`. Defaults to
+        ``0``, no falloff.
+    distance
+        Maximum range of the light in world units, as on
+        :class:`~.PointLight`. Defaults to ``0``, unlimited.
+    shadow_radius
+        World-space radius of the emitting disk used for soft shadows, as on
+        :class:`~.PointLight`. Defaults to ``0``, hard shadows.
     degrees
         Whether ``cone_angle`` is in degrees. Defaults to True; pass False to
         give it in radians.
-    penumbra
-        Portion ``[0, 1]`` of the cone over which the light fades to zero
-        at the edge (0 = hard edge).
-    decay / distance / shadow_radius
-        As on :class:`PointLight`.
+    *args, **kwargs
+        Passed to :class:`~.Light` -- notably ``location``, the apex of the
+        cone, and ``color``.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``cone_angle`` is outside ``(0, 90]`` degrees, ``penumbra`` outside
+        ``[0, 1]``, or ``decay``, ``distance``, ``shadow_radius`` or
+        ``intensity`` is not a finite number of at least ``0``.
     """
 
     light_type = LIGHT_SPOT
@@ -647,20 +724,33 @@ class RectAreaLight(_TargetedLight):
 
     Parameters
     ----------
-    width / height
-        Positive rectangle dimensions in world units. Each defaults to 2.
+    width
+        Width of the rectangle in world units; must be positive. Defaults to
+        ``2``.
+    height
+        Height of the rectangle in world units; must be positive. Defaults to
+        ``2``.
     target
-        World point the rectangle faces. Defaults to the origin.
+        World point the rectangle faces, or a Mob, whose location at the time
+        of the call is used. Defaults to ``ORIGIN``.
     samples
         Positive emitter sample count, rounded up to a square grid. Defaults
         to 4. More samples improve the single-sample renderer's integration
         and shadows at linear cost. The path tracer samples the panel directly
         and its cost does not depend on this count.
-    decay / distance
-        Compatibility keywords fixed to 2 and 0 respectively, including on
-        later assignment. Other values raise instead of silently changing
-        emission to a distance-dependent, nonphysical model. Omit both in new
-        code. Point and spot lights retain their artistic falloff controls.
+    decay
+        Compatibility keyword fixed to ``2``, the inverse-square exponent,
+        including on later assignment. Any other value raises instead of
+        silently changing emission to a nonphysical model. Omit it in new
+        code; point and spot lights keep their artistic falloff controls.
+        Defaults to ``2``.
+    distance
+        Compatibility keyword fixed to ``0``, unlimited range, including on
+        later assignment. Any other value raises. Omit it in new code.
+        Defaults to ``0``.
+    *args, **kwargs
+        Passed to :class:`~.Light` -- notably ``location``, the center of the
+        rectangle, and ``color``.
 
     Raises
     ------

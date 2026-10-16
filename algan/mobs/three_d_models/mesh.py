@@ -93,33 +93,54 @@ class TriangleMesh(Mob):
 
     Parameters
     ----------
-    vertices : torch.Tensor[V, 3]
-        Vertex positions.
-    faces : torch.Tensor[F, 3]
-        Triangle vertex indices into ``vertices``.
-    normals : torch.Tensor[V, 3], optional
-        Per-vertex normals (in the mesh's local frame). When omitted, flat
-        per-face normals are computed from the geometry each frame (so they
-        stay correct under rotation and deformation).
-    uvs : torch.Tensor[V, 2], optional
-        Per-vertex texture coordinates. Required to show ``texture`` /
-        ``material_texture_map`` / ``normal_texture_map``.
-    texture : torch.Tensor, optional
+    vertices
+        Vertex positions in world units, shape ``(V, 3)``.
+    faces
+        Triangle vertex indices into ``vertices``, shape ``(F, 3)``.
+    normals
+        Per-vertex normals in the mesh's local frame, shape ``(V, 3)``.
+        Defaults to ``None``: flat per-face normals are computed from the
+        geometry each frame, so they stay correct under rotation and
+        deformation.
+    uvs
+        Per-vertex texture coordinates, shape ``(V, 2)``. Required to show
+        ``texture``, ``material_texture_map`` or ``normal_texture_map``.
+        Defaults to ``None``.
+    texture
         Either a ``[W, H, 5]`` texture map already in engine layout (as built
         by :func:`image_to_texture_map`) or a raw image ``[H, W, C]`` which is
         converted automatically. Provides the surface albedo; replaces the
-        per-vertex color where present.
-    vertex_colors : torch.Tensor[V, 5], optional
-        Per-vertex colors (RGB + glow + opacity). Ignored when a ``texture``
-        is given. Falls back to a single ``color`` otherwise.
-    material_texture_map, material_texture_flags, normal_texture_map
-        Optional per-texel material-property / tangent-space normal maps,
-        forwarded to the ray tracer exactly as for
-        :class:`~algan.mobs.surfaces.surface.Surface`.
-    ignore_normals : bool
+        per-vertex color where present. Defaults to ``None``.
+    vertex_colors
+        Per-vertex colors (RGB + glow + opacity), shape ``(V, 5)``. Ignored
+        when a ``texture`` is given. Defaults to ``None``, which colors the
+        whole mesh with ``color``.
+    material_texture_map
+        Per-texel material-property map, forwarded to the ray tracer exactly
+        as a :class:`~algan.mobs.surfaces.surface.Surface` forwards its own.
+        Defaults to ``None``.
+    material_texture_flags
+        Bitmask of the material channels that ``material_texture_map``
+        drives. Defaults to ``0``, none of them.
+    normal_texture_map
+        Tangent-space normal map, as ``normal_texture`` is for
+        :class:`~algan.mobs.surfaces.surface.Surface`. Defaults to ``None``.
+    ignore_normals
         If True the mesh carries zero normals (no lighting interaction).
-    *args, **kwargs
-        Passed to :class:`~.Mob`.
+        Defaults to False.
+    recompute_normals
+        Recompute smooth, area-weighted normals from the current geometry
+        every frame, instead of turning the authored ones with the Mob. Use it
+        when the geometry itself deforms -- node, skeletal or morph animation
+        -- so shading follows the deformed surface. Defaults to False.
+    **kwargs
+        Passed to :class:`~.Mob` -- notably ``color``.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If a ``texture``, ``material_texture_map`` or ``normal_texture_map`` is
+        given without ``uvs``.
     """
 
     _morph_family = "mesh"

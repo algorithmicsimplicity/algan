@@ -1606,17 +1606,15 @@ class MarkupText(Text):
     text
         The marked-up source. Tags are stripped, ``<br/>`` becomes a newline and
         entities such as ``&amp;`` are unescaped; what remains is typeset.
+    fill_opacity, stroke_width, color, font_size, line_spacing, font, slant, weight
+        As :class:`~algan.mobs.text.Text`, with the same defaults.
     justify
         Accepted for Manim parity and has no effect on the rendered text; it is
         stored on the Mob as ``justify``. Defaults to ``False``.
-    fill_opacity, stroke_width, color, font_size, line_spacing
-        As :class:`~algan.mobs.text.Text`, with the same defaults.
-    font, slant, weight, gradient, disable_ligatures, warn_missing_font
-        As :class:`~algan.mobs.text.Text`, with the same defaults.
-    tab_width, height, width, center
-        As :class:`~algan.mobs.text.Text`, with the same defaults. All of these
-        are redeclared here only so this constructor's signature matches
-        Manim's.
+    gradient, tab_width, height, width, center, disable_ligatures, warn_missing_font
+        As :class:`~algan.mobs.text.Text`, with the same defaults. All of these,
+        and those above, are redeclared here only so this constructor's
+        signature matches Manim's.
     **kwargs
         Passed to :class:`~algan.mobs.text.Text`.
 

@@ -599,6 +599,9 @@ class Cone(Surface):
         Direction the tip points, shape ``(*, 3)``; it need not be normalized.
         Defaults to ``UP`` (the +y axis), the same default as
         :class:`Cylinder`'s axis.
+    v_range
+        Angular sweep around the axis, in degrees. ``(0, 180)`` gives a half
+        cone. Defaults to ``(0, 360)`` (the full cone).
     closed
         Whether to cap the base with a filled circle. Defaults to ``False``: the
         cone is open, so the camera can see inside it. The disc samples its rim
@@ -606,9 +609,6 @@ class Cone(Surface):
         disc's boundary cannot be refined at render time the way the curved
         side's is -- so a capped cone carries more triangles than the side
         alone suggests.
-    v_range
-        Angular sweep around the axis, in degrees. ``(0, 180)`` gives a half
-        cone. Defaults to ``(0, 360)`` (the full cone).
     resolution
         Manim-style grid resolution as ``(patches along the height, patches
         round the axis)``, or one int for both -- the order :class:`Cylinder`

@@ -663,15 +663,23 @@ class QuadTriangulated(Mob):
 
 
 class Polygon(BezierCircuitCubic):
-    """A 2-D planar polygon with N vertices.
+    """A 2-D planar polygon with N vertices, joined by straight edges.
 
     Parameters
     ----------
-    vertex_locations : torch.Tensor[N, 3]
-        3-D coordinates for each of the N vertex points.
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
+    *vertex_locations
+        The vertices in order, in world units: either one point per argument,
+        ``Polygon(LEFT, RIGHT, UP)``, or a single tensor of shape ``(N, 3)``.
+        Each vertex is joined to the next and the last back to the first. At
+        least three are required.
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``color``, which
+        defaults to ``RED``, and the ``stroke_*`` styling.
 
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If fewer than three vertices are given.
     """
 
     def __init__(self, *vertex_locations: torch.Tensor, **kwargs):

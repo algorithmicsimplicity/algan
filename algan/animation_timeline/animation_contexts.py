@@ -451,6 +451,23 @@ class AnimationContext:
     spawn_at_end
         Whether Mobs created inside are held back and spawned together when the block
         ends. Defaults to ``None``, meaning inherit (False at the top level).
+    new_animation
+        Whether the enclosing context counts this whole block as one animation of
+        its own, so its next animation starts after the block's runtime times its
+        ``lag_ratio``; when False it carries on from wherever the block stopped.
+        :class:`~.Lag` and its subclasses, and :class:`~.Off`, set it. Defaults to
+        False.
+    finished
+        Internal: set when the block exits. Leave it unset. Defaults to False.
+    new_mobs
+        Internal: the Mobs created inside the block. Leave it unset. Defaults to
+        ``None``, an empty list.
+    child_contexts
+        Internal: the contexts nested directly inside this one. Leave it unset.
+        Defaults to ``None``, an empty list.
+    kwargs
+        Internal: keywords a nested context inherits, merged with its parent's on
+        entry. Leave it unset. Defaults to ``None``, an empty dict.
     animation_manager
         The :class:`~.AnimationManager` to record against. Defaults to ``None``,
         meaning the active Scene's -- pass one explicitly when authoring a Scene that

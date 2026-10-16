@@ -440,6 +440,16 @@ class Animatable:
     is_primitive
         Internal: whether this object carries geometry the renderer must keep
         at render time.
+    **unexpected
+        Never valid. Every Mob constructor forwards the keywords it does not
+        take down to here, so a keyword no Algan class accepts raises a
+        :class:`TypeError` that names the class you constructed and, for a
+        Manim spelling, the Algan one.
+
+    Raises
+    ------
+    TypeError
+        If any keyword is left over for ``**unexpected``.
 
     Attributes
     ----------
