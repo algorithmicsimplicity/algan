@@ -278,18 +278,69 @@ class Line(BezierCircuitCubic):
         super().__init__(control_points, *args, **kwargs)
 
     def get_start(self):
+        """Get the point the line starts at, where it is now.
+
+        Follows the line when it is moved, rotated or scaled, and reflects
+        animations recorded so far. Meant for a straight line: on an arc built
+        with ``path_arc`` it currently returns the first point of every bezier
+        segment of the arc, one row each, so the arc's own start is row ``0``.
+
+        Returns
+        -------
+        torch.Tensor
+            The start, in world units, shape ``(*, 3)``.
+        """
         return unsquish(self.control_points.location, -2, 4)[..., 0, :]
 
     def get_end(self):
+        """Get the point the line ends at, where it is now.
+
+        As :meth:`get_start`, for the other end. On an arc it currently returns
+        the last point of every bezier segment, so the arc's own end is the
+        last row.
+
+        Returns
+        -------
+        torch.Tensor
+            The end, in world units, shape ``(*, 3)``.
+        """
         return unsquish(self.control_points.location, -2, 4)[..., -1, :]
 
     def get_vector(self):
+        """Get the vector from the line's start to its end.
+
+        Meant for a straight line: on an arc it currently returns each bezier
+        segment's chord, as :meth:`get_start` explains.
+
+        Returns
+        -------
+        torch.Tensor
+            ``get_end() - get_start()``, in world units, shape ``(*, 3)``.
+        """
         return self.get_end() - self.get_start()
 
     def get_unit_vector(self):
+        """Get the direction the line runs in, from its start to its end.
+
+        Returns
+        -------
+        torch.Tensor
+            :meth:`get_vector` normalized to length 1, shape ``(*, 3)``.
+        """
         return F.normalize(self.get_vector(), p=2, dim=-1)
 
     def get_length(self):
+        """Get the distance from the line's start to its end.
+
+        Meant for a straight line: on an arc it currently returns each bezier
+        segment's chord length, not the length along the arc.
+
+        Returns
+        -------
+        torch.Tensor
+            The length in world units, shape ``(*)``: :meth:`get_vector`'s
+            shape without its last axis.
+        """
         return self.get_vector().norm(p=2, dim=-1)
 
     def set_color_by_function(self, function):
@@ -473,12 +524,38 @@ class Point(BezierCircuitCubic):
         super().__init__(torch.cat([location for _ in range(4)], -2), *args, **kwargs)
 
     def get_num_points(self):
+        """Get how many points this is, for Manim compatibility: always ``1``.
+
+        Returns
+        -------
+        int
+            ``1``.
+        """
         return 1
 
     def get_points(self):
+        """Get the point's location as a list of points, as Manim's would be.
+
+        Returns
+        -------
+        torch.Tensor
+            The location in world units, shape ``(1, 3)``.
+        """
         return self.get_center().reshape(1, 3)
 
     def point_from_proportion(self, alpha):
+        """Get the point a proportion of the way along: always its location.
+
+        Parameters
+        ----------
+        alpha
+            The proportion, from ``0`` to ``1``. Ignored: a point has no length.
+
+        Returns
+        -------
+        torch.Tensor
+            The location in world units, shape ``(*, 3)``.
+        """
         return self.get_center()
 
 
@@ -725,6 +802,13 @@ class Polygon(BezierCircuitCubic):
         super().__init__(control_points, **kwargs)
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``RED`` for a Polygon and the shapes built on it.
+        """
         return RED
 
 
@@ -1071,6 +1155,13 @@ class Circle(BezierCircuitCubic):
         self.scale_coefficient = radius
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``BLUE`` for a Circle.
+        """
         return BLUE
 
 

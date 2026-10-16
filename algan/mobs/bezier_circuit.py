@@ -1731,6 +1731,7 @@ class BezierCircuitCubic(Mob):
         return result
 
     def get_render_primitives(self):
+        """Internal: build the primitive that draws this shape's fill and stroke."""
         if self.empty:
             return None
         # Derive transport directly from the material shader parameters. A

@@ -155,6 +155,7 @@ class RenderResult:
 
     @property
     def rendered(self) -> bool:
+        """Whether this call wrote the file: ``status == "rendered"``."""
         return self.status == "rendered"
 
     def _repr_html_(self) -> str | None:

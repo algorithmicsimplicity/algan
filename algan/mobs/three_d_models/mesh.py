@@ -455,6 +455,7 @@ class TriangleMesh(Mob):
         return vert_n.gather(1, idx)  # [T, 3F, 3]
 
     def get_render_primitives(self):
+        """Internal: build the mesh's triangles, with per-corner normals."""
         corners = self.grid.location  # [T, 3F, 3]
 
         normals = self._compute_corner_normals(corners)
@@ -578,4 +579,11 @@ class TriangleMesh(Mob):
         return n_v * num_vars * 4
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``WHITE`` for a TriangleMesh.
+        """
         return WHITE

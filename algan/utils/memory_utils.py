@@ -1241,33 +1241,138 @@ class ManualMemory:
         return self.length
 
     def get_pointers(self):
+        """Get both allocation pointers, to put back later with :meth:`set_pointers`.
+
+        Returns
+        -------
+        tuple[int, int]
+            The forward pointer and the reverse (persistent) pointer, as byte
+            offsets into the arena.
+        """
         return self.current_pointer, self.current_reverse_pointer
 
     def set_pointers(self, pointers):
+        """Move both allocation pointers back to where :meth:`get_pointers` saw them.
+
+        Everything allocated since that call is freed; tensors still holding
+        those bytes now share them with whatever is allocated next. :meth:`temp`
+        does this for a ``with`` block.
+
+        Parameters
+        ----------
+        pointers
+            The pair :meth:`get_pointers` returned.
+        """
         pointers = [*pointers]
         self.current_pointer = pointers[0]
         self.current_reverse_pointer = pointers[1]
 
     def get_percent_used(self):
+        """Get how full the arena is, counting both ends.
+
+        Returns
+        -------
+        float
+            The fraction of the arena allocated, from ``0`` to ``1`` -- not a
+            percentage, despite the name. ``0.0`` for an empty arena.
+        """
         if not len(self):
             return 0.0
         return 1.0 - self.get_num_bytes_remaining() / len(self)
 
     def get_num_bytes_remaining(self):
+        """Get how many bytes are free between the two pointers.
+
+        Returns
+        -------
+        int
+            The largest allocation that could still succeed, before alignment.
+        """
         return self.current_reverse_pointer - self.current_pointer
 
     def clone(self, x, **kwargs):
+        """Copy a tensor into the arena.
+
+        Parameters
+        ----------
+        x
+            The tensor to copy, from any device.
+        **kwargs
+            Passed to :meth:`get_tensor` -- ``persist=True`` to allocate from
+            the persistent end.
+
+        Returns
+        -------
+        torch.Tensor
+            A copy of ``x`` with the same shape and dtype, in the arena's memory.
+
+        Raises
+        ------
+        InsufficientMemoryException
+            If the arena has no room for it.
+        """
         new_x = self.get_tensor(x.shape, x.dtype, **kwargs)
         # copy_ rather than new_x[:] = x: a 0-dim tensor cannot be sliced.
         new_x.copy_(x)
         return new_x
 
     def cast(self, x, dtype, **kwargs):
+        """Copy a tensor into the arena, converted to another dtype.
+
+        Parameters
+        ----------
+        x
+            The tensor to copy, from any device.
+        dtype
+            The dtype of the copy.
+        **kwargs
+            Passed to :meth:`get_tensor`, as for :meth:`clone`.
+
+        Returns
+        -------
+        torch.Tensor
+            ``x`` converted to ``dtype``, with the same shape, in the arena's
+            memory.
+
+        Raises
+        ------
+        InsufficientMemoryException
+            If the arena has no room for it.
+        """
         new_x = self.get_tensor(x.shape, dtype=dtype, **kwargs)
         new_x.copy_(x)
         return new_x
 
     def get_tensor(self, shape, dtype=torch.float, persist=False):
+        """Allocate an uninitialized tensor from the arena.
+
+        Parameters
+        ----------
+        shape
+            The tensor's shape: a sequence of non-negative ints.
+        dtype
+            The tensor's dtype. Defaults to ``torch.float``.
+        persist
+            Whether to allocate from the persistent (reverse) end, for a tensor
+            that must outlive the forward scope it is made in. Defaults to
+            ``False``.
+
+        Returns
+        -------
+        torch.Tensor
+            A view into the arena, aligned to its dtype. Its contents are
+            whatever was there before. An arena built with ``managed=False``
+            returns an ordinary ``torch.empty`` tensor instead.
+
+        Raises
+        ------
+        InsufficientMemoryException
+            If the arena has no room for it. The pointers are left unchanged.
+        ValueError
+            If a dimension is negative.
+        TypeError
+            If a dimension is not an integer: a float is refused, not truncated.
+        """
         # Validate the entire shape before touching either allocation pointer.
         # operator.index accepts integer scalars (including tensor dimensions),
         # but does not silently truncate a float dimension. A negative extent
@@ -1328,6 +1433,12 @@ class ManualMemory:
         return out
 
     def reset(self):
+        """Free everything: both pointers go back to the ends of the arena.
+
+        Also forgets the high-water mark, the :meth:`save_pointer` stack and any
+        open recording scopes. Tensors handed out earlier keep their memory,
+        which later allocations will overwrite.
+        """
         self.current_pointer = 0
         self.current_reverse_pointer = self.length
         self.max_pointer = 0
@@ -1339,13 +1450,42 @@ class ManualMemory:
             self._recorder.clear()
 
     def save_pointer(self):
+        """Remember the forward pointer, for the matching :meth:`reset_pointer`.
+
+        Saves nest: each :meth:`reset_pointer` returns to the most recent save.
+        """
         self.stack.append(self.current_pointer)
 
     def reset_pointer(self):
+        """Free every forward allocation made since the last :meth:`save_pointer`.
+
+        Persistent allocations are kept.
+        """
         self.current_pointer = self.stack[-1]
         self.stack = self.stack[:-1]
 
     def temp(self, clear_persist=False, persist_floor=None):
+        """Free every forward allocation made inside a ``with`` block when it ends.
+
+        The pointers are put back even when the block raises, which is what
+        lets a caller retry a smaller frame window after running out of room.
+
+        Parameters
+        ----------
+        clear_persist
+            Whether to free the block's persistent allocations as well.
+            Defaults to ``False``.
+        persist_floor
+            Only with ``clear_persist``: a function of no arguments, called as
+            the block ends, returning a reverse-pointer position the rewind must
+            not pass -- so a persistent tensor made inside the block can survive
+            it. Defaults to ``None``, meaning no floor.
+
+        Returns
+        -------
+        TempMemoryContext
+            The context manager; entering it gives back this arena.
+        """
         return TempMemoryContext(self, clear_persist, persist_floor)
 
     def scope(self, name, **params):

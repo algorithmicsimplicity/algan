@@ -637,4 +637,11 @@ class Model3D(Mob):
         return self
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            A light grey, ``#CCCCCC``, for a Model3D.
+        """
         return Color("#CCCCCC")
