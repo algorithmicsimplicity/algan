@@ -431,7 +431,8 @@ def _render_scene_to_file(
         pass_job = VideoPassJob.create(passes, destination)
 
         suffix = destination.suffix.lower()
-        if scene.background_is_transparent():
+        transparent = scene.background_is_transparent()
+        if transparent:
             _check_transparent_container_is_supported(destination)
             if scene.premultiplied_over:
                 from algan.rendering.post_processing.post_process import (
@@ -439,6 +440,47 @@ def _render_scene_to_file(
                 )
 
                 _validate_premultiplied_over()
+
+        # The encoder is chosen and checked here, while nothing has been
+        # recorded yet: below this point the render waits out a zero-length
+        # scene, records the fade-out and, with reset=True, resets the Scene
+        # in ``finally``. Chosen after them, a misspelt codec left the fade-out
+        # baked into the authored timeline -- or, with reset=True, an empty
+        # Scene -- although no frame had been rendered.
+        #
+        # Selection sees the raw arguments, before defaults are filled in:
+        # an explicit codec must win verbatim, caller-supplied parameters
+        # must not be confused with Algan's own, and its software fallback
+        # reproduces exactly the pair the fills below used to produce.
+        codec, ffmpeg_params = select_video_encoder(
+            codec, ffmpeg_params, transparent, tuple(video_settings.resolution)
+        )
+        # Transparent output picks its codec from the container (selection
+        # leaves it None), and does so *before* the availability check below --
+        # a build without the WebM encoder should say so by name now, not fail
+        # once the frames are already rendered.
+        if codec is None and transparent:
+            over = scene.premultiplied_over
+            codec, container_params = _transparent_encoder(suffix, over)
+            if ffmpeg_params is None:
+                ffmpeg_params = list(container_params)
+            elif over and suffix == ".mov":
+                # Keep the required alpha profile with caller rate-control or
+                # metadata flags. FFmpeg lets later explicit options win.
+                ffmpeg_params = [*container_params, *ffmpeg_params]
+        # A hardware pick can land on a binary other than moviepy's own
+        # (moviepy is often configured with a static build that has no NVENC
+        # encoders); None keeps moviepy's configuration untouched.
+        # Before the render, not after it: an unusable codec used to cost a
+        # whole render and then surface as a missing temporary file.
+        check_codec_is_available(codec)
+        encode_binary = resolve_encode_binary(codec)
+        if codec is None:
+            codec = "libx264"
+        if audio_codec is None:
+            audio_codec = "mp3"
+        if ffmpeg_params is None:
+            ffmpeg_params = [] if transparent else ["-crf", "17", "-preset", "slower"]
 
         if scene.camera is None:
             scene.camera = Camera(False, scene=scene)
@@ -494,40 +536,6 @@ def _render_scene_to_file(
             # so authoring can continue after save_video returns.
             scene_finalized = False
 
-        transparent = scene.background_is_transparent()
-        # Selection sees the raw arguments, before defaults are filled in:
-        # an explicit codec must win verbatim, caller-supplied parameters
-        # must not be confused with Algan's own, and its software fallback
-        # reproduces exactly the pair the fills below used to produce.
-        codec, ffmpeg_params = select_video_encoder(
-            codec, ffmpeg_params, transparent, tuple(video_settings.resolution)
-        )
-        # Transparent output picks its codec from the container (selection
-        # leaves it None), and does so *before* the availability check below --
-        # a build without the WebM encoder should say so by name now, not fail
-        # once the frames are already rendered.
-        if codec is None and transparent:
-            over = scene.premultiplied_over
-            codec, container_params = _transparent_encoder(suffix, over)
-            if ffmpeg_params is None:
-                ffmpeg_params = list(container_params)
-            elif over and suffix == ".mov":
-                # Keep the required alpha profile with caller rate-control or
-                # metadata flags. FFmpeg lets later explicit options win.
-                ffmpeg_params = [*container_params, *ffmpeg_params]
-        # A hardware pick can land on a binary other than moviepy's own
-        # (moviepy is often configured with a static build that has no NVENC
-        # encoders); None keeps moviepy's configuration untouched.
-        # Before the render, not after it: an unusable codec used to cost a
-        # whole render and then surface as a missing temporary file.
-        check_codec_is_available(codec)
-        encode_binary = resolve_encode_binary(codec)
-        if codec is None:
-            codec = "libx264"
-        if audio_codec is None:
-            audio_codec = "mp3"
-        if ffmpeg_params is None:
-            ffmpeg_params = [] if transparent else ["-crf", "17", "-preset", "slower"]
         logger.info(f"Encoding video with {codec}")
 
         temp_file_path = destination.with_name(
