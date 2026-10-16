@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 import torch
 
-from algan import SceneManager
+from algan import SceneManager, UnsupportedFeatureWarning
 from algan.mobs.three_d_models import Model3D, TriangleMesh
 from algan.mobs.three_d_models.mesh import image_to_normal_map, image_to_texture_map
 from algan.mobs.three_d_models.scene_data import (
@@ -255,6 +255,58 @@ def test_normal_maps_and_pbr_can_be_disabled():
     mesh = model.mesh_mobs[0]
     assert mesh.normal_texture_map is None
     assert mesh.shader is not standard_shader
+
+
+def _quad_scene(material):
+    v, f, n, uv = _quad()
+    mesh = MeshData(
+        vertices=v, faces=f, normals=n, uvs=uv, material_index=0, name="quad"
+    )
+    node = NodeData(name="quad_node", parent=-1, mesh_indices=[0])
+    return SceneData(
+        meshes=[mesh], materials=[material], nodes=[node], source_path="synthetic"
+    )
+
+
+def test_a_texture_file_that_cannot_be_loaded_is_named_in_a_warning(tmp_path):
+    """A missing or unreadable texture used to leave the model untextured
+    without a word, typically when a model file refers to textures by a path
+    on the machine it was made on.
+    """
+    SceneManager.reset()
+    missing = tmp_path / "wood.png"
+    with pytest.warns(UnsupportedFeatureWarning, match="wood.png.*no such file"):
+        model = Model3D(
+            scene_data=_quad_scene(MaterialData(diffuse_texture=str(missing)))
+        )
+    assert model.mesh_mobs[0].texture_map is None
+
+    unreadable = tmp_path / "bump.png"
+    unreadable.write_bytes(b"not an image")
+    with pytest.warns(
+        UnsupportedFeatureWarning, match="bump.png.*UnidentifiedImageError"
+    ):
+        model = Model3D(
+            scene_data=_quad_scene(MaterialData(normal_texture=str(unreadable)))
+        )
+    assert model.mesh_mobs[0].normal_texture_map is None
+
+
+def test_an_embedded_texture_that_cannot_be_decoded_is_named_in_a_warning():
+    from types import SimpleNamespace
+
+    from algan.mobs.three_d_models.gltf_loader import _convert_material
+
+    out_of_range = np.full((2, 2, 3), 2.0)
+    visual = SimpleNamespace(
+        material=SimpleNamespace(name="scales", baseColorTexture=out_of_range)
+    )
+    with pytest.warns(
+        UnsupportedFeatureWarning,
+        match="base color texture of material 'scales'.*must be in",
+    ):
+        material = _convert_material(visual)
+    assert material.diffuse_image is None
 
 
 def test_node_part_access():

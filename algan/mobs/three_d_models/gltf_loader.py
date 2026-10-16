@@ -22,7 +22,11 @@ import warnings
 import numpy as np
 import torch
 
-from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
+from algan.errors import (
+    UnsupportedFeatureError,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.scene_data import (
     AnimationData,
@@ -101,28 +105,37 @@ def _convert_material(visual):
         else getattr(material, "main_color", None)
     )
 
-    def _img(attr):
+    name = getattr(material, "name", "") or ""
+
+    def _img(attr, role):
         tex = getattr(material, attr, None)
         if tex is None:
             return None
         try:
             return _image_to_float_hwc(tex)
-        except Exception:
+        except Exception as exc:
+            owner = f" of material {name!r}" if name else ""
+            warnings.warn(
+                f"Could not decode the {role} texture{owner} "
+                f"({type(exc).__name__}: {exc}), so the model is drawn without it.",
+                UnsupportedFeatureWarning,
+                stacklevel=_user_stacklevel(),
+            )
             return None
 
-    diffuse_image = _img("baseColorTexture")
+    diffuse_image = _img("baseColorTexture", "base color")
     if diffuse_image is None:
-        diffuse_image = _img("image")  # some trimesh materials
+        diffuse_image = _img("image", "base color")  # some trimesh materials
     metallic = getattr(material, "metallicFactor", None)
     roughness = getattr(material, "roughnessFactor", None)
     emissive = getattr(material, "emissiveFactor", None)
     return MaterialData(
-        name=getattr(material, "name", "") or "",
+        name=name,
         base_color=base,
         diffuse_image=diffuse_image,
-        normal_image=_img("normalTexture"),
-        metallic_roughness_image=_img("metallicRoughnessTexture"),
-        emissive_image=_img("emissiveTexture"),
+        normal_image=_img("normalTexture", "normal"),
+        metallic_roughness_image=_img("metallicRoughnessTexture", "metallic-roughness"),
+        emissive_image=_img("emissiveTexture", "emissive"),
         metallic_factor=float(metallic) if metallic is not None else 0.0,
         roughness_factor=float(roughness) if roughness is not None else 1.0,
         emissive=(

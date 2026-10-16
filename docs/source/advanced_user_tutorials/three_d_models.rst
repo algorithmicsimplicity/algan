@@ -93,7 +93,9 @@ and tangent-space normal maps are loaded and applied too.
        default lit shader.
    * - ``load_textures``
      - Load diffuse texture maps. Default True; False (or a failed load) falls
-       back to the material's flat base color.
+       back to the material's flat base color. A failed load warns, naming the
+       texture and why, except for a glTF or OBJ texture file that is missing,
+       which is left out without a word.
    * - ``normal_maps``
      - Apply tangent-space normal maps. Default True. Requires per-vertex UVs.
    * - ``smooth_normals``
@@ -218,7 +220,10 @@ Troubleshooting
    * - Faceted where it should be smooth
      - The file has no authored normals; they are being derived per face.
    * - Untextured / flat color
-     - A texture failed to load, or the mesh has no UVs.
+     - A texture failed to load, or the mesh has no UVs. Most failed loads
+       warn, naming the texture; a glTF or OBJ whose texture file is missing,
+       often because it names a path on the machine it was made on, does not:
+       look for the file it refers to beside the model.
    * - Black or very dark
      - A metallic material with nothing to reflect. Add an environment map --
        see :doc:`lighting_and_shadows`.

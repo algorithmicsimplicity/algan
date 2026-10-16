@@ -24,6 +24,7 @@ animatable per-corner ``location``.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -33,7 +34,11 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
 from algan.constants.easings import identity
-from algan.errors import AlganConfigurationError
+from algan.errors import (
+    AlganConfigurationError,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.mesh import (
     TriangleMesh,
@@ -114,21 +119,34 @@ def _transform_normals(normals, matrix):
     return normals @ inv_t.T
 
 
-def _load_image_hwc(path):
-    """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}),
-    or ``None`` on failure.
-    """
-    try:
-        from PIL import Image
+def _load_image_hwc(path, fallback="in its material's flat color instead"):
+    """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}).
 
-        with Image.open(path) as pil_image:
-            array = np.array(pil_image)  # [H, W, C] (or [H, W] for grayscale)
-        if array.ndim == 2:
-            array = array[:, :, None]
-        img = torch.from_numpy(array)  # [H, W, C] uint8
-        return img.float() / 255.0
-    except Exception:
-        return None
+    ``None`` when it cannot be read, after a warning that names the file, why
+    it could not be read, and ``fallback``: how the model is drawn instead,
+    by default the way a model whose diffuse texture fails is drawn.
+    """
+    if not os.path.exists(path):
+        reason = "no such file"
+    else:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as pil_image:
+                array = np.array(pil_image)  # [H, W, C] (or [H, W] for grayscale)
+            if array.ndim == 2:
+                array = array[:, :, None]
+            img = torch.from_numpy(array)  # [H, W, C] uint8
+            return img.float() / 255.0
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+    warnings.warn(
+        f"Could not load the texture {path!r} ({reason}), so the model is drawn "
+        f"{fallback}.",
+        UnsupportedFeatureWarning,
+        stacklevel=_user_stacklevel(),
+    )
+    return None
 
 
 class Model3D(Mob):
@@ -146,8 +164,13 @@ class Model3D(Mob):
         be a label only.
     load_textures : bool
         Load and apply diffuse texture maps referenced by materials
-        (default True). When False (or a texture fails to load) meshes fall
-        back to their material's flat base color.
+        (default True). When False, or when a texture fails to load, meshes
+        fall back to their material's flat base color. A texture file that a
+        model read through assimp names, or an image embedded in a glTF, that
+        cannot be read warns with an
+        :class:`~algan.errors.UnsupportedFeatureWarning` naming it and why. A
+        glTF or OBJ texture *file* that is missing is left out without a
+        warning: trimesh, which reads those formats, drops it silently.
     fit_to_size : float, optional
         Recenter the model and uniformly scale it so its bounding-box diagonal
         is this many world units -- handy, since model files use wildly
@@ -382,8 +405,8 @@ class Model3D(Mob):
         """
         if material.normal_image is not None:
             return image_to_normal_map(material.normal_image.to(device)).to(device)
-        if material.normal_texture and os.path.exists(material.normal_texture):
-            image = _load_image_hwc(material.normal_texture)
+        if material.normal_texture:
+            image = _load_image_hwc(material.normal_texture, "without that normal map")
             if image is not None:
                 return image_to_normal_map(image).to(device)
         return None
@@ -403,7 +426,7 @@ class Model3D(Mob):
         if path in self._texture_cache:
             return self._texture_cache[path]
         tex_map = None
-        image = _load_image_hwc(path) if os.path.exists(path) else None
+        image = _load_image_hwc(path)
         if image is not None:
             tex_map = image_to_texture_map(image).to(device)
         self._texture_cache[path] = tex_map
