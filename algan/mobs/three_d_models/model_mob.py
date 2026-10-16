@@ -26,7 +26,6 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-import numpy as np
 import torch
 
 from algan.animatable_base.mob import Mob
@@ -121,12 +120,10 @@ def _load_image_hwc(path):
     try:
         from PIL import Image
 
+        from algan.utils.file_utils import _decode_pil_image
+
         with Image.open(path) as pil_image:
-            array = np.array(pil_image)  # [H, W, C] (or [H, W] for grayscale)
-        if array.ndim == 2:
-            array = array[:, :, None]
-        img = torch.from_numpy(array)  # [H, W, C] uint8
-        return img.float() / 255.0
+            return torch.from_numpy(_decode_pil_image(pil_image))
     except Exception:
         return None
 

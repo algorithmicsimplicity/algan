@@ -71,7 +71,18 @@ def _normalized_components(values):
 
 
 def _image_to_float_hwc(image):
-    """PIL image (or array) -> torch ``[H, W, C]`` float in ``[0, 1]``."""
+    """PIL image (or array) -> torch ``[H, W, C]`` float in ``[0, 1]``.
+
+    A PIL image is decoded by its mode first, so a palette, CMYK or 16-bit
+    greyscale texture reaches the range check as the colors it shows rather
+    than as raw palette indices or ink densities.
+    """
+    from PIL import Image
+
+    if isinstance(image, Image.Image):
+        from algan.utils.file_utils import _decode_pil_image
+
+        image = _decode_pil_image(image)
     arr = _normalized_components(image)
     if arr.ndim == 2:  # grayscale
         arr = arr[..., None]

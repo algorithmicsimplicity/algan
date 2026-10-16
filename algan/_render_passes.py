@@ -249,15 +249,9 @@ def encode_passes(names, aux, resolver=None) -> dict[str, np.ndarray]:
 
 
 def _ffmpeg_binary():
-    from algan.utils.video_encoding import _moviepy_ffmpeg_binary, resolve_encode_binary
+    from algan.utils.video_encoding import _software_ffmpeg_binary
 
-    binary = resolve_encode_binary(None)
-    if binary:
-        return binary
-    try:
-        return _moviepy_ffmpeg_binary() or "ffmpeg"
-    except Exception:  # noqa: BLE001 -- an unimportable moviepy is not ours
-        return "ffmpeg"
+    return _software_ffmpeg_binary()
 
 
 _ENCODERS_OF = {}

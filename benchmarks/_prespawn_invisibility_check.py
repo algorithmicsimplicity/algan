@@ -43,6 +43,9 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Each arm must render in the process that patched the batch fetcher, not in a
+# warm daemon that never saw the patch (the benchmarks in this tree all do this).
+os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
 import algan.render_loop as rl  # noqa: E402
 from algan import (  # noqa: E402
@@ -61,7 +64,7 @@ from algan import (  # noqa: E402
     Square,
     Sync,
 )
-from algan.utils.memory_utils import empty_cache  # noqa: E402
+from algan.utils.memory_utils import release_torch_memory  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_prespawn_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -74,7 +77,7 @@ _orig_get_batch = rl.RenderLoopMixin._get_batch_of_primitives
 _state = {"drop_unspawned": False, "primitives": None}
 
 
-def _filtered_get_batch(self, start_ind, end_ind, actors, budget):
+def _filtered_get_batch(self, start_ind, end_ind, actors, budget, **kwargs):
     """Optionally hide actors that have not spawned by the window's start.
 
     This is exactly the difference between re-fetching a prefix (which selects
@@ -84,7 +87,7 @@ def _filtered_get_batch(self, start_ind, end_ind, actors, budget):
     if _state["drop_unspawned"]:
         start_time = start_ind / self.frames_per_second
         actors = [a for a in actors if float(a.lifespan.start()) <= start_time]
-    result = _orig_get_batch(self, start_ind, end_ind, actors, budget)
+    result = _orig_get_batch(self, start_ind, end_ind, actors, budget, **kwargs)
     if _state["primitives"] is None:
         _state["primitives"] = sum(
             int(getattr(p, "corners", np.zeros((1, 0))).shape[1]) for p in result[0]
@@ -136,7 +139,7 @@ def render(tag, drop_unspawned):
     # memory pressure re-windows its state materialization, and CPU rate-func
     # rounding is window-dependent, which would show up as a difference of its
     # own. Hand the previous arm's memory back before starting.
-    empty_cache(force_gc=True)
+    release_torch_memory(force_gc=True)
     SceneManager.reset()
     _state["drop_unspawned"] = drop_unspawned
     _state["primitives"] = None

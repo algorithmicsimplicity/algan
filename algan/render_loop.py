@@ -350,6 +350,32 @@ def _opt_disabled_render_loop(name):
     return _opt_disabled(name)
 
 
+def _close_video_file_writer(file_writer):
+    """Close moviepy's writer, and raise if FFmpeg did not finish the file.
+
+    moviepy's ``close`` waits for FFmpeg without asking how it exited, and a
+    refusal that comes when FFmpeg writes the header -- a codec the container
+    cannot hold -- breaks no frame write when the whole video fits in the
+    pipe: the temporary file was then published as rendered, 262 bytes of
+    WebM or an empty GIF. The pass encoders check the same way.
+    """
+    proc = getattr(file_writer, "proc", None)
+    message = b""
+    if proc is not None:
+        with contextlib.suppress(OSError):
+            proc.stdin.close()
+        if proc.stderr is not None:
+            # Read before moviepy's ``close`` closes it unread.
+            message = proc.stderr.read()
+    file_writer.close()
+    if proc is not None and proc.returncode:
+        raise RuntimeError(
+            f"FFmpeg failed writing {getattr(file_writer, 'filename', 'the video')} "
+            f"(exit code {proc.returncode}): "
+            f"{message.decode(errors='replace').strip() or 'no message'}"
+        )
+
+
 class _VideoWriter:
     """A bounded encoder queue whose failures reach its sole producer."""
 
@@ -4818,7 +4844,7 @@ class RenderLoopMixin:
         own stage instead of leaving it in the profile's unaccounted bucket.
         """
         writer.finish()
-        writer.file_writer.close()
+        _close_video_file_writer(writer.file_writer)
 
     def _recorded_end_time_for_render(self):
         """End of everything recorded so far, in seconds.

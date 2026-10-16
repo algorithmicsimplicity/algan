@@ -383,6 +383,24 @@ def resolve_encode_binary(codec: str | None) -> str | None:
     return _probe_cached()[1]
 
 
+def _software_ffmpeg_binary() -> str:
+    """The FFmpeg binary the video writer runs for a software codec.
+
+    ``SETTINGS.paths.ffmpeg_binary`` when set, else moviepy's configured binary
+    (often imageio-ffmpeg's bundled build), else ``ffmpeg`` on the PATH. Code
+    that drives FFmpeg itself -- render passes, video concatenation -- runs
+    this one, so it works on every machine ``save_video`` does, including one
+    with no FFmpeg on the PATH.
+    """
+    binary = resolve_encode_binary(None)
+    if binary:
+        return binary
+    try:
+        return _moviepy_ffmpeg_binary() or "ffmpeg"
+    except Exception:  # noqa: BLE001 -- an unimportable moviepy is not ours
+        return "ffmpeg"
+
+
 def _listed_encoders(binary: str) -> set[str] | None:
     """Encoder names ``binary`` reports, or ``None`` if it could not be asked."""
     try:

@@ -152,6 +152,11 @@ The automatic choice only applies when you have not passed an explicit
     # Keep encoding on the CPU even when an NVENC encoder is available.
     ALGAN_VIDEO_ENCODER=software python my_scene.py
 
+All of this is H.264, which ``.mp4``, ``.mov``, ``.mkv`` and ``.avi`` hold.
+``.webm`` is encoded with VP9 (``libvpx-vp9``) and its sound with Opus, and
+``.gif`` with FFmpeg's ``gif`` encoder, one palette per frame. A GIF has no
+audio track, so a Scene's sound is left out of it, with a warning.
+
 Exporting additive glow and coverage together
 ==============================================
 
