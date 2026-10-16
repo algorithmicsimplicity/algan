@@ -228,7 +228,7 @@ Two accuracy caveats:
     gradient direction (computable inside `_bezier_point_metrics` — it already
     forms the closest-point vector, it just discards it) combined with the
     projected plane bases. Ship isotropic first; camera-facing text, which is
-    the common case, is exact.
+    the common case, is exact. (Closed 2026-10-16 exactly that way: ss22.)
 
 Circuits have **no shared-edge problem** (a glyph or shape is one closed
 circuit), so scalar coverage is correct for them. That is why this half can ship
@@ -2231,3 +2231,242 @@ broken by ruff's `from __future__ import annotations`, which turns Taichi kernel
 annotations into strings (`benchmarks/*` now carries an I002 ignore so that
 cannot recur). All three are repaired. `benchmarks/_rt2_i64_atomic_smoke.py` has
 the same future-import breakage and has not been touched.
+
+
+================================================================================
+22. TILTED CIRCUITS: COVERAGE MEASURED ON SCREEN — 2026-10-16
+================================================================================
+
+§4 shipped circuit coverage with an isotropic footprint: a circuit's signed
+distance is taken in its own plane and was turned into pixels with
+`pixel_size`, the world size of a pixel on a plane FACING the camera at that
+depth. That is exact only where the plane faces the camera. Tilted away from
+it, a plane is squeezed on screen along its foreshortened direction, so a
+plane distance there is FEWER screen pixels than `d / pixel_size` says, and the
+box filter came out narrower than a pixel in that direction. Two smaller
+defects rode along: the exact half-plane area (§21) was oriented by the plane
+frame's axes, which are an arbitrary orthonormal pair derived from the normal
+(`primitives`' `basis_u`) and the screen's axes only for a plane facing an
+unrotated camera; and the nearest and second-nearest edges, which the oriented
+wedge models as the local boundary, were chosen by PLANE distance.
+
+22.1 The symptom
+----------------
+A filter narrower than the pixel pitch does not tile: as a thin stroke crosses
+pixel rows its per-column ink rises and falls, so the stroke BEADS, and the
+beads crawl when the camera moves. The case that surfaced it was the
+backpropagation video's error landscape, whose floor grid of 1.6 px strokes is
+seen from 42 degrees up: at 1080p a grid line's brightness varied by 8.5 %
+(std, 0.81x-1.11x) along its length against 1.3 % for a 4x supersampled render
+(and by 12.1 % with that scene's camera 16,000 units out, where float32 rounding
+of the rays added to it -- the video now uses a nearer near-orthographic
+camera). A single 1.6 px stroke on a plane tipped 65 degrees: 17.6 % spread,
+one column 26 % off the supersampled reference. Facing the camera: 0.1 %.
+Filled shapes suffer the same way at their edges: on a plane tipped 60 degrees
+the edge pixels of a square, a thin bar and a triangle were 9.4 % of a pixel
+off their supersampled coverage on average.
+
+22.2 The fix: the edge query is made on screen
+----------------------------------------------
+`_circuit_screen_map` gives the plane's local projection at the pixel, per
+`pixel_size`: a world displacement `w` at the hit moves its projection across
+the view by `w - (w . fwd) rd / (rd . fwd)` per unit of perpendicular depth,
+read off the screen's unit axes and taken along the plane frame. That is the
+exact Jacobian of a flat image plane at the pixel centre, off-axis included, and
+a rotation (or reflection) wherever the plane faces the camera.
+
+`_bezier_point_metrics_in` in screen mode carries every candidate segment onto
+the screen with it (around the query point, in `pixel_size` units) and does the
+whole nearest-edge query there: each segment's distance and closest point are
+measured on screen, candidates are ranked and accepted by that distance
+against `screen_reach` (the drawn region's reach, at most `s_max` times its
+plane width, plus the filter's `_AA_FILTER_RADIUS`), and the closest-point
+vectors, the segment directions and the stored inward sides (flipped where the
+map mirrors) come back on screen. The crossing parity stays in the plane --
+inside is inside. With that, `_bez_pixel_hit` reads the screen directly: the
+signed distance, the half-plane area's orientation and the wedge's two walls
+need no conversion, the wedge's tests on its own shape (same wall, convex or
+reflex) run on screen like the rest, and a corner is measured to its vertex on
+screen rather than through a straight-edge approximation. Only the WIDTHS are
+the plane's -- the stroke, the hairline dilation, the border band -- and each
+is carried across by the nearest segment's own scale, `|det M| |e| / |M e|`
+for its plane direction `e` (`_segment_width_scale`): a width laid across a
+segment running along the foreshortened direction keeps its size, one across a
+segment running across it is squeezed with the plane.
+
+Choosing edges by screen distance matters as much as measuring them there. A
+first version kept the plane query and only converted its answer, widening the
+plane radius by `1 / s_min` so the filter's screen reach was covered; but a
+circle in the plane that covers an ellipse also takes in segments the filter
+cannot see along the less foreshortened direction, and the wedge extends such
+a segment's LINE across the pixel -- the notch speck of
+`_bezier_point_metrics`' docstring in another guise. On small tilted text that
+version left 79 pixels more than 4 levels worse than before against 540 better;
+measuring on screen took the mean error further down, though not those last
+scattered pixels (22.4).
+
+Two supporting details. The plane radius the cell walk uses is
+`screen_reach / s_min`, which holds every point the screen reach can see; it is
+floored at `_AA_MIN_SCREEN_SCALE` (0.1), bounding the search on a plane within
+about six degrees of edge-on, where coverage is next to nothing anyway. And a
+pixel centre ON a boundary -- a stroke's own path -- has a closest-point vector
+of rounding noise; within `_AA_ON_BOUNDARY` (a hundredth of a pixel) the nearest
+segment's own perpendicular orients its area instead.
+
+What deliberately did NOT change: widths are still `pixel_size` multiples IN
+THE PLANE, so a stroke painted on a tilted plane foreshortens with it, as it
+always has; only the filter that resolves it moved to the screen.
+
+The candidate bounds hold without change. A centre is accepted within the
+filter's reach, `_AA_FILTER_RADIUS` pixels on screen, of the drawn region, and
+the drawn region reaches at most `R_d / cos(theta)` pixels past the projected
+outline; `_circuit_reach`'s `(R_d + _AA_FILTER_RADIUS) / cos(theta)` covers
+both. The box expansion inflates a circuit's bounds by half its stroke plus 1.5
+pixels before projecting them, past the filter's 0.71 as well. (On screen the
+filter now reaches 0.71 pixels in every direction; before, 0.71 times the
+plane's local scale there, which is at most `1 / cos(theta)` and which
+`_circuit_reach` already allowed for.)
+`test_circuit_span_candidates.py`, whose scene is built to be hostile to that
+bound (strokes and fills on planes tilted far out of the image plane under a
+100-degree field of view), still renders spans bit-identical to boxes.
+
+22.3 A repeat must not break a corner's tie
+-------------------------------------------
+The spatial grid lists a segment in every cell its bounds touch and the cell
+walk visits every cell the query square touches, so the nearest segment is
+usually read more than once -- and each repeat ties with it. A strict ranking
+lets a repeat take the SECOND slot from a runner-up even a rounding error
+farther, and the wedge, handed one wall twice, folds it as a flattening chord
+(`nd >= 0.9`) and draws the corner as a half-plane: a convex corner's pixel
+inked as if its edge ran on. Where both walls of a corner are closest at the
+vertex they share, the runner-up is exactly as near, and whether the repeat
+wins comes down to rounding. In the plane the two distances mostly come out
+equal, both from the one stored vertex; carried through a rotated screen map
+they almost never do -- a query outside a square's corner, under 61 rotations
+of the map, had the repeat take the slot at 60, all but the identity. The
+first screen version therefore left 9-12 pixels a frame more than 20 levels
+too bright at glyph tips in the rotated-camera act of `solids_and_camera`.
+
+On screen, the nearest segment's repeat must now beat the second slot by more
+than `_AA_RANK_TIE`, a hundredth of a pixel, to take it;
+`test_a_corner_keeps_both_walls_through_any_screen_map` is the guard. That also
+settles the corners where the plane query's own arithmetic missed the tie
+(`x0 + 1 * dx` an ulp off the stored vertex), so camera-facing text changes at
+those too, toward the reference (22.4).
+
+Two wider fixes were tried and are NOT in, because the wedge is not guarded
+against the second walls they hand it:
+
+  * The same tolerance between ANY two candidates. Which of two near-equal
+    DISTINCT walls the wedge gets decides its convex/reflex call: in
+    `shapes_and_timeline` a pixel 2.3 px inside a circle's 5 px border kept a
+    chord 0.006 px farther than the one sharing a vertex with its nearest
+    segment, the call went convex, and the pixel dropped to the background.
+    Distinct segments stay strictly ranked, as they were.
+  * Reading each segment once (skip one already holding a slot). That also
+    stops a repeat beating a runner-up CLEARLY farther -- a corner's other
+    wall seen from deep inside the corner, a stem's far wall -- where today
+    the wedge stays off and the pixel gets the nearest wall's half-plane. On
+    average a gain (the fast suite's frame at t=3.1: 41 pixels more than 20
+    levels better against 4 worse), but the query radius reaches as far as a
+    border is wide: a pixel 4.2 px deep in that 5 px border was handed a 0.2
+    px segment 4.5 px away, its inward side pointing out of the circle, as
+    its second wall; the convex wedge zeroed it and a crack ran through the
+    border. Every full-render scene moved in nearly every frame, by up to 221
+    levels.
+
+Both want the wedge confined first to walls the filter can see (within
+`_AA_FILTER_RADIUS` of the pixel, past the dilation), to walls that meet -- an
+apex at the ends of both segments, or a strip -- and to convex/reflex calls the
+crossing parity at the pixel centre agrees with (today the parity arbitrates
+only when the closest points split the call; 22.4 has a pixel it would have
+saved, and it would have saved both cracks above). That is work of its own.
+
+22.4 Measured
+-------------
+Per-column ink of one stroke along its length (std / mean), 320x180, against a
+4x render averaged down; "worst" is the largest single-column departure from
+that reference:
+
+    plane tipped / stroke turned   spread before   spread after   worst before -> after
+    65 deg / 20 deg                    17.6 %          0.2 %         26.5 % -> 0.5 %
+    70 deg / 30 deg                    23.7 %          0.2 %         34.5 % -> 0.5 %
+    60 deg / -10 deg                    7.3 %          0.2 %         13.0 % -> 0.4 %
+    50 deg / -35 deg                    2.2 %          0.1 %          3.5 % -> 0.3 %
+    facing the camera                   0.1 %          0.1 %          0.2 % -> 0.2 %
+
+The stroke's total ink is unchanged in every case (mean ratio 1.000), which is
+the check that widths did not move. Filled shapes on a plane tipped 60 degrees
+(a square, a thin bar, a triangle; 320x180 against 4x): mean coverage error at
+the edges 9.4 % -> 0.14 % of a pixel, worst pixel 22.5 % -> 0.5 %, total ink
+unchanged; facing the camera both arms measure 0.14 %. On the video's floor
+grid at 1080p (camera at the video's new distance) the line measured in 22.1
+went from 8.5 % (0.81x-1.11x) to 2.1 % (0.95x-1.04x) against the supersampled
+1.2-1.3 % (the lines lie over a shadowed, dithered plane, which the
+measurement does not separate out).
+
+The limit is glyphs smaller than the model. Tex text on a plane tipped 62
+degrees, its glyphs one or two pixels tall, has pixels holding three or four
+edges, which neither the single boundary nor the two-wall wedge can represent:
+mean error against 4x 0.22 -> 0.08 levels over the whole frame and pixels more
+than 8 levels off 658 -> 352, the old filter visibly dropping strokes the new
+one keeps -- but 77 scattered pixels end more than 4 levels worse, against 558
+better.
+
+Real scenes, where most text faces the camera. Single frames against a 4x
+render of the same frame, averaged down in linear light; mean |error| over the
+frame and pixels more than 8 levels off, for the previous filter, the screen
+query ranking strictly (the first version), and the final one:
+
+    frame                                    mean error (levels)       pixels > 8 off
+                                             before  first   final     before  first  final
+    solids_and_camera t=14.4 (camera turned)  0.160   0.160   0.156     1571    1591   1550
+    solids_and_camera t=13.2 (camera turned)  0.157   0.155   0.153     1467    1470   1444
+    complex_hierarchy_become t=6.3            0.135   0.135   0.133     1375    1376   1356
+    complex_hierarchy_become t=5.1            0.147   0.135   0.134     1472    1383   1367
+    shapes_and_timeline t=17.9                0.082     --    0.081      942      --    931
+    text_and_media t=6.2                      0.173     --    0.172     2024      --   2003
+    fast suite's scene t=3.1                  0.069  = before 0.068      705  = before  693
+
+Pixels more than 20 levels worse than the previous filter's: 12, 9, 1 and 0
+in the first four frames for the first version, 0, 1, 0 and 0 for the final
+one; in the last three, 0, 3 and 0, against 8, 14 and 6 more than 20 levels
+better. The 3 are the class 22.3 leaves open: at one, a corner of a small
+glyph, the wedge was handed both walls of a real corner, called it
+convex from where the closest points lie, and zeroed a pixel the crossing
+parity puts inside (235 -> 34, where the reference has 175) -- the parity is
+consulted only when that call is split. In `benchmarks/_aa_iter.py`'s
+camera-facing scenes (references rebuilt for this checkout, at the matched
+0.15 half-width) slant and corner render byte-identically, stem L1 0.154 ->
+0.152 and glyph 0.132 -> 0.130, ink stem 1.060 -> 1.058 and glyph 1.053 ->
+1.049; interior notches and the worst pixel unchanged.
+
+The full-render scenes, compared on and off on one machine: all six move,
+since all have glyph or polygon corners -- over the tolerance of 2 in 73 of
+75 frames of `complex_hierarchy_become` (max 51), 120 of 171 of
+`manim_compat_and_plots` (59), 171 of 179 of `materials_and_lighting` (40),
+298 of 301 of `shapes_and_timeline` (221: one pixel of a stroke both arms draw
+aliased there, 34 -> 255 where the reference has 167), 236 of 239 of
+`solids_and_camera` (60) and 167 of 182 of `text_and_media` (201: the glyph
+corner above). Most frames move by a few dozen pixels, the two scenes that
+also turn or tilt their circuits by up to 849 and 288. Their release-hosted baselines need
+regenerating on the machine that owns them.
+
+Byte identity. `ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC=0` restores the previous
+filter byte for byte -- checked on a tilted and a facing grid at two camera
+distances, and on the fast suite's scene, which renders within 2 of its old
+baseline that way. Under the default a circuit facing an unrotated camera
+measures exactly what it did (its plane frame is then the screen's axes up to a
+quarter turn or a reflection, under which the screen map is exact) and differs
+only where the plane query's tie at a corner came out an ulp unequal and the
+nearest wall's repeat took the slot (22.3): the fast suite's baseline, whose
+scene is all camera-facing, moved in 43 of its 45 frames, by at most 19
+pixels a frame and up to 92 levels (a star's tip that was 92 levels too
+bright), and is re-baselined. The warm render of that scene takes as long
+either way (12.9 s against 12.5 s here). The switch is
+`SETTINGS.raytracing.experimental.analytic_aa_bez_anisotropic`, behind
+`ti.static` and therefore in `KERNEL_COMPILED_IN_FIELDS`; the paths without
+analytic coverage call `_bezier_point_metrics`, the plane-mode wrapper, and
+compile as before. `tests/unit_tests/test_tilted_circuit_coverage.py` is the
+guard: its stroke test fails on the old filter by 7-18 % spread against a
+1.5 % bound, and its corner test on a screen query without the tie.

@@ -57,7 +57,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     INV_DEPTH_TIE_EPSILON,
     NODE_ARG,
     _axis_cos,
-    _bezier_point_metrics,
+    _bezier_point_metrics_in,
     _circuit_inner_distance,
     _circuit_outer_dilation,
     _circuit_point_region,
@@ -121,6 +121,32 @@ Z_SENTINEL = 0x7FFFFFFFFFFFFFFF
 # guaranteed to find every edge that can touch the square. (The filter itself
 # uses the perpendicular half-pixel; this is the conservative query radius.)
 _AA_FILTER_RADIUS = 0.7071067811865476
+
+# Floor on the foreshortening a circuit's nearest-edge query widens for
+# (``_bez_pixel_hit``). The filter's reach is measured on screen, so a plane
+# tilted away from the camera spends more of itself on it along its most
+# foreshortened direction, and the query grows by the inverse of how far that
+# direction is squeezed. A plane within about six degrees of edge-on (squeezed
+# below a tenth) keeps a query ten times the camera-facing one, which bounds the
+# search and its cost; such a plane covers next to nothing on screen anyway.
+_AA_MIN_SCREEN_SCALE = 0.1
+
+# A pixel centre this close to a circuit's boundary, in camera-facing pixels, is
+# taken to be on it: its closest-point vector is too short to give the boundary
+# a direction, and ``_bez_pixel_hit`` orients it by the nearest segment instead.
+# Plane coordinates of a few world units round at about 1e-6, a pixel is
+# typically thousands of times that, so a hundredth of one leaves the vector's
+# direction good to a couple of percent wherever it is used.
+_AA_ON_BOUNDARY = 0.01
+
+# How close, in pixels, a segment in the nearest-edge query's second slot must
+# be to the nearest one to keep the slot against the nearest's own repeat from
+# another grid cell (``_bezier_point_metrics_in``, screen mode): what the plane
+# query's tie between a corner's two walls at their shared vertex comes to once
+# the screen map's rounding has been through it. That rounding is of order 1e-5
+# of a pixel for plane coordinates of a few world units, growing with them; a
+# hundredth of a pixel is far above it and far below anything the filter shows.
+_AA_RANK_TIE = 0.01
 
 # A fragment whose analytic coverage is at least this is treated as covering the
 # whole pixel: a materially opaque fragment at this coverage (with a full sample
@@ -736,6 +762,91 @@ def _boundary_coverage(nx, ny, d, aa: ti.template()):
     else:
         c = ti.math.clamp(d + 0.5, 0.0, 1.0)
     return c
+
+
+def _bez_anisotropic():
+    """Whether :func:`_bez_pixel_hit` measures circuit coverage on screen.
+
+    ``rt_settings.analytic_aa_bez_anisotropic``, read live through the module
+    rather than imported by value: the use is behind ``ti.static``, so whatever
+    the setting holds when a kernel compiles is what that kernel keeps, and the
+    field is in ``KERNEL_COMPILED_IN_FIELDS`` so that a render which moves it
+    gets kernels rebuilt around the new answer.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    return bool(rt_settings.analytic_aa_bez_anisotropic)
+
+
+@ti.func
+def _circuit_screen_map(f, ro, rd, bu, bv, screen_point: ti.template(),
+                        pixel_basis_x: ti.template(),
+                        pixel_basis_y: ti.template()):
+    """How a circuit's plane lands on the screen at one pixel's hit.
+
+    Returns the 2x2 matrix ``M = ((m00, m01), (m10, m11))`` that takes a
+    displacement ``(du, dv)`` along the plane frame ``(bu, bv)`` to a screen
+    displacement of ``M (du, dv) / pixel_size`` pixels, ``pixel_size`` being the
+    camera-facing footprint :func:`_bez_pixel_hit` measures widths in. Where the
+    plane faces the camera ``M`` is a rotation or a reflection -- the plane
+    frame is an arbitrary orthonormal pair (``primitives``' ``basis_u``), not
+    the screen's axes -- and everything built on it reduces to the isotropic
+    filter. A plane tilted away from the camera is squeezed along its
+    foreshortened direction, which is ``M``'s smaller singular value.
+
+    A world displacement ``w`` at the hit moves its projection across the view
+    by ``w - (w . fwd) rd / (rd . fwd)`` per unit of perpendicular depth: the
+    depth change it brings slides the projection back toward the axis along
+    the ray. Measured along the screen's own axes, that is the exact local
+    Jacobian at the pixel centre of a flat image plane, off-axis included.
+    """
+    fwd = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                        screen_point[f, 2]) - ro).normalized()
+    ex = ti.math.vec3(pixel_basis_x[f, 0], pixel_basis_x[f, 1],
+                      pixel_basis_x[f, 2]).normalized()
+    ey = ti.math.vec3(pixel_basis_y[f, 0], pixel_basis_y[f, 1],
+                      pixel_basis_y[f, 2]).normalized()
+    slide = rd / ti.max(rd.dot(fwd), 1e-6)
+    ax = ex - slide.dot(ex) * fwd
+    ay = ey - slide.dot(ey) * fwd
+    return ax.dot(bu), ax.dot(bv), ay.dot(bu), ay.dot(bv)
+
+
+@ti.func
+def _screen_scales(m00, m01, m10, m11):
+    """The singular values ``(s_min, s_max)`` of a :func:`_circuit_screen_map` matrix.
+
+    How far the plane's most and least foreshortened directions are scaled on
+    screen: both 1 facing the camera, ``s_min`` falling toward 0 as the plane
+    turns edge-on. ``s_min`` is taken as ``|det| / s_max`` so that a nearly
+    singular matrix does not lose it to cancellation.
+    """
+    t = m00 * m00 + m01 * m01 + m10 * m10 + m11 * m11
+    det = m00 * m11 - m01 * m10
+    s_max = ti.sqrt(0.5 * (t + ti.sqrt(ti.max(t * t - 4.0 * det * det, 0.0))))
+    return ti.abs(det) / ti.max(s_max, 1e-30), s_max
+
+
+@ti.func
+def _segment_width_scale(m00, m01, m10, m11, ex, ey):
+    """How far a width laid across a segment in the plane spans on screen, per unit.
+
+    ``(ex, ey)`` is the segment ON SCREEN, ``M e`` for its plane direction
+    ``e`` (as :func:`_bezier_point_metrics_in` reports it in screen mode). A
+    width ``w`` along the segment's plane normal moves its line ``w * k`` across
+    the screen (per ``pixel_size``), ``k`` being the area ``M`` gives the unit
+    square on ``e`` over the length it gives ``e``: ``|det M| |e| / |M e|``,
+    which is ``|adj(M) M e| / |M e|``. 1 where the plane faces the camera and for
+    a segment running along the foreshortened direction; the squeeze itself for
+    one running across it. 1 for no segment at all.
+    """
+    k = 1.0
+    le = ti.sqrt(ex * ex + ey * ey)
+    if le > 1e-30:
+        ax = m11 * ex - m01 * ey
+        ay = m00 * ey - m10 * ex
+        k = ti.sqrt(ax * ax + ay * ay) / le
+    return k
 
 
 @ti.func
@@ -1629,7 +1740,16 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
     Analytic coverage (see DESIGN_analytic_aa.md ss4).  ``_bezier_point_metrics``
     returns the distance to the nearest outline segment plus a crossing parity,
     so ``d = +/- sqrt(min_dist_sq)`` is a signed distance (positive inside) in
-    plane units, and ``pixel_size`` converts it to pixels.  The drawn region is
+    plane units.  The filter is a box in SCREEN pixels, so under the
+    anisotropic coverage (ss22) the query is made on screen instead: the
+    plane's own projection at the pixel (:func:`_circuit_screen_map`) carries
+    the outline there, and the distance, its direction and the wedge's walls
+    come back in ``pixel_size`` units of screen -- the same as the plane's where
+    the plane faces the camera, squeezed along its foreshortened direction
+    where it is tilted.  Widths -- the stroke, the hairline dilation -- stay in
+    the plane, ``pixel_size`` multiples of it, so a stroke painted on a tilted
+    plane foreshortens with it (:func:`_segment_width_scale` carries each onto
+    the screen).  The drawn region is
 
         filled:    d > -outer_w        (outer_w = min_half_width, or half the
                                         stroke width on a centred border)
@@ -1698,17 +1818,43 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
             inner_w = _circuit_inner_distance(border_w, filled, centered)
             query_radius = _circuit_query_radius(border_w, outline_w, filled,
                                                  centered)
+            # The plane's map onto the screen here, per ``pixel_size``
+            # (:func:`_circuit_screen_map`), and the nearest-edge query's reach
+            # measured there; both are read only by the anisotropic coverage.
+            m00 = 1.0
+            m01 = 0.0
+            m10 = 0.0
+            m11 = 1.0
+            screen_reach = 0.0
             if ti.static(aa or border_aa):
                 # The filter reaches half a pixel past each drawn boundary in
                 # any direction, so the nearest-edge query must too -- a pixel
                 # whose centre is OUTSIDE now needs a real distance, where the
                 # classic path was content with "no edge within the radius".
-                query_radius += _AA_FILTER_RADIUS * pixel_size
+                if ti.static(_bez_anisotropic()):
+                    # Half a pixel ON SCREEN, past a drawn region whose widths
+                    # are the plane's and reach at most ``s_max`` times as far
+                    # there. The query ranks and accepts edges by that screen
+                    # distance; the plane radius only has to hold everything it
+                    # can see, ``1 / s_min`` farther along a tilted plane's
+                    # foreshortened direction.
+                    m00, m01, m10, m11 = _circuit_screen_map(
+                        f, ro, rd, bu, bv, screen_point, pixel_basis_x,
+                        pixel_basis_y)
+                    s_min, s_max = _screen_scales(m00, m01, m10, m11)
+                    screen_reach = (query_radius * s_max
+                                    + _AA_FILTER_RADIUS * pixel_size)
+                    query_radius = screen_reach / ti.max(s_min,
+                                                         _AA_MIN_SCREEN_SCALE)
+                else:
+                    query_radius += _AA_FILTER_RADIUS * pixel_size
             te = f % edges_2d.shape[0]
             (crossings, min_dist_sq, ccu, ccv, e1x, e1y, sg1,
-             sec_dist_sq, scu, scv, e2x, e2y, sg2) = _bezier_point_metrics(
+             sec_dist_sq, scu, scv, e2x, e2y, sg2) = _bezier_point_metrics_in(
                 circuit, te, uu, vv, query_radius,
-                circuit_meta.shape[1], edges_2d, edge_accel)
+                circuit_meta.shape[1], edges_2d, edge_accel,
+                ti.static(bool(aa or border_aa) and _bez_anisotropic()),
+                m00, m01, m10, m11, screen_reach, _AA_RANK_TIE * pixel_size)
             inside, is_border = _circuit_point_region(
                 border_w, outline_w, filled, centered, crossings, min_dist_sq)
             bf = 1.0 if is_border else 0.0
@@ -1725,21 +1871,37 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 # shape. The closest-point vector runs from the query to the
                 # outline, so it points out of the shape from inside and into it
                 # from outside; negating it in the first case makes one gradient.
-                # Plane units, but only its direction is read and the plane-to-
-                # pixel map is isotropic (the anisotropy caveat of ss4 is
-                # unchanged by this), so it needs no conversion.
                 gu = ccu
                 gv = ccv
                 if d > 0.0:
                     gu = -gu
                     gv = -gv
-                signed = d + outer_w
+                # ``wk`` turns a width laid in the plane into the units the
+                # distance is in. The anisotropic query reports the boundary ON
+                # SCREEN -- its distance and direction, in ``pixel_size`` units
+                # -- so the box filter and the half-plane area read the screen
+                # directly, and only the widths, which are the plane's, need
+                # converting: by how far the nearest segment's normal is scaled
+                # there (:func:`_segment_width_scale`). Measured in the plane
+                # instead (the other arm), a plane tilted away from the camera
+                # got a filter narrower than a pixel along its foreshortened
+                # direction, and a thin stroke on it beaded as it crossed pixel
+                # rows (ss22).
+                wk = 1.0
+                if ti.static(_bez_anisotropic()):
+                    wk = _segment_width_scale(m00, m01, m10, m11, e1x, e1y)
+                    # A centre ON the boundary -- a stroke's own path, say --
+                    # has a closest-point vector of rounding noise; the nearest
+                    # segment's own perpendicular orients its area instead.
+                    on = _AA_ON_BOUNDARY * pixel_size
+                    if gu * gu + gv * gv < on * on:
+                        gu = -e1y
+                        gv = e1x
+                signed = d + outer_w * wk
                 # Which way the DRAWN region lies from the active boundary. For a
                 # filled circuit that is always "deeper in", but an unfilled one
                 # is a band with a wall on each side, and past its middle the
                 # nearer wall is the inner one, whose covered side is outward.
-                bnu = gu
-                bnv = gv
                 if not filled:
                     # Unfilled: the drawn band is bounded on BOTH sides, and
                     # once it is thinner than a pixel both walls cut the SAME
@@ -1760,7 +1922,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                     # is exactly ``cov(near) + cov(far) - 1`` -- at any angle,
                     # and for either coverage form, since it asks nothing of
                     # ``_boundary_coverage`` beyond what it already returns.
-                    half = 0.5 * border_w
+                    half = 0.5 * border_w * wk
                     c = ti.math.clamp(
                         _boundary_coverage(-gu, -gv, (half - d) * inv_px, aa)
                         + _boundary_coverage(gu, gv, (d + half) * inv_px, aa)
@@ -1769,7 +1931,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                         1.0,
                     )
                 else:
-                    c = _boundary_coverage(bnu, bnv, signed * inv_px, aa)
+                    c = _boundary_coverage(gu, gv, signed * inv_px, aa)
                 if ti.static(int(aa) == 3):
                     # THE ORIENTED WEDGE (DESIGN_analytic_aa_v2.md ss5). A thin
                     # stroke is a STRIP and a corner is a WEDGE; one distance
@@ -1803,8 +1965,15 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                             # single-plane path.
                             b1p = n1x * ccu + n1y * ccv
                             b2p = n2x * scu + n2y * scv
-                            sd1 = (outer_w - b1p) * inv_px
-                            sd2 = (outer_w - b2p) * inv_px
+                            # Each wall's dilation in the distance's units (see
+                            # ``wk``); everything else here is already on screen
+                            # under the anisotropic query, the walls included.
+                            w2k = 1.0
+                            if ti.static(_bez_anisotropic()):
+                                w2k = _segment_width_scale(
+                                    m00, m01, m10, m11, e2x, e2y)
+                            sd1 = (outer_w * wk - b1p) * inv_px
+                            sd2 = (outer_w * w2k - b2p) * inv_px
                             nd = n1x * n2x + n1y * n2y
                             if nd < 0.9:
                                 # nd >= 0.9: the second segment is the next
@@ -1879,7 +2048,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                         # is the only edge visible at all on an outlined glyph
                         # whose fill is invisible.
                         fill_c = _boundary_coverage(
-                            gu, gv, (d - inner_w) * inv_px, aa)
+                            gu, gv, (d - inner_w * wk) * inv_px, aa)
                         bf = ti.math.clamp(
                             (c - fill_c) / ti.max(c, 1e-6), 0.0, 1.0)
                     else:
