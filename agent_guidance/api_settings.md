@@ -303,7 +303,10 @@ Only a script that can render is handed off at all: `daemon_client.script_may_re
 
 `ImageMob`, `set_texture` and `background` all route through `file_utils.get_image` → `resolve_asset_path`, which
 tries the working directory and then the main script's directory, so an image beside your script loads regardless of
-where you launch Python.
+where you launch Python. `set_environment_map` resolves its path the same way. Every loader that reads an image file
+(those, plus model textures and embedded glTF images) decodes it with `file_utils._decode_pil_image`, so palette,
+greyscale, CMYK and 16-bit greyscale files mean the same thing everywhere; give a new loader that helper rather than
+`np.array(pil_image)`.
 
 
 ### Batched screenshots
