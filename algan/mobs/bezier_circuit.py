@@ -1959,6 +1959,32 @@ class BezierCircuitCubic(Mob):
         prim.declare_shadow_flags(*self._resolved_shadow_flags())
         return prim
 
+    def _cubic_layout(self, total_control_points, device, dtype):
+        """Place every cubic of this circuit within the member it belongs to.
+
+        A circuit packed by :meth:`from_batches` -- a Text's glyphs, for one --
+        holds its members' cubics back to back, and members differ in length:
+        an "H" takes more cubics than an "l". A reveal runs along each member
+        separately, so it needs, per cubic, the member's index, the cubic's
+        index within that member, and the member's cubic count. An unpacked
+        circuit is a single member.
+        """
+        num_cubics = total_control_points // 4
+        sizes = self.control_points.parent_batch_sizes
+        counts = (
+            torch.tensor([num_cubics])
+            if sizes is None
+            else sizes.detach().to("cpu", torch.long) // 4
+        )
+        member = torch.repeat_interleave(torch.arange(len(counts)), counts)
+        first = torch.cumsum(counts, 0) - counts
+        index = torch.arange(num_cubics) - first[member]
+        return (
+            member.to(device),
+            index.to(device=device, dtype=dtype),
+            counts[member].to(device=device, dtype=dtype),
+        )
+
     @animated_function(animated_args={"t": 0.0})
     def draw(self, t: float = 1.0) -> BezierCircuitCubic:
         """Draw the circuit on, as though traced by a pen.
@@ -2003,31 +2029,32 @@ class BezierCircuitCubic(Mob):
         num_frames = self.control_points.location.shape[0]
         total_control_points = self._original_control_points.shape[-2]
         points = self._original_control_points.expand(num_frames, -1, -1)
+        member, index, count = self._cubic_layout(
+            total_control_points, points.device, points.dtype
+        )
+        num_mobs = (
+            1
+            if self.control_points.parent_batch_sizes is None
+            else len(self.control_points.parent_batch_sizes)
+        )
+        num_cubics = member.numel()
 
-        if self.control_points.parent_batch_sizes is not None:
-            num_mobs = len(self.control_points.parent_batch_sizes)
-        else:
-            num_mobs = 1
+        # Reshape points to (num_frames, num_cubics, 4, 3)
+        points_reshaped = points.view(num_frames, num_cubics, 4, 3)
 
-        num_control_points_per_mob = total_control_points // num_mobs
-        N_per_mob = num_control_points_per_mob // 4
-
-        # Reshape points to (num_frames, num_mobs, N_per_mob, 4, 3)
-        points_reshaped = points.view(num_frames, num_mobs, N_per_mob, 4, 3)
-
-        # Ensure t is a tensor and has shape (num_frames, num_mobs, 1, 1)
+        # Ensure t is a tensor and has shape (num_frames, num_mobs, 1)
         t = cast_to_tensor(t).to(points.device)
         while t.dim() < 3:
             t = t.unsqueeze(0)
         if t.shape[1] != num_mobs:
             t = t.expand(-1, num_mobs, -1)
-        t = t.unsqueeze(-1)  # (num_frames, num_mobs, 1, 1)
+        # Every cubic follows its own member's t: (num_frames, num_cubics, 1).
+        t = t[:, member]
 
         # Calculate local b parameters
-        inds_local = torch.arange(N_per_mob, device=points.device, dtype=points.dtype)
-        b = (N_per_mob * t - inds_local.view(1, 1, N_per_mob, 1)).clamp(
+        b = (count.view(1, -1, 1) * t - index.view(1, -1, 1)).clamp(
             0.0, 1.0
-        )  # (num_frames, num_mobs, N_per_mob, 1, 1)
+        )  # (num_frames, num_cubics, 1)
 
         # Portion matrix coefficients for each segment
         mb = 1.0 - b
@@ -2036,9 +2063,9 @@ class BezierCircuitCubic(Mob):
         b3 = b2 * b
         mb3 = mb2 * mb
 
-        # Construct portion_matrix of shape (num_frames, num_mobs, N_per_mob, 4, 4)
+        # Construct portion_matrix of shape (num_frames, num_cubics, 4, 4)
         portion_matrix = torch.zeros(
-            (num_frames, num_mobs, N_per_mob, 4, 4),
+            (num_frames, num_cubics, 4, 4),
             device=points.device,
             dtype=points.dtype,
         )
@@ -2100,39 +2127,31 @@ class BezierCircuitCubic(Mob):
             raise AlganConfigurationError("end_t must have one value per frame")
 
         total_control_points = full_control_points.shape[-2]
-
-        if self.control_points.parent_batch_sizes is not None:
-            num_mobs = len(self.control_points.parent_batch_sizes)
-        else:
-            num_mobs = 1
-
-        num_control_points_per_mob = total_control_points // num_mobs
-        N_per_mob = num_control_points_per_mob // 4
-
-        points_reshaped = full_control_points.view(
-            num_frames, num_mobs, N_per_mob, 4, 3
+        _, index, count = self._cubic_layout(
+            total_control_points, full_control_points.device, full_control_points.dtype
         )
 
-        j = torch.arange(
-            N_per_mob,
-            device=full_control_points.device,
-            dtype=full_control_points.dtype,
-        ).view(1, 1, N_per_mob, 1, 1)
-        s_start = j / N_per_mob
-        s_end = (j + 1) / N_per_mob
+        points_reshaped = full_control_points.view(num_frames, -1, 4, 3)
 
-        a = torch.clamp(start_t.view(-1, 1, 1, 1, 1), min=s_start, max=s_end)
-        b = torch.clamp(end_t.view(-1, 1, 1, 1, 1), min=s_start, max=s_end)
+        # Each cubic covers its own slice [j / N, (j + 1) / N] of its member's
+        # path, N being that member's cubic count: (1, num_cubics, 1).
+        j = index.view(1, -1, 1)
+        n = count.view(1, -1, 1)
+        s_start = j / n
+        s_end = (j + 1) / n
 
-        local_a = (a - s_start) * N_per_mob
-        local_b = (b - s_start) * N_per_mob
+        a = torch.clamp(start_t.view(-1, 1, 1), min=s_start, max=s_end)
+        b = torch.clamp(end_t.view(-1, 1, 1), min=s_start, max=s_end)
+
+        local_a = (a - s_start) * n
+        local_b = (b - s_start) * n
 
         P0 = points_reshaped[..., 0, :]
         P1 = points_reshaped[..., 1, :]
         P2 = points_reshaped[..., 2, :]
         P3 = points_reshaped[..., 3, :]
 
-        b_t = local_b.squeeze(-1)
+        b_t = local_b
         mb_t = 1.0 - b_t
 
         Q0 = P0
@@ -2145,7 +2164,7 @@ class BezierCircuitCubic(Mob):
             + b_t**3 * P3
         )
 
-        u = torch.where(b_t > 1e-6, local_a.squeeze(-1) / b_t, torch.zeros_like(b_t))
+        u = torch.where(b_t > 1e-6, local_a / b_t, torch.zeros_like(b_t))
         u = torch.clamp(u, 0.0, 1.0)
         mu = 1.0 - u
 
