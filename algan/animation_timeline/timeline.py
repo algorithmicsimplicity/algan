@@ -2626,6 +2626,9 @@ class AnimationTimeline:
         # materialization; off, replay is batched over the window as always.
         self.replay_frame_by_frame = False
         self._active_updater_trace = None
+        # Frames the replaying updater computes at once; see
+        # frames_in_running_updater.
+        self._running_updater_frames = 1
         self._active_updater_write_capture = None
         # (id(updater event), parent mob id) pairs already warned about, so a
         # loop that re-parents the same Mob every iteration says it once.
@@ -2679,6 +2682,18 @@ class AnimationTimeline:
 
     def end_updater_dependency_trace(self, previous):
         self._active_updater_trace = previous
+
+    def frames_in_running_updater(self):
+        """How many frames the updater running now computes at once.
+
+        Zero when no updater is running, and one while authoring, where
+        ``add_updater`` applies it once. During a render it is the number of
+        frames the updater is called for, which every value it reads carries
+        along its leading axis.
+        """
+        if self._active_updater_trace is None:
+            return 0
+        return self._running_updater_frames
 
     def begin_updater_write_capture(self, event):
         """Capture attribute writes made by one updater during replay."""
@@ -4216,6 +4231,8 @@ class AnimationTimeline:
                 elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
                 caller, args, kwargs = f.invocation_for_signature(signature)
                 previous_trace = self.begin_updater_dependency_trace(f)
+                previous_frames = self._running_updater_frames
+                self._running_updater_frames = elapsed.numel()
                 try:
                     f.function(
                         caller,
@@ -4224,6 +4241,7 @@ class AnimationTimeline:
                         **kwargs,
                     )
                 finally:
+                    self._running_updater_frames = previous_frames
                     self.end_updater_dependency_trace(previous_trace)
 
         for timeline in self.attr_to_timeline.values():
