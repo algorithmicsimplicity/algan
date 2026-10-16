@@ -731,7 +731,8 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
 @ti.func
 def _generate_ray(f, px, py, jitter_x, jitter_y, half_screen_w, half_screen_h,
                   cam_origin: ti.template(), screen_point: ti.template(),
-                  pixel_basis_x: ti.template(), pixel_basis_y: ti.template()):
+                  pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
+                  cam_proj: ti.template()):
     """Build the world-space ray through a point inside a pixel
     (``jitter = 0.5`` is the pixel center; random jitter gives sub-pixel
     anti-aliasing when averaging many samples).
@@ -741,6 +742,13 @@ def _generate_ray(f, px, py, jitter_x, jitter_y, half_screen_w, half_screen_h,
     ``u * half_screen_h + half_screen`` -- so a pixel position corresponds to
     the world point ``screen_point + u * d_x + v * d_y`` where ``d_*`` is the
     reciprocal screen basis (precomputed into ``pixel_basis_*``).
+
+    ``cam_proj`` is the frame's ``(persp, spread, ...)`` row
+    (``algan.rendering.projection``). A pinhole camera (``spread == 0``) aims
+    from the eye through that point. Otherwise, with ``L`` the point's offset
+    from ``screen_point``, the ray starts at ``eye + spread * L`` on the
+    camera plane and runs along ``(screen_point - eye) + persp * L``: parallel
+    to the forward axis for an orthographic camera.
     """
     x = ti.cast(px, ti.f32) + jitter_x
     y = ti.cast(py, ti.f32) + jitter_y
@@ -753,11 +761,45 @@ def _generate_ray(f, px, py, jitter_x, jitter_y, half_screen_w, half_screen_h,
         screen_point[f, 2] + u * pixel_basis_x[f, 2] + v * pixel_basis_y[f, 2],
     )
     rd = (pix - ro).normalized()
+    spread = cam_proj[f, 1]
+    if spread != 0.0:
+        # L from ``pix`` rather than from u and v again: a second copy of
+        # those products could change how the pinhole line above contracts.
+        sp = ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                          screen_point[f, 2])
+        lat = pix - sp
+        rd = ((sp - ro) + cam_proj[f, 0] * lat).normalized()
+        ro = ro + spread * lat
     return ro, rd
 
 
 @ti.func
-def _axis_cos(f, ro, rd, screen_point: ti.template()):
+def _camera_point(f, p, cam_origin: ti.template(), cam_proj: ti.template()):
+    """Where the camera ray through world point ``p`` starts.
+
+    The eye for a pinhole camera. Otherwise the point on the camera plane
+    that ``_generate_ray`` starts the ray reaching ``p`` from -- for an
+    orthographic camera, ``p`` slid back along the forward axis. This is the
+    camera position a material stage sees: the distance from ``p`` to it is
+    the length of the camera ray. A point behind the camera plane, which no
+    camera ray reaches, is answered as if it lay on that plane.
+    ``algan.rendering.projection.ray_origins_for_points`` is the host twin.
+    """
+    out = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
+    spread = cam_proj[f, 1]
+    if spread != 0.0:
+        sd = ti.math.vec3(cam_proj[f, 3], cam_proj[f, 4], cam_proj[f, 5])
+        dist = sd.norm()
+        fwd = sd / ti.max(dist, 1e-30)
+        rel = p - out
+        depth = rel.dot(fwd)
+        z_eff = spread * dist + cam_proj[f, 0] * ti.max(depth, 0.0)
+        out = out + (rel - depth * fwd) * (spread * dist / ti.max(z_eff, 1e-30))
+    return out
+
+
+@ti.func
+def _axis_cos(f, cam_origin: ti.template(), rd, screen_point: ti.template()):
     """Cosine between a primary ray and the camera's optical axis.
 
     ``pixel_world_scale`` is world-per-pixel PER UNIT OF PERPENDICULAR DEPTH,
@@ -775,9 +817,15 @@ def _axis_cos(f, ro, rd, screen_point: ti.template()):
     of a 16:9 frame: a horizontal ``Line`` whose geometry is identical in every
     column is drawn 9.09 px wide at the centre of a 720p frame and 12.18 px at
     its edges. ``benchmarks/_stroke_width_check.py`` is the regression check.
+
+    The axis runs from the eye (``cam_origin``), not from the ray's origin:
+    the two are one point for a pinhole camera, but an orthographic ray
+    starts off the axis, and its cosine is exactly 1.
     """
     fwd = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
-                        screen_point[f, 2]) - ro).normalized()
+                        screen_point[f, 2])
+           - ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1],
+                          cam_origin[f, 2])).normalized()
     return rd.dot(fwd)
 
 
@@ -1263,7 +1311,7 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
 @ti.func
 def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                         layer_prev, t_cap,
-                        pixel_size_per_t, base_dist,
+                        pixel_size_per_t, base_dist, pixel_size_base,
                         nodes: ti.template(), node_miss: ti.template(),
                         leaf_prim: ti.template(), leaf_tspan: ti.template(),
                         first_leaf, circuit_meta: ti.template(),
@@ -1376,8 +1424,12 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                 v = hit.dot(bv)
 
                                 # World size of one screen pixel at this hit,
-                                # for screen-constant border/outline widths.
-                                pixel_size = pixel_size_per_t * (base_dist + t)
+                                # for screen-constant border/outline widths:
+                                # a part that grows with the camera path
+                                # length and a constant one (the whole of it
+                                # for an orthographic camera, zero for a
+                                # pinhole -- algan.rendering.projection).
+                                pixel_size = pixel_size_base + pixel_size_per_t * (base_dist + t)
                                 border_w = (circuit_meta[tm, circuit, _M_BORDER_W]
                                             * pixel_size)
                                 outline_w = 0.6 * pixel_size
@@ -2019,7 +2071,7 @@ def _bezier_plane_point(f, circuit, p, circuit_meta: ti.template()):
 
     A hit formed as ``ro + t_hit * rd`` is rounded at the ray origin's
     magnitude, in every direction including off the plane. A distant camera's
-    eye (``set_near_orthographic`` puts it thousands of units out) rounds it
+    eye (thousands of units out) rounds it
     by ~1e-3 -- far more than the lift ``_offset_ray_origin`` then gives a
     reflection or refraction, which starts under the circuit and meets it
     again: speckle on a reflective circuit. ``p - centre`` is formed at the
@@ -2085,7 +2137,7 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
                    tri_mat_id: ti.template(), tri_mat: ti.template(),
                    light_pos: ti.template(), light_col: ti.template(),
                    num_lights, albedo, shadows: ti.template(), vis,
-                   cam_origin: ti.template()):
+                   cam_origin: ti.template(), cam_proj: ti.template()):
     """Per-fragment material shading of a confirmed flat-triangle hit: feeds the
     caller-supplied shading normal ``shade_normal``, the geometric face normal,
     the hit position and the per-primitive parameter block into
@@ -2097,9 +2149,11 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
     ``tri_mat_id``/``tri_mat`` carry the per-primitive pipeline id and parameter
     block; returns the shaded RGB + glow. ``vis`` holds the caller's per-light
     shadow visibilities (used iff ``shadows``). ``cam_origin`` is the batch's
-    per-frame camera-position table, read at the hit's frame and handed on as
-    the stages' ``cam_pos`` (depth-style materials measure from the CAMERA,
-    which no ray argument names once the ray has bounced).
+    per-frame camera-position table and ``cam_proj`` its projection rows,
+    read at the hit's frame: the stages' ``cam_pos`` is the start of the
+    CAMERA ray through ``pos`` (:func:`_camera_point` -- the eye for a pinhole
+    camera), since depth-style materials measure from the camera, which no
+    ray argument names once the ray has bounced.
 
     ``pos`` is the WORLD HIT POSITION, passed in rather than rebuilt here as
     ``ro + t_hit * rd``: under analytic coverage a partially covering raster
@@ -2121,7 +2175,7 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
                       tri_pos[tp, prim, 8])
     face_n = (v1 - v0).cross(v2 - v0)
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    cam_pos = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
+    cam_pos = _camera_point(f, pos, cam_origin, cam_proj)
     return _run_frag_pipeline(frag_pipelines, pids_present,
                               prim, f, pos, -rd, shade_normal,
                               face_n, rgb,
@@ -2135,7 +2189,7 @@ def _nearest_surface_g(refit: ti.template(),
                      has_bez: ti.template(),
                      ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      t_cap,
-                     pixel_size_per_t, base_dist, layer_offset_triangles,
+                     pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
@@ -2195,7 +2249,7 @@ def _nearest_surface_g(refit: ti.template(),
             bez_cap = ti.min(bez_cap, tt + depth_tie_epsilon)
         bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, bez_cap,
-            pixel_size_per_t, base_dist, b_nodes, b_node_miss, b_leaf_prim,
+            pixel_size_per_t, base_dist, pixel_size_base, b_nodes, b_node_miss, b_leaf_prim,
             b_leaf_tspan, b_first_leaf, circuit_meta, edges_2d, edge_accel,
             nocast)
 
@@ -2394,7 +2448,7 @@ def _distance_sq_to_point(ro, rd, t_max, p):
 @ti.func
 def _nearest_surface(refit: ti.template(),
                      ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                     pixel_size_per_t, base_dist, layer_offset_triangles,
+                     pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
@@ -2414,7 +2468,7 @@ def _nearest_surface(refit: ti.template(),
         refit, 1, 1,
         ro, rd, inv_rd, f, ff, t_prev, layer_prev,
         1e30,
-        pixel_size_per_t, base_dist, layer_offset_triangles,
+        pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
         circuit_meta, edges_2d, edge_accel,
@@ -2424,7 +2478,7 @@ def _nearest_surface(refit: ti.template(),
 @ti.func
 def _collect_hits(refit: ti.template(),
                   ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                  pixel_size_per_t, base_dist, layer_offset_triangles,
+                  pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
                   hit_t: ti.template(), hit_layer: ti.template(),
                   hit_prim: ti.template(), hit_flags: ti.template(),
                   hit_a: ti.template(), hit_b: ti.template(),
@@ -2733,7 +2787,7 @@ def _collect_hits(refit: ti.template(),
                                     u = hit.dot(bu)
                                     v = hit.dot(bv)
 
-                                    pixel_size = pixel_size_per_t * (base_dist + t)
+                                    pixel_size = pixel_size_base + pixel_size_per_t * (base_dist + t)
                                     border_w = (circuit_meta[tm, circuit, _M_BORDER_W]
                                                 * pixel_size)
                                     outline_w = 0.6 * pixel_size
@@ -2905,7 +2959,7 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
 
 @ti.func
 def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
-                       pixel_size_per_t, base_dist,
+                       pixel_size_per_t, base_dist, pixel_size_base,
                        nodes: ti.template(), leaf_prim: ti.template(),
                        leaf_tspan: ti.template(), first_leaf,
                        circuit_meta: ti.template(),
@@ -3001,7 +3055,7 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                                     circuit_meta[tm, circuit, _M_BASIS_V + 2])
                                 u = hp.dot(bu)
                                 v = hp.dot(bv)
-                                pixel_size = pixel_size_per_t * (base_dist + t)
+                                pixel_size = pixel_size_base + pixel_size_per_t * (base_dist + t)
                                 border_w = (
                                     circuit_meta[tm, circuit, _M_BORDER_W]
                                     * pixel_size)
@@ -3040,7 +3094,7 @@ def _shadow_anyhit_opaque(refit: ti.template(),
                           has_tri: ti.template(),
                           has_bez: ti.template(),
                           ro, rd, inv_rd, f, t_lo, max_t,
-                          pixel_size_per_t, base_dist,
+                          pixel_size_per_t, base_dist, pixel_size_base,
                           t_nodes: ti.template(), t_leaf_prim: ti.template(),
                           t_leaf_tspan: ti.template(), t_first_leaf,
                           tri_pos: ti.template(),
@@ -3070,7 +3124,7 @@ def _shadow_anyhit_opaque(refit: ti.template(),
     if ti.static(has_bez != 0):
         if hit == 0:
             hit = _anyhit_opaque_bez(refit, ro, rd, inv_rd, f, t_lo, max_t,
-                                     pixel_size_per_t, base_dist,
+                                     pixel_size_per_t, base_dist, pixel_size_base,
                                      b_nodes, b_leaf_prim, b_leaf_tspan,
                                      b_first_leaf, circuit_meta, edges_2d,
                                      edge_accel)
@@ -3080,7 +3134,7 @@ def _shadow_anyhit_opaque(refit: ti.template(),
 @ti.func
 def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                      ro, rd, f, ff, max_t,
-                     pixel_size_per_t, base_dist, layer_offset_triangles,
+                     pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
                      has_tri: ti.template(),
                      has_bez: ti.template(),
                      t_nodes: ti.template(), t_node_miss: ti.template(),
@@ -3142,7 +3196,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
         opaque_hit = _shadow_anyhit_opaque(
             refit, has_tri, has_bez, ro, rd, inv_rd, f,
             -depth_tie_epsilon, max_t,
-            pixel_size_per_t, base_dist,
+            pixel_size_per_t, base_dist, pixel_size_base,
             t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
             b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_accel,
@@ -3152,7 +3206,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
         if ti.static(anyhit == 4):
             occluded = _shadow_gather_occluded(
                 refit, ro, rd, inv_rd, f, ff, max_t,
-                pixel_size_per_t, base_dist, layer_offset_triangles,
+                pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
                 has_tri, has_bez,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
@@ -3164,7 +3218,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
         else:
             occluded = _shadow_march_occluded(
                 refit, anyhit, ro, rd, inv_rd, f, ff, max_t,
-                pixel_size_per_t, base_dist, layer_offset_triangles,
+                pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
                 has_tri, has_bez,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
@@ -3180,7 +3234,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
 def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                            ro, rd, inv_rd, f, ff,
                            max_t,
-                           pixel_size_per_t, base_dist,
+                           pixel_size_per_t, base_dist, pixel_size_base,
                            layer_offset_triangles,
                            has_tri: ti.template(),
                            has_bez: ti.template(),
@@ -3265,7 +3319,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
             refit, has_tri, has_bez,
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             max_t,
-            pixel_size_per_t, base_dist, layer_offset_triangles,
+            pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
@@ -3355,7 +3409,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                 if _shadow_anyhit_opaque(
                         refit, has_tri, has_bez, ro, rd, inv_rd, f,
                         t_hit - depth_tie_epsilon, max_t,
-                        pixel_size_per_t, base_dist,
+                        pixel_size_per_t, base_dist, pixel_size_base,
                         t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf,
                         tri_pos,
                         b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
@@ -3372,7 +3426,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
 def _shadow_gather_occluded(refit: ti.template(),
                             ro, rd, inv_rd, f, ff,
                             max_t,
-                            pixel_size_per_t, base_dist,
+                            pixel_size_per_t, base_dist, pixel_size_base,
                             layer_offset_triangles,
                             has_tri: ti.template(),
                             has_bez: ti.template(),
@@ -3450,7 +3504,7 @@ def _shadow_gather_occluded(refit: ti.template(),
         kb_b = ti.Vector([0.0] * kbuf)
         num_hits = _collect_hits(
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-            pixel_size_per_t, base_dist, layer_offset_triangles,
+            pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
             kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos,

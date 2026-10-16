@@ -77,6 +77,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_TRANSMISSION,
     _bezier_normal,
     _bezier_plane_point,
+    _camera_point,
     _generate_ray,
     _sample_circuit_color_blend,
     _shade_tri_hit,
@@ -260,6 +261,8 @@ def sheet_resolve_shade_arena(
     pixel_basis_y = ti.static(ArenaView(arena_f32, aoff[38], (ashp[79], ashp[80])))
     gen_meta = ti.static(ArenaView(arena_f32, aoff[39], (ashp[81],)))
     rs_alloc = ti.static(ArenaView(arena_i32, aoff[40], (ashp[82],)))
+    # Per-frame projection rows (algan.rendering.projection).
+    cam_proj = ti.static(ArenaView(arena_f32, aoff[41], (ashp[83], ashp[84])))
     pixels_per_frame = width * height
     env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
     env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
@@ -283,7 +286,7 @@ def sheet_resolve_shade_arena(
         ro, rd = _generate_ray(f, px, py, gen_meta[0], gen_meta[1],
                                gen_meta[2], gen_meta[3],
                                cam_origin, screen_point,
-                               pixel_basis_x, pixel_basis_y)
+                               pixel_basis_x, pixel_basis_y, cam_proj)
         dmatch = False
         if ti.static(dump):
             dmatch = _aa_dump_match(dump_out, px, py, f)
@@ -341,6 +344,19 @@ def sheet_resolve_shade_arena(
             axis_cos = rd.dot((sp_c - ro).normalized())
             px_per_depth = pbx_c.norm() / (gen_meta[3] * ti.max(focal, 1e-6))
             gl_px_per_rad = 1.0 / ti.max(px_per_depth * axis_cos, 1e-9)
+            if cam_proj[f, 1] != 0.0:
+                # Off the pinhole a pixel at camera path length s is
+                # ``B + C * s`` world units across (projection.py), and
+                # ``C`` is zero for an orthographic camera, so the scale
+                # stored is per unit of the constant part instead: one over
+                # ``B``, the axis cosine taken from the eye. gloss_scatter
+                # reads it with the frame's projection.
+                eye_c = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1],
+                                     cam_origin[f, 2])
+                axis_cos = rd.dot((sp_c - eye_c).normalized())
+                gl_px_per_rad = 1.0 / ti.max(
+                    pbx_c.norm() * cam_proj[f, 1] / gen_meta[3] * axis_cos,
+                    1e-12)
 
         acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         weight = ti.math.vec3(1.0, 1.0, 1.0)
@@ -534,7 +550,11 @@ def sheet_resolve_shade_arena(
                     surf_pos = _tri_surface_point(f, prim, w0, a, b, tri_pos)
                 partial = msk_low != _AA_MASK_ALL
                 if partial:
-                    surf_rd = (surf_pos - ro).normalized()
+                    # From where the camera ray reaching the point starts:
+                    # the eye (``ro``) for a pinhole camera; an orthographic
+                    # ray re-aimed from its own origin would tilt.
+                    surf_rd = (surf_pos - _camera_point(
+                        f, surf_pos, cam_origin, cam_proj)).normalized()
                 # Avoid camera/footprint work for untextured and promoted
                 # constant maps, including the feature-disabled bank.
                 tex_idx = prim - num_colored_triangles
@@ -546,8 +566,21 @@ def sheet_resolve_shade_arena(
                             camera_screen = ti.math.vec3(screen_point[f, 0], screen_point[f, 1], screen_point[f, 2])
                             pixel_basis = ti.math.vec3(pixel_basis_y[f, 0], pixel_basis_y[f, 1], pixel_basis_y[f, 2])
                             pixel_angle = pixel_basis.norm() / ti.max(gen_meta[3] * (camera_screen - ro).norm(), 1e-12)
+                            footprint = (surf_pos - ro).norm() * pixel_angle
+                            if cam_proj[f, 1] != 0.0:
+                                # spread * D + persp * (ray length) pixel
+                                # widths at unit depth: measured from the
+                                # eye and the camera ray's own origin, not
+                                # from ``ro``, which an orthographic ray
+                                # starts off the axis (projection.py).
+                                eye = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
+                                pixel_angle = pixel_basis.norm() / ti.max(gen_meta[3] * (camera_screen - eye).norm(), 1e-12)
+                                footprint = pixel_angle * (
+                                    cam_proj[f, 1] * (camera_screen - eye).norm()
+                                    + cam_proj[f, 0] * (surf_pos - _camera_point(
+                                        f, surf_pos, cam_origin, cam_proj)).norm())
                             tex_du, tex_dv = _triangle_uv_footprint(
-                                0, f, prim, surf_rd, (surf_pos - ro).norm() * pixel_angle,
+                                0, f, prim, surf_rd, footprint,
                                 tri_pos, tri_uvs, tri_tex_meta, num_colored_triangles)
                 if ti.static(memo != 0 and mode == 2):
                     color = ti.math.vec4(sheet_memo[idx, 0], sheet_memo[idx, 1],
@@ -593,7 +626,7 @@ def sheet_resolve_shade_arena(
                                            light_pos, light_col,
                                            num_lights, color,
                                            ti.static(1 if mode == 2 else 0),
-                                           lvis, cam_origin)
+                                           lvis, cam_origin, cam_proj)
                 if ti.static(memo != 0 and mode == 2):
                     ior = sheet_memo[idx, 7]
                     T = sheet_memo[idx, 8]
@@ -694,7 +727,7 @@ def sheet_resolve_shade_arena(
                             dpx, dpy = _pixel_footprint(
                                 f, px, py, gen_meta, surf_pos, fnrm,
                                 cam_origin, screen_point,
-                                pixel_basis_x, pixel_basis_y)
+                                pixel_basis_x, pixel_basis_y, cam_proj)
                             dpx, dpy = _footprint_on_triangle(
                                 f, prim, w0, a, b, dpx, dpy, shadow_msk,
                                 tri_pos)
@@ -882,7 +915,7 @@ def sheet_resolve_shade_arena(
                                         tri_tex_meta, textures,
                                         num_colored_triangles,
                                         cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y)
+                                        pixel_basis_x, pixel_basis_y, cam_proj)
                                 nj = _transmission_normal(rdj, nj, face_normal)
                                 rel_j = _relative_ior(rs_sca, r, ior,
                                                      rdj.dot(face_normal) < 0.0,
@@ -940,7 +973,7 @@ def sheet_resolve_shade_arena(
                                         tri_tex_meta, textures,
                                         num_colored_triangles,
                                         cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y)
+                                        pixel_basis_x, pixel_basis_y, cam_proj)
                                 rdr, nj = _reflect_frame(rdj, nj, geo_normal)
                                 if ti.static(glossy != 0):
                                     if rough > _GLOSSY_MIN_ROUGHNESS:
@@ -1002,7 +1035,7 @@ def sheet_resolve_shade_arena(
                                             tri_tex_meta, textures,
                                             num_colored_triangles,
                                             cam_origin, screen_point,
-                                            pixel_basis_x, pixel_basis_y)
+                                            pixel_basis_x, pixel_basis_y, cam_proj)
                                     rdr, nj = _reflect_frame(rdj, nj,
                                                              geo_normal)
                                     if ti.static(glossy != 0):
@@ -1123,7 +1156,7 @@ def sheet_resolve_shade_arena(
                                         tri_tex_meta, textures,
                                         num_colored_triangles,
                                         cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y)
+                                        pixel_basis_x, pixel_basis_y, cam_proj)
                                 rdr, nj = _reflect_frame(rdj, nj, geo_normal)
                                 if ti.static(glossy != 0):
                                     if rough > _GLOSSY_MIN_ROUGHNESS:
@@ -1180,7 +1213,7 @@ def sheet_resolve_shade_arena(
                                 tri_pos, tri_norm, tri_uvs, tri_tex_meta,
                                 textures, num_colored_triangles,
                                 cam_origin, screen_point,
-                                pixel_basis_x, pixel_basis_y)
+                                pixel_basis_x, pixel_basis_y, cam_proj)
                             rdr, nj = _reflect_frame(rdj, nj, geo_normal)
                             if ti.static(glossy != 0):
                                 if rough > _GLOSSY_MIN_ROUGHNESS:
@@ -1402,6 +1435,7 @@ _SHEET_RESOLVE_SHADE_ARENA = (
     ("pixel_basis_y", "f32", 2),
     ("gen_meta", "f32", 1),
     ("rs_alloc", "i32", 1),
+    ("cam_proj", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -1422,7 +1456,7 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "shadow_vis", "covered_idx", "time_start", "width", "height",
     "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
     "gen_meta", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix",
-    "pix_accum", "rs_alloc", "dump", "dump_out",
+    "pix_accum", "rs_alloc", "dump", "dump_out", "cam_proj",
 )
 
 _sheet_resolve_shade_launch = arena_packed(
@@ -1446,6 +1480,7 @@ def env_background_prefill(
         jx: ti.f32, jy: ti.f32, half_w: ti.f32, half_h: ti.f32,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        cam_proj: ti.types.ndarray(),
         env_off: int, env_w: int, env_h: int, env_intensity: ti.f32,
         textures: ti.types.ndarray(),
         out: ti.types.ndarray()):
@@ -1459,6 +1494,10 @@ def env_background_prefill(
     of forcing the dense one. Byte-scale to match ``_prefill_background``;
     the alpha channel is opaque (the sheet route excludes transparent
     backgrounds).
+
+    Every ray of an orthographic camera runs along the forward axis, so it
+    sees the map in that one direction: a uniform backdrop, which is what
+    parallel projection of an infinitely distant sphere is.
     """
     ppf = width * height
     for i in range(num_frames * ppf):
@@ -1469,7 +1508,7 @@ def env_background_prefill(
         px = p - py * width
         _ro, rd = _generate_ray(f, px, py, jx, jy, half_w, half_h,
                                 cam_origin, screen_point,
-                                pixel_basis_x, pixel_basis_y)
+                                pixel_basis_x, pixel_basis_y, cam_proj)
         ec = _sample_env_map(f, rd, env_off, env_w, env_h,
                              env_intensity, textures)
         for k in ti.static(range(3)):

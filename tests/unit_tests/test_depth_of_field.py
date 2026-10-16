@@ -247,16 +247,16 @@ def test_overshooting_easings_never_hand_the_renderer_a_bad_lens(fresh_scene):
     assert torch.all(tweened[:, 0] >= 0)
 
 
-def test_near_orthographic_keeps_the_plane_in_focus(fresh_scene):
+def test_orthographic_keeps_the_plane_in_focus(fresh_scene):
     with Scene() as scene:
         camera = scene.get_camera()
         with Off():
-            camera.set_near_orthographic()
-        # The eye backed off to 8,000 units (1.6x the default distance); the
-        # focus followed it, so the ORIGIN plane that was in focus still is.
+            camera.set_orthographic()
+        # Neither the camera nor its focus moves, so the ORIGIN plane that was
+        # in focus still is.
         depth = float(camera._depth_of(torch.zeros(3)))
-        assert depth == pytest.approx(8e3, rel=1e-3)
-        assert float(camera.focus_distance) == pytest.approx(depth, rel=1e-5)
+        assert depth == pytest.approx(20.0)
+        assert float(camera.focus_distance) == pytest.approx(depth)
 
 
 def test_a_default_camera_view_copies_the_lens(fresh_scene):
@@ -292,7 +292,27 @@ def _camera_arrays():
     return co, sp, pbx, pby
 
 
-def _generate(co, sp, pbx, pby, lens, *, width=8, height=6, samples=16, near=0.0):
+def _cam_proj(co, sp, persp=1.0, spread=0.0, footprint_base=0.0):
+    """The tracer's per-frame ``cam_proj`` row: ``(persp, spread, footprint
+    base, screen - eye)``, a pinhole's by default.
+    """
+    head = torch.tensor([[persp, spread, footprint_base]], dtype=torch.float32)
+    return torch.cat((head, sp - co), -1).contiguous()
+
+
+def _generate(
+    co,
+    sp,
+    pbx,
+    pby,
+    lens,
+    *,
+    width=8,
+    height=6,
+    samples=16,
+    near=0.0,
+    cam_proj=None,
+):
     from algan.rendering.raytracing.path_tracer_taichi import (
         NEE_META_WIDTH,
         PT_ACC_WIDTH,
@@ -301,6 +321,8 @@ def _generate(co, sp, pbx, pby, lens, *, width=8, height=6, samples=16, near=0.0
     from algan.rendering.taichi_runtime import init_taichi
 
     init_taichi()
+    if cam_proj is None:
+        cam_proj = _cam_proj(co, sp)
     n = width * height
     slots = n * samples
     rs_ro = torch.zeros((slots, 3))
@@ -311,7 +333,7 @@ def _generate(co, sp, pbx, pby, lens, *, width=8, height=6, samples=16, near=0.0
     pt_generate(
         slots, n, 0, 7, 0, 0, width, height,
         float(width // 2), float(height // 2),
-        co, sp, pbx, pby, float(near),
+        co, sp, pbx, pby, cam_proj, float(near),
         torch.arange(n, dtype=torch.int32),
         rs_ro, rs_rd, rs_sca, rs_pix,
         torch.zeros((NEE_META_WIDTH,)),
@@ -352,6 +374,37 @@ def test_pt_generate_puts_lens_rays_through_the_pinhole_focus_point(fresh_scene)
         return ro + rd * t
 
     miss = (on_focus_plane(ro1, rd1) - on_focus_plane(ro0, rd0)).norm(dim=-1)
+    assert miss.max() < 1e-4 * focus
+
+
+def test_pt_generate_gives_an_orthographic_camera_a_telecentric_lens(fresh_scene):
+    co, sp, pbx, pby = _camera_arrays()
+    fwd = torch.nn.functional.normalize(sp - co, dim=-1)
+    radius, focus = 0.6, 11.0
+    cam_proj = _cam_proj(co, sp, persp=0.0, spread=0.8)
+
+    ro0, rd0, _, _ = _generate(co, sp, pbx, pby, torch.zeros(2), cam_proj=cam_proj)
+    ro1, rd1, _, acc1 = _generate(
+        co, sp, pbx, pby, torch.tensor([radius, focus]), cam_proj=cam_proj
+    )
+
+    # Without the lens: parallel rays along the forward axis, each from its
+    # own point on the camera plane.
+    assert torch.allclose(rd0, fwd.expand_as(rd0), atol=1e-6)
+    assert ((ro0 - co) @ fwd.T).abs().max() < 1e-5
+    assert (ro0 - co).norm(dim=-1).max() > 1.0
+    # With it: every slot's aperture is centred on its own ray's origin ...
+    offset = ro1 - ro0
+    assert (offset @ fwd.T).abs().max() < 1e-4, "the aperture is not in the lens plane"
+    assert offset.norm(dim=-1).max() <= radius * (1 + 1e-5)
+    assert offset.norm(dim=-1).mean() == pytest.approx(2 * radius / 3, rel=0.08)
+
+    # ... and aimed at the point straight ahead of it on the focus plane.
+    def on_focus_plane(ro, rd):
+        t = (focus - (ro - co) @ fwd.T) / (rd @ fwd.T)
+        return ro + rd * t
+
+    miss = (on_focus_plane(ro1, rd1) - (ro0 + fwd * focus)).norm(dim=-1)
     assert miss.max() < 1e-4 * focus
 
 

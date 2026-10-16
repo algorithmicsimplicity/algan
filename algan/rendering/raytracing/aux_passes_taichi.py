@@ -145,6 +145,7 @@ def aux_trace_arena(
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[22], (ashp[52],)))
     tri_src = ti.static(ArenaView(arena_i32, aoff[23], (ashp[53],)))
     circ_src = ti.static(ArenaView(arena_i32, aoff[24], (ashp[54],)))
+    cam_proj = ti.static(ArenaView(arena_f32, aoff[25], (ashp[55], ashp[56])))
     pixels_per_frame = width * height
     for cell in range(num_cells):
         f_rel = cell // pixels_per_frame
@@ -154,15 +155,21 @@ def aux_trace_arena(
         px = p - py * width
         ro, rd = _generate_ray(f, px, py, 0.5, 0.5, half_screen_w,
                                half_screen_h, cam_origin, screen_point,
-                               pixel_basis_x, pixel_basis_y)
+                               pixel_basis_x, pixel_basis_y, cam_proj)
         # The camera basis, from the CAMERA origin (before any near-clip
         # advance -- the same forward _axis_cos and the near plane use).
+        # Every ray starts on the camera plane, so ``(base_dist + t) * cos``
+        # below is the depth from that plane under any projection.
         cam = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
         fwd = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
                             screen_point[f, 2]) - cam).normalized()
         cos_ax = rd.dot(fwd)
         pixel_size_per_t = pixel_world_scale[f] * pixel_size_mul * cos_ax
         footprint_scale = pixel_world_scale[f] * footprint_mul
+        # The depth-independent part of a pixel's size (zero for a pinhole
+        # camera, all of it for an orthographic one), scaled alike.
+        pixel_size_base = cam_proj[f, 2] * pixel_size_mul
+        footprint_base = cam_proj[f, 2] * footprint_mul
         base_dist = 0.0
         if near_clip > 0.0:
             # The renderers' planar near plane: the origin advances to it and
@@ -193,7 +200,8 @@ def aux_trace_arena(
             kb_b = ti.Vector([0.0] * kbuf)
             num_hits = _collect_hits(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                pixel_size_per_t, base_dist, layer_offset_triangles,
+                pixel_size_per_t, base_dist, pixel_size_base,
+                layer_offset_triangles,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
                 # The node_miss slots are never indexed by the gather, so the
                 # leaf array stands in for them rather than binding two more.
@@ -281,7 +289,8 @@ def aux_trace_arena(
                         color4 = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                         if htype == 1:
                             du, dv = _triangle_uv_footprint(
-                                0, f, prim, rd, (base_dist + t_hit) * footprint_scale,
+                                0, f, prim, rd,
+                                footprint_base + (base_dist + t_hit) * footprint_scale,
                                 tri_pos, tri_uvs, tri_tex_meta,
                                 num_colored_triangles)
                             color4, alpha = _tri_color_g(
@@ -422,6 +431,7 @@ _AUX_TRACE_ARENA = (
     ("pixel_world_scale", "f32", 1),
     ("tri_src", "i32", 1),
     ("circ_src", "i32", 1),
+    ("cam_proj", "f32", 2),
 )
 
 #: The argument list the launch site passes (``aux_passes.trace_aux_passes``).
@@ -437,7 +447,7 @@ _AUX_TRACE_PARAMS = (
     "b_nodes", "b_leaf_prim", "b_leaf_tspan", "b_first_leaf", "circuit_meta",
     "circuit_colors", "circuit_border_colors", "edges_2d", "edge_accel",
     "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
-    "pixel_world_scale", "tri_src", "circ_src",
+    "pixel_world_scale", "tri_src", "circ_src", "cam_proj",
     "refit", "has_tri", "has_bez", "aux_depth", "aux_normal", "aux_mob",
 )
 

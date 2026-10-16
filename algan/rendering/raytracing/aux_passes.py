@@ -161,6 +161,7 @@ def trace_aux_passes(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
+    cam_proj,
     time_start,
     time_end,
     screen_width,
@@ -179,8 +180,9 @@ def trace_aux_passes(
     UNTRIMMED trees (real ones -- a deferred build must have run), the arena
     camera arrays, ``pixel_world_scale`` as the render computed it (per render
     pixel, hence ``anti_alias_level``, the render's supersampling factor, which
-    turns it back into one OUTPUT pixel for the texture footprint), and the
-    batch-relative frame range the chunk rendered. ``screen_width`` and
+    turns it back into one OUTPUT pixel for the texture footprint) and the
+    projection rows ``cam_proj`` beside it, and the batch-relative frame range
+    the chunk rendered. ``screen_width`` and
     ``screen_height`` are the OUTPUT resolution.
 
     Scratch comes from ``memory``; the caller rewinds it afterwards. Returns
@@ -259,6 +261,7 @@ def trace_aux_passes(
             pixel_world_scale,
             tri_src,
             circ_src,
+            cam_proj,
             refit,
             int(has_tri),
             int(has_bez),

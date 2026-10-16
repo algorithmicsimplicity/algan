@@ -223,6 +223,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
     _bezier_normal,
     _bezier_plane_point,
+    _camera_point,
     _comes_after,
     _generate_ray,
     _sample_circuit_color,
@@ -1783,7 +1784,8 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                 half_screen_w: ti.f32, half_screen_h: ti.f32,
                 cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
                 pixel_basis_x: ti.types.ndarray(),
-                pixel_basis_y: ti.types.ndarray(), near_clip: ti.f32,
+                pixel_basis_y: ti.types.ndarray(), cam_proj: ti.types.ndarray(),
+                near_clip: ti.f32,
                 pix_list: ti.types.ndarray(),
                 rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
                 rs_sca: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
@@ -1840,6 +1842,14 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
     ``pt_acc`` (see ``_PT_ACC_STOCH``), which the host zeroes before this
     launch. A zero radius leaves the pinhole arithmetic untouched, bit for
     bit.
+
+    ``cam_proj`` is the per-frame projection (``_generate_ray``). Under an
+    orthographic camera every pixel's ray is parallel to the forward axis, so
+    the same construction is a telecentric lens: each pixel's own aperture
+    disk around its ray origin, aimed at the point straight ahead on the
+    focus plane, and a point ``z`` deep blurs over ``aperture * |z - focus|
+    / focus`` world units -- in proportion to the defocus alone, with no
+    perspective shrink.
     """
     pixels_per_frame = width * height
     blue_noise = nee_meta[_NM_BLUE_NOISE] > 0.5
@@ -1865,20 +1875,23 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
         ro, rd = _generate_ray(f, px, py, jitter[0], jitter[1],
                                half_screen_w, half_screen_h,
                                cam_origin, screen_point,
-                               pixel_basis_x, pixel_basis_y)
+                               pixel_basis_x, pixel_basis_y, cam_proj)
         tl = f % lens.shape[0]
         lens_r = lens[tl, 0]
         if lens_r > 0.0:
             # Thin lens. The lens basis is the camera's own: forward from the
-            # screen point (as the near clip builds it), right from the
-            # pixel basis, which is screen_half_height * right; the
-            # Gram-Schmidt step only guards a hand-built screen. The new
-            # direction is formed relative to the eye -- the pinhole ray
-            # scaled to the focus plane, minus the lens offset -- rather than
-            # from an absolute focus point, which would cost f32 digits at the
-            # 1e5-unit camera distance of the near-orthographic mode.
+            # eye to the screen point (as the near clip builds it -- never
+            # from ``ro``, which an orthographic ray starts off the axis),
+            # right from the pixel basis, which is screen_half_height *
+            # right; the Gram-Schmidt step only guards a hand-built screen.
+            # The new direction is formed relative to the ray origin -- the
+            # camera ray scaled to the focus plane, minus the lens offset --
+            # rather than from an absolute focus point, which would cost f32
+            # digits under a camera thousands of units from the origin.
             fwd_l = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
-                                  screen_point[f, 2]) - ro).normalized()
+                                  screen_point[f, 2])
+                     - ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1],
+                                    cam_origin[f, 2])).normalized()
             bx = ti.math.vec3(pixel_basis_x[f, 0], pixel_basis_x[f, 1],
                               pixel_basis_x[f, 2])
             ex = (bx - fwd_l * bx.dot(fwd_l)).normalized()
@@ -1957,7 +1970,8 @@ def _pt_nee_visibility(refit: ti.template(), anyhit: ti.template(),
                        has_tri: ti.template(),
                        has_bez: ti.template(),
                        sorigin, wi, ldist, f, ff,
-                       pixel_size_per_t, base_dist, layer_offset_triangles,
+                       pixel_size_per_t, base_dist, pixel_size_base,
+                       layer_offset_triangles,
                        t_nodes: ti.template(), t_node_miss: ti.template(),
                        t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                        t_first_leaf, tri_pos: ti.template(),
@@ -1986,7 +2000,7 @@ def _pt_nee_visibility(refit: ti.template(), anyhit: ti.template(),
     occ = _shadow_occluded(
         refit, anyhit, sorigin, wi, f, ff,
         _pt_shadow_tmax(sorigin, wi, ldist),
-        pixel_size_per_t, base_dist, layer_offset_triangles,
+        pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
         has_tri, has_bez,
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
         tri_pos, tri_colors, tri_uvs, tri_tex_meta, textures, tri_extra,
@@ -2262,6 +2276,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     nee_inf_cdf = ti.static(ArenaView(arena_f32, aoff[35], (ashp[75],)))
     nee_inf_ref = ti.static(ArenaView(arena_i32, aoff[36], (ashp[76],)))
     pt_glass_energy = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
+    cam_proj = ti.static(ArenaView(arena_f32, aoff[38], (ashp[79], ashp[80])))
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -2305,8 +2320,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             s_index = sample_base + r // tile_pixels
             ff = ti.cast(f, ti.f32)
             pixel_size_per_t = pixel_world_scale[f]
-            cam_pos = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1],
-                                   cam_origin[f, 2])
+            # The depth-independent part of a pixel's world size (zero for
+            # a pinhole camera; algan.rendering.projection).
+            pixel_size_base = cam_proj[f, 2]
             ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
             rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
             thru = ti.math.vec4(pt_thru[r, 0], pt_thru[r, 1], pt_thru[r, 2],
@@ -2496,7 +2512,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 tex_du, tex_dv = 0.0, 0.0
                 if htype == 1:
                     tex_du, tex_dv = _triangle_uv_footprint(
-                        0, f, prim, rd, (base_dist + t_hit) * pixel_size_per_t,
+                        0, f, prim, rd,
+                        pixel_size_base + (base_dist + t_hit) * pixel_size_per_t,
                         tri_pos, tri_uvs, tri_tex_meta, num_colored_triangles)
                     color, alpha = _tri_color_g(
                         0, f, prim, w0, a, b, tri_colors, tri_colors, tri_uvs,
@@ -2652,8 +2669,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     shade_n = spec_n
 
                 # On the surface hit: ``ro + t_hit * rd`` rounds at the ray
-                # origin's magnitude, and a distant camera's primary ray (a
-                # near-orthographic eye is thousands of units out) sinks it
+                # origin's magnitude, and a distant camera's primary ray (an
+                # eye thousands of units out) sinks it
                 # below the lift _pt_offset_ray_origin gives the next ray,
                 # whose shadow ray or bounce then hits the surface it left --
                 # speckle across every lit surface and mirror. A triangle hit
@@ -3040,6 +3057,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 f, ff,
                                                 pixel_size_per_t,
                                                 base_dist,
+                                                pixel_size_base,
                                                 layer_offset_triangles,
                                                 t_nodes, t_node_miss,
                                                 t_leaf_prim, t_leaf_tspan,
@@ -3165,6 +3183,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 has_tri, has_bez,
                                                 sorigin_a, wi, ldist, f, ff,
                                                 pixel_size_per_t, base_dist,
+                                                pixel_size_base,
                                                 layer_offset_triangles,
                                                 t_nodes, t_node_miss, t_leaf_prim,
                                                 t_leaf_tspan, t_first_leaf,
@@ -3206,7 +3225,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             media_offset > 0, frag_pipelines, tri_pids, prim, f, hit_p, -rd,
                             snrm, fnrm, albedo3, color[3],
                             lpos_v, lcol_v, n_slots, tri_mat_id,
-                            tri_mat, shadows, vis, cam_pos)
+                            tri_mat, shadows, vis,
+                            _camera_point(f, hit_p, cam_origin, cam_proj))
                     else:
                         if ti.static(shadows != 0):
                             recv_a = 1
@@ -3236,6 +3256,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 has_tri, has_bez,
                                                 sorigin_a, wi, ldist, f, ff,
                                                 pixel_size_per_t, base_dist,
+                                                pixel_size_base,
                                                 layer_offset_triangles,
                                                 t_nodes, t_node_miss, t_leaf_prim,
                                                 t_leaf_tspan, t_first_leaf,
@@ -3276,7 +3297,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             media_offset > 0, frag_pipelines, tri_pids, prim, f, hit_p, -rd,
                             snrm, fnrm, albedo3, color[3],
                             light_pos, light_col, num_lights, tri_mat_id,
-                            tri_mat, shadows, vis, cam_pos)
+                            tri_mat, shadows, vis,
+                            _camera_point(f, hit_p, cam_origin, cam_proj))
                     if ti.static(len(frag_scatters) > 0):
                         # Custom ray continuation. The pid switch mirrors
                         # ``_run_frag_scatter``'s, minus its default-scatter
@@ -4012,6 +4034,7 @@ _PT_SHADE_ARENA = (
     ("nee_inf_cdf", "f32", 1),
     ("nee_inf_ref", "i32", 1),
     ("pt_glass_energy", "f32", 2),
+    ("cam_proj", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -4034,7 +4057,7 @@ _PT_SHADE_PARAMS = (
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
     "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
     "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
-    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy",
+    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy", "cam_proj",
 )
 
 _pt_shade_launch = arena_packed(

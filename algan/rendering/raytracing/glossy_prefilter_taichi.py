@@ -174,7 +174,8 @@ def gloss_scatter(
         covered_idx: ti.types.ndarray(),
         pix_accum: ti.types.ndarray(),
         gl_main: ti.types.ndarray(), gl_pyr: ti.types.ndarray(),
-        out: ti.types.ndarray(), row_base: int):
+        out: ti.types.ndarray(), row_base: int,
+        cam_proj: ti.types.ndarray(), frame: int):
     """Move one drained tile's glossy pixels into the frame's buffers.
 
     Must run BEFORE ``wf_composite_accum_sparse`` for the same tile: both read
@@ -193,7 +194,22 @@ def gloss_scatter(
     same expression and this pass must stop one step short of that -- the
     glossy pixel's final value is not known until the frame's prefilter has
     run, and a tonemap is not something you can add to afterwards.
+
+    ``cam_proj[frame]`` is the frame's projection (``algan.rendering
+    .projection``). Off the pinhole a pixel at camera path length ``s`` is
+    ``B + C * s`` world units across, ``C`` zero for an orthographic camera,
+    so the resolve stores the lobe's scale per unit of ``B`` instead of per
+    unit of ``C`` (``sheet_resolve_taichi``), and the cone factor becomes
+    ``(d_tot - d_p) / (1 + d_tot * C / B)``: a blur that grows with the
+    distance past the reflector and, with no perspective, never shrinks
+    with distance from the camera.
     """
+    spread = cam_proj[frame, 1]
+    inv_virtual = 0.0
+    if spread != 0.0:
+        sd = ti.math.vec3(cam_proj[frame, 3], cam_proj[frame, 4],
+                          cam_proj[frame, 5])
+        inv_virtual = cam_proj[frame, 0] / (spread * ti.max(sd.norm(), 1e-30))
     for ri in range(num_covered):
         r = ri + row_base
         gr = r + gloss_base
@@ -230,11 +246,20 @@ def gloss_scatter(
         # host's +inf, which is k = 1 -- a reflection of the sky, fully blurred.
         d_tot = pix_accum[gr, GL_ROW_DIST]
         d_p = pix_accum[gr, GL_ROW_DP]
-        k_cone = 1.0
-        if d_tot < 1e29:
-            k_cone = ti.math.clamp(1.0 - d_p / ti.max(d_tot, 1e-6), 0.0, 1.0)
-        gl_main[p, GL_MAIN_SIGMA] = ti.min(k_cone * sigma_scale,
-                                           sigma_max)
+        if spread == 0.0:
+            k_cone = 1.0
+            if d_tot < 1e29:
+                k_cone = ti.math.clamp(1.0 - d_p / ti.max(d_tot, 1e-6), 0.0, 1.0)
+            gl_main[p, GL_MAIN_SIGMA] = ti.min(k_cone * sigma_scale,
+                                               sigma_max)
+        else:
+            sigma = sigma_max
+            if d_tot < 1e29:
+                sigma = (ti.max(d_tot - d_p, 0.0) * sigma_scale
+                         / (1.0 + inv_virtual * d_tot))
+            elif inv_virtual > 0.0:
+                sigma = sigma_scale / inv_virtual
+            gl_main[p, GL_MAIN_SIGMA] = ti.min(sigma, sigma_max)
 
 
 @ti.kernel

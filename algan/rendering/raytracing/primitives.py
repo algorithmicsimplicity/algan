@@ -34,6 +34,14 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
     batch_arange,
 )
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
+from algan.rendering.projection import (
+    PINHOLE,
+    effective_depth,
+    footprint_terms,
+    projection_rows,
+    ray_origins_for_points,
+    view_directions,
+)
 from algan.rendering.raytracing.float32_rounding import record_projection
 from algan.rendering.raytracing.logical_pn_taichi import (
     bezier_chord_hull_error,
@@ -79,6 +87,41 @@ from algan.rendering.raytracing.settings import *  # noqa: F403 -- re-export for
 from algan.settings.kernel_settings import KERNEL_REGISTRY
 
 _SAMPLE_TENSOR_CACHE = {}
+
+
+def _camera_projection(camera, num_frames, device):
+    """``[T, 2]`` ``(persp, spread)`` rows of a camera snapshot, or ``None``.
+
+    ``None`` is a pinhole camera: the render snapshot leaves its projection
+    out (``RenderLoopMixin._materialize_render_state``), and every caller
+    keeps its historical pinhole arithmetic for it. See
+    ``algan.rendering.projection`` for what the rows mean.
+    """
+    projection = getattr(camera, "camera_projection", None)
+    if projection is None:
+        return None
+    return projection_rows(projection, num_frames, device)
+
+
+def _camera_points(points, camera, projection):
+    """Where the camera rays through ``points`` start: the per-point camera
+    position a shader sees (``projection.ray_origins_for_points``).
+
+    ``points`` are ``[T, ..., 3]`` and the camera rows broadcast against them;
+    ``projection`` is :func:`_camera_projection`'s non-``None`` answer.
+    """
+    shape = (-1,) + (1,) * (points.ndim - 2)
+    eye = camera.ray_origin.reshape(*shape, 3).to(points)
+    screen = camera.screen_point.reshape(*shape, 3).to(points)
+    projection = projection.to(points)
+    return ray_origins_for_points(
+        points,
+        eye,
+        screen,
+        F.normalize(screen - eye, p=2, dim=-1),
+        projection[:, 0].reshape(*shape, 1),
+        projection[:, 1].reshape(*shape, 1),
+    )
 
 
 def _sample_tensor(values, device, dtype):
@@ -163,6 +206,7 @@ class _PNCriterionInputs(NamedTuple):
     cam_origin: torch.Tensor  # [T, 3]
     screen_point: torch.Tensor  # [T, 3]
     screen_basis: torch.Tensor  # [T, 3, 3]
+    projection: torch.Tensor  # [T, 2], (persp, spread); see algan.rendering.projection
     front_sign: torch.Tensor  # [T]
     slack: torch.Tensor  # [T], world-space accuracy of the surface; zeros = off
 
@@ -215,7 +259,18 @@ def _criterion_tensors_are_local(tensors, device_only=()):
     ) and all(taichi_launch_is_local(value.device) for value in device_only)
 
 
-def _bezier_criterion_inputs(corners, cam_o, sp, sb):
+def _kernel_projection(projection, cam_o):
+    """The ``[T, 2]`` projection rows a criterion kernel takes: the snapshot's,
+    or a pinhole's ``(1, 0)`` per frame when it has none.
+    """
+    if projection is None:
+        return torch.tensor(PINHOLE, dtype=cam_o.dtype, device=cam_o.device).expand(
+            cam_o.shape[0], 2
+        )
+    return projection
+
+
+def _bezier_criterion_inputs(corners, cam_o, sp, sb, projection=None):
     """Kernel inputs for the bezier chord-count search, or ``None`` for torch.
 
     Same gate as :func:`_pn_criterion_inputs` -- the two searches are the same
@@ -223,14 +278,29 @@ def _bezier_criterion_inputs(corners, cam_o, sp, sb):
     """
     if not rt_settings.pn_criterion_kernel_active():
         return None
-    if not _criterion_tensors_are_local((corners, cam_o, sp, sb)):
+    projection = _kernel_projection(projection, cam_o)
+    if not _criterion_tensors_are_local((corners, cam_o, sp, sb, projection)):
         return None
     base, stride = _frame_broadcast_base(corners)
-    return (base, stride, cam_o.contiguous(), sp.contiguous(), sb.contiguous())
+    return (
+        base,
+        stride,
+        cam_o.contiguous(),
+        sp.contiguous(),
+        sb.contiguous(),
+        projection.contiguous(),
+    )
 
 
 def _pn_criterion_inputs(
-    control_points, edge_controls, cam_o, sp, sb, front_sign, slack=None
+    control_points,
+    edge_controls,
+    cam_o,
+    sp,
+    sb,
+    front_sign,
+    slack=None,
+    projection=None,
 ):
     """Kernel inputs for the level searches, or ``None`` to stay on torch.
 
@@ -250,7 +320,8 @@ def _pn_criterion_inputs(
     # ``source_corners``.
     if slack is None:
         slack = torch.zeros_like(front_sign)
-    tensors = (control_points, edge_controls, cam_o, sp, sb, front_sign)
+    projection = _kernel_projection(projection, cam_o)
+    tensors = (control_points, edge_controls, cam_o, sp, sb, projection, front_sign)
     if not _criterion_tensors_are_local(tensors, device_only=(slack,)):
         return None
     control_base, control_stride = _frame_broadcast_base(control_points)
@@ -263,6 +334,7 @@ def _pn_criterion_inputs(
         cam_o.contiguous(),
         sp.contiguous(),
         sb.contiguous(),
+        projection.contiguous(),
         front_sign.contiguous(),
         slack.to(front_sign.dtype).contiguous(),
     )
@@ -917,6 +989,14 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         d = -1
         if getattr(self, "shader", None) is not None:
             param_values = self._ordered_shader_param_values()
+            camera_location = camera.ray_origin
+            projection = _camera_projection(
+                camera, int(camera.ray_origin.shape[0]), self.corners.device
+            )
+            if projection is not None:
+                # Each vertex is lit as seen from where its own camera ray
+                # starts: the rays of an orthographic camera share no eye.
+                camera_location = _camera_points(self.corners, camera, projection)
             for light_source in light_sources:
                 if getattr(light_source, "_render_aux", None) is not None:
                     # Extended light types (directional / ambient / spot /
@@ -941,7 +1021,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                         self.corners,
                         self.normals,
                         self.colors[..., :d],
-                        camera.ray_origin,
+                        camera_location,
                         light_source.origin,
                         light_color,
                         1,
@@ -1671,13 +1751,18 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return dice_pixel_threshold(self.render_tolerance_pixels, screen_height)
 
     @staticmethod
-    def _project_to_output_pixels(points, cam_o, sp, sb, screen_height):
+    def _project_to_output_pixels(points, cam_o, sp, sb, screen_height, proj=None):
         """Perspective-project ``[T, ... ,3]`` points into output pixels.
 
         Returns the pixels, each point's depth, and the pixels-per-world-unit
         scale there -- the last so a caller holding a world-space length (the
         surface's own accuracy) can say what it is worth on screen at that
         point.
+
+        ``proj`` is ``None`` for a pinhole camera, or its ``[T, 2]``
+        ``(persp, spread)`` rows (``algan.rendering.projection``): the divide
+        is then by ``spread * D + persp * depth``, and the depth returned is
+        still the planar one, from the camera plane.
         """
         extra = points.ndim - 2
         camera_shape = (-1,) + (1,) * extra + (3,)
@@ -1689,7 +1774,15 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         screen_distance = ((screen_point - camera_origin) * screen_normal).sum(
             -1, keepdim=True
         )
-        projected = camera_origin + (screen_distance / depth) * rays
+        divisor = depth
+        if proj is not None:
+            divisor = effective_depth(
+                depth,
+                screen_distance,
+                proj[:, 0].reshape(camera_shape[:-1] + (1,)),
+                proj[:, 1].reshape(camera_shape[:-1] + (1,)),
+            )
+        projected = camera_origin + (screen_distance / divisor) * rays
         relative = projected - screen_point
         screen_x = sb[:, 0].view(camera_shape)
         screen_y = sb[:, 1].view(camera_shape)
@@ -1702,7 +1795,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         )
         half_height = float(screen_height) / 2.0
         depth = depth.squeeze(-1)
-        scale = (screen_distance.squeeze(-1) / depth).abs() * half_height
+        scale = (screen_distance.squeeze(-1) / divisor.squeeze(-1)).abs() * half_height
         return pixels * half_height, depth, scale
 
     def _guarded_pixel_error(
@@ -1712,6 +1805,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
         ``exact`` and ``approximated`` are ``[K, ..., 3]``; ``cam``,
         ``front_sign`` and ``slack`` carry one row per leading element.
+        ``cam`` is ``(eye, screen, basis)`` for a pinhole camera, and carries the
+        ``(persp, spread)`` rows of any other as a fourth entry
+        (``algan.rendering.projection``).
 
         ``slack`` is the world-space distance the *reference* surface is itself
         uncertain by -- the logical PN patch's own accuracy, which is
@@ -1745,8 +1841,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         front half, whose near-plane projection is genuinely large.
         """
         guard = self.screen_guard_factor * float(screen_height)
+        origin, screen, basis, *projection = cam
+        proj = projection[0] if projection else None
         approximated_pixels, approximated_depth, _ = self._project_to_output_pixels(
-            approximated, *cam, screen_height
+            approximated, origin, screen, basis, screen_height, proj
         )
         # Subtract in world space *before* projecting. Two absolute float32
         # projections of a distant camera can differ by more than the pixel
@@ -1755,9 +1853,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # eye, and D the screen distance, the projected difference is exactly
         # D / depth_exact * (d - r * dot(d, normal) / depth_approximated).
         # This stays float32 (including on MPS), but its precision follows the
-        # small displacement rather than the distance to the eye.
+        # small displacement rather than the distance to the eye. Off the
+        # pinhole both depths become divisors (spread * D + persp * depth) and
+        # the divisor changes by persp * dot(d, normal).
         shape = (-1,) + (1,) * (exact.ndim - 2) + (3,)
-        origin, screen, basis = cam
         origin, screen = origin.view(shape), screen.view(shape)
         normal = basis[:, 2].view(shape)
         delta = exact - approximated
@@ -1766,11 +1865,27 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # larger approximated depth can round a near-eye exact point to zero.
         exact_depth = ((exact - origin) * normal).sum(-1)
         screen_distance = ((screen - origin) * normal).sum(-1)
-        scale = screen_distance / exact_depth
-        projected_delta = scale.unsqueeze(-1) * (
-            delta
-            - (approximated - origin) * (delta_depth / approximated_depth).unsqueeze(-1)
-        )
+        if proj is None:
+            scale = screen_distance / exact_depth
+            projected_delta = scale.unsqueeze(-1) * (
+                delta
+                - (approximated - origin)
+                * (delta_depth / approximated_depth).unsqueeze(-1)
+            )
+        else:
+            persp = proj[:, 0].reshape(shape[:-1])
+            spread = proj[:, 1].reshape(shape[:-1])
+            scale = screen_distance / effective_depth(
+                exact_depth, screen_distance, persp, spread
+            )
+            approximated_divisor = effective_depth(
+                approximated_depth, screen_distance, persp, spread
+            )
+            projected_delta = scale.unsqueeze(-1) * (
+                delta
+                - (approximated - origin)
+                * (persp * delta_depth / approximated_divisor).unsqueeze(-1)
+            )
         pixel_delta = torch.stack(
             tuple(
                 (projected_delta * basis[:, axis].view(shape)).sum(-1)
@@ -1827,6 +1942,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         screen_height,
         geometry_static=False,
         slack=None,
+        projection=None,
     ):
         """Choose the crack-free logical PN levels of every patch and edge.
 
@@ -1838,13 +1954,16 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         itself; see :meth:`_guarded_pixel_error`. It is a property of the frame,
         not of the patch or the edge, so the two copies of a shared boundary
         curve are handed the same value and still reach the same level.
+
+        ``projection`` is ``None`` for a pinhole camera, or its ``[T, 2]``
+        ``(persp, spread)`` rows (``algan.rendering.projection``).
         """
         # Which side of the camera plane is in front: the screen plane's own
         # side, exactly as the renderer's front test decides it.
         front_sign = torch.sign(((sp - cam_o) * sb[:, 2]).sum(-1))
-        cam = (cam_o, sp, sb)
+        cam = (cam_o, sp, sb) if projection is None else (cam_o, sp, sb, projection)
         kernel = _pn_criterion_inputs(
-            control_points, edge_controls, cam_o, sp, sb, front_sign, slack
+            control_points, edge_controls, cam_o, sp, sb, front_sign, slack, projection
         )
         edge_levels, edge_capped = self._required_edge_levels(
             edge_controls, cam, front_sign, screen_height, kernel, slack
@@ -2107,6 +2226,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                     kernel.cam_origin,
                     kernel.screen_point,
                     kernel.screen_basis,
+                    kernel.projection,
                     kernel.front_sign,
                     kernel.slack,
                     error,
@@ -2295,6 +2415,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                     kernel.cam_origin,
                     kernel.screen_point,
                     kernel.screen_basis,
+                    kernel.projection,
                     kernel.front_sign,
                     kernel.slack,
                     error,
@@ -2422,6 +2543,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)), num_frames).to(
             device
         )
+        projection = _camera_projection(camera, num_frames, device)
 
         # Control nets are built on the source frames and only broadcast
         # afterwards, so a static mesh keeps one copy however many frames the
@@ -2462,6 +2584,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 output_height,
                 geometry_static,
                 slack,
+                projection,
             )
         )
 
@@ -3100,9 +3223,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)), num_frames).to(
             device
         )
+        projection = _camera_projection(camera, num_frames, device)
 
         edge_source = (corners, self.mob_center)
-        corners = self._apply_z_index_bias(corners, cam_o, sp)
+        corners = self._apply_z_index_bias(corners, cam_o, sp, projection)
 
         # Ratio of the internal render resolution to the output resolution: the
         # supersampling factor actually in force for this batch, which is 1 on
@@ -3134,19 +3258,32 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                         sb[f : f + 1],
                         camera.screen_height,
                         analytic_raster,
+                        None if projection is None else projection[f : f + 1],
                     )
                     for f in range(num_frames)
                 ]
             )
         else:
             num_samples = self._compute_samples_per_segment(
-                corners, cam_o, sp, sb, camera.screen_height, analytic_raster
+                corners,
+                cam_o,
+                sp,
+                sb,
+                camera.screen_height,
+                analytic_raster,
+                projection,
             )
         self._build_circuit_geometry(
             corners, num_samples, edge_source, frame_local=frame_local
         )
         self._build_frame_bounds(
-            corners, cam_o, sp, sb, camera.screen_height, frame_local=frame_local
+            corners,
+            cam_o,
+            sp,
+            sb,
+            camera.screen_height,
+            frame_local=frame_local,
+            projection=projection,
         )
 
         # The polylines/metadata now carry everything the renderer needs;
@@ -3157,7 +3294,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         release_torch_memory(force_gc=False)
         return self
 
-    def _apply_z_index_bias(self, corners, cam_o, sp):
+    def _apply_z_index_bias(self, corners, cam_o, sp, projection=None):
         """Nudge each circuit toward the camera by ``z_index`` tie-bins.
 
         Exactly coplanar circuits produce the same hit distance, so the resolve
@@ -3194,6 +3331,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         rest of it scales, by the same ``bias / distance`` about that centre:
         0.17% on a Manim ``Sphere``'s tiles, versus the ~0.25 px of displacement
         the shared axis gave them.
+
+        ``projection`` is ``None`` for a pinhole camera, or its ``[T, 2]``
+        ``(persp, spread)`` rows (``algan.rendering.projection``). The eye ray
+        is then the camera ray through the circuit's centre, which an
+        orthographic camera points along the forward axis for every circuit.
         """
         if not getattr(self, "_has_z_index", False):
             return corners
@@ -3203,7 +3345,16 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # its own; fall back to the optical axis, which is what the whole scene
         # used before and is as good as any direction there.
         forward = F.normalize((sp - cam_o).float(), p=2, dim=-1)  # [T, 3]
-        rays = centers - cam_o.float().view(-1, 1, 3)
+        if projection is None:
+            rays = centers - cam_o.float().view(-1, 1, 3)
+        else:
+            rays = -view_directions(
+                centers,
+                cam_o.float().view(-1, 1, 3),
+                sp.float().view(-1, 1, 3),
+                projection[:, 0].view(-1, 1, 1),
+                projection[:, 1].view(-1, 1, 1),
+            )
         direction = torch.where(
             rays.norm(p=2, dim=-1, keepdim=True) > 1e-6,
             F.normalize(rays, p=2, dim=-1),
@@ -3219,7 +3370,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         return corners - offset.unsqueeze(-2)
 
     def _compute_samples_per_segment(
-        self, corners, cam_o, sp, sb, screen_h, analytic_raster=False
+        self, corners, cam_o, sp, sb, screen_h, analytic_raster=False, projection=None
     ):
         """Choose uniform chord counts independently for every cubic segment.
 
@@ -3237,6 +3388,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         two geometric endpoints; its final endpoint is shared with the next
         cubic in the packed representation -- except at the end of an open
         subpath, where ``_build_circuit_geometry`` emits it explicitly.
+
+        ``projection`` is ``None`` for a pinhole camera, or its ``[T, 2]``
+        ``(persp, spread)`` rows (``algan.rendering.projection``). The rational
+        weights are then the projection divisors ``spread * D + persp * depth``
+        rather than the depths; an orthographic camera's are one constant, its
+        projection is affine, and every subcurve is bounded.
         """
         device = corners.device
         T = cam_o.shape[0]
@@ -3267,7 +3424,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         )
         active = torch.arange(S, device=device)
         num_subdivisions = 1
-        kernel = _bezier_criterion_inputs(corners, cam_o, sp, sb)
+        kernel = _bezier_criterion_inputs(corners, cam_o, sp, sb, projection)
 
         while active.numel() > 0:
             num_active = active.shape[0]
@@ -3285,6 +3442,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                     kernel[2],
                     kernel[3],
                     kernel[4],
+                    kernel[5],
                     max_error_squared,
                     T,
                     num_subdivisions,
@@ -3327,6 +3485,17 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 screen_distance = ((screen_point - camera_origin) * screen_normal).sum(
                     -1, keepdim=True
                 )
+                if projection is not None:
+                    # The weights of the projected rational curve: the
+                    # divisors, which stand in for the depths throughout.
+                    proj_shape = frame_shape[:-1] + (1,)
+                    rows = projection[frame_start:frame_end]
+                    depth = effective_depth(
+                        depth,
+                        screen_distance,
+                        rows[:, 0].reshape(proj_shape),
+                        rows[:, 1].reshape(proj_shape),
+                    )
                 projected = camera_origin + (screen_distance / depth) * rays
                 relative = projected - screen_point
                 basis_shape = (-1,) + (1,) * (controls.ndim - 2) + (3,)
@@ -3745,12 +3914,17 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self._rt_circuit_border_colors = border_colors.contiguous().as_subclass(Color)
         self._rt_border_width = stroke_width
 
-    def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h, frame_local=False):
+    def _build_frame_bounds(
+        self, corners, cam_o, sp, sb, screen_h, frame_local=False, projection=None
+    ):
         """Per-frame circuit AABBs (from control-point hulls, inflated by the
         screen-space border width and glow radius), with invisible frames marked empty.
 
         The inflation is the batch's widest unless ``frame_local``, which gives
-        every frame its own (see :meth:`project_to_screen`).
+        every frame its own (see :meth:`project_to_screen`). ``projection`` is
+        ``None`` for a pinhole camera, or its ``[T, 2]`` ``(persp, spread)``
+        rows, which change how a pixel's world size grows with distance
+        (``algan.rendering.projection.footprint_terms``).
         """
         device = corners.device
         C = self._rt_edge_offsets.shape[0] - 1
@@ -3846,7 +4020,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         pixel_world_scale = 2.0 / clamp_floor(screen_h * b1_norm * screen_dist, 1e-12)
         centers = self._rt_circuit_meta[..., :3]
         dist = (centers - cam_o.view(-1, 1, 3)).norm(p=2, dim=-1)
-        world_per_px = pixel_world_scale.view(-1, 1) * dist
+        if projection is None:
+            world_per_px = pixel_world_scale.view(-1, 1) * dist
+        else:
+            # The Euclidean distance bounds the planar depth the footprint
+            # grows with, so the slope term stays the conservative one.
+            slope, base = footprint_terms(
+                pixel_world_scale, screen_dist, projection[:, 0], projection[:, 1]
+            )
+            world_per_px = slope.view(-1, 1) * dist + base.view(-1, 1)
         if frame_local:
             inflate = (0.5 * self._rt_border_width + 1.5) * world_per_px
             inflate = inflate.unsqueeze(-1)  # [T, C, 1]

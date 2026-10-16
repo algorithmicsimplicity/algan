@@ -238,7 +238,9 @@ def _floor(tensor, floor):
 
 
 @compiled(dynamic=True)
-def _triangle_projection_fused(verts, ro, sp, pbx, pby, half_w, half_h, wide):
+def _triangle_projection_fused(
+    verts, ro, sp, pbx, pby, half_w, half_h, wide, proj=None
+):
     """The projection record's arithmetic, from gathered inputs to the packed
     table (:func:`precompute_triangle_projection` documents what it means).
 
@@ -252,6 +254,13 @@ def _triangle_projection_fused(verts, ro, sp, pbx, pby, half_w, half_h, wide):
     exact; ``wide`` is the 13-column analytic-AA layout, passed as a Python
     bool so Dynamo specialises the two shapes apart, and the frame and
     triangle counts move from batch to batch, hence ``dynamic=True``.
+
+    ``proj`` is ``None`` for a pinhole camera, or the frames' ``[F, 2]``
+    ``(persp, spread)`` rows (``algan.rendering.projection``): a vertex then
+    lands at its offset across the forward axis divided by
+    ``spread * D + persp * depth`` rather than by its depth, and that divisor
+    is the one columns 6:9 carry -- one constant per frame for an orthographic
+    camera, whose perspective-correct interpolation is then the affine one.
     """
     nvec = torch.linalg.cross(pbx, pby)
     n2 = (nvec * nvec).sum(-1)
@@ -273,12 +282,26 @@ def _triangle_projection_fused(verts, ro, sp, pbx, pby, half_w, half_h, wide):
     # primitive a full-screen candidate scan).
     behind = ~cam_ok | (cam_ok & ~vert_front.any(-1))
 
-    safe_denom = torch.where(denom.abs() > 1e-20, denom, torch.ones_like(denom))
-    hit = (
-        ro[:, None, None, :] + (big_d[:, None, None, None] / safe_denom[..., None]) * d
-    )
-    rel = hit - sp[:, None, None, :]
     safe_n2 = _floor(n2, 1e-30)
+    if proj is None:
+        safe_denom = torch.where(denom.abs() > 1e-20, denom, torch.ones_like(denom))
+        hit = (
+            ro[:, None, None, :]
+            + (big_d[:, None, None, None] / safe_denom[..., None]) * d
+        )
+        rel = hit - sp[:, None, None, :]
+    else:
+        divisor = (
+            proj[:, 1, None, None] * big_d[:, None, None]
+            + proj[:, 0, None, None] * denom
+        )
+        safe_denom = torch.where(
+            divisor.abs() > 1e-20, divisor, torch.ones_like(divisor)
+        )
+        lateral = (
+            d - (denom / safe_n2[:, None, None]).unsqueeze(-1) * nvec[:, None, None, :]
+        )
+        rel = (big_d[:, None, None] / safe_denom).unsqueeze(-1) * lateral
     u = (torch.linalg.cross(rel, pby[:, None, None, :]) * nvec[:, None, None, :]).sum(
         -1
     ) / safe_n2[:, None, None]
@@ -319,6 +342,7 @@ def precompute_triangle_projection(
     half_h,
     memory,
     persist=False,
+    projection=None,
 ):
     """Prepare one compact projection record per frame and flat triangle.
 
@@ -338,6 +362,10 @@ def precompute_triangle_projection(
     (3 floats per frame per triangle is real memory on a dense scene), and the
     kernels gate on the width the host actually produced, never on the live
     toggle, so a table and a kernel can never disagree mid-render.
+
+    ``projection`` is ``None`` for a pinhole batch, or the batch's ``cam_proj``
+    rows (``[T, >= 2]``, ``(persp, spread, ...)``; see
+    ``algan.rendering.projection``), whose divisors the columns 6:9 then hold.
     """
     tri_pos = merged["tri_pos"]
     # Every materialized input may be independently deduplicated to T=1.  The
@@ -374,7 +402,15 @@ def precompute_triangle_projection(
     pbx = pixel_basis_x.index_select(0, frame_ids % pixel_basis_x.shape[0])
     pby = pixel_basis_y.index_select(0, frame_ids % pixel_basis_y.shape[0])
     packed = _triangle_projection_fused(
-        verts, ro, sp, pbx, pby, float(half_w), float(half_h), ncol >= 13
+        verts,
+        ro,
+        sp,
+        pbx,
+        pby,
+        float(half_w),
+        float(half_h),
+        ncol >= 13,
+        _frame_projection(projection, frame_ids),
     )
     out[:frames, :ntri].copy_(packed)
     return out
@@ -494,7 +530,7 @@ def _straddle_clip_wanted(straddles):
     return rt_settings.raster_straddle_clip and bool(straddles.any().item())
 
 
-def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
+def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h, proj=None):
     """Screen extent of the part of a convex hull a primary ray can reach.
 
     ``verts`` is ``[F, N, K, 3]`` world points whose convex hull bounds each
@@ -525,6 +561,13 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
     are in the same continuous pixel space as
     :func:`precompute_triangle_projection` and are meaningless where ``bounded``
     is False.
+
+    ``proj`` is ``None`` for a pinhole camera, or the frames' ``[F, 2]``
+    ``(persp, spread)`` rows (``algan.rendering.projection``). Off the pinhole
+    every ray starts on the camera plane and the divisor ``spread * D +
+    persp * depth`` is positive all the way down to it, so the clip sits on
+    the camera plane itself: nothing is discarded that a ray could reach, and
+    every primitive with a point in front of the plane is bounded.
     """
     ro_b = ro[:, None, None, :]
     sp_b = sp[:, None, None, :]
@@ -541,7 +584,10 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
 
     rel_verts = verts - ro_b
     depth = (rel_verts * nvec_b).sum(-1) * sign[:, None, None]
-    clip_depth = clamp_floor(_CLIP_DEPTH_FRACTION * depth.amax(-1), 1e-30)
+    if proj is None:
+        clip_depth = clamp_floor(_CLIP_DEPTH_FRACTION * depth.amax(-1), 1e-30)
+    else:
+        clip_depth = torch.zeros_like(depth[..., 0])
     keep = depth >= clip_depth.unsqueeze(-1)
 
     lo_i, hi_i = _edge_index(edges, verts.device)
@@ -561,15 +607,26 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
     # plane *by construction*, so they use that depth analytically rather than
     # a recomputed one that floating point could push to the far side.
     rel = torch.cat((rel_verts, rel_edge), -2)
-    scale = torch.cat(
-        (
-            front_d[:, None, None] / clamp_floor(depth, 1e-30),
-            (front_d[:, None] / clip_depth).unsqueeze(-1).expand_as(step),
-        ),
-        -1,
-    )
-    hit = ro_b + scale.unsqueeze(-1) * rel
-    offset = hit - sp_b
+    if proj is None:
+        scale = torch.cat(
+            (
+                front_d[:, None, None] / clamp_floor(depth, 1e-30),
+                (front_d[:, None] / clip_depth).unsqueeze(-1).expand_as(step),
+            ),
+            -1,
+        )
+        hit = ro_b + scale.unsqueeze(-1) * rel
+        offset = hit - sp_b
+    else:
+        persp = proj[:, 0, None, None]
+        spread = proj[:, 1, None, None]
+        base = spread * front_d[:, None, None]
+        divisor = torch.cat(
+            (base + persp * depth.clamp_min(0.0), base.expand_as(step)), -1
+        )
+        scale = front_d[:, None, None] / clamp_floor(divisor, 1e-30)
+        across = (rel * nvec_b).sum(-1, keepdim=True) * inv_n2.unsqueeze(-1)
+        offset = scale.unsqueeze(-1) * (rel - across * nvec_b)
     u = (torch.linalg.cross(offset, pby_b.expand_as(offset)) * nvec_b).sum(-1) * inv_n2
     v = (torch.linalg.cross(pbx_b.expand_as(offset), offset) * nvec_b).sum(-1) * inv_n2
     sx = u * half_h + half_w
@@ -597,6 +654,9 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
         (ro_b.squeeze(-2) >= verts.amin(-2) - pad)
         & (ro_b.squeeze(-2) <= verts.amax(-2) + pad)
     ).all(-1)
+    if proj is not None:
+        # Nothing reachable was discarded (see the docstring).
+        near_camera = torch.zeros_like(near_camera)
     bounded = keep.any(-1) & ~near_camera
     return xmin, xmax, ymin, ymax, bounded
 
@@ -617,8 +677,15 @@ def _aabb_corners(lo, hi):
     return torch.where(sel, hi.unsqueeze(-2), lo.unsqueeze(-2))
 
 
-def _project_points(verts, ro, sp, pbx, pby, half_w, half_h):
-    """Vectorized point projection without Python scalar conversions."""
+def _project_points(verts, ro, sp, pbx, pby, half_w, half_h, proj=None):
+    """Vectorized point projection without Python scalar conversions.
+
+    ``proj`` is ``None`` for a pinhole camera, or the frame's ``(persp,
+    spread)`` row (``algan.rendering.projection``), with which a point's
+    offset across the forward axis is divided by ``spread * D + persp *
+    depth`` instead of by its depth. ``front`` is in front of the camera plane
+    either way.
+    """
     nvec = torch.linalg.cross(pbx, pby)
     d = verts - ro
     wpn = (d * nvec).sum(-1)
@@ -626,9 +693,18 @@ def _project_points(verts, ro, sp, pbx, pby, half_w, half_h):
     safe = torch.where(wpn.abs() < 1e-12, torch.ones_like(wpn), wpn)
     td = big_d / safe
     front = (wpn.abs() >= 1e-12) & (td > 0)
-    hit = ro + td.unsqueeze(-1) * d
-    rel = hit - sp
     dsq = clamp_floor((nvec * nvec).sum(), 1e-30)
+    if proj is None:
+        hit = ro + td.unsqueeze(-1) * d
+        rel = hit - sp
+    else:
+        divisor = proj[..., 1] * big_d + proj[..., 0] * wpn
+        safe_divisor = torch.where(
+            divisor.abs() < 1e-30, torch.ones_like(divisor), divisor
+        )
+        rel = (big_d / safe_divisor).unsqueeze(-1) * (
+            d - (wpn / dsq).unsqueeze(-1) * nvec
+        )
     u = (torch.linalg.cross(rel, pby.expand_as(rel)) * nvec).sum(-1) / dsq
     v = (torch.linalg.cross(pbx.expand_as(rel), rel) * nvec).sum(-1) / dsq
     return u * half_h + half_w, v * half_h + half_h, front
@@ -637,6 +713,18 @@ def _project_points(verts, ro, sp, pbx, pby, half_w, half_h):
 def _frame_one(value, f):
     """One frame of a possibly time-deduplicated input, keeping the axis."""
     return value[f % value.shape[0]].unsqueeze(0)
+
+
+def _frame_projection(projection, frame_ids):
+    """``[F, 2]`` ``(persp, spread)`` rows for ``frame_ids``; ``None`` for a pinhole.
+
+    ``projection`` is ``None`` or a batch's ``cam_proj`` table (``[T, >= 2]``,
+    see ``tracer.render_batch_raytraced``), read modulo its own length like
+    every other camera input.
+    """
+    if projection is None:
+        return None
+    return projection.index_select(0, frame_ids % projection.shape[0])[:, :2]
 
 
 def _frame_pairs(
@@ -653,6 +741,7 @@ def _frame_pairs(
     half_w,
     half_h,
     device,
+    projection=None,
 ):
     valid_all = merged["tri_frame_valid"]
     opaque_all = merged["tri_frame_opaque"]
@@ -678,6 +767,7 @@ def _frame_pairs(
                 _frame_one(pixel_basis_y, f),
                 half_w,
                 half_h,
+                _frame_projection(projection, torch.tensor([f], device=device)),
             )
         ]
     x0, x1, y0, y1, reach = _screen_bbox(px, py, front, width, row_lo, row_hi, clip)
@@ -704,6 +794,7 @@ def _frame_bez_pairs(
     half_w,
     half_h,
     device,
+    projection=None,
 ):
     valid_all = merged["bez_frame_valid"]
     opaque_all = merged["bez_frame_opaque"]
@@ -714,6 +805,7 @@ def _frame_bez_pairs(
     lo = lo_all[f % lo_all.shape[0]]
     hi = hi_all[f % hi_all.shape[0]]
     corners = _aabb_corners(lo, hi)
+    proj = _frame_projection(projection, torch.tensor([f], device=device))
     px, py, front = _project_points(
         corners,
         cam_origin[f % cam_origin.shape[0]],
@@ -722,6 +814,7 @@ def _frame_bez_pairs(
         pixel_basis_y[f % pixel_basis_y.shape[0]],
         half_w,
         half_h,
+        None if proj is None else proj[0],
     )
     clip = None
     if _straddle_clip_wanted(front.any(-1) & ~front.all(-1)):
@@ -736,6 +829,7 @@ def _frame_bez_pairs(
                 _frame_one(pixel_basis_y, f),
                 half_w,
                 half_h,
+                proj,
             )
         ]
     x0, x1, y0, y1, reach = _screen_bbox(px, py, front, width, row_lo, row_hi, clip)
@@ -760,6 +854,7 @@ def precompute_circuit_screen_bounds(
     width,
     memory,
     persist=False,
+    projection=None,
 ):
     """Batched once-per-window screen bounds for bezier circuits.
 
@@ -788,6 +883,9 @@ def precompute_circuit_screen_bounds(
           (``all_front & x_on``), the straddler reach base
           (``~all_front & front_any``), and the opaque / translucent class
           masks.
+
+    ``projection`` is ``None`` for a pinhole batch or the batch's ``cam_proj``
+    table, as :func:`precompute_triangle_projection` takes it.
     """
     lo_all = merged["bez_frame_lo"]
     hi_all = merged["bez_frame_hi"]
@@ -812,6 +910,7 @@ def precompute_circuit_screen_bounds(
     sp = screen_point.index_select(0, frame_ids % screen_point.shape[0])
     pbx = pixel_basis_x.index_select(0, frame_ids % pixel_basis_x.shape[0])
     pby = pixel_basis_y.index_select(0, frame_ids % pixel_basis_y.shape[0])
+    proj = _frame_projection(projection, frame_ids)
 
     # _project_points, batched over the leading frame dimension.
     nvec = torch.linalg.cross(pbx, pby)  # [F, 3]
@@ -821,9 +920,20 @@ def precompute_circuit_screen_bounds(
     safe = torch.where(wpn.abs() < 1e-12, torch.ones_like(wpn), wpn)
     td = big_d[:, None, None] / safe
     front = (wpn.abs() >= 1e-12) & (td > 0)
-    hit = ro[:, None, None, :] + td.unsqueeze(-1) * d
-    rel = hit - sp[:, None, None, :]
     dsq = clamp_floor((nvec * nvec).sum(-1), 1e-30)  # [F]
+    if proj is None:
+        hit = ro[:, None, None, :] + td.unsqueeze(-1) * d
+        rel = hit - sp[:, None, None, :]
+    else:
+        divisor = proj[:, 1, None, None] * big_d[:, None, None] + (
+            proj[:, 0, None, None] * wpn
+        )
+        safe_divisor = torch.where(
+            divisor.abs() < 1e-30, torch.ones_like(divisor), divisor
+        )
+        rel = (big_d[:, None, None] / safe_divisor).unsqueeze(-1) * (
+            d - (wpn / dsq[:, None, None]).unsqueeze(-1) * nvec[:, None, None, :]
+        )
     u = (
         torch.linalg.cross(rel, pby[:, None, None, :].expand_as(rel))
         * nvec[:, None, None, :]
@@ -845,7 +955,7 @@ def precompute_circuit_screen_bounds(
     bounded = all_front
     if _straddle_clip_wanted(front_any & ~all_front):
         clip_x0, clip_x1, clip_y0, clip_y1, clip_ok = _clipped_screen_extents(
-            corners, _BOX_EDGES, ro, sp, pbx, pby, half_w, half_h
+            corners, _BOX_EDGES, ro, sp, pbx, pby, half_w, half_h, proj
         )
         # The behind-cull outranks the clip: a box with no corner in front
         # stays dropped rather than becoming an emittable bounded candidate.
@@ -894,6 +1004,7 @@ def precompute_triangle_screen_bounds(
     width,
     memory,
     persist=False,
+    projection=None,
 ):
     """Batched once-per-window candidate screen bounds for flat triangles.
 
@@ -909,7 +1020,8 @@ def precompute_triangle_screen_bounds(
     construction.
 
     Straddlers get the camera-plane clip of :func:`_clipped_screen_extents`
-    rather than the whole window; the camera arguments are needed for that and
+    rather than the whole window; the camera arguments (``projection`` as
+    :func:`precompute_triangle_projection` takes it) are needed for that and
     for nothing else.
     """
     valid_all = merged["tri_frame_valid"]
@@ -949,6 +1061,7 @@ def precompute_triangle_screen_bounds(
             pixel_basis_y.index_select(0, frame_ids % pixel_basis_y.shape[0]),
             half_w,
             half_h,
+            _frame_projection(projection, frame_ids),
         )
         # The behind-cull outranks the clip: a provably-behind triangle stays
         # dropped rather than becoming an emittable bounded candidate.
@@ -1102,8 +1215,9 @@ def _circuit_pair_expand_rows(
     """:func:`_pair_expand_rows` for circuits, row by row along each outline.
 
     ``circuits`` is ``(cam_origin, screen_point, pixel_basis_x,
-    pixel_basis_y, circuit_meta, edges_2d, edge_accel, half_w, half_h,
-    aa_min_half_width)``: the geometry ``raster_bez_count`` itself reads.
+    pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel, half_w,
+    half_h, aa_min_half_width)``: the geometry ``raster_bez_count`` itself
+    reads.
     A long diagonal stroke's box is almost all empty -- a 5,400-stroke
     network produced 8.3 M box chunks at HD for ~9 M covered pixels -- and
     every chunk pixel is a coverage test and 32 bytes of candidate row. Only
@@ -1121,6 +1235,7 @@ def _circuit_pair_expand_rows(
         screen_point,
         pbx,
         pby,
+        cam_proj,
         circuit_meta,
         edges_2d,
         edge_accel,
@@ -1135,6 +1250,7 @@ def _circuit_pair_expand_rows(
         screen_point.contiguous(),
         pbx.contiguous(),
         pby.contiguous(),
+        cam_proj.contiguous(),
         circuit_meta,
         edges_2d,
         edge_accel,
@@ -2188,6 +2304,7 @@ def prepare_sparse_raster_coverage(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
+    cam_proj,
     col_row_arr,
     time_start,
     time_end,
@@ -2198,6 +2315,7 @@ def prepare_sparse_raster_coverage(
     layer_offset_triangles,
     env_in_composite=False,
     depth_order_eye=None,
+    projection=None,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
@@ -2226,6 +2344,11 @@ def prepare_sparse_raster_coverage(
     depth-order check on the sorted stream and returns its record as
     ``"depth_order"``: overlapping flat shapes a distant camera cannot keep in
     order.
+
+    ``cam_proj`` is the batch's projection table (``[T, 6]``, see
+    ``tracer.render_batch_raytraced``), which every kernel here reads;
+    ``projection`` is ``None`` for a pinhole batch, whose host-side bounds
+    keep their historical arithmetic, and ``cam_proj`` otherwise.
     """
     device = merged["tri_pos"].device
     ppf = int(width) * int(height)
@@ -2260,6 +2383,7 @@ def prepare_sparse_raster_coverage(
                     half_w,
                     half_h,
                     device,
+                    projection=projection,
                 )
                 if po is not None:
                     tri_opaque.append(po)
@@ -2279,6 +2403,7 @@ def prepare_sparse_raster_coverage(
                     half_w,
                     half_h,
                     device,
+                    projection=projection,
                 )
                 if po is not None:
                     bez_opaque.append(po)
@@ -2305,6 +2430,7 @@ def prepare_sparse_raster_coverage(
             screen_point,
             pixel_basis_x,
             pixel_basis_y,
+            cam_proj,
             merged["circuit_meta"],
             merged["edges_2d"],
             merged["edge_accel"],
@@ -2390,7 +2516,7 @@ def prepare_sparse_raster_coverage(
             "settings (the route decision and the emission disagree)."
         )
     tri_pos = merged["tri_pos"]
-    cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+    cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y, cam_proj)
     geo_args = (
         int(time_start),
         int(width),
@@ -2915,6 +3041,7 @@ def prepare_sparse_raster_coverage(
                     band_rule="prim",
                     band_c=2.0,
                     tri_screen=tri_screen,
+                    cam_proj=projection,
                     shade_split=bool(rt_settings.sheet_shade_split),
                     positioned_depth=bool(rt_settings.sheet_positioned_depth),
                     sample_depth=bool(rt_settings.sheet_sample_depth),
@@ -3049,6 +3176,7 @@ def shade_sparse_raster_coverage(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
+    cam_proj,
     layer_offsets,
     gen_meta,
     light_pos,
@@ -3199,6 +3327,7 @@ def shade_sparse_raster_coverage(
         rs_alloc,
         1 if dump_req else 0,
         sdump,
+        cam_proj,
     )
     dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
     dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
@@ -3377,6 +3506,7 @@ def shade_sparse_raster_coverage(
                 # Primary hits: the soft fans take the full budget (column 16).
                 0,
                 _use_light_major(num_events, num_lights, ev_pos.device),
+                cam_proj,
             )
         sheet_resolve_shade(
             *pre_args,

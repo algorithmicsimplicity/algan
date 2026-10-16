@@ -149,19 +149,19 @@ them up front. ``fov`` is derived from these, so use one or the other, not both.
 
 .. _camera-orthographic:
 
-Near-Orthographic Projection
-============================
+Orthographic Projection
+=======================
 
 If you are building technical diagrams, engineering cross-sections, or 2-D plots
-where you want almost parallel lines with minimal perspective distortion, use
-:meth:`~algan.rendering.camera.Camera.set_near_orthographic`:
+where parallel lines should stay parallel and nothing should shrink with
+distance, use :meth:`~algan.rendering.camera.Camera.set_orthographic`:
 
 .. algan:: CameraOrthographic
 
     from algan import *
 
     with Off():
-        Scene.get_camera().set_near_orthographic()
+        Scene.get_camera().set_orthographic()
         cubes = Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
@@ -170,19 +170,50 @@ where you want almost parallel lines with minimal perspective distortion, use
 
     Scene.save_video()
 
-This moves both the eye and its internal screen while narrowing the lens. The
-visible frame on the plane parallel to the screen through ``ORIGIN`` stays the
-same throughout the animation: the default 16:9 frame remains approximately
-14.2 by 8 world units, so text and shapes on that plane keep their apparent size.
-Other depths retain a small amount of perspective because this is a distant
-perspective camera. ``distance`` sets the eye-to-screen distance in world units
-and defaults to ``5000``: from the default camera that puts the eye 8,000 units
-out, where a point 5 units off the origin plane at a corner of a 1080p frame
-lands within 0.7 pixels of where true parallel projection would draw it. A
-larger distance flattens further, but positions are float32 (see
-:ref:`limits-float32`), so a much larger one makes text and edges grainy once the
-camera turns off its axes. If the origin plane is at or behind the eye, the
-current screen plane is used as the framing reference instead.
+Every camera ray now runs along the forward axis, starting from the plane
+through the camera perpendicular to it, so a Mob's size on screen no longer
+depends on its distance. The frame is a rectangle of fixed world size: by
+default the one the perspective view had on the plane parallel to the screen
+through ``ORIGIN``, so from the default camera it is Manim's 14.2 by 8 world
+units at every depth, and text and shapes on that plane keep their apparent
+size. ``set_orthographic(frame_height=...)`` chooses another height in world
+units; the width follows the output's aspect ratio. If the origin plane is at or
+behind the camera, its screen plane sets the default frame instead.
+
+Only what lies in front of the camera's plane is drawn, so moving the camera
+along its forward axis changes nothing but what is cut away behind it, and
+moving it sideways pans. To zoom, change the frame:
+:meth:`~algan.rendering.camera.Camera.center_on` frames a Mob by resizing it,
+and ``set_orthographic(frame_height=...)`` sets it directly.
+:meth:`~algan.rendering.camera.Camera.set_fov` and
+:meth:`~algan.rendering.camera.Camera.set_distance_to_screen` are perspective
+controls, so either one switches the camera back to perspective.
+
+:meth:`~algan.rendering.camera.Camera.set_perspective` switches back on its
+own. Both switches are recorded like any camera move and animate as a dolly
+zoom: the frame on the plane through ``ORIGIN`` holds still while the
+perspective drains away or returns.
+
+.. algan:: CameraOrthographicSwitch
+
+    from algan import *
+
+    with Off():
+        Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+               for i in range(4)]).spawn()
+
+    camera = Scene.get_camera()
+    with Seq(runtime=2):
+        camera.set_orthographic()
+        camera.set_perspective()
+
+    Scene.save_video()
+
+``Camera(orthographic=True)`` starts a camera orthographic, and
+``camera.orthographic`` reads the projection (assigning it switches, like the
+two methods). :meth:`~algan.rendering.camera.Camera.set_near_orthographic`,
+the name from before Algan had a true orthographic camera, now does exactly
+what ``set_orthographic()`` does.
 
 Clipping Planes
 ===============
@@ -289,13 +320,12 @@ A few things to know:
 * **The background colour, image or callable stays sharp**: it is a
   screen-space backdrop, not an object in the scene. An environment map is
   scenery at infinity and blurs like any distant object.
-* The **near-orthographic** mode backs the camera far away (``distance``, the
-  eye-to-screen distance, is ``5000`` by default) and moves ``focus_distance``
-  out with it, so the plane in focus stays where it was. From that far, any
-  world-sized aperture blurs by a tiny angle: depth of field is effectively
-  invisible there. (Call ``focus_at`` again if you move the focus afterwards.)
-* The auxiliary passes of :ref:`saving-render-passes` are always pinhole, so
-  a depth pass stays sharp for compositing even when the colour pass is
+* An **orthographic** camera's lens is telecentric: it magnifies nothing, so a
+  point ``d`` along the forward axis blurs into a disk ``aperture * |d -
+  focus_distance| / focus_distance`` world units across, which is its size on
+  screen at any depth.
+* The auxiliary passes of :ref:`saving-render-passes` ignore the lens, so a
+  depth pass stays sharp for compositing even when the colour pass is
   defocused.
 
 Screen Coordinates
@@ -419,7 +449,6 @@ See Also
   moving subject.
 * :doc:`lighting_and_shadows` -- lights, and the rig that goes with a camera move.
 * :doc:`renderer_limitations` -- what the camera model does not do, including
-  true orthographic projection and motion blur, and which renderer draws depth
-  of field.
+  motion blur, and which renderer draws depth of field.
 * :doc:`performance_and_quality` -- what actually makes a render expensive, and what
   to do about it.

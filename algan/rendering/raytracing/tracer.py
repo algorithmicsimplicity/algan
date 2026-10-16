@@ -43,6 +43,7 @@ from algan.rendering import fragment_capture
 from algan.rendering.mps_compat import clamp_floor, index_copy_rows
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.rendering.projection import PINHOLE, is_pinhole
 from algan.rendering.raytracing.float32_rounding import (
     DEPTH_ORDER_RECORDS,
     attach_depth_order,
@@ -1150,12 +1151,15 @@ def _build_raster_tables(
     half_screen_w,
     half_screen_h,
     width,
+    projection=None,
 ):
     """Build the batch-wide raster projection / bounds tables, once per batch.
 
     Allocated at the arena's persistent end: they cover the whole prepared
     batch, every chunk of it reads the same rows, and the per-chunk reset only
     rewinds the forward pointer. See the call site for the lifetime contract.
+    ``projection`` is ``None`` for a pinhole batch and its ``cam_proj``
+    otherwise (``raster_pipeline.precompute_triangle_projection``).
     """
     from algan.rendering.raytracing.raster_pipeline import (
         precompute_circuit_screen_bounds,
@@ -1178,6 +1182,7 @@ def _build_raster_tables(
             half_screen_h,
             memory,
             persist=True,
+            projection=projection,
         )
         # Live reads (settings convention): each kill-switch falls back to
         # the per-frame pair emission inside prepare_sparse_raster_coverage.
@@ -1197,6 +1202,7 @@ def _build_raster_tables(
                 width,
                 memory,
                 persist=True,
+                projection=projection,
             )
         if rt_settings.raster_bez_precompute and int(merged.get("num_circuits", 0)) > 0:
             bez_bounds = precompute_circuit_screen_bounds(
@@ -1210,6 +1216,7 @@ def _build_raster_tables(
                 width,
                 memory,
                 persist=True,
+                projection=projection,
             )
     return tri_screen, tri_bounds, bez_bounds
 
@@ -1231,6 +1238,7 @@ def render_batch_raytraced(
     memory=None,
     post_processes=(),
     camera_lens=None,
+    camera_projection=None,
     **kwargs,
 ):
     """Render a primitive batch through the selected hybrid or path tracer.
@@ -1246,6 +1254,10 @@ def render_batch_raytraced(
     focus distance) snapshot, or None for a pinhole. Only the path tracer
     renders it; the deterministic renderer reports an open aperture as an
     unsupported feature.
+
+    ``camera_projection`` is the batch's per-frame ``[T, 1, 2]``
+    ``(persp, spread)`` snapshot (``algan.rendering.projection``), or None for
+    a pinhole. Every route renders it.
 
     ``aux_passes=True`` (keyword, default off) also traces the compositing
     passes of ``aux_passes.trace_aux_passes`` for every rendered frame, per
@@ -1377,16 +1389,6 @@ def render_batch_raytraced(
     cam_origin_host = _expand_frames(
         _flat_frames(_host_tensor(ray_origin), (3,)), num_frames
     ).contiguous()
-    # The depth-order check (float32_rounding.depth_order_record) for a camera
-    # far enough out that float32 cannot keep overlapping flat shapes in order;
-    # None, and no work at all, for every other render.
-    from algan.rendering.raytracing.raster_pipeline import coplanar_tie_step
-
-    order_eye = (
-        depth_order_eye(cam_origin_host, coplanar_tie_step())
-        if int(merged.get("num_circuits", 0)) > 0
-        else None
-    )
     sp_host = _expand_frames(
         _flat_frames(_host_tensor(screen_point), (3,)), num_frames
     ).contiguous()
@@ -1403,6 +1405,58 @@ def render_batch_raytraced(
     pixel_world_scale_host = (
         2.0 / clamp_floor(screen_height * aa * b1_norm * screen_dist, 1e-12)
     ).contiguous()
+    # The projection (algan.rendering.projection). One pixel at planar depth z
+    # is pixel_world_scale * (spread * d + persp * z) across, so what the
+    # kernels call pixel_world_scale -- the part that grows with distance --
+    # is premultiplied by persp, and the constant part travels in cam_proj:
+    # ``[T, 6]`` (persp, spread, footprint base, screen - eye). A pinhole's
+    # rows are (1, 0, 0, ...): its pixel_world_scale is unchanged bit for bit
+    # and every kernel keeps its pinhole branch.
+    projection_host = (
+        _expand_frames(_flat_frames(_host_tensor(camera_projection), (2,)), num_frames)
+        .to(torch.float32)
+        .contiguous()
+        if camera_projection is not None
+        else torch.tensor(PINHOLE, dtype=torch.float32).expand(num_frames, 2)
+    )
+    pinhole = is_pinhole(projection_host)
+    persp_host = projection_host[:, 0].to(pixel_world_scale_host.dtype)
+    spread_host = projection_host[:, 1].to(pixel_world_scale_host.dtype)
+    footprint_base_host = pixel_world_scale_host * (spread_host * screen_dist)
+    pixel_world_scale_host = (pixel_world_scale_host * persp_host).contiguous()
+    cam_proj_host = (
+        torch.cat(
+            (
+                torch.stack((persp_host, spread_host, footprint_base_host), -1),
+                sp_host - cam_origin_host,
+            ),
+            -1,
+        )
+        .to(torch.float32)
+        .contiguous()
+    )
+    # The depth-order check (float32_rounding.depth_order_record) for a camera
+    # far enough out that float32 cannot keep overlapping flat shapes in order;
+    # None, and no work at all, for every other render. Rays leave from the
+    # eye, or for a camera with a parallel part from anywhere on the patch of
+    # its plane the frame corners span; the farthest of those decides.
+    from algan.rendering.raytracing.raster_pipeline import coplanar_tie_step
+
+    order_eye = None
+    if int(merged.get("num_circuits", 0)) > 0:
+        ray_origins = cam_origin_host
+        if bool((spread_host != 0).any()):
+            aspect = float(screen_width) / float(screen_height)
+            ray_origins = torch.cat(
+                [cam_origin_host]
+                + [
+                    cam_origin_host
+                    + spread_host[:, None] * (cu * pbx_host + cv * pby_host)
+                    for cu in (-aspect, aspect)
+                    for cv in (-1.0, 1.0)
+                ]
+            )
+        order_eye = depth_order_eye(ray_origins, coplanar_tie_step())
     # The thin lens, for the path tracer only and only when some frame of the
     # batch opens the aperture: a pinhole batch uploads nothing and takes the
     # kernel's untouched pinhole branch. Radius, not diameter, is what the
@@ -1422,6 +1476,7 @@ def render_batch_raytraced(
         pbx = _arena_copy(memory, pbx_host)
         pby = _arena_copy(memory, pby_host)
         pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
+        cam_proj = _arena_copy(memory, cam_proj_host)
         lens = _arena_copy(memory, lens_host) if lens_host is not None else None
 
     # An animated/image background arrives super-sampled at the *requested*
@@ -1808,6 +1863,7 @@ def render_batch_raytraced(
                         sp,
                         pbx,
                         pby,
+                        cam_proj,
                         int(eo),
                         int(ew),
                         int(eh),
@@ -1896,6 +1952,7 @@ def render_batch_raytraced(
                         pixel_basis_x=pbx,
                         pixel_basis_y=pby,
                         pixel_world_scale=pixel_world_scale,
+                        cam_proj=cam_proj,
                         time_start=start,
                         time_end=end,
                         width=width,
@@ -1975,6 +2032,7 @@ def render_batch_raytraced(
                             pbx,
                             pby,
                             pixel_world_scale,
+                            cam_proj,
                             int(start),
                             int(end),
                             int(width),
@@ -2004,6 +2062,7 @@ def render_batch_raytraced(
                             far_clip=far_clip,
                             analytic_raster=analytic_raster,
                             depth_order_eye=order_eye,
+                            projection=None if pinhole else cam_proj,
                         )
                     depth_records.extend(merged.pop(DEPTH_ORDER_RECORDS, None) or ())
             frames = out.view(end - start, height, width, C_out)
@@ -2044,6 +2103,7 @@ def render_batch_raytraced(
                     pbx,
                     pby,
                     pixel_world_scale,
+                    cam_proj,
                     start,
                     end,
                     screen_width,
@@ -2141,6 +2201,7 @@ def _run_wavefront_tiles(
     screen_point,
     pixel_basis_x,
     pixel_basis_y,
+    cam_proj,
     half_screen_w,
     half_screen_h,
     max_bounces,
@@ -2332,6 +2393,7 @@ def _run_wavefront_tiles(
                                 screen_point,
                                 pixel_basis_x,
                                 pixel_basis_y,
+                                cam_proj,
                                 int(time_start),
                                 int(width),
                                 int(height),
@@ -2451,6 +2513,7 @@ def raytrace_render_wavefront(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
+    cam_proj,
     time_start,
     time_end,
     width,
@@ -2480,6 +2543,7 @@ def raytrace_render_wavefront(
     far_clip=0.0,
     analytic_raster=False,
     depth_order_eye=None,
+    projection=None,
 ):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
@@ -2490,6 +2554,13 @@ def raytrace_render_wavefront(
     No pool-wide K-buffer is attached to secondary radiance ray slots. The
     persistent scalar state carries ``base_dist`` for Bezier border widths
     across bounces.
+
+    ``cam_proj`` is the batch's ``[T, 6]`` projection table, which every
+    kernel reads (``render_batch_raytraced`` builds it: per frame ``(persp,
+    spread, footprint base, screen - eye)``, see ``algan.rendering
+    .projection``). ``projection`` is ``None`` for a pinhole batch, whose
+    host-side screen tables keep their historical arithmetic, and ``cam_proj``
+    otherwise.
 
     ``frag_flag``/``shadow_flag`` select the deterministic per-fragment shading
     and opacity-weighted hard-shadow paths (compile-time templates of the shade
@@ -2781,6 +2852,7 @@ def raytrace_render_wavefront(
                 half_screen_w,
                 half_screen_h,
                 width,
+                projection=projection,
             )
             merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
             _retain_persistent(merged, memory)
@@ -3003,6 +3075,7 @@ def raytrace_render_wavefront(
             # soft fans take the bounce budget (light row column 17).
             1,
             _use_light_major(num_events, num_lights, ev_pos.device),
+            cam_proj,
         )
         filled = torch.ones(
             (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device
@@ -3110,6 +3183,7 @@ def raytrace_render_wavefront(
                         pixel_basis_x,
                         pixel_basis_y,
                         gen_meta,
+                        cam_proj,
                     )
                 # Deferred shadows (rt_settings.wf_deferred_shadows): the lit
                 # triangle hits in this iteration's K-buffers become shadow
@@ -3204,6 +3278,7 @@ def raytrace_render_wavefront(
                         rs_vis_arg,
                         cam_origin,
                         tri_shell,
+                        cam_proj,
                     )
             active = compactor.select(
                 rs_int,
@@ -3243,6 +3318,7 @@ def raytrace_render_wavefront(
                 pixel_basis_x,
                 pixel_basis_y,
                 pixel_world_scale,
+                cam_proj,
                 col_row_arr,
                 time_start,
                 time_end,
@@ -3253,6 +3329,7 @@ def raytrace_render_wavefront(
                 layer_offset_triangles,
                 env_in_composite=env_active,
                 depth_order_eye=depth_order_eye,
+                projection=projection,
             )
             if coverage is not None and coverage.get("depth_order") is not None:
                 merged.setdefault(DEPTH_ORDER_RECORDS, []).append(
@@ -3476,6 +3553,7 @@ def raytrace_render_wavefront(
                                 pixel_basis_x,
                                 pixel_basis_y,
                                 pixel_world_scale,
+                                cam_proj,
                                 layer_offsets_t,
                                 gen_meta,
                                 light_pos,
@@ -3674,6 +3752,8 @@ def raytrace_render_wavefront(
                                     gl_pyr,
                                     out,
                                     int(a),
+                                    cam_proj,
+                                    int(time_start) + gl_frame,
                                 )
                                 wf_composite_accum_sparse(
                                     int(time_start),
@@ -3816,6 +3896,7 @@ def raytrace_render_wavefront(
                     pixel_basis_x,
                     pixel_basis_y,
                     gen_meta,
+                    cam_proj,
                 )
                 wavefront_shade(
                     active,
@@ -3895,6 +3976,7 @@ def raytrace_render_wavefront(
                     rs_vis,
                     cam_origin,
                     tri_shell,
+                    cam_proj,
                 )
             active = compactor.select(
                 rs_int,
@@ -3919,6 +4001,7 @@ def raytrace_render_wavefront(
         screen_point=screen_point,
         pixel_basis_x=pixel_basis_x,
         pixel_basis_y=pixel_basis_y,
+        cam_proj=cam_proj,
         half_screen_w=half_screen_w,
         half_screen_h=half_screen_h,
         max_bounces=max_bounces,

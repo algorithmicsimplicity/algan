@@ -833,7 +833,8 @@ def pair_expand_write(
 
 @ti.func
 def _camera_terms(f, cam_origin: ti.template(), screen_point: ti.template(),
-                  pixel_basis_x: ti.template(), pixel_basis_y: ti.template()):
+                  pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
+                  cam_proj: ti.template()):
     """Frame ``f``'s camera, in the form :func:`_screen_point_of` reads."""
     ro = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
     sp = ti.math.vec3(screen_point[f, 0], screen_point[f, 1], screen_point[f, 2])
@@ -842,16 +843,21 @@ def _camera_terms(f, cam_origin: ti.template(), screen_point: ti.template(),
     nvec = pbx.cross(pby)
     big_d = (sp - ro).dot(nvec)
     dsq = ti.max(nvec.dot(nvec), 1e-30)
-    return ro, sp, pbx, pby, nvec, big_d, dsq
+    proj = ti.math.vec2(cam_proj[f, 0], cam_proj[f, 1])
+    return ro, sp, pbx, pby, nvec, big_d, dsq, proj
 
 
 @ti.func
-def _screen_point_of(w, ro, sp, pbx, pby, nvec, big_d, dsq, half_w, half_h):
+def _screen_point_of(w, ro, sp, pbx, pby, nvec, big_d, dsq, proj, half_w,
+                     half_h):
     """``(front, px, py)``: world point ``w`` in screen pixel coordinates.
 
     The inverse of ``_generate_ray``, exactly as the host's
     ``raster_pipeline._project_points``; ``front`` is 0 for a point not in
-    front of the camera.
+    front of the camera plane. ``proj`` is the frame's ``(persp, spread)``:
+    a pinhole camera (``spread == 0``) divides by the point's depth, any other
+    by ``spread * D + persp * depth`` (``algan.rendering.projection``), a
+    constant for an orthographic camera.
     """
     front = 0
     px = 0.0
@@ -863,6 +869,9 @@ def _screen_point_of(w, ro, sp, pbx, pby, nvec, big_d, dsq, half_w, half_h):
         if td > 0.0:
             front = 1
             rel = ro + td * d - sp
+            if proj[1] != 0.0:
+                rel = (d - (wpn / dsq) * nvec) * (
+                    big_d / (proj[1] * big_d + proj[0] * wpn))
             u = rel.cross(pby).dot(nvec) / dsq
             v = pbx.cross(rel).dot(nvec) / dsq
             px = u * half_h + half_w
@@ -888,7 +897,7 @@ def _circuit_plane(tm, c, circuit_meta: ti.template()):
 def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
                    cam_origin: ti.template(), screen_point: ti.template(),
                    pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
-                   circuit_meta: ti.template()):
+                   cam_proj: ti.template(), circuit_meta: ti.template()):
     """How far from its projected outline, in screen pixels, a pixel centre
     can still be accepted.
 
@@ -901,6 +910,9 @@ def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
     the optical axis -- whatever the plane's tilt. So ``R / cos(theta)`` over
     the frame's widest ray bounds it, with slack for the depth change across
     the reach itself (a fraction of a percent: the reach is a few pixels).
+    Any other projection is a pinhole with its eye pushed back (see
+    ``algan.rendering.projection``), so the same bound holds with its own
+    rays; an orthographic camera's are all on the axis, ``cos == 1``.
     """
     border_w = ti.abs(circuit_meta[tm, c, _M_BORDER_W])
     outline_w = ti.max(aa_min_half_width, 0.6)
@@ -909,11 +921,11 @@ def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
     r = _circuit_query_radius(border_w, outline_w, filled, centered) + _AA_FILTER_RADIUS
     lowest = 1.0
     for k in ti.static(range(4)):
-        ro, rd = _generate_ray(f, 0, 0, 2.0 * half_w * (k % 2),
-                               2.0 * half_h * (k // 2), half_w, half_h,
-                               cam_origin, screen_point, pixel_basis_x,
-                               pixel_basis_y)
-        lowest = ti.min(lowest, _axis_cos(f, ro, rd, screen_point))
+        _ro, rd = _generate_ray(f, 0, 0, 2.0 * half_w * (k % 2),
+                                2.0 * half_h * (k // 2), half_w, half_h,
+                                cam_origin, screen_point, pixel_basis_x,
+                                pixel_basis_y, cam_proj)
+        lowest = ti.min(lowest, _axis_cos(f, cam_origin, rd, screen_point))
     return r / ti.max(lowest, 0.05) * 1.02 + 0.5
 
 
@@ -921,7 +933,8 @@ def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
 def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
                         aa_min_half_width, cam_origin: ti.template(),
                         screen_point: ti.template(), pixel_basis_x: ti.template(),
-                        pixel_basis_y: ti.template(), circuit_meta: ti.template(),
+                        pixel_basis_y: ti.template(), cam_proj: ti.template(),
+                        circuit_meta: ti.template(),
                         edges_2d: ti.template(), edge_accel: ti.template()):
     """``(use_span, e0, e1, reach)`` for candidate circuit ``c`` of frame ``f``.
 
@@ -940,8 +953,9 @@ def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
         e0 = edge_accel[header + BEZIER_EDGE_START]
         e1 = edge_accel[header + BEZIER_EDGE_END]
         if e1 > e0:
-            ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
-                f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+            ro, sp, pbx, pby, nvec, big_d, dsq, proj = _camera_terms(
+                f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                cam_proj)
             center, bu, bv = _circuit_plane(tm, c, circuit_meta)
             front = 1
             for k in range(e0, e1):
@@ -949,14 +963,14 @@ def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
                     w = (center + edges_2d[te, k, 2 * end] * bu
                          + edges_2d[te, k, 2 * end + 1] * bv)
                     ok, _px, _py = _screen_point_of(w, ro, sp, pbx, pby, nvec,
-                                                    big_d, dsq, 0.0, 0.0)
+                                                    big_d, dsq, proj, 0.0, 0.0)
                     front = ti.min(front, ok)
             if front == 1:
                 use_span = 1
                 reach = _circuit_reach(f, tm, c, half_w, half_h,
                                        aa_min_half_width, cam_origin,
                                        screen_point, pixel_basis_x,
-                                       pixel_basis_y, circuit_meta)
+                                       pixel_basis_y, cam_proj, circuit_meta)
     return use_span, e0, e1, reach
 
 
@@ -964,12 +978,13 @@ def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
 def _circuit_span_chunks(f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
                          cam_origin: ti.template(), screen_point: ti.template(),
                          pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
+                         cam_proj: ti.template(),
                          circuit_meta: ti.template(), edges_2d: ti.template()):
     """Chunks the row ``y`` of a circuit span candidate expands to, and the span."""
     tm = f % circuit_meta.shape[0]
     te = f % edges_2d.shape[0]
-    ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
-        f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+    ro, sp, pbx, pby, nvec, big_d, dsq, proj = _camera_terms(
+        f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y, cam_proj)
     center, bu, bv = _circuit_plane(tm, c, circuit_meta)
     ylo = ti.cast(y, ti.f32) + 0.5 - reach
     yhi = ti.cast(y, ti.f32) + 0.5 + reach
@@ -980,9 +995,9 @@ def _circuit_span_chunks(f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h
         wa = center + edges_2d[te, k, 0] * bu + edges_2d[te, k, 1] * bv
         wb = center + edges_2d[te, k, 2] * bu + edges_2d[te, k, 3] * bv
         _fa, ax, ay = _screen_point_of(wa, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       half_w, half_h)
+                                       proj, half_w, half_h)
         _fb, bx, by = _screen_point_of(wb, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       half_w, half_h)
+                                       proj, half_w, half_h)
         if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
             t0 = 0.0
             t1 = 1.0
@@ -1027,6 +1042,7 @@ def pair_expand_count_circuits(
     screen_point: ti.types.ndarray(),
     pixel_basis_x: ti.types.ndarray(),
     pixel_basis_y: ti.types.ndarray(),
+    cam_proj: ti.types.ndarray(),
     circuit_meta: ti.types.ndarray(),
     edges_2d: ti.types.ndarray(),
     edge_accel: ti.types.ndarray(),
@@ -1051,13 +1067,13 @@ def pair_expand_count_circuits(
             use_span, e0, e1, reach = _circuit_span_setup(
                 mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
                 aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, circuit_meta, edges_2d, edge_accel)
+                pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel)
             if use_span == 1:
                 for y in range(by0, by1 + 1):
                     nch, _xs, _xe = _circuit_span_chunks(
                         f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
                         cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                        circuit_meta, edges_2d)
+                        cam_proj, circuit_meta, edges_2d)
                     cnt += nch
             else:
                 cnt = (ti.cast(bw, ti.i64) * bh + chunk - 1) // chunk
@@ -1082,6 +1098,7 @@ def pair_expand_write_circuits(
     screen_point: ti.types.ndarray(),
     pixel_basis_x: ti.types.ndarray(),
     pixel_basis_y: ti.types.ndarray(),
+    cam_proj: ti.types.ndarray(),
     circuit_meta: ti.types.ndarray(),
     edges_2d: ti.types.ndarray(),
     edge_accel: ti.types.ndarray(),
@@ -1107,13 +1124,13 @@ def pair_expand_write_circuits(
             use_span, e0, e1, reach = _circuit_span_setup(
                 mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
                 aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, circuit_meta, edges_2d, edge_accel)
+                pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel)
             if use_span == 1:
                 for y in range(by0, by1 + 1):
                     nch, xs, xe = _circuit_span_chunks(
                         f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
                         cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                        circuit_meta, edges_2d)
+                        cam_proj, circuit_meta, edges_2d)
                     for k in range(nch):
                         rows[j, 0] = c
                         rows[j, 1] = f

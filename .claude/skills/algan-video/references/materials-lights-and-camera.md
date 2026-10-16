@@ -197,8 +197,15 @@ tracking = camera.add_updater(lambda mob, t: mob.look_at(subject.location))
 # camera.remove_updater(tracking) when tracking should stop.
 ```
 
-`set_near_orthographic()` is an approximation achieved through the perspective
-camera; do not call it mathematically exact orthographic projection.
+`camera.set_orthographic()` is true orthographic projection: parallel rays, so
+a Mob's size on screen does not depend on its depth. By default it keeps the
+frame the perspective view had on the plane through `ORIGIN` (8 units tall from
+the default camera); `set_orthographic(frame_height=...)` sets another, in world
+units, and `center_on` resizes it rather than moving the camera.
+`set_perspective()` switches back; both switches animate as a dolly zoom over
+the context's runtime, so wrap setup in `with Off():`. `set_fov` and
+`set_distance_to_screen` are perspective controls and switch back too.
+`set_near_orthographic()` is the old name of `set_orthographic()`.
 `set_near(...)` and `set_far(...)` configure clip distances; they are not
 animated timeline controls. Establish them during setup, not as purported
 mid-shot keyframes. Depth of field is `camera.aperture` (lens diameter, world

@@ -1140,6 +1140,7 @@ def path_trace_render(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
+    cam_proj,
     time_start,
     time_end,
     width,
@@ -1198,6 +1199,10 @@ def path_trace_render(
     units, indexed by the same batch frame as ``cam_origin`` (see
     ``pt_generate``). ``None`` is a pinhole: a one-row zero tensor stands in so
     the kernel keeps a single variant.
+
+    ``cam_proj`` is the batch's ``[T, 6]`` projection table
+    (``tracer.render_batch_raytraced`` builds it; ``algan.rendering
+    .projection``), which every kernel here reads beside the camera rows.
 
     ``accum_odd`` is the adaptive sampler's stopping-rule buffer -- a zeroed
     ``[frames, pixels, 4]`` float32 tensor the caller allocates exactly when
@@ -1423,6 +1428,7 @@ def path_trace_render(
                     screen_point,
                     pixel_basis_x,
                     pixel_basis_y,
+                    cam_proj,
                     float(near_clip),
                     pix_list,
                     rs_ro,
@@ -1505,6 +1511,7 @@ def path_trace_render(
                             pixel_basis_x,
                             pixel_basis_y,
                             gen_meta,
+                            cam_proj,
                         )
                         pt_shade(
                             active,
@@ -1588,6 +1595,7 @@ def path_trace_render(
                             nee_inf_cdf,
                             nee_inf_ref,
                             pt_glass_energy,
+                            cam_proj,
                         )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1

@@ -613,6 +613,13 @@ def _slice_render_state(render_state, start, end, total_frames):
             if "camera_lens" in render_state
             else {}
         ),
+        # Optional the same way, and as silent if dropped: a retried window
+        # would render an orthographic camera as a pinhole.
+        **(
+            {"camera_projection": sliced(render_state["camera_projection"])}
+            if "camera_projection" in render_state
+            else {}
+        ),
         "lights": [
             (sliced(origin), sliced(color), sliced(aux))
             for origin, color, aux in render_state["lights"]
@@ -2006,6 +2013,9 @@ class RenderLoopMixin:
             camera.ray_origin = render_state["ray_origin"]
             camera.screen_point = render_state["screen_point"]
             camera.screen_basis = render_state["screen_basis"]
+            # ``[T, 1, 2]`` (persp, spread), or None for a pinhole camera;
+            # host-side projection reads it beside the three above.
+            camera.camera_projection = render_state.get("camera_projection")
             projection_aa, projection_analytic = _projection_anti_alias_level(
                 self, primitive_batch
             )
@@ -2264,6 +2274,7 @@ class RenderLoopMixin:
                     # the live camera: only the path tracer reads it, and
                     # projection never needs it.
                     camera_lens=render_state.get("camera_lens"),
+                    camera_projection=camera.camera_projection,
                     **({"aux_passes": True} if aux_sink is not None else {}),
                 )
                 if aux_sink is not None:
@@ -3377,6 +3388,7 @@ class RenderLoopMixin:
         camera.ray_origin = _to_device(render_state["ray_origin"])
         camera.screen_point = _to_device(render_state["screen_point"])
         camera.screen_basis = _to_device(render_state["screen_basis"])
+        camera.camera_projection = _to_device(render_state.get("camera_projection"))
         camera.screen_width = self.num_pixels_screen_width * aa
         camera.screen_height = self.num_pixels_screen_height * aa
         camera.output_screen_width = self.num_pixels_screen_width
@@ -3752,15 +3764,27 @@ class RenderLoopMixin:
                         None,
                     )
                 )
-        # ``[T, 1, 2]`` (aperture diameter, focus distance). getattr: the camera
-        # doubles some tests drive this mixin with have no lens.
+        # ``[T, 1, 2]`` (aperture diameter, focus distance), and ``[T, 1, 2]``
+        # (persp, spread) -- see algan.rendering.projection. getattr: the
+        # camera doubles some tests drive this mixin with have neither. The
+        # projection is left out for a camera that is a pinhole throughout the
+        # window, so every reader of the snapshot keeps the historical pinhole
+        # arithmetic, and knows to without asking the device.
         lens_fn = getattr(camera, "_get_render_lens", None)
+        projection_fn = getattr(camera, "_get_render_projection", None)
+        if projection_fn is not None and camera._is_pinhole():
+            projection_fn = None
         return {
             **({"frame_indices": frame_indices} if frame_indices is not None else {}),
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
             "screen_basis": camera._get_render_screen_basis().to(device),
             **({"camera_lens": lens_fn().to(device)} if lens_fn is not None else {}),
+            **(
+                {"camera_projection": projection_fn().to(device)}
+                if projection_fn is not None
+                else {}
+            ),
             "lights": lights,
             "light_objects": light_objects,
             "light_active": light_active,
