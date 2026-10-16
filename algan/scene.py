@@ -1,4 +1,4 @@
-"""The :class:`Scene` -- the unit of authoring and rendering.
+"""The :class:`~algan.scene.Scene` -- the unit of authoring and rendering.
 
 A Scene owns everything an animation needs: its actors, its camera and lights,
 **its own** timeline, animation and audio managers, its video settings, and the
@@ -1695,8 +1695,8 @@ class Scene(RenderLoopMixin):
         (``block=False``), open a new viewer to see the additions rather than
         expecting this one to grow.
 
-        There is no module-level ``view``: use a Scene or :meth:`Project.view`
-        for a tabbed project viewer. The bare name is too general to spend on a
+        There is no module-level ``view``: use a Scene or
+        :meth:`~algan.project.Project.view` for a tabbed project viewer. The bare name is too general to spend on a
         namespace that ``from algan import *`` empties into a user's own.
 
         Parameters

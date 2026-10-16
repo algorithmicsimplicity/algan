@@ -32,10 +32,47 @@ class AudioManager:
         self._subcaptions = []
 
     def set_speech_source(self, speech_generator):
+        """Choose where this Scene's :class:`~.Speech` blocks get their audio.
+
+        See :doc:`/advanced_user_tutorials/audio_and_speech` for recorded
+        narration and for supplying word timings.
+
+        Parameters
+        ----------
+        speech_generator
+            A callable that takes a line of narration and returns the MoviePy
+            audio clip to play for it -- for example what
+            ``algan.utils.audio_utils.get_speech_generator_from_file`` returns
+            for a recording and its transcript. ``None`` restores the default:
+            text-to-speech through ``pyttsx3``, cached under
+            ``SETTINGS.paths.cache_directory``.
+
+        Returns
+        -------
+        :class:`AudioManager`
+            This object, so calls can be chained.
+        """
         self.speech_generator = speech_generator
         return self
 
     def append_script(self, script):
+        """Add a line to the Scene's transcript.
+
+        :class:`~.Speech` calls this for every line it narrates. When the Scene
+        has sound, :meth:`~algan.scene.Scene.save_video` writes the transcript
+        beside the video as ``<name>_script.txt``.
+
+        Parameters
+        ----------
+        script
+            The line, as plain text. Leading and trailing spaces are dropped
+            and a blank line follows it.
+
+        Returns
+        -------
+        :class:`AudioManager`
+            This object, so calls can be chained.
+        """
         self.video_transcript += script.strip(" ") + "\n\n"
         return self
 
@@ -45,6 +82,19 @@ class AudioManager:
         return block
 
     def get_speech(self, script):
+        """Get the audio clip to play for a line of narration.
+
+        Parameters
+        ----------
+        script
+            The line, exactly as it was passed to :class:`~.Speech`.
+
+        Returns
+        -------
+        moviepy.AudioClip
+            What the speech source set with :meth:`set_speech_source` returns
+            for ``script``; by default, the line spoken by ``pyttsx3``.
+        """
         if self.speech_generator is None:
             return get_pyttsx_speech_generator(script)
         return self.speech_generator(script)

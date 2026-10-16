@@ -26,10 +26,22 @@ class Singleton:
 
     @classmethod
     def instance(cls):
+        """Get the one instance of this class, creating it on first use.
+
+        Returns
+        -------
+        Singleton
+            The same object on every call until :meth:`reset`.
+        """
         if cls._instance is None:
             cls._instance = cls._create()
         return cls._instance
 
     @classmethod
     def reset(cls):
+        """Forget the instance, so the next :meth:`instance` call builds a new one.
+
+        Anything still holding the old instance keeps it; this only changes
+        what :meth:`instance` returns from now on.
+        """
         cls._instance = None

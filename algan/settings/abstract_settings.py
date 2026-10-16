@@ -236,17 +236,36 @@ class Settings:
     def set(self, source=None, **kwargs):
         """Validate and apply settings.
 
-        ``source`` may be another instance of the same settings class. Its
-        fields are copied first, then any keyword overrides are applied.
         Mutable sections are changed in place and returned. Presets return a
-        new immutable copy.
+        new immutable copy, which is what makes ``HD.set(frames_per_second=60)``
+        a safe expression.
 
         Every field is validated -- the replacement is built by re-running the
         section's own construction -- but only the fields whose value actually
         changed are written back, so an unrelated field keeps its identity.
 
-        Keywords may use a field's alias; naming one field by two spellings in
-        the same call is an error rather than a silent last-one-wins.
+        Parameters
+        ----------
+        source
+            Another instance of the same settings class -- a preset such as
+            ``HD``, typically -- whose fields are copied first. Defaults to
+            ``None``, meaning start from this object's own values.
+        **kwargs
+            Fields to change, by name or alias, applied after ``source``.
+            Naming one field by two spellings in the same call is an error
+            rather than a silent last-one-wins.
+
+        Returns
+        -------
+        :class:`Settings`
+            This section, changed in place, so calls can be chained; or, on a
+            preset, the modified copy.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If a name is not a field of this section, a value is invalid, or
+            ``source`` is a different settings class.
         """
         kwargs = type(self)._canonical_keys(kwargs)
         values = {}
@@ -286,21 +305,69 @@ class Settings:
 
     @property
     def is_preset(self) -> bool:
+        """Whether this is an immutable preset rather than a live section.
+
+        ``True`` for ``HD``, ``PREVIEW`` and the other presets, and for whatever
+        :meth:`as_preset` returns; ``False`` for the sections of ``SETTINGS``.
+        """
         return bool(getattr(self, "_is_preset", False))
 
     def clone(self, *, preset: bool | None = None):
+        """Get an independent copy of these settings.
+
+        Parameters
+        ----------
+        preset
+            ``True`` to make the copy an immutable preset, ``False`` to make it
+            mutable. Defaults to ``None``, meaning whichever this one is.
+
+        Returns
+        -------
+        :class:`Settings`
+            A deep copy of the same class: changing either never changes the
+            other.
+        """
         result = deepcopy(self)
         if preset is not None:
             object.__setattr__(result, "_is_preset", bool(preset))
         return result
 
     def as_preset(self):
+        """Get an immutable copy of these settings, the kind ``HD`` is.
+
+        Use it to keep the current values safe from later changes:
+        ``saved = SETTINGS.video.as_preset()``.
+
+        Returns
+        -------
+        :class:`Settings`
+            A preset: :meth:`set` on it returns a modified copy instead of
+            changing it.
+        """
         return self.clone(preset=True)
 
     def as_mutable(self):
+        """Get a mutable copy of these settings, detached from the original.
+
+        Returns
+        -------
+        :class:`Settings`
+            A copy that :meth:`set` changes in place. It is not ``SETTINGS``'s
+            section: changing it does not change what Algan renders with.
+        """
         return self.clone(preset=False)
 
     def to_dict(self) -> dict:
+        """Get every field as a plain dict, under its declared name.
+
+        Aliases (``fps`` for ``frames_per_second``) are left out, so
+        ``section.set(**section.to_dict())`` round-trips.
+
+        Returns
+        -------
+        dict
+            Each field's name mapped to a deep copy of its value.
+        """
         return {
             name: deepcopy(getattr(self, name))
             for name in type(self)._declared_field_names()
@@ -308,7 +375,29 @@ class Settings:
 
     @contextmanager
     def override(self, **kwargs):
-        """Temporarily override a mutable section and restore it reliably."""
+        """Change fields for the duration of a ``with`` block.
+
+        Every value is put back on exit, including when the block raises::
+
+            with SETTINGS.video.override(frames_per_second=60):
+                Scene.save_video("smooth")
+
+        Parameters
+        ----------
+        **kwargs
+            Fields to change, as for :meth:`set`.
+
+        Yields
+        ------
+        :class:`Settings`
+            This section.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If this is a preset, which cannot change in place, or :meth:`set`
+            refuses the values.
+        """
         if self.is_preset:
             raise AlganConfigurationError(
                 "Cannot override an immutable preset in place"

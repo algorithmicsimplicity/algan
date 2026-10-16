@@ -35,6 +35,23 @@ class SceneManager(Singleton):
 
     @classmethod
     def set_scene_class(cls, scene_class, scene_initializer):
+        """Choose what the default Scene is built from, and how Scenes set up.
+
+        ``import algan`` calls this once, with :class:`~algan.scene.Scene` and
+        the initializer that spawns the default camera and point light. The
+        default Scene is built the first time :attr:`current_scene` finds the
+        stack empty, and a Scene constructed without a ``scene_initializer`` of
+        its own falls back to the one set here, so a call only affects Scenes
+        created after it.
+
+        Parameters
+        ----------
+        scene_class
+            The class to build the default Scene from: ``Scene`` or a subclass.
+        scene_initializer
+            Called with a Scene, while it is active, each time it is created or
+            reset, to set it up. ``None`` for no setup.
+        """
         cls._scene_class = scene_class
         cls._scene_initializer = scene_initializer
 

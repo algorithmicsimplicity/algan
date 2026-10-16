@@ -319,6 +319,8 @@ class DecimalNumber(Mob):
 
     @property
     def value(self):
+        # Documented in the class docstring's Attributes section; a docstring
+        # here would describe the same object twice in the API reference.
         return self.get_animated_attribute("value")
 
     @value.setter
@@ -326,6 +328,16 @@ class DecimalNumber(Mob):
         return self.set_value(value)
 
     def on_create(self):
+        """Play this number's spawn-in animation: its glyphs fade in together.
+
+        Called by :meth:`~.Animatable.spawn` when ``animate=True``.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default). Every glyph fades from transparent to its own opacity over
+        the same span.
+        """
         with Sync(animation_manager=self.animation_manager):
             for c in self.get_descendants():
                 o = c.opacity
@@ -364,6 +376,13 @@ class DecimalNumber(Mob):
         return self
 
     def get_value(self):
+        """Get the number shown; the same as reading :attr:`value`.
+
+        Returns
+        -------
+        torch.Tensor
+            The value as of the animations recorded so far, shape ``(*, 1)``.
+        """
         return self.value
 
     def set_value(

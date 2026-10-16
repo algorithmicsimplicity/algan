@@ -3,7 +3,8 @@ Write this description yourself, in your own words, from what you set out to
 do. Do not paste a generated summary: they restate the diff rather than the
 change, and they invent novelty ("X was impossible before") for things that
 were merely undocumented. The diff is already in the PR; this is for what the
-diff cannot show. See AGENTS.md, "Pull requests".
+diff cannot show. See docs/source/contributing/development.rst, "Opening a pull
+request".
 
 Delete any section that genuinely does not apply.
 -->

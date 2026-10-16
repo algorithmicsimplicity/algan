@@ -914,7 +914,10 @@ class Surface(Mob):
     ----------
     coord_function
         The function mapping 2-D intrinsic coordinates (ranging from [0,1]), to 3-D world coordinates,
-        which defines the manifold's shape.
+        which defines the manifold's shape. Defaults to ``None``, meaning the
+        class's own :meth:`coord_function` -- a flat plane spanning ``[-1, 1]``
+        on the base class, the shape itself on a subclass such as
+        :class:`~algan.mobs.shapes_3d.Sphere`.
     grid_height
         Number of sampled points along the ``v`` axis. Defaults to ``None``,
         meaning the resolution is chosen automatically to meet
@@ -922,6 +925,37 @@ class Surface(Mob):
     grid_width
         Number of sampled points along the ``u`` axis. Defaults to ``None``, as
         ``grid_height`` does; giving only one of the two uses it for both.
+    color_texture
+        Color texture map ``[W, H, 5]`` -- one image, sampled in-kernel by the ray
+        tracer: bilinearly up close, and trilinearly from a mip chain when minified
+        (``SETTINGS.raytracing.texture_antialiasing``, on by default). It is an ordinary
+        animatable attribute: assign a new map of the same shape to animate it.
+        :mod:`~algan.mobs.surfaces.procedural_textures` generates the common patterns,
+        so a checkerboard is ``color_texture=get_checkerboard((BLUE, WHITE))``. Defaults
+        to ``None``: the surface takes its ``color``.
+    reflectivity_texture, roughness_texture, refractive_index_texture
+        Optional per-texel material property maps, each ``[W, H, 1]`` (or
+        ``[W, H]``). Like ``color_texture`` they are sampled per fragment,
+        with the same mip filtering, inside the ray tracing kernel (only
+        the general wavefront tracer implements this; batches containing such
+        maps are routed to it automatically, for both flat and curved PN
+        triangles). Properties without a map keep the per-vertex system. Maps
+        of different resolutions are resampled to a common resolution. Each
+        defaults to ``None``, no map.
+    normal_texture
+        Optional tangent-space normal map ``[W, H, 3]``, with components in
+        ``[-1, 1]``: x along increasing ``u``, y along
+        increasing ``v``, z along the smooth surface normal (``(0, 0, 1)`` =
+        unperturbed). Perturbs the shading normal per fragment in-kernel.
+        Note: under the default vertex-shaded pipeline lighting is baked at
+        the vertices, so a normal map only affects effects evaluated per
+        fragment (mirror reflections, refraction, ray traced shadows, and
+        fragment shading when enabled). Defaults to ``None``, no map.
+    glow_texture
+        Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
+        These are consumed per-vertex by the glow accumulator, so they are
+        baked to the surface grid resolution (raise ``grid_width``/
+        ``grid_height`` for more detail). Defaults to ``None``, no map.
     ignore_normals
         Whether to draw the surface as flat, faceted triangles instead of
         smoothing it. Defaults to ``False``, meaning smooth vertex normals are
@@ -939,7 +973,7 @@ class Surface(Mob):
         point.
         The selected grid is cached per concrete Surface subclass and geometry
         configuration, so constructing the same shape again does not repeat
-        the resolution search.
+        the resolution search. Defaults to ``0.0005``.
     render_tolerance_pixels
         Maximum sampled deviation between a PN triangle and the flat render
         triangles it is dynamically diced into, in output pixels. Defaults to
@@ -976,37 +1010,6 @@ class Surface(Mob):
         *patches*, one less than the vertices ``grid_width`` / ``grid_height``
         count, matching Manim. Defaults to ``None``. Ignored if either grid size
         is given.
-    color_texture
-        Optional color texture map ``[W, H, 5]`` -- one image, sampled
-        in-kernel by the ray tracer: bilinearly up close, and trilinearly from
-        a mip chain when minified (``SETTINGS.raytracing.texture_antialiasing``,
-        on by default). It is an ordinary animatable
-        attribute: assign a new map of the same shape to animate it.
-        :mod:`~algan.mobs.surfaces.procedural_textures` generates the common
-        patterns, so a checkerboard is
-        ``color_texture=get_checkerboard((BLUE, WHITE))``.
-    reflectivity_texture, roughness_texture, refractive_index_texture
-        Optional per-texel material property maps, each ``[W, H, 1]`` (or
-        ``[W, H]``). Like ``color_texture`` they are sampled per fragment,
-        with the same mip filtering, inside the ray tracing kernel (only
-        the general wavefront tracer implements this; batches containing such
-        maps are routed to it automatically, for both flat and curved PN
-        triangles). Properties without a map keep the per-vertex system. Maps
-        of different resolutions are resampled to a common resolution.
-    normal_texture
-        Optional tangent-space normal map ``[W, H, 3]``, with components in
-        ``[-1, 1]``: x along increasing ``u``, y along
-        increasing ``v``, z along the smooth surface normal (``(0, 0, 1)`` =
-        unperturbed). Perturbs the shading normal per fragment in-kernel.
-        Note: under the default vertex-shaded pipeline lighting is baked at
-        the vertices, so a normal map only affects effects evaluated per
-        fragment (mirror reflections, refraction, ray traced shadows, and
-        fragment shading when enabled).
-    glow_texture
-        Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
-        These are consumed per-vertex by the glow accumulator, so they are
-        baked to the surface grid resolution (raise ``grid_width``/
-        ``grid_height`` for more detail).
     *args, **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
         ``opacity`` and ``location``.
@@ -1408,6 +1411,13 @@ class Surface(Mob):
         Every member has the same shape, resolution and material -- only its
         centre and color vary. Anything else that differs needs separate Mobs.
 
+        Animation
+        ---------
+        Not animated: this only constructs. Animating the pack moves every
+        member; animating ``pack[i]`` moves just that one. All members share one
+        lifespan, so they spawn and despawn together -- stagger an entrance with
+        opacity rather than with separate spawns.
+
         Parameters
         ----------
         centers
@@ -1427,12 +1437,10 @@ class Surface(Mob):
         :class:`~algan.mobs.surfaces.surface.Surface`
             The packed Mob, of whichever subclass this was called on.
 
-        Animation
-        ---------
-        Not animated: this only constructs. Animating the pack moves every
-        member; animating ``pack[i]`` moves just that one. All members share one
-        lifespan, so they spawn and despawn together -- stagger an entrance with
-        opacity rather than with separate spawns.
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``centers`` is empty.
 
         Examples
         --------
@@ -1875,6 +1883,9 @@ class Surface(Mob):
         axis
             Which world axis the value is read along: ``0`` for x, ``1`` for y,
             ``2`` for z. Defaults to ``2``, colouring by height.
+        **kwargs
+            Only ``colors``, an older name for ``colorscale``, is accepted; it
+            is used when ``colorscale`` is not given.
 
         Returns
         -------
@@ -1883,8 +1894,8 @@ class Surface(Mob):
 
         Raises
         ------
-        ValueError
-            If an unrecognized keyword argument is passed.
+        :class:`.AlganConfigurationError`
+            If any other keyword argument is passed.
 
         See Also
         --------

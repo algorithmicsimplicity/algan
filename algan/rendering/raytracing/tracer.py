@@ -183,9 +183,24 @@ class RenderPlan:
 
     @property
     def is_supported(self) -> bool:
+        """Whether the chosen route can draw every requested feature.
+
+        ``False`` exactly when ``unsupported_features`` is not empty.
+        """
         return not self.unsupported_features
 
     def as_dict(self) -> dict[str, object]:
+        """Get the plan as plain Python values, for logging or JSON.
+
+        Returns
+        -------
+        dict[str, object]
+            ``backend``, ``samples_per_pixel``, ``requested_features`` and
+            ``unsupported_features`` (as lists), ``truncations`` (as
+            :meth:`TruncationCounts.as_dict
+            <algan.rendering.raytracing.truncation.TruncationCounts.as_dict>`
+            gives it) and ``path_samples_mean``.
+        """
         return {
             "backend": self.backend,
             "samples_per_pixel": self.samples_per_pixel,

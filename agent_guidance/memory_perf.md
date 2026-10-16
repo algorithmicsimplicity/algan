@@ -113,11 +113,12 @@ New compilation, lower headroom, or unavailable telemetry retains the reset
 fallback. This exception does not apply to Linux/cgroups or CPU rendering.
 It changes the destructive reset decision, not arena sizing or OOM retries.
 
-`benchmarks/performance/pressure_reset_probe.py` records reset counts, process
-memory, host/commit headroom, and teardown ordering on the real graphics scene.
-Its `--sequence legacy,legacy,current,current,current,legacy,legacy` option
-loads only the old cleanup functions from the specified `--baseline-ref` for
-an in-process comparison with identical rendering settings.
+The probe this was measured with, which recorded reset counts, process memory,
+host/commit headroom and teardown ordering on the real graphics scene and
+compared the old cleanup functions against the current ones in one process,
+was never committed. Only its summarizer is in the tree:
+`benchmarks/performance/summarize_pressure_probe.py` reads the probe's
+`summary.json` and, with `--compare`, diffs the lossless renders it made.
 
 ## Performance and renderer validation
 

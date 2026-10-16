@@ -536,6 +536,11 @@ class Sphere(Surface):
         )
 
     def coord_function(self, coords_2d):
+        """Map the ``(u, v)`` grid onto the sphere.
+
+        ``u`` runs round the axis over ``u_range`` and ``v`` from pole to pole
+        over ``v_range``. See :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`.
+        """
         # Keep the original Algan sampling orientation.  Although a sphere is
         # rotationally symmetric, rotating its latitude/longitude grid changes
         # triangle placement, normals, and therefore pixel output.  That is why
@@ -599,6 +604,9 @@ class Cone(Surface):
         Direction the tip points, shape ``(*, 3)``; it need not be normalized.
         Defaults to ``UP`` (the +y axis), the same default as
         :class:`Cylinder`'s axis.
+    v_range
+        Angular sweep around the axis, in degrees. ``(0, 180)`` gives a half
+        cone. Defaults to ``(0, 360)`` (the full cone).
     closed
         Whether to cap the base with a filled circle. Defaults to ``False``: the
         cone is open, so the camera can see inside it. The disc samples its rim
@@ -606,9 +614,6 @@ class Cone(Surface):
         disc's boundary cannot be refined at render time the way the curved
         side's is -- so a capped cone carries more triangles than the side
         alone suggests.
-    v_range
-        Angular sweep around the axis, in degrees. ``(0, 180)`` gives a half
-        cone. Defaults to ``(0, 360)`` (the full cone).
     resolution
         Manim-style grid resolution as ``(patches along the height, patches
         round the axis)``, or one int for both -- the order :class:`Cylinder`
@@ -728,6 +733,11 @@ class Cone(Surface):
         )
 
     def coord_function(self, uv):
+        """Map the ``(u, v)`` grid onto the cone's side.
+
+        ``u`` runs from the base (0) to the tip (1) and ``v`` round the axis
+        over ``v_range``. See :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`.
+        """
         u = uv[..., :1]
         v_start, v_end = _sweep_radians(self.v_range)
         phi = v_start + uv[..., 1:] * (v_end - v_start)
@@ -777,12 +787,40 @@ class Cone(Surface):
         )
 
     def get_start(self):
+        """Get the centre of the cone's base, relative to the cone's centre.
+
+        It is fixed when the cone is built, as ``-direction * height / 2`` for
+        the normalized ``direction``: moving or rotating the cone afterwards
+        does not change it.
+
+        Returns
+        -------
+        torch.Tensor
+            The offset in world units, shape ``(*, 3)``.
+        """
         return self.start_point
 
     def get_end(self):
+        """Get the cone's tip, relative to the cone's centre.
+
+        Fixed when the cone is built, like :meth:`get_start`.
+
+        Returns
+        -------
+        torch.Tensor
+            The offset in world units, shape ``(*, 3)``.
+        """
         return self.end_point
 
     def get_direction(self):
+        """Get the direction the cone was built to point its tip in.
+
+        Returns
+        -------
+        torch.Tensor
+            The ``direction`` passed to the constructor, as given -- not
+            normalized, and not updated if the cone is rotated afterwards.
+        """
         return self.direction
 
 
@@ -852,17 +890,17 @@ class Cylinder(Surface):
 
         Scene.save_video()
 
-    Half a tube, cut along its length and turned so the shell faces the camera
-    (unrotated, the cut runs straight through the line of sight and the half
-    reads as a flat panel):
+    Half a tube, cut along its length, turned so its outside faces the camera
+    and tipped toward it to show the open top (unrotated, the cut runs straight
+    through the line of sight and the half reads as a flat panel):
 
     .. algan:: Example2Cylinder
         :save_last_frame:
 
         from algan import *
 
-        Cylinder(radius=0.7, height=1.4, v_range=(0, PI),
-                 color=BLUE).rotate(-90, UP).spawn()
+        Cylinder(radius=0.7, height=1.4, v_range=(0, 180),
+                 color=BLUE).rotate(120, UP).rotate(20, RIGHT).spawn()
 
         Scene.save_video()
     """
@@ -911,6 +949,30 @@ class Cylinder(Surface):
             self.add_bases(direction_t)
 
     def add_bases(self, direction=None):
+        """Close both ends of the tube with flat discs.
+
+        Does after construction what ``closed=True`` does during it. The discs
+        are children of the cylinder and Scene actors of their own. Calling it
+        again re-aims the discs the cylinder already has rather than adding a
+        second pair.
+
+        Animation
+        ---------
+        Takes effect immediately and is not animated. On a cylinder that is
+        already spawned the discs appear at once, without a fade-in.
+
+        Parameters
+        ----------
+        direction
+            The cylinder's axis, shape ``(*, 3)`` and normalized: the discs sit
+            at either end of it and face along it. Defaults to ``None``, meaning
+            the cylinder's own ``direction``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Cylinder`
+            This Mob, so calls can be chained.
+        """
         if direction is None:
             direction = F.normalize(cast_to_tensor(self.direction), p=2, dim=-1)
         offset = direction * self.height * 0.5
@@ -1006,6 +1068,11 @@ class Cylinder(Surface):
         )
 
     def coord_function(self, uv):
+        """Map the ``(u, v)`` grid onto the tube.
+
+        ``u`` runs round the axis over ``v_range`` and ``v`` along it, from one
+        end to the other. See :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`.
+        """
         # Same uncopied-basis read as _cap_ring_offsets: this runs per grid
         # per stretch (set_location_by_function), where the clone would be a
         # dead copy -- every result feeds out-of-place arithmetic.
@@ -1021,7 +1088,7 @@ class Cylinder(Surface):
         v = uv[..., 1:]
         # The ring is swept from MINUS the forward row (``INWARD``, for the
         # default ``direction=UP``) and turns toward the tube's left, which is
-        # what makes ``(0, PI)`` the LEFT half. The sign is the Mob convention
+        # what makes ``(0, 180)`` the LEFT half. The sign is the Mob convention
         # showing through: a Mob's forward axis points ``OUTWARD``, at the
         # viewer, so a cross-section swept from ``+forward`` would start on the
         # near side and run the other way round -- reversing the (u, v)
@@ -1048,6 +1115,25 @@ class Cylinder(Surface):
         return (radial - radius).abs()
 
     def set_direction(self, direction):
+        """Turn the cylinder about its centre to run along a new axis.
+
+        Its height and radius are kept.
+
+        Animation
+        ---------
+        As :meth:`move_between_points`: recorded as an animation over the
+        current context's runtime (1 second by default).
+
+        Parameters
+        ----------
+        direction
+            The new axis, shape ``(*, 3)``; it need not be normalized.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Cylinder`
+            This Mob, so calls can be chained.
+        """
         direction = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         start = self.get_center() - direction * self.height * 0.5
         end = self.get_center() + direction * self.height * 0.5
@@ -1056,6 +1142,30 @@ class Cylinder(Surface):
 
     @animated_function(animated_args={"interpolation": 0})
     def set_start_point(self, point, interpolation=1):
+        """Move the cylinder's start to a new point, keeping its end in place.
+
+        The cylinder stretches and turns to span the two.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default): the start travels in a straight line to ``point``. Use
+        ``with Off(): ...`` to move it instantly.
+
+        Parameters
+        ----------
+        point
+            The new start, shape ``(*, 3)`` in world units.
+        interpolation
+            How far to go, from 0 (where the cylinder is now) to 1 (all the
+            way). The animation sweeps it from 0 to 1, so leave it unset.
+            Defaults to ``1``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Cylinder`
+            This Mob, so calls can be chained.
+        """
         # Read uncopied: every result below feeds out-of-place arithmetic
         # before any write happens (the writes land in _move_between_points),
         # so the property getters' defensive clones would be dead copies on
@@ -1073,6 +1183,30 @@ class Cylinder(Surface):
 
     @animated_function(animated_args={"interpolation": 0})
     def set_end_point(self, point, interpolation=1):
+        """Move the cylinder's end to a new point, keeping its start in place.
+
+        The cylinder stretches and turns to span the two.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default): the end travels in a straight line to ``point``. Use
+        ``with Off(): ...`` to move it instantly.
+
+        Parameters
+        ----------
+        point
+            The new end, shape ``(*, 3)`` in world units.
+        interpolation
+            How far to go, from 0 (where the cylinder is now) to 1 (all the
+            way). The animation sweeps it from 0 to 1, so leave it unset.
+            Defaults to ``1``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Cylinder`
+            This Mob, so calls can be chained.
+        """
         basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
         location = self.get_animated_attribute("location", copy=False)
         offset = basis_rows[..., 1, :] * 0.5
@@ -1086,6 +1220,32 @@ class Cylinder(Surface):
 
     @animated_function(animated_args={"interpolation": 0})
     def move_between_points(self, start, end, interpolation=1):
+        """Move, turn and stretch the cylinder so it spans two points.
+
+        Its radius is kept; its length becomes the distance between them.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default): each end travels in a straight line to its new point. Use
+        ``with Off(): ...`` to place it instantly.
+
+        Parameters
+        ----------
+        start
+            Where the cylinder should start, shape ``(*, 3)`` in world units.
+        end
+            Where it should end, shape ``(*, 3)`` in world units.
+        interpolation
+            How far to go, from 0 (where the cylinder is now) to 1 (all the
+            way). The animation sweeps it from 0 to 1, so leave it unset.
+            Defaults to ``1``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Cylinder`
+            This Mob, so calls can be chained.
+        """
         start = cast_to_tensor(start)
         end = cast_to_tensor(end)
         basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
@@ -1168,7 +1328,7 @@ class Arrow3D(Mob):
 
     Raises
     ------
-    ValueError
+    :class:`.AlganConfigurationError`
         If the distance from ``start`` to ``end`` is not greater than
         ``tip_length``, which would leave no room for a shaft.
 
@@ -1290,6 +1450,7 @@ class Arrow3D(Mob):
         )
 
     def get_render_primitives(self):
+        """Internal: build the shaft's, the tip's and their end discs' primitives."""
         # The whole subtree, not just the shaft and the head: their end discs
         # are children of theirs and are not Scene actors, so this is the only
         # thing that asks them to build. Emitting each part's discs directly
@@ -1313,15 +1474,47 @@ class Arrow3D(Mob):
         return primitives or None
 
     def get_start(self):
+        """Get the arrow's tail, where it is now.
+
+        Follows the arrow when it is moved, rotated or scaled.
+
+        Returns
+        -------
+        torch.Tensor
+            The tail's location in world units, shape ``(*, 3)``.
+        """
         return self.start_point.location
 
     def get_end(self):
+        """Get the arrow's tip, where it is now.
+
+        Follows the arrow when it is moved, rotated or scaled.
+
+        Returns
+        -------
+        torch.Tensor
+            The tip's location in world units, shape ``(*, 3)``.
+        """
         return self.end_point.location
 
     def get_vector(self):
+        """Get the vector from the arrow's tail to its tip.
+
+        Returns
+        -------
+        torch.Tensor
+            ``get_end() - get_start()``, in world units, shape ``(*, 3)``.
+        """
         return self.get_end() - self.get_start()
 
     def get_unit_vector(self):
+        """Get the direction the arrow points in.
+
+        Returns
+        -------
+        torch.Tensor
+            :meth:`get_vector` normalized to length 1, shape ``(*, 3)``.
+        """
         return F.normalize(self.get_vector(), p=2, dim=-1)
 
 
@@ -1445,12 +1638,54 @@ class Line3D(Cylinder):
         self.move_between_points(self.start, self.end)
 
     def get_start(self):
+        """Get the point the line was last set to start at.
+
+        That is the ``start`` it was built with, or the one given to
+        :meth:`move_between_points` or :meth:`set_start_and_end_attrs` since.
+        Moving or rotating the line by other means does not update it.
+
+        Returns
+        -------
+        torch.Tensor
+            A copy of the start point, in world units, shape ``(*, 3)``.
+        """
         return self.start.clone()
 
     def get_end(self):
+        """Get the point the line was last set to end at.
+
+        As :meth:`get_start`, for the other end.
+
+        Returns
+        -------
+        torch.Tensor
+            A copy of the end point, in world units, shape ``(*, 3)``.
+        """
         return self.end.clone()
 
     def set_start_and_end_attrs(self, start, end, **kwargs):
+        """Move the line to span two points, or the centres of two Mobs.
+
+        Animation
+        ---------
+        As :meth:`move_between_points`: recorded as an animation over the
+        current context's runtime (1 second by default).
+
+        Parameters
+        ----------
+        start
+            The new start, shape ``(*, 3)`` in world units, or a Mob whose
+            centre to start at.
+        end
+            The new end, as for ``start``.
+        **kwargs
+            Accepted for Manim compatibility and ignored.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Line3D`
+            This Mob, so calls can be chained.
+        """
         from algan.utils.tensor_utils import cast_to_tensor
 
         self.start = cast_to_tensor(
@@ -1463,6 +1698,33 @@ class Line3D(Cylinder):
         return self
 
     def move_between_points(self, start, end, interpolation=1):
+        """Move, turn and stretch the line so it spans two points.
+
+        As :meth:`Cylinder.move_between_points
+        <algan.mobs.shapes_3d.Cylinder.move_between_points>`, and also records
+        the new ends for :meth:`get_start` and :meth:`get_end`.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default): each end travels in a straight line to its new point. Use
+        ``with Off(): ...`` to place it instantly.
+
+        Parameters
+        ----------
+        start
+            Where the line should start, shape ``(*, 3)`` in world units.
+        end
+            Where it should end, shape ``(*, 3)`` in world units.
+        interpolation
+            How far to go, from 0 (where the line is now) to 1 (all the way).
+            Defaults to ``1``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Line3D`
+            This Mob, so calls can be chained.
+        """
         from algan.utils.tensor_utils import cast_to_tensor
 
         result = super().move_between_points(start, end, interpolation=interpolation)
@@ -1473,6 +1735,27 @@ class Line3D(Cylinder):
 
     @classmethod
     def parallel_to(cls, line, point, length=1, **kwargs):
+        """Build a line through a point, parallel to another line.
+
+        Parameters
+        ----------
+        line
+            The line to be parallel to: anything with ``get_start`` and
+            ``get_end``, such as a :class:`Line3D` or a
+            :class:`~algan.mobs.shapes_2d.Line`.
+        point
+            The new line's centre, shape ``(*, 3)`` in world units, or a Mob
+            whose centre to use.
+        length
+            The new line's length, in world units. Defaults to ``1``.
+        **kwargs
+            Passed to the constructor -- notably ``radius`` and ``color``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Line3D`
+            The new line, not yet spawned.
+        """
         direction = line.get_end() - line.get_start()
         direction = F.normalize(direction, p=2, dim=-1)
         point = point.get_center() if hasattr(point, "get_center") else point
@@ -1482,6 +1765,31 @@ class Line3D(Cylinder):
 
     @classmethod
     def perpendicular_to(cls, line, point, length=1, **kwargs):
+        """Build a line through a point, perpendicular to another line.
+
+        In 3-D every direction in a plane is perpendicular to a line; this
+        picks one of them for you, the same one every time for the same
+        ``line``. To choose the direction, build the :class:`Line3D` directly.
+
+        Parameters
+        ----------
+        line
+            The line to be perpendicular to: anything with ``get_start`` and
+            ``get_end``, such as a :class:`Line3D` or a
+            :class:`~algan.mobs.shapes_2d.Line`.
+        point
+            The new line's centre, shape ``(*, 3)`` in world units, or a Mob
+            whose centre to use.
+        length
+            The new line's length, in world units. Defaults to ``1``.
+        **kwargs
+            Passed to the constructor -- notably ``radius`` and ``color``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Line3D`
+            The new line, not yet spawned.
+        """
         direction = line.get_end() - line.get_start()
         perpendicular = get_orthonormal_vector(F.normalize(direction, p=2, dim=-1))
         point = point.get_center() if hasattr(point, "get_center") else point
@@ -1581,6 +1889,11 @@ class Torus(Surface):
         )
 
     def coord_function(self, uv):
+        """Map the ``(u, v)`` grid onto the torus.
+
+        ``u`` runs round the ring over ``u_range`` and ``v`` round the tube
+        over ``v_range``. See :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`.
+        """
         u_start, u_end = _sweep_radians(self.u_range)
         v_start, v_end = _sweep_radians(self.v_range)
         u = u_start + uv[..., :1] * (u_end - u_start)
@@ -1617,6 +1930,24 @@ class Torus(Surface):
         return (tube_distance - tube_radius).abs()
 
     def func(self, u, v):
+        """Get the point on the torus at a ring angle and a tube angle.
+
+        Manim's ``Torus.func``, kept for ported scripts: unlike the rest of
+        Algan it takes **radians**.
+
+        Parameters
+        ----------
+        u
+            Angle round the ring, in radians.
+        v
+            Angle round the tube, in radians.
+
+        Returns
+        -------
+        torch.Tensor
+            The point in world units, relative to the torus's centre and
+            ignoring any rotation since it was built, shape ``(*, 3)``.
+        """
         u = torch.as_tensor(u)
         v = torch.as_tensor(v)
         sweep_radius = self.ring_radius - self.tube_radius * torch.cos(v)
@@ -1877,6 +2208,7 @@ class Polyhedron(Mob):
         )
 
     def get_render_primitives(self):
+        """Internal: build every face's triangles, declared as one surface."""
         primitives = []
         for mob in self._face_primitive_mobs():
             primitive = mob.get_render_primitives()
@@ -1895,6 +2227,19 @@ class Polyhedron(Mob):
 
     @staticmethod
     def get_edges(faces_list):
+        """List the edges of a set of faces, each once.
+
+        Parameters
+        ----------
+        faces_list
+            The faces, each a sequence of vertex indices in order round it.
+
+        Returns
+        -------
+        list[tuple[int, int]]
+            One ``(lower, higher)`` index pair per edge, in the order the edges
+            are first met.
+        """
         edges = []
         seen = set()
         for face in faces_list:
@@ -1906,9 +2251,37 @@ class Polyhedron(Mob):
         return edges
 
     def extract_face_coords(self):
+        """Get each face's corners, from where its vertex markers are now.
+
+        Returns
+        -------
+        list[list[torch.Tensor]]
+            One list per face, in ``faces_list`` order, of its corners' centres
+            in world units.
+        """
         return [[self.graph[j].get_center() for j in face] for face in self.faces_list]
 
     def update_faces(self, _mob=None):
+        """Rebuild the faces from where the vertex markers are now.
+
+        Manim's updater for a Polyhedron whose vertices are moved one by one;
+        moving or rotating the whole Polyhedron needs no rebuild.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default): the old faces morph into the new ones.
+
+        Parameters
+        ----------
+        _mob
+            The Mob an updater passes in. Ignored. Defaults to ``None``.
+
+        Returns
+        -------
+        :class:`~algan.mobs.shapes_3d.Polyhedron`
+            This Mob, so calls can be chained.
+        """
         # The native Algan hierarchy propagates transforms from the parent.  If
         # individual graph vertices are edited, rebuild the face triangles.
         new = Polyhedron(

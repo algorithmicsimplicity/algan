@@ -149,6 +149,13 @@ class TruncationCounts:
         return self.total > 0
 
     def as_dict(self) -> dict[str, int]:
+        """Get the counts as a plain dict, for logging or JSON.
+
+        Returns
+        -------
+        dict[str, int]
+            Each counter's field name mapped to its value.
+        """
         return {f.name: getattr(self, f.name) for f in fields(self)}
 
 

@@ -1,4 +1,4 @@
-"""The process-global settings root, :data:`SETTINGS`.
+"""The process-global settings root, :data:`~algan.SETTINGS`.
 
 Everything configurable at runtime hangs off one object, grouped into sections
 by what it affects: ``SETTINGS.video`` (resolution, frame rate, anti-aliasing),

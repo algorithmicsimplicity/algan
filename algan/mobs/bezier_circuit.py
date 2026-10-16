@@ -1731,6 +1731,7 @@ class BezierCircuitCubic(Mob):
         return result
 
     def get_render_primitives(self):
+        """Internal: build the primitive that draws this shape's fill and stroke."""
         if self.empty:
             return None
         # Derive transport directly from the material shader parameters. A
@@ -2181,11 +2182,22 @@ class BezierCurveCubic(BezierCircuitCubic):
 
     Parameters
     ----------
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`, except ``filled``, which is
-        always ``False``. ``color`` stands in for ``stroke_color`` when that was
-        not given, as it does on a :class:`~algan.mobs.shapes_2d.Line`, since an
-        unfilled path has no fill for it to act on otherwise.
+    *args
+        Passed to :class:`~.BezierCircuitCubic` -- the control points first.
+    filled
+        Accepted only so that a call written for
+        :class:`~.BezierCircuitCubic` still works: the path is never filled.
+        ``None`` and ``False`` are allowed. Defaults to ``None``.
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic`. ``color`` stands in for
+        ``stroke_color`` when that was not given, as it does on a
+        :class:`~algan.mobs.shapes_2d.Line`, since an unfilled path has no fill
+        for it to act on otherwise.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``filled`` is true.
 
     See Also
     --------

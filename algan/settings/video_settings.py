@@ -54,8 +54,10 @@ class VideoSettings(Settings):
     ``supersampling`` -- how many samples per axis the frame is
     rendered at before being filtered back down to ``resolution`` -- may also be
     written ``ssaa`` or ``SSAA``. The short spellings are accepted for reading,
-    for assignment, as constructor keywords and by :meth:`set`; the declared
-    names are what :meth:`to_dict` and the settings snapshot answer with.
+    for assignment, as constructor keywords and by
+    :meth:`~algan.settings.abstract_settings.Settings.set`; the declared names
+    are what :meth:`~algan.settings.abstract_settings.Settings.to_dict` and the
+    settings snapshot answer with.
     """
 
     resolution: tuple[int, int]
