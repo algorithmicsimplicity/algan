@@ -1,6 +1,12 @@
 {
   "render": {"width": 640, "height": 480, "background": [0, 0, 0], "samples_per_pixel": 1},
   "camera": {"position": [0, 0, 12], "target": [0, 0, 0], "up": [0, 1, 0], "fov": 40, "near": 0.1, "far": 200},
+  "object": {"name": "", "position": [0, 0, 0], "rotation_y": 0},
+  "geometry": {
+    "sphere": {"radius": 1, "segments": 64},
+    "box": {}
+  },
+  "geometry_required": {"box": ["size"]},
   "material": {
     "type": "physical", "color": [1, 1, 1], "roughness": 0.85,
     "metalness": 0, "ior": 1.5, "transmission": 0, "clearcoat": 0,
@@ -10,5 +16,23 @@
     "attenuation_color": [1, 1, 1], "attenuation_distance": 0,
     "specular": [0.067, 0.067, 0.067], "shininess": 30, "bands": 3,
     "near": 0.1, "far": 100
+  },
+  "material_types": ["physical", "standard", "basic", "lambert", "phong", "toon", "normal", "matcap", "depth"],
+  "light": {
+    "ambient": {"color": [1, 1, 1], "intensity": 1},
+    "directional": {"color": [1, 1, 1], "intensity": 1, "target": [0, 0, 0]},
+    "point": {"color": [1, 1, 1], "intensity": 1, "decay": 0, "distance": 0},
+    "spot": {"color": [1, 1, 1], "intensity": 1, "penumbra": 0, "decay": 0, "distance": 0},
+    "rect_area": {"color": [1, 1, 1], "intensity": 1},
+    "hemisphere": {"color": [1, 1, 1], "ground_color": [0, 0, 0], "intensity": 1}
+  },
+  "light_required": {
+    "point": ["position"],
+    "spot": ["position", "target", "angle"],
+    "rect_area": ["position", "target", "width", "height"]
+  },
+  "light_optional": {
+    "directional": ["direction", "position"],
+    "rect_area": ["samples"]
   }
 }

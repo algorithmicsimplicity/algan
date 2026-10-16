@@ -2,9 +2,11 @@
 
 A single JSON document describing one still frame, rendered by two independent
 back ends (`algan_render.py`, `three_render.mjs`) so their images can be
-compared pixel-wise. Both translators normalize omitted render, camera and
-material fields using [scene_defaults.json](scene_defaults.json). The geometry
-and shading limitations below still matter when interpreting image differences.
+compared pixel-wise. Both translators check every section of the scene against
+[scene_defaults.json](scene_defaults.json) and fill each omitted render, camera,
+object, geometry, material and light field from it, so the two engines never
+receive different values for a field the scene left out. The geometry and
+shading limitations below still matter when interpreting image differences.
 
 Conventions shared by both back ends:
 
@@ -72,13 +74,22 @@ Geometry types:
 | `type`   | fields                                | meaning |
 | -------- | ------------------------------------- | ------- |
 | `sphere` | `radius`, `segments` (default 64)     | Three.js `SphereGeometry(radius, segments, segments/2)`; Algan `Sphere(radius=...)` |
-| `box`    | `size` `[x, y, z]`                    | Three.js `BoxGeometry`; Algan `Prism(width=, height=, depth=)` |
+| `box`    | `size` `[x, y, z]` (required)         | Three.js `BoxGeometry`; Algan `Prism(width=, height=, depth=)` |
 
 The JSON above is an example. The shared defaults select a **physical**, **white**
 material with roughness `0.85`, and map nonpositive attenuation distance to no
-absorption. Unknown camera fields are rejected by both translators. Unrecognized or
-irrelevant fields can be ignored rather than rejected, so a successfully parsed
-scene is not proof that every requested feature reached both engines.
+absorption. An object needs only its `geometry`: `name` defaults to `""`,
+`position` to the origin and `rotation_y` to 0.
+
+Both translators reject a field that its section does not define — a misspelt
+`roughnes`, a `rotation_x`, an unknown light, geometry or material `type` — and
+a scene missing a required field, with the same message on both sides
+(`tests/unit_tests/test_renderer_audit_contract.py` holds them to that). A key
+that starts with `_` is an annotation, since JSON has no comments, and is
+accepted anywhere. Material fields are one shared set, so a field that some
+other material type reads (`roughness` on a `basic` material) is still accepted
+and ignored; a successfully parsed scene is therefore not proof that every
+requested feature reached both engines.
 
 ### Geometry and camera limits
 
@@ -146,12 +157,16 @@ Notes the back ends must respect:
 
 ## Light types
 
-Existing: `directional` (via `direction`), `point`, `ambient`. Additions:
+Existing: `directional` (via `direction`), `point`, `ambient`. Every light's
+`color` defaults to white and its `intensity` to 1. A `point` light requires
+`position`; its `decay` defaults to 0 (no falloff, overriding three's own
+constructor default of 2) and its `distance` to 0 (unlimited). Additions:
 
 * **`directional`, position+target form.** As an alternative to `direction`,
   a directional light accepts `"position": [x,y,z], "target": [x,y,z]`
-  (light sits there, shines toward the target). Exactly one form must be
-  given — both back ends reject a light carrying both or neither.
+  (light sits there, shines toward the target; `target` defaults to the
+  origin). Exactly one form must be given — both back ends reject a light
+  carrying both or neither.
 * **`spot`**: `position`, `target`, `color`, `intensity`, `angle` (half-angle in
   **degrees**, required — the engines' own defaults disagree), `penumbra`
   [0,1] (default 0), `decay` (default 0 = no falloff; overrides three's own
@@ -173,8 +188,8 @@ Existing: `directional` (via `direction`), `point`, `ambient`. Additions:
   all, while in Algan it illuminates every lit material. Give a rect-area
   light a `standard` receiver, or the panel measures that limit instead of the
   light.
-* **`hemisphere`**: `color` (sky), `ground_color`, `intensity`. No shadows on
-  either side.
+* **`hemisphere`**: `color` (sky), `ground_color` (default black), `intensity`.
+  No shadows on either side.
 
 Coordinates: `_vec` in `algan_render.py` copies `(x, y, z)` without a sign
 change. Both bridges use +Y up and +Z toward the viewer; positions, targets,
