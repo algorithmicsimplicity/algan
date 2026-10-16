@@ -496,7 +496,6 @@ class TriangleTriangulated(Mob):
             color = self.get_default_color()
         super().__init__(**kwargs)
         kwargs["color"] = color
-        # scl = squish(corner_locations, 0, -2)
         if vertices == TriangleVertices:
             corner_locations = corner_locations.view(-1, 3, 3)
             kwargs["parent_batch_sizes"] = torch.full((len(corner_locations),), 3)

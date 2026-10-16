@@ -964,5 +964,3 @@ def combine_scenes(directory):
 
     with open(output_text_file, "w") as f:
         f.write(transcript)
-
-    # concatenate_videos(directory, output_file=f"video.{ext}")

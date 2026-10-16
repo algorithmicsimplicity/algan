@@ -269,8 +269,6 @@ class Color(torch.Tensor):
     @property
     def opacity(self):
         opacity = self.data[..., -1:].as_subclass(torch.Tensor)
-        # if opacity.numel() == 1:
-        #    opacity = opacity.item()
         return opacity
 
     @opacity.setter
@@ -280,8 +278,6 @@ class Color(torch.Tensor):
     @property
     def glow(self):
         glow = self.data[..., -2:-1].as_subclass(torch.Tensor)
-        # if glow.numel() == 1:
-        #    glow = glow.item()
         return glow
 
     def is_transparent(self):
@@ -510,10 +506,6 @@ def color_to_texture_map(color):
 
 GLOW = Color((0, 0, 0), 1, 0)
 TRANSPARENT = Color((0, 0, 0), 0, 0)
-# REDS = [Color(*[__ / 255 for __ in _]) for _ in ((249, 113, 123), (225, 69, 81), (213, 27, 41), (172, 13, 24), (139, 0, 10))]
-# YELLOWS = [Color(*[__ / 255 for __ in _]) for _ in ((255,230, 116), (231, 202, 71), (219, 184, 28), (177, 147, 13), (142, 116, 0))]
-# BLUES = [Color(*[__ / 255 for __ in _]) for _ in ((110, 92, 178), (82, 62, 159), (59+20, 35+20, 151+20), (43, 22, 122), (20, 11, 98))]
-# GREENS = [Color(*[__ / 255 for __ in _]) for _ in ((112, 212, 96), (77, 191, 59), (45, 181, 23), (29, 146, 11), (16, 118, 0))]
 
 GRAY_A = Color("#DDDDDD")
 GREY_A = Color("#DDDDDD")

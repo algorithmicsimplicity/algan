@@ -108,8 +108,6 @@ class ManimMob(BezierCircuitCubic):
                 raise NotImplementedError(
                     "ManimMob does not support Mobjects which do not have n_points_per_curve == 4"
                 )
-            # if isinstance(submob, VectorizedPoint):# or isinstance(submob, ThreeDVMobject):
-            #    continue
             children.append(
                 ManimMob(
                     submob, batch=False, _add_to_scene=child_add_to_scene, **kwargs

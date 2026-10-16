@@ -549,8 +549,6 @@ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
 def tweak_color(c, strength=0.2, min_strength=0.0):
     t = torch.rand((1,), generator=_color_rng).item()
     t = t * strength + (1 - t) * min_strength
-    # m = torch.randint(0, 2, (1,), generator=_color_rng)
-    # target_c = WHITE * m + (1 - m) * BLACK
     target_c = c.set_rgb(
         torch.rand(
             c.rgb.shape, device=c.rgb.device, dtype=c.rgb.dtype, generator=_color_rng
@@ -564,8 +562,6 @@ gs = 0.75
 
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
-        # grid_height = 20  # None
-        # grid_width = 12
         grid_height = None
         grid_width = None
         if "color" in kwargs:
@@ -615,13 +611,6 @@ class Neuron(Mob):
             .set_shader(None)
             .scale(0.2)
         )
-
-
-# class Layer(Mob):
-#    def __init__(self, input_locs, neuron_locs, **kwargs):
-#        super().__init__(**kwargs)
-#        self.neurons = [Neuron(input_locs, location=l) for l in neuron_locs]
-#        self.add_children(self.neurons)
 
 
 # The V2/V3 fill light comes from envMapIntensity (ambient = albedo * 0.1 * env)
@@ -762,8 +751,6 @@ class NeuralNetMLP(Mob):
         def rng(size):
             return torch.rand(size) * 2 - 1
 
-        # orth_direction = get_orthonormal_vector(direction)
-        # neuron_locs = [start + proj(rng((d,3))*0.4) + direction * rng((1,)) * 0.1 + direction*(i)*layer_spacing for i, d in enumerate(dims)]
         neuron_locs = [
             start
             + (torch.arange(d).unsqueeze(-1) - (d // 2))
@@ -800,7 +787,6 @@ class NeuralNetMLP(Mob):
                 ]
                 for i in range(len(neuron_locs) - 1)
             ]
-        # self.layers = [[Neuron(neuron_locs[i], location=l) for l in neuron_locs[i+1]] for i in range(len(neuron_locs)-1)]
 
         self.add_children(self.layers)
         self._idle_neurons = [neuron for layer in self.layers[:-1] for neuron in layer]
@@ -863,7 +849,6 @@ class NeuralNetMLP(Mob):
                 reset=False,
                 color=forward_color,
             )  # .get_component_mobs())
-            # o.move_next_to(label, -self.get_right_direction())
             self.backward(o, label, color=backward_color, runtime=runtime)
             o.despawn()
         return self
@@ -914,19 +899,11 @@ class NeuralNetMLP(Mob):
     def backward(
         self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, runtime=3
     ):
-        # with Seq():
-        #    self.activate(reverse=True, color=color, runtime=runtime)
-        #    self.reset_input_synapses()
-        # return self
-        # with Seq(runtime=runtime, animation_manager=self.animation_manager):
         with Lag(0.9, runtime=runtime):
             if label is not None:
                 with Lag(0.65, runtime=1, animation_manager=self.animation_manager):
                     zap(label, output, color=color)
                     zap(output, self.layers[-1][0].shell, color=color)
-            # self.animation_manager.context.timespan.current_time = (
-            #    self.animation_manager.context.timespan.current_time - 1.5
-            # )
             with Seq():
                 self.activate(reverse=True, color=color)
                 self.reset_input_synapses()
@@ -994,9 +971,6 @@ class NeuralNetMLP(Mob):
             if output_generator is None:
                 return
             with Seq():
-                # self.animation_manager.context.current_time = (
-                #        self.animation_manager.context.current_time - 1.7
-                # )
                 with Off(animation_manager=self.animation_manager):
                     output = output_generator().move_next_to(
                         self.layers[-1][len(self.layers[-1]) // 2],
@@ -1085,7 +1059,6 @@ class SynapseV3(Cylinder):
             envMapIntensity=5.0,
         ))"""
         self.color = c
-        # self.set_material(MeshBasicMaterial(color=c.set_glow(0.04)))
         self.set_shader(None)
         self.scale(0.01)
 
@@ -1106,7 +1079,6 @@ class NeuronV3(Neuron):
             clearcoat=1.0,
             clearcoat_roughness=0.08,
             env_map_intensity=4.0,
-            # reflectivity=1.0
         )
         return (
             Sphere(
