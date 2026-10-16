@@ -1939,11 +1939,7 @@ class Scene(RenderLoopMixin):
             lossless ``png`` for ``.mov`` (also ``.mkv``, ``.avi``), and
             ``libvpx-vp9`` for ``.webm``, whose alpha rides in a 4:2:0 chroma
             plane and so is lossy at object edges. ``.mp4`` cannot carry alpha
-            at all and is refused before the render. ``.webm`` and ``.gif``
-            pick from the container whatever the background: ``libvpx-vp9``
-            video with Opus audio for ``.webm``, and a per-frame 256-color
-            palette for ``.gif``, which has no audio track, so a Scene's sound
-            is left out of it with a warning.
+            at all and is refused before the render.
         passes
             Auxiliary render passes to write beside the video for compositing
             in an editor: any of ``"depth"``, ``"normal"`` and

@@ -34,7 +34,6 @@ from typing import Literal
 from algan.animation_timeline.animation_contexts import Off
 from algan.errors import (
     AlganConfigurationError,
-    AlganWarning,
     LegacySceneDiscoveryWarning,
     NeverSpawnedMobWarning,
     _user_stacklevel,
@@ -271,38 +270,6 @@ def _transparent_encoder(suffix, premultiplied_over=False):
     if premultiplied_over and suffix == ".mov":
         return "prores_ks", ["-profile:v", "4444", "-pix_fmt", "yuva444p10le"]
     return _TRANSPARENT_CODECS[suffix]
-
-
-#: How Algan encodes *opaque* output into the two containers that cannot hold
-#: its default H.264 stream: WebM takes only VP8, VP9 or AV1 video, and GIF only
-#: the GIF codec. Handing either one ``libx264`` rendered every frame and then
-#: died as a ``BrokenPipeError`` when FFmpeg's muxer refused the stream. WebM's
-#: settings are its transparent entry's without the alpha plane. GIF quantizes
-#: each frame to a 256-color palette built from that frame: without the palette
-#: the encoder falls back to a fixed 3-3-2 one that bands every gradient, and
-#: one palette for the whole clip would make FFmpeg hold every frame in memory
-#: until the last one arrived.
-_OPAQUE_CONTAINER_CODECS = {
-    ".webm": (
-        "libvpx-vp9",
-        ["-pix_fmt", "yuv420p", "-crf", "20", "-b:v", "0", "-row-mt", "1"],
-    ),
-    ".gif": (
-        "gif",
-        [
-            "-vf",
-            "split[frame][sample];[sample]palettegen=stats_mode=single[palette];"
-            "[frame][palette]paletteuse=new=1",
-        ],
-    ),
-}
-
-#: The audio codec a container needs when it cannot carry Algan's default MP3:
-#: WebM takes only Vorbis or Opus.
-_CONTAINER_AUDIO_CODECS = {".webm": "libopus"}
-
-#: Containers with no audio track at all.
-_CONTAINERS_WITHOUT_AUDIO = (".gif",)
 
 
 def _check_transparent_container_is_supported(destination) -> None:
@@ -549,12 +516,6 @@ def _render_scene_to_file(
             scene_finalized = False
 
         transparent = scene.background_is_transparent()
-        if codec is None and not transparent and suffix in _OPAQUE_CONTAINER_CODECS:
-            # Before selection, which would pick H.264 -- in software or on
-            # NVENC -- and that is exactly what these containers refuse. Caller
-            # parameters go after the container's, so theirs win.
-            codec, container_params = _OPAQUE_CONTAINER_CODECS[suffix]
-            ffmpeg_params = [*container_params, *(ffmpeg_params or ())]
         # Selection sees the raw arguments, before defaults are filled in:
         # an explicit codec must win verbatim, caller-supplied parameters
         # must not be confused with Algan's own, and its software fallback
@@ -585,7 +546,7 @@ def _render_scene_to_file(
         if codec is None:
             codec = "libx264"
         if audio_codec is None:
-            audio_codec = _CONTAINER_AUDIO_CODECS.get(suffix, "mp3")
+            audio_codec = "mp3"
         if ffmpeg_params is None:
             ffmpeg_params = [] if transparent else ["-crf", "17", "-preset", "slower"]
         logger.info(f"Encoding video with {codec}")
@@ -610,17 +571,7 @@ def _render_scene_to_file(
                     scene.audio_manager.video_transcript,
                     encoding="utf-8",
                 )
-            if suffix in _CONTAINERS_WITHOUT_AUDIO:
-                warnings.warn(
-                    f"{destination.name} has no audio track, so the Scene's "
-                    "sound is left out of it. Save to .mp4, .mov or .webm to "
-                    "keep the sound.",
-                    AlganWarning,
-                    stacklevel=_user_stacklevel(),
-                )
-                audiofile = None
-            else:
-                logger.info("Audio rendered, now rendering video")
+            logger.info("Audio rendered, now rendering video")
 
         # The writer spawns its ffmpeg process at construction, so the
         # override only needs to span this call; it is restored right after.
