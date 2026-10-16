@@ -215,6 +215,20 @@ def _reject_invalid_runtime(name, value):
     return value
 
 
+def _compose_easings(outer, inner):
+    """``outer(inner(t))``: ``inner`` bends the progress first, then ``outer``.
+
+    Nested :class:`ComposedEasing` blocks build their rate function this way,
+    so the innermost block's function is applied first and every enclosing one
+    still applies on top, before the base easing.
+    """
+
+    def composed(t):
+        return outer(inner(t))
+
+    return composed
+
+
 def _guard_context_init(cls):
     """Make ``cls``'s generated ``__init__`` reject legacy timing spellings.
 
@@ -436,8 +450,12 @@ class AnimationContext:
         Easing function to compose *with* the parent's rather than replace it. Defaults
         to ``None``. See :class:`~.ComposedEasing`.
     combine_easing
-        Whether component rate functions are combined into the context's own.
-        Defaults to False.
+        Whether the rate function spans the whole block rather than each animation
+        in it. With True, every animation inside takes its own slice of the curve
+        across this context's runtime, rescaled so it still ends on its target:
+        with the default easing, a :class:`~.Seq` of moves reads as one motion
+        that eases in at the start of the block and out at its end, instead of
+        stopping between moves. Defaults to False.
     record_funcs
         Whether animated functions inside are recorded on the Scene timeline.
         Defaults to ``None``, meaning inherit (True at the top level;
@@ -555,6 +573,11 @@ class AnimationContext:
             if self.__getattribute__(attr) is None:
                 self.__setattr__(attr, self.prev_context.__getattribute__(attr))
 
+        # A composed easing layers on top of the one already in effect, and
+        # that includes one an enclosing context composed: inheriting only
+        # when unset made an inner ComposedEasing silently replace an outer.
+        own_composed_easing = self.composed_easing
+        enclosing_composed_easing = self.prev_context.composed_easing
         for attr in [
             "runtime_per_part",
             "lag_ratio",
@@ -566,6 +589,10 @@ class AnimationContext:
             "spawn_at_end",
         ]:
             inherit_missing_value(attr)
+        if own_composed_easing is not None and enclosing_composed_easing is not None:
+            self.composed_easing = _compose_easings(
+                enclosing_composed_easing, own_composed_easing
+            )
 
         self.easing = copy.deepcopy(self.easing)
         self.composed_easing = copy.deepcopy(self.composed_easing)
@@ -808,22 +835,6 @@ class AnimationContext:
             else:
                 self.timespan.start = self.timespan.original_start
                 self.timespan.end = self.timespan.original_end
-
-            if self.combine_easing:
-
-                def wrap(easing):
-                    if easing is None:
-                        return easing
-                    easing.set_full_time(
-                        lambda context=self: context.timespan.start,
-                        lambda context=self: context.timespan.end,
-                    )
-                    easing.time_set = True
-                    return easing
-
-                for child in self.get_descendants(include_self=False):
-                    wrap(child.easing)
-                    wrap(child.composed_easing)
 
             self.finished = True
             # Subsequent parent updates and spawn-at-end work must execute in
@@ -1365,8 +1376,8 @@ class SlideShow(Seq):
 
     A :class:`~.Seq` with presentation manners: every Mob spawned inside gets a
     one-second pause after it appears, so the viewer has time to read it, and when
-    the block ends everything spawned inside is despawned together. Good for
-    stepping through a list of points.
+    the block ends everything spawned inside is despawned together, followed by one
+    more pause on the cleared slide. Good for stepping through a list of points.
 
     Examples
     --------
@@ -1402,13 +1413,19 @@ class SlideShow(Seq):
         """Despawn everything spawned inside the block, then pause.
 
         The despawns run together inside a :class:`~.Sync`, so the slide clears in one
-        beat rather than item by item.
+        beat rather than item by item. A block that raised records no clear-up: the
+        error propagates as it was raised.
         """
         super().__exit__(exc_type, exc_val, exc_tb)
+        if exc_type is not None or self.ignored:
+            return False
         with Sync(animation_manager=self.animation_manager):
             for mob in self.new_mobs:
                 mob.despawn()
-        self.wait()
+        # This block has exited, so the pause belongs to the enclosing context:
+        # ``self.wait()`` here only moved this block's own, already-read cursor.
+        self.animation_manager.wait(self.runtime_per_part)
+        return False
 
 
 class OnInit(AnimationContext):
@@ -1454,13 +1471,17 @@ class ComposedEasing(AnimationContext):
     The given function is composed with whatever rate function is already in effect,
     rather than replacing it, so an enclosing ease is kept and this one layers on
     top. Use it to make a run of animations rush, dawdle or bounce without
-    restating the base easing.
+    restating the base easing. Nested ``ComposedEasing`` blocks compose too: the
+    innermost function bends the progress first, then each enclosing one, then the
+    base easing.
 
     Parameters
     ----------
     rfunc
         Rate function mapping progress in ``[0, 1]`` to adjusted progress. Composed
-        with the enclosing context's rate function.
+        with the enclosing context's rate function. It should map ``1`` to ``1``:
+        when an animation ends its Mob holds the animation's target, so a function
+        that finishes elsewhere jumps there on the last frame.
     **kwargs
         Passed to :class:`~.AnimationContext`.
 
@@ -1468,8 +1489,8 @@ class ComposedEasing(AnimationContext):
     --------
     .. code-block:: python
 
-        with ComposedEasing(easings.there_and_back):
-            square.move(RIGHT)  # goes out and comes back
+        with ComposedEasing(easings.ease_out_bounce):
+            square.move(RIGHT)  # arrives with a bounce
     """
 
     def __init__(self, rfunc, **kwargs):

@@ -2120,6 +2120,49 @@ class TimelineSpan:
             bump_timing_version()
 
 
+def _outermost_combining_context(context):
+    """The outermost context enclosing ``context`` that sets ``combine_easing``.
+
+    ``None`` when no enclosing context does. The outermost wins because its
+    rate function is the one meant to span everything inside it.
+    """
+    found = None
+    while context is not None:
+        if getattr(context, "combine_easing", False):
+            found = context
+        context = context.prev_context
+    return found
+
+
+def _eased_over_block(rate_function, own_span, block_span):
+    """Evaluate ``rate_function`` across a whole block, not one animation.
+
+    The returned function takes the animation's own progress in ``[0, 1]`` and
+    reads ``rate_function`` over the block's span instead, renormalized so the
+    animation still starts at its start state and ends at its target. Spans are
+    read when the function is evaluated, so the block's retroactive rescaling
+    (``runtime=`` on exit) is already applied by then.
+    """
+
+    def eased(progress):
+        progress = torch.as_tensor(progress)
+        block_start, block_end = block_span.start, block_span.end
+        length = block_end - block_start
+        if not length > 0:
+            return rate_function(progress)
+        at_start = (own_span.start - block_start) / length
+        at_end = (own_span.end - block_start) / length
+        first = rate_function(torch.full_like(progress, at_start))
+        last = rate_function(torch.full_like(progress, at_end))
+        current = rate_function(at_start + (at_end - at_start) * progress)
+        change = last - first
+        moves = change.abs() > 1e-12
+        safe_change = torch.where(moves, change, torch.ones_like(change))
+        return torch.where(moves, (current - first) / safe_change, progress)
+
+    return eased
+
+
 class FunctionApplicationEvent:
     def __init__(
         self,
@@ -2847,6 +2890,10 @@ class AnimationTimeline:
 
             def rf(x, rf=easing, rfc=composed_easing):
                 return rf(rfc(x))
+
+        block = _outermost_combining_context(c)
+        if block is not None:
+            rf = _eased_over_block(rf, c.timespan, block.timespan)
 
         event = FunctionApplicationEvent(
             function, caller, animated_args, kwargs, rf, c.timespan
