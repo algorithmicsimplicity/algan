@@ -2077,8 +2077,6 @@ def render_batch_raytraced(
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
-            # traceback.print_tb(exc_traceback)
-            # exc_traceback.tb_next.tb_frame.clear()
             # Release the failed allocation (e.g. the wavefront's large per-ray
             # state) so it doesn't fragment/block the smaller retry.
             release_torch_memory(force_gc=False)

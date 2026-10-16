@@ -9,7 +9,6 @@ These compose with the animation contexts rather than replacing them: the lag is
 expressed as timing within the surrounding context.
 """
 
-# from camera import Sequential, Synchronized, Off
 from __future__ import annotations
 
 import torch
@@ -43,10 +42,7 @@ def map_mob_over_inputs(mob, animation_func, inputs, percent_shown=0.1):
 
 
 def rfd(x, start_portion, runtime, lag_time):
-    # return x
     x = x * (runtime + lag_time)
-    # t = t.unsqueeze(-2)
-    # x = x.unsqueeze(-1)#unsqueeze_right(x, t)
     return ((x - (start_portion * lag_time)).clamp_(min=0) / runtime).clamp_(max=1)
 
 
@@ -57,17 +53,13 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
         # here on ``torch.cat`` of an empty list -- a torch error for a string
         # that simply has nothing in it.
         return
-    # dots = dot_product(direction, torch.cat([mob.location for mob in mobs]), dim=-1, keepdim=True)
     dots = [dot_product(direction, mob.location, dim=-1, keepdim=True) for mob in mobs]
     dotsc = torch.cat(dots, -2)
     min_dot, max_dot = dotsc.amin(-2, keepdim=True), dotsc.amax(-2, keepdim=True)
 
     amc = mobs[0].animation_manager.context
     ts = [((_ - min_dot) / (max_dot - min_dot).clamp_(min=1e-8)) for _ in dots]
-    # t = t * lag_duration
-
     runtime = amc.runtime_per_part  # max(amc.runtime_per_part - lag_duration, 0)
-    # lag_duration = min(lag_duration, amc.runtime_per_part - runtime)
     start_time = amc.timespan.current_time
     for i in range(len(mobs)):
         # ``rf`` already delays every attribute row by its normalized spatial

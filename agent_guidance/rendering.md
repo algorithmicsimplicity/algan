@@ -87,7 +87,7 @@ A scene with custom fragment shading/scatter may force deterministic fragment-sh
 
 The settings facade resolves fields across the owning rendering modules, including `raytracing/settings.py`, with env-var defaults and setters where needed. Public output controls live on `SETTINGS.raytracing`; low-level tuning lives on its `.experimental` section. **Read them live** (`rt_settings.samples_per_pixel`, for example, at call time) — importing them by value at module import freezes them before user code runs (this bug has shipped before).
 
-Post-processing (`post_processing/`): bloom/glow, optional FXAA and tonemapping; the standalone SMAA code is not a normal post-processing route. `Camera` (`camera.py`): perspective with a near-orthographic approximation, fov/near/far, and an animatable thin lens (`aperture`, `focus_distance`); render code consumes an immutable camera/light snapshot per batch so batch prep for frame batch N+1 can run on a worker thread while N renders (`ALGAN_PREFETCH_BATCHES=0` disables).
+Post-processing (`post_processing/`): bloom/glow, optional FXAA and tonemapping. `Camera` (`camera.py`): perspective with a near-orthographic approximation, fov/near/far, and an animatable thin lens (`aperture`, `focus_distance`); render code consumes an immutable camera/light snapshot per batch so batch prep for frame batch N+1 can run on a worker thread while N renders (`ALGAN_PREFETCH_BATCHES=0` disables).
 
 ## Depth of field is a path-tracer primary-ray change and nothing else
 

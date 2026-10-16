@@ -110,10 +110,6 @@ class MobMaterialsMixin:
             d.set_non_recursive(
                 **dict(zip(shader_specific_param_names, shader_specific_param_defaults))
             )
-            # for n, v in zip(
-            #
-            # ):
-            #    d.__setattr__(n, v)
             d.shader = shader
             d.shader_specific_param_names = shader_specific_param_names
         return self
@@ -315,8 +311,6 @@ class MobMaterialsMixin:
         )
         for d in reversed(self.get_descendants()):
             d.set_non_recursive(**params)
-            # for name, value in params.items():
-            #    d.__setattr__(name, value)
             if color5 is not None:
                 d.color = color5
             d.opacity = cast_to_tensor(material.opacity)

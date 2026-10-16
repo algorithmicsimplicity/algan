@@ -187,8 +187,6 @@ class StageTimers:
             self.counts[name] += 1
             if items is not None:
                 self.item_totals[name] += int(items)
-            # self.launch_times[name] += t1 - t0
-            # self.device_sync_times[name] += t2 - t0
             tls.active.discard(name)
 
     @staticmethod
@@ -807,7 +805,6 @@ def install_pipeline_hooks():
     _try_wrap(pp_mod, "_finalize_on_device", "post:   - tonemap/finalize")
     _try_wrap(pp_mod, "_frames_to_host", "post:   - device->host copy")
     _try_wrap(rtr, "raytrace_render_wavefront", "wavefront_loop")
-    # _try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
     _try_wrap(KERNEL_REGISTRY, "render_kernel", "ray traced render total")
 
     # Previously-unaccounted wall time: the per-batch memory reclaim

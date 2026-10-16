@@ -199,12 +199,8 @@ def test_the_one_frame_oom_message_names_the_switch_only_for_the_deterministic_r
 
 
 #: Out-of-memory raises that deliberately carry no path-tracer hint, keyed by a
-#: phrase of their message: one the path tracer alone can reach, and one that
-#: reports a broken planner invariant rather than a scene too large to fit.
-_OOM_RAISES_WITHOUT_THE_HINT = (
-    "per-launch path budget",
-    "fit was not monotone",
-)
+#: phrase of their message: the one the path tracer alone can reach.
+_OOM_RAISES_WITHOUT_THE_HINT = ("per-launch path budget",)
 
 
 def test_every_deterministic_oom_raise_names_the_path_tracer_switch():
