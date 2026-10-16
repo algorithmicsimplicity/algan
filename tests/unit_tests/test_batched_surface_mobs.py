@@ -294,3 +294,41 @@ def test_a_packed_text_batch_transforms_too():
             batch.control_points.location - before,
             torch.tensor([0.0, 1.0, 0.0]),
         )
+
+
+@pytest.mark.fast
+def test_a_packed_text_batch_takes_back_the_values_read_from_it():
+    """REGRESSION. A packed circuit's control points keep one color, opacity,
+    glow and stroke-width row for all of the circuit's members, so the exact
+    spread above cannot cover the subtree, and writing back a per-glyph value
+    read from the batch raised a shape error. ``AnimatedBoundary`` does just
+    that to hide the fill of every circuit it outlines, which is why it failed
+    on any Text. Rows no single member owns now keep what they had.
+    """
+    from algan.constants.color import Color
+    from algan.mobs.text import Text
+
+    SceneManager.reset()
+    with Scene() as scene, Off():
+        text = Text("Hi!", scene=scene).spawn()
+        text[1].color = RED
+        batch = text._character_batch
+        before = batch.color.clone()
+
+        batch.color = batch.color.as_subclass(Color).set_opacity(0.0)
+        batch.opacity = batch.opacity * 0.5
+        batch.glow = batch.glow + 0.25
+        batch.stroke_width = batch.stroke_width + 1
+
+        # Each glyph keeps its own rgb -- the red one stays red -- and only
+        # loses its alpha, on the rows the fill is drawn from too.
+        for colors in (batch.color, batch.grid.color):
+            assert torch.allclose(colors[..., :3], before[..., :3])
+            assert bool((colors[..., -1] == 0).all())
+        assert torch.allclose(batch.opacity, torch.full_like(batch.opacity, 0.5))
+        assert torch.allclose(batch.glow, torch.full_like(batch.glow, 0.25))
+        assert torch.allclose(batch.stroke_width, torch.ones_like(batch.stroke_width))
+
+        # A value that is not one row per glyph is still refused.
+        with pytest.raises(Exception, match="shape"):
+            batch.color = torch.zeros(1, 2, 5)

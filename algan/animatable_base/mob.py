@@ -867,7 +867,7 @@ class Mob(
             ).contiguous()
         return value
 
-    def _distribute_over_packed_subtree(self, key, value, current_value):
+    def _distribute_over_packed_subtree(self, key, value, current_value, unowned=None):
         """Spread a per-member value across the rows of a packed subtree.
 
         A packed Mob carries one row per logical member, but its components
@@ -890,15 +890,33 @@ class Mob(
         Returns ``value`` unchanged whenever it is already broadcastable or the
         subtree cannot be covered exactly, so an unbatched Mob -- and any shape
         this cannot describe -- behaves exactly as it did before.
+
+        ``unowned``, when given, rescues a value the subtree cannot be covered
+        with exactly: rows no single member owns take their row of ``unowned``
+        instead. A packed circuit's control points keep **one** color row for
+        all of its members, so without it reading a Text's per-glyph colors
+        and writing them back raised. Pass the current value for a value, so
+        those rows keep what they have; a change has no such rescue here (see
+        :meth:`_spread_change_over_packed_rows`).
         """
         members = value.shape[-2]
         total = current_value.shape[-2]
         if members == 1 or members == total:
             return value
         owners = self._member_owner_index(key, members, total)
-        if owners is None:
+        if owners is not None:
+            return value.index_select(-2, owners.to(value.device))
+        if unowned is None:
             return value
-        return value.index_select(-2, owners.to(value.device))
+        owners = self._member_owner_index(key, members, total, partial=True)
+        # No owned row at all means ``value`` is not one row per member of this
+        # Mob, so it is left to fail as the shape error it is.
+        if owners is None or not bool((owners >= 0).any()):
+            return value
+        owners = owners.to(value.device)
+        gathered = value.index_select(-2, owners.clamp(min=0))
+        known = (owners >= 0).reshape((1,) * (gathered.dim() - 2) + (total, 1))
+        return torch.where(known, gathered, unowned)
 
     def _member_owner_index(self, key, members, total, partial=False):
         """Map each buffered row of ``key`` over this Mob's packed subtree to
@@ -1657,7 +1675,9 @@ class Mob(
             # device. Only a replayed write can land here with a mismatch.
             value = value.to(current_value.device)
         if recursive:
-            value = self._distribute_over_packed_subtree(attr, value, current_value)
+            value = self._distribute_over_packed_subtree(
+                attr, value, current_value, unowned=current_value
+            )
         if attr == "color":
             value = self._keep_explicit_alpha(value, current_value, recursive)
         change = value - current_value
