@@ -258,8 +258,8 @@ def align_large_audio_torchaudio_robust(
     return all_word_segments
 
 
-def subfinder(mylist, pattern):
-    for i in range(len(mylist)):
+def subfinder(mylist, pattern, start=0):
+    for i in range(start, len(mylist)):
         if mylist[i] == pattern[0] and mylist[i : i + len(pattern)] == pattern:
             return i
     return -1
@@ -394,16 +394,24 @@ def get_speech_generator_from_file(audio_file, transcript_file):
             full_ac.close()
         raise
 
+    # Speech blocks ask for their lines in narration order, so search after the
+    # previous match first: a phrase the transcript repeats ("Next.") is then
+    # its next occurrence, not always its first. A line found nowhere after it
+    # (narration authored again, or out of order) falls back to its first one.
+    transcript_words = [_[0] for _ in word_time_stamps]
+    next_word = 0
+
     def generator(script):
+        nonlocal next_word
         script = script.replace("-", " ")
         script_words = [strip_nonchars(_) for _ in script.split()]
         script_words = [_ for _ in script_words if len(_) > 0]
 
-        script_start_ind = (
-            subfinder([_[0] for _ in word_time_stamps], script_words)
-            if script_words
-            else -1
-        )
+        script_start_ind = -1
+        if script_words:
+            script_start_ind = subfinder(transcript_words, script_words, next_word)
+            if script_start_ind < 0:
+                script_start_ind = subfinder(transcript_words, script_words)
 
         if (
             script_start_ind < 0
@@ -415,6 +423,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
                 f" audio file, and so this speech will be machine generated:\n\n{script_words}"
             )
             return get_pyttsx_speech_generator(script)
+        next_word = script_start_ind + len(script_words)
 
         audio_start = word_time_stamps[script_start_ind][1]
         audio_end = word_time_stamps[script_start_ind + len(script_words) - 1][2]
