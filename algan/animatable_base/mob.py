@@ -314,6 +314,7 @@ _MANIM_CONSTRUCTOR_HINTS = {
     "rate_func": "easing is a context in Algan: `with Seq(easing=...): ...`",
     "lag_ratio": "staggering is a context in Algan: `with Lag(ratio=0.5): ...`",
     "scale_factor": "build it, then call `.scale(2)`",
+    "num_decimal_places": "DecimalNumber spells it `decimal_places`",
 }
 
 

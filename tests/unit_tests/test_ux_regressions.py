@@ -1144,6 +1144,12 @@ def test_a_misspelled_constructor_keyword_names_the_class_it_went_to(build, name
         build()
 
 
+def test_manims_decimal_places_keyword_points_at_algans():
+    """``DecimalNumber(x, num_decimal_places=2)`` is the line a Manim script has."""
+    with algan.Scene(), pytest.raises(TypeError, match="spells it `decimal_places`"):
+        algan.DecimalNumber(3.14, num_decimal_places=2)
+
+
 def test_a_manim_backed_class_keeps_only_the_hints_that_hold_for_it():
     """Manim's spellings are this class's spellings, so only timing is hinted.
 
