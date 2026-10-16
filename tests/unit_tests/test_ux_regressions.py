@@ -1023,6 +1023,39 @@ def test_draw_border_then_fill_tolerates_an_empty_iterable():
     assert DrawBorderThenFill([]) == []
 
 
+def test_draw_border_then_fill_traces_whatever_holds_the_curves():
+    """REGRESSION. Its documented "glyphs of a Text" raised -- iterating a Text
+    gives a Group per glyph, and a Group has no stroke to draw -- as did a
+    single shape (Manim's own signature: "Mob object is not iterable"), a list
+    holding a Text or a Group, and a ``MathTex``, which as an item of a list
+    drew no outline at all: it is an empty curve that holds its glyphs.
+    """
+    from algan.animations.manim_animations import DrawBorderThenFill
+    from algan.mobs.bezier_circuit import BezierCircuitCubic
+
+    text = algan.Text("Hi", add_to_scene=True).spawn(False)
+    glyphs = list(text.character_mobs)
+    assert DrawBorderThenFill(text) == glyphs
+    assert DrawBorderThenFill([text]) == glyphs
+
+    square = Square(add_to_scene=True).spawn(False)
+    assert DrawBorderThenFill(square) == [square]
+
+    circle = algan.Circle(add_to_scene=True)
+    nested = algan.Group([algan.Group([square, circle]), text]).spawn(False)
+    assert DrawBorderThenFill([nested]) == [square, circle, *glyphs]
+
+    math = algan.MathTex("x^2", add_to_scene=True).spawn(False)
+    traced = DrawBorderThenFill(math)
+    assert len(traced) == 2
+    assert all(
+        isinstance(curve, BezierCircuitCubic) and not curve.empty for curve in traced
+    )
+
+    with pytest.raises(TypeError, match="no curves to trace"):
+        DrawBorderThenFill([algan.Sphere(add_to_scene=True).spawn(False)])
+
+
 def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
     import algan.animations.manim_animations as manim_animations
 
