@@ -48,7 +48,7 @@ from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
-from algan.mobs.surfaces.procedural_textures import get_checkerboard
+from algan.mobs.surfaces.procedural_textures import _as_texel, get_checkerboard
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
     evaluate_logical_pn_per_patch,
@@ -1828,13 +1828,7 @@ class Surface(Mob):
         """
         if not colors:
             return self
-        converted = [
-            torch.as_tensor(
-                color, device=self.grid.color.device, dtype=self.grid.color.dtype
-            ).reshape(-1, self.grid.color.shape[-1])[0]
-            for color in colors
-        ]
-        palette = torch.stack(converted)
+        palette = self._palette_for_grid(colors)
         u_indices = torch.arange(self.grid_width, device=palette.device).unsqueeze(1)
         v_indices = torch.arange(self.grid_height, device=palette.device).unsqueeze(0)
         color_grid = palette[(u_indices + v_indices) % len(palette)]
@@ -1842,6 +1836,17 @@ class Surface(Mob):
         if opacity is not None:
             self.grid.opacity = opacity
         return self
+
+    def _palette_for_grid(self, colors) -> torch.Tensor:
+        """User-supplied colors as rows matching ``grid.color``.
+
+        Each goes through the same coercion as a mob's ``color``, so a hex
+        string, a CSS name, a hex int or an RGB tuple is as good as a
+        :class:`~algan.constants.color.Color` -- the color helpers used to
+        reshape the raw value instead, which only a 5-channel ``Color``
+        survived.
+        """
+        return torch.stack([_as_texel(color) for color in colors]).to(self.grid.color)
 
     def set_color_by_axis(
         self, axes=None, colorscale=None, axis: int = 2, **kwargs
@@ -1919,15 +1924,23 @@ class Surface(Mob):
         if colorscale is None:
             return self
 
-        values = self.grid.location.reshape(-1, 3)[..., axis]
+        # searchsorted wants contiguous values; a column of the location rows is
+        # a strided view.
+        values = self.grid.location.reshape(-1, 3)[..., axis].contiguous()
         entries = list(colorscale)
         if not entries:
             return self
         if isinstance(entries[0], tuple) and len(entries[0]) == 2:
             colors, pivots = zip(*entries)
             pivots = torch.as_tensor(pivots, device=values.device, dtype=values.dtype)
+            palette = self._palette_for_grid(colors)
+            # Each pair pins a color to a coordinate, so the order they are
+            # written in carries no meaning; searchsorted needs them ascending.
+            pivots, order = torch.sort(pivots)
+            palette = palette[order]
         else:
             colors = entries
+            palette = self._palette_for_grid(colors)
             axis_range = getattr(axes, ("x_range", "y_range", "z_range")[axis], None)
             if axis_range is None:
                 pivot_min, pivot_max = values.min(), values.max()
@@ -1941,14 +1954,6 @@ class Surface(Mob):
                 dtype=values.dtype,
             )
 
-        palette = torch.stack(
-            [
-                torch.as_tensor(
-                    color, device=self.grid.color.device, dtype=self.grid.color.dtype
-                ).reshape(-1, self.grid.color.shape[-1])[0]
-                for color in colors
-            ]
-        )
         upper = torch.searchsorted(pivots, values).clamp(1, len(pivots) - 1)
         lower = upper - 1
         denominator = (pivots[upper] - pivots[lower]).clamp_min(1e-12)
