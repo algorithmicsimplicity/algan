@@ -724,7 +724,15 @@ class Tex(Mob):
         :class:`~algan.mobs.group.Group`
             A Group of the selected glyphs.
         """
-        return Group([self.character_mobs[item]], scene=self.scene)
+        # The view registers with the Scene only when this text did: a text
+        # built with add_to_scene=False is reference geometry -- a morph target,
+        # or DecimalNumber's spacing template -- and a registered view of it
+        # was reported as a Group the user had built and never spawned.
+        return Group(
+            [self.character_mobs[item]],
+            scene=self.scene,
+            add_to_scene=self._added_to_scene,
+        )
 
     def __len__(self):
         """Get the number of glyphs, so ``len(text)`` works.

@@ -1257,6 +1257,38 @@ def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
         )
 
 
+def test_views_of_reference_text_are_not_reported_as_never_spawned(
+    monkeypatch, tmp_path, recwarn
+):
+    """Indexing a text built with ``add_to_scene=False`` registers nothing.
+
+    ``tex[i]`` and ``get_segment`` hand back a Group of views into the text's
+    glyph batch, and that Group used to join the Scene whatever the text had
+    done. So coloring a segment of a morph target was reported as a Group the
+    user had built and never spawned -- and so was a correctly spawned
+    ``DecimalNumber``, which measures its digit spacing on a reference
+    ``Tex("00")`` whenever it has fewer than two integer or decimal places.
+    """
+    from algan.errors import NeverSpawnedMobWarning
+    from algan.mobs.numeric_display import DecimalNumber
+    from algan.mobs.text import Tex
+
+    scene = SceneManager.instance().current_scene
+    target = Tex("a", "b", add_to_scene=False)
+    target.get_segment(1).color = algan.YELLOW
+    DecimalNumber(0, decimal_places=1).spawn()
+    _stub_render(monkeypatch, scene)
+    algan.Scene.save_video(
+        tmp_path / "views.mp4",
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
+    )
+    assert not [w for w in recwarn if issubclass(w.category, NeverSpawnedMobWarning)]
+    # Unregistered, the view still writes through to the text it came from.
+    yellow = algan.YELLOW[:3].to(torch.get_default_dtype())
+    glyph_color = target.character_mobs[1].color.reshape(-1)[:3]
+    assert torch.allclose(glyph_color.cpu(), yellow.cpu(), atol=1e-6)
+
+
 def test_angle_unit_constants_are_exported_with_algan_convention():
     """Algan's DEGREES is 1, the reciprocal of Manim's -- guard the value."""
     assert {"DEGREES", "RADIANS"} <= set(algan.__all__)
