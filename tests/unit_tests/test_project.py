@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from algan import Project, Scene, SceneManager, Speech
@@ -9,6 +11,7 @@ from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
 from algan.utils import algan_utils
 from algan.utils.algan_utils import RenderResult, algan_scene
+from algan.utils.video_encoding import _software_ffmpeg_binary
 
 
 class _SilentClip:
@@ -469,6 +472,105 @@ def test_project_concatenates_to_its_resolved_file_path(monkeypatch, tmp_path):
             },
         )
     ]
+
+
+def _clip(path, color):
+    """A two-frame 16x16 clip of one solid color, made by the encoder binary."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            _software_ffmpeg_binary(),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color={color}:s=16x16:r=2:d=1",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _mean_frame_colors(path):
+    raw = subprocess.run(
+        [
+            _software_ffmpeg_binary(),
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    return np.frombuffer(raw, dtype=np.uint8).reshape(-1, 16 * 16, 3).mean(1)
+
+
+def _two_scene_project_with_awkward_paths(tmp_path):
+    """Apostrophes, spaces and non-ASCII letters in the directories and the
+    clip names: the characters #152 found the concat list mis-serialized.
+    """
+
+    @algan_scene(name="O'Brien's intro")
+    def first():
+        pass
+
+    @algan_scene(name="café ending")
+    def second():
+        pass
+
+    return Project([first, second], **_project_paths(tmp_path / "Ada's lesson – été"))
+
+
+def test_project_concat_names_a_missing_scene_before_ffmpeg_and_keeps_the_export(
+    monkeypatch, tmp_path
+):
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    project.file_path.write_bytes(b"previous complete export")
+
+    def ffmpeg_must_not_run(*args, **kwargs):
+        raise AssertionError(f"FFmpeg ran on a partial manifest: {args}")
+
+    monkeypatch.setattr(subprocess, "run", ffmpeg_must_not_run)
+
+    with pytest.raises(FileNotFoundError, match="1_café ending.mp4"):
+        project.concatenate_videos()
+
+    assert project.file_path.read_bytes() == b"previous complete export"
+    assert list(project.video_directory.iterdir()) == [
+        project.video_directory / "0_O'Brien's intro.mp4"
+    ]
+
+
+def test_project_concat_joins_every_scene_in_project_order(tmp_path):
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    # Rendered out of order, beside a clip that is not one of the project's
+    # scenes and sorts first: only the project's manifest decides what joins.
+    _clip(project.video_directory / "1_café ending.mp4", "blue")
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    _clip(project.video_directory / "00_stray.mp4", "lime")
+
+    output = project.concatenate_videos()
+
+    assert output == project.file_path.resolve()
+    colors = _mean_frame_colors(output)
+    assert len(colors) == 4
+    red, blue = colors[:2], colors[2:]
+    assert (red[:, 0] > 200).all()
+    assert (red[:, 2] < 60).all()
+    assert (blue[:, 2] > 200).all()
+    assert (blue[:, 0] < 60).all()
 
 
 def test_project_run_cli_dispatches_project_actions(monkeypatch, tmp_path):

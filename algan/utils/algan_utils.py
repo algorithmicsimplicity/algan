@@ -42,6 +42,7 @@ from algan.logging.logger import get_logger
 from algan.rendering.camera import Camera
 from algan.settings import SETTINGS
 from algan.utils.video_encoding import (
+    _software_ffmpeg_binary,
     check_codec_is_available,
     override_moviepy_ffmpeg_binary,
     resolve_encode_binary,
@@ -768,6 +769,9 @@ def concatenate_videos(
     An explicit manifest is validated before encoding or replacing the output,
     and its order is preserved. Without a manifest, clips are sorted by their
     numeric filename prefix, such as ``1_intro.mp4`` then ``2_scene.mp4``.
+    FFmpeg is the binary ``save_video`` encodes with:
+    ``SETTINGS.paths.ffmpeg_binary`` when set, else the one bundled with
+    Algan's dependencies, so no FFmpeg needs to be on the PATH.
 
     Parameters
     ----------
@@ -875,16 +879,21 @@ def concatenate_videos(
     try:
         with open(concat_file, "w", encoding="utf-8") as f:
             for video_file in sorted_files:
-                # Use absolute path with proper escaping for ffmpeg
-                # Replace backslashes with forward slashes for ffmpeg on Windows
-                abs_path = str(video_file.resolve()).replace("\\", "/")
+                # Absolute paths, single-quoted. Inside the quotes FFmpeg reads a
+                # backslash literally, so only Windows, where it is the path
+                # separator, rewrites it; elsewhere it is part of a name.
+                abs_path = str(video_file.resolve())
+                if os.sep == "\\":
+                    abs_path = abs_path.replace("\\", "/")
                 if "\n" in abs_path or "\r" in abs_path:
                     raise ValueError("FFmpeg concat paths cannot contain newlines")
                 abs_path = abs_path.replace("'", "'\\''")
                 f.write(f"file '{abs_path}'\n")
 
-        # Build ffmpeg command
-        cmd = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
+        # The binary save_video encodes with, so concatenation works wherever
+        # rendering does -- including with no FFmpeg on the PATH.
+        cmd = [_software_ffmpeg_binary(), "-f", "concat", "-safe", "0"]
+        cmd.extend(["-i", str(concat_file)])
 
         if reencode:
             # Re-encode with multithreading
