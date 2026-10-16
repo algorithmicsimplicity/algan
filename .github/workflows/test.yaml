@@ -205,6 +205,53 @@ jobs:
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
+      # Compiling kernels is most of this job. Measured on a 4-core Linux
+      # container, the test step below spent 47 of its 79 minutes in the
+      # compiler, 42 of them on 125 specializations of the two megakernels,
+      # and every run started from an empty cache.
+      #
+      # Restoring an older cache is safe because of how it is keyed: an entry
+      # is found only under the key the render computes from the kernel's
+      # source and every function it reaches, the settings, the compiler and
+      # its config and the device's capabilities
+      # (algan/utils/taichi_source_key.py), and the compiler's own offline
+      # cache is keyed by the IR. A kernel this PR changed misses and compiles
+      # exactly as it does today; only the ones it did not touch are loaded.
+      # It is the cache every development machine runs against. Nor does it
+      # matter which runner built it: on the CPU arms an entry is LLVM IR with
+      # no host CPU attributes on the kernels, lowered for this runner's CPU
+      # as it loads.
+      #
+      # Pull requests restore; pushes to master and stable do not. Those runs
+      # stay the cold-compile control -- the one place a stale entry served
+      # under a key that missed a change would still show up -- and they save
+      # what they compiled, so the next pull request starts from it. Within a
+      # pull request, each run restores the previous one's cache first. If an
+      # entry is ever suspected, bump `kernels-v1` in both steps and every arm
+      # starts cold.
+      #
+      # Only the compiled kernels are kept. The content caches beside them
+      # (LaTeX, SVG, tessellations) are keyed by their inputs and a
+      # hand-bumped version, not by the code that produced them, so a cached
+      # result could outlive a change to that code and hide it from these
+      # tests. The precompile manifest in this directory is left out too: it
+      # records which script used which kernels, and restored, it would let a
+      # test that renders a script in a subprocess start a precompile pool
+      # that a cold run never starts. The directory's entries are listed with
+      # `/*` because an exclusion only removes what the pattern itself
+      # matched; listed as a directory, tar would put the manifest back.
+      - name: Restore compiled kernels
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.algan/cache/quadrants/*
+            !~/.algan/cache/quadrants/algan_kernel_specs.json
+          key: kernels-v1-${{ runner.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}-${{ hashFiles('uv.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            kernels-v1-${{ runner.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}-${{ hashFiles('uv.lock') }}-
+            kernels-v1-${{ runner.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}-
+
       # A required MPS check must not be able to go green after silently running
       # on CPU. Ask Algan's startup resolver -- the same source the renderer
       # uses -- and separately verify that torch sees an MPS device. Printing
@@ -323,6 +370,22 @@ jobs:
       # DESIGN_mps_support.md §4 is the scoreboard.
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
+
+      # Saved whether the tests passed or failed: what the compiler wrote is
+      # sound either way (see "Restore compiled kernels"), and an arm that is
+      # red for an unrelated reason would otherwise compile from nothing on
+      # every run. A cancelled run is left out, since its last kernels may
+      # not have reached the disk. `path` must stay identical to the restore
+      # step's: the cache's version is derived from it, and a save under
+      # another `path` is one the restore never finds.
+      - name: Save compiled kernels
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.algan/cache/quadrants/*
+            !~/.algan/cache/quadrants/algan_kernel_specs.json
+          key: kernels-v1-${{ runner.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}-${{ hashFiles('uv.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # What the fast render drew, and -- when the comparison failed -- the
       # difference video the harness wrote beside it. A pixel failure reports
