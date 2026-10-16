@@ -909,6 +909,7 @@ class Scene(RenderLoopMixin):
                 if actor.is_spawned():
                     actor.despawn(**kwargs)
 
+    @active_scene_method
     def save_audio(
         self,
         file_path: str | Path,
@@ -938,6 +939,10 @@ class Scene(RenderLoopMixin):
         str or pathlib.Path or None
             The path written, or ``None`` if the Scene has no audio effects.
         """
+        # Asking for the audio on its own is asking for output, as
+        # save_subtitles is: without this a script ending in save_audio was
+        # told at exit that it "finished without rendering anything".
+        _note_render_requested()
         if len(self.effects) == 0:
             return None
 
@@ -1389,6 +1394,7 @@ class Scene(RenderLoopMixin):
         """
         return "rgba" if self.background_is_transparent() else "rgb"
 
+    @active_scene_method
     def show_frame(self, at: float | None = None):
         """Render one frame and display it, for interactive work.
 
@@ -1414,6 +1420,7 @@ class Scene(RenderLoopMixin):
         """
         from algan.utils.plotting_utils import plot_tensor
 
+        _note_render_requested()
         if at is None:
             at = (
                 self.animation_manager.context.current_time
@@ -1431,7 +1438,10 @@ class Scene(RenderLoopMixin):
                 frame = frame.float() / 255
                 frames.append(frame.squeeze(0).permute(-1, 0, 1))
         for frame in frames:
-            plot_tensor(frame)
+            # The frame is already in [0, 1]. plot_tensor's default stretches
+            # each image to its own min and max, which shifted every color and
+            # turned a frame of one flat color into 0 / 0.
+            plot_tensor(frame, norm=False)
 
         return frames
 
