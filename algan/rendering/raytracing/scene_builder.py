@@ -387,14 +387,9 @@ _UPLOAD_ALIGNMENT_FLOOR = None
 def _upload_alignment_floor():
     global _UPLOAD_ALIGNMENT_FLOOR
     if _UPLOAD_ALIGNMENT_FLOOR is None:
-        _UPLOAD_ALIGNMENT_FLOOR = 1
-        try:
-            from algan.rendering.mps_zero_copy import installed
+        from algan.rendering.mps_zero_copy import installed
 
-            if installed():
-                _UPLOAD_ALIGNMENT_FLOOR = 16
-        except Exception:
-            _UPLOAD_ALIGNMENT_FLOOR = 1
+        _UPLOAD_ALIGNMENT_FLOOR = 16 if installed() else 1
     return _UPLOAD_ALIGNMENT_FLOOR
 
 

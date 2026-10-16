@@ -268,6 +268,25 @@ def test_the_upload_alignment_floor_follows_the_zero_copy_conversion():
         scene_builder._UPLOAD_ALIGNMENT_FLOOR = None
 
 
+def test_a_broken_zero_copy_check_is_raised_not_taken_for_no_floor(monkeypatch):
+    """A failure in it read as "not installed": no floor, so on a Mac with the
+    conversion installed the BVH's blocks went back to host staging unseen.
+    """
+    from algan.rendering import mps_zero_copy
+    from algan.rendering.raytracing import scene_builder
+
+    def broken():
+        raise AttributeError("module 'torch.mps' has no attribute '_buffer'")
+
+    monkeypatch.setattr(mps_zero_copy, "installed", broken)
+    scene_builder._UPLOAD_ALIGNMENT_FLOOR = None
+    try:
+        with pytest.raises(AttributeError, match="_buffer"):
+            scene_builder._upload_alignment_floor()
+    finally:
+        scene_builder._UPLOAD_ALIGNMENT_FLOOR = None
+
+
 def test_the_alignment_floor_starts_a_vector_element_storage_on_its_boundary(
     monkeypatch,
 ):

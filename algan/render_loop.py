@@ -3340,16 +3340,12 @@ class RenderLoopMixin:
         by ``_render_primitive_batch``; on any failure the un-projected remainder
         (and the merge) simply runs on the render thread as before.
         """
-        try:
-            from algan.rendering.raytracing.primitives import (
-                RayTracedBezierCircuitPrimitive,
-                RayTracedTrianglePrimitive,
-            )
-            from algan.rendering.raytracing.scene_builder import (
-                upload_primitive_source,
-            )
-        except Exception:
-            return
+        from algan.rendering.raytracing.primitives import (
+            RayTracedBezierCircuitPrimitive,
+            RayTracedTrianglePrimitive,
+        )
+        from algan.rendering.raytracing.scene_builder import upload_primitive_source
+
         if not primitives or not isinstance(
             primitives[0], (RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
         ):
@@ -4205,7 +4201,7 @@ class RenderLoopMixin:
                     build(batch[0], batch[2])
                 except Exception as e:
                     logger.warning(
-                        f"{what} failed (deferring to the render thread): {e}"
+                        f"{what} failed (deferring to the render thread): {e!r}"
                     )
                 if source is not None:
                     # Anything short of a fully projected copy (declined,
