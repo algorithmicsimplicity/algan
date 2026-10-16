@@ -363,7 +363,9 @@ Stage                  Lighting model
                        :meth:`~algan.scene.Scene.use_manim_defaults`.
 ``STAGE_UNLIT``        No lighting: the fragment keeps its own color. Resolved
                        from ``null_shader`` and ``basic_material_shader``, and
-                       what :class:`~.MeshBasicMaterial` maps to.
+                       what
+                       :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`
+                       maps to.
 ``STAGE_LAMBERT``      Diffuse only. Resolved from ``lambert_shader``.
 ``STAGE_PHONG``        Blinn-Phong diffuse plus specular. Resolved from
                        ``phong_shader``.

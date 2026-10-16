@@ -138,7 +138,7 @@ class RenderResult:
         Seconds the render took, ``0.0`` for a skipped or deferred one. A
         batched still render shares its total time evenly among rendered files.
     render_plan
-        The last batch's :class:`~algan.rendering.raytracing.RenderPlan`: which
+        The last batch's :class:`~algan.rendering.raytracing.tracer.RenderPlan`: which
         renderer ran, what it could not honor, and how often each ceiling bound.
     passes
         The auxiliary passes written beside the output, as ``{pass name:

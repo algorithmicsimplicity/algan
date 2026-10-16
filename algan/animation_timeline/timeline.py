@@ -78,7 +78,8 @@ STRUCTURE_VERSION = [0]
 
 #: Global hierarchy version, bumped only when the mob hierarchy (any mob's
 #: ``children``) changes -- NOT on attribute-buffer row allocation. The
-#: descendant-*list* cache (:meth:`~algan.mobs.mob.Mob.get_descendants`)
+#: descendant-*list* cache
+#: (:meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.get_descendants`)
 #: depends only on the hierarchy, so keying it on this version lets it survive
 #: the row allocations that happen constantly during construction (every mob's
 #: first attribute write allocates rows and bumps STRUCTURE_VERSION). Every

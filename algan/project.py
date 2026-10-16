@@ -325,7 +325,8 @@ class Project:
         Speech generator installed on each Scene's audio manager. Defaults to
         None, using the default speech source.
     post_processes
-        Sequence of frame-processing callables, as for :meth:`Scene.save_video`.
+        Sequence of frame-processing callables, as for
+        :meth:`~algan.scene.Scene.save_video`.
         Used for videos, screenshots and profiling, including :meth:`run_cli`.
         Defaults to None, using the renderer's defaults. An empty sequence
         disables post-processing; explicit export options override this default.
@@ -641,7 +642,7 @@ class Project:
 
         See Also
         --------
-        Scene.view : Inspect a single already-authored scene.
+        ~algan.scene.Scene.view : Inspect a single already-authored scene.
         render_video : Export the selected scenes instead of opening a viewer.
 
         Examples
