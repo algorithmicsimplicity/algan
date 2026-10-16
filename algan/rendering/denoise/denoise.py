@@ -28,6 +28,7 @@ from algan.rendering.denoise.tza import parse_tza
 from algan.rendering.denoise.weights import weights_path
 from algan.rendering.mps_compat import clamp_floor
 from algan.rendering.raytracing import settings as rt_settings
+from algan.utils.memory_utils import is_out_of_memory
 
 logger = get_logger("raytracing")
 
@@ -192,8 +193,10 @@ class Denoiser:
         return out
 
 
-#: Per-(device, precision) cache. "" marks a load that failed (stay off).
+#: Per-(device, precision) cache. "" marks a load that failed (stay off);
+#: ``_OUT_OF_MEMORY`` one that ran out of memory, which lasts for one render job.
 _denoisers: dict[str, Denoiser | str] = {}
+_OUT_OF_MEMORY = "out of memory"
 
 
 def resolve_precision(device) -> tuple[torch.dtype, bool]:
@@ -214,6 +217,11 @@ def get_denoiser(device) -> Denoiser | None:
     """The cached :class:`Denoiser` for ``device`` at the live
     ``denoise_precision``, or ``None`` when the weights cannot be had or
     loaded (warned once; the render continues without denoising).
+
+    Running out of memory while loading them also continues without denoising,
+    with its own warning, but only for the rest of that render job: memory,
+    unlike a bad weight file, may be there next time, and remembering the
+    failure for the process left every later render on a warm daemon noisy.
     """
     dtype, channels_last = resolve_precision(device)
     key = f"{device}:{'fp16' if dtype == torch.float16 else 'fp32'}"
@@ -229,6 +237,13 @@ def get_denoiser(device) -> Denoiser | None:
             tensors = parse_tza(f.read())
         net = OidnUNet(tensors, device, dtype=dtype, channels_last=channels_last)
     except Exception as exc:  # TzaError, WeightShapeError, IO, device errors
+        if is_out_of_memory(exc):
+            logger.warning(
+                f"Ran out of memory loading the denoiser ({exc}); rendering "
+                f"without denoising. The next render tries again."
+            )
+            _denoisers[key] = _OUT_OF_MEMORY
+            return None
         logger.warning(
             f"Could not load the denoiser weights at {path} ({exc}); "
             f"rendering without denoising."
@@ -238,6 +253,14 @@ def get_denoiser(device) -> Denoiser | None:
     denoiser = Denoiser(net)
     _denoisers[key] = denoiser
     return denoiser
+
+
+def _begin_render_job() -> None:
+    """Render-loop hook: a new render job tries again a load that ran out of
+    memory in the last one.
+    """
+    for key in [key for key, cached in _denoisers.items() if cached == _OUT_OF_MEMORY]:
+        del _denoisers[key]
 
 
 def _reset_for_tests() -> None:

@@ -4028,6 +4028,11 @@ class RenderLoopMixin:
         _rt_settings = SETTINGS.raytracing
 
         _rt_settings._begin_render_job()
+        # A denoiser that ran out of memory loading in the last job loads again;
+        # until a render has loaded one, there is nothing to forget.
+        denoise_module = sys.modules.get("algan.rendering.denoise.denoise")
+        if denoise_module is not None:
+            denoise_module._begin_render_job()
 
         with self._batch_prep_context():
             current_time_ind = start_time_ind
