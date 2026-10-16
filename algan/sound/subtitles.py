@@ -232,7 +232,14 @@ def _serialize_cues(cues, subtitle_format):
         start_ms = max(0, math.floor(start * 1000 + 0.5))
         end_ms = max(start_ms + 1, math.floor(end * 1000 + 0.5))
         # Subtitle text is literal, including math comparisons and '-->'.
-        payload = html.escape(_caption_text(text), quote=False)
+        # WebVTT reads '&' and '<' as markup and '-->' as cue timing, so the
+        # text is escaped there. SubRip has no escapes -- its decoders, FFmpeg's
+        # included, show "&lt;" as written -- so it is written as authored, as
+        # FFmpeg's own SubRip encoder does. A span shaped like a tag ("<i>",
+        # "x<0 or x>1") is still read as one there; SubRip cannot say otherwise.
+        payload = _caption_text(text)
+        if subtitle_format == "vtt":
+            payload = html.escape(payload, quote=False)
         blocks.append(
             f"{index}\n{_timestamp(start_ms, separator)} --> "
             f"{_timestamp(end_ms, separator)}\n{payload}\n"
