@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import re
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -376,20 +377,59 @@ def _unexpected_keywords_message(owner, unexpected) -> str:
     """Word the error for constructor keywords no Algan class takes.
 
     ``_MANIM_CONSTRUCTOR_HINTS`` lives in ``mob.py``, which imports this
-    module, so it is read on demand rather than at import.
+    module, so it is read on demand rather than at import. A class whose
+    constructor speaks another API names its own table as
+    ``_constructor_keyword_hints``.
     """
     from algan.animatable_base.mob import _MANIM_CONSTRUCTOR_HINTS
 
+    table = getattr(owner, "_constructor_keyword_hints", _MANIM_CONSTRUCTOR_HINTS)
     names = sorted(unexpected)
     listed = ", ".join(f"`{name}`" for name in names)
     plural = "s" if len(names) > 1 else ""
-    hints = [
-        f"`{name}`: {_MANIM_CONSTRUCTOR_HINTS[name]}"
-        for name in names
-        if name in _MANIM_CONSTRUCTOR_HINTS
-    ]
+    hints = [f"`{name}`: {table[name]}" for name in names if name in table]
     tail = (" -- " + "; ".join(hints) + ".") if hints else "."
     return f"{owner.__name__}() got unexpected keyword argument{plural}: {listed}{tail}"
+
+
+def _unexpected_keywords_error(owner, unexpected) -> TypeError:
+    """The TypeError for ``unexpected`` keywords, marked with who refused them."""
+    error = TypeError(_unexpected_keywords_message(owner, unexpected))
+    error._algan_refused = (owner, frozenset(unexpected))
+    return error
+
+
+#: How Python words a keyword a plain function refuses -- what a Manim
+#: constructor raises, with its own base class's name on it.
+_PYTHON_REFUSED_KEYWORD = re.compile(r"got an unexpected keyword argument '(\w+)'")
+
+
+def _reports_refused_keywords(init):
+    """Name the class being built when a part it builds refuses its keyword.
+
+    A composite hands its keywords on before its own ``Animatable.__init__``
+    runs -- Tex to its packed glyph circuit, a Manim-backed Mob to a Manim
+    constructor -- so a misspelled one was refused down there, by a class the
+    user never wrote: ``Text("x", bogus=1)`` blamed ``BezierCircuitCubic()``
+    and ``Axes(bogus=1)`` blamed ``Mobject.__init__()``. Only a keyword the
+    caller passed is claimed; any other TypeError is the part's own and
+    propagates as it was.
+    """
+
+    @wraps(init)
+    def __init__(self, *args, **kwargs):
+        try:
+            init(self, *args, **kwargs)
+        except TypeError as error:
+            owner, names = getattr(error, "_algan_refused", (None, None))
+            if names is None:
+                match = _PYTHON_REFUSED_KEYWORD.search(str(error))
+                names = frozenset(match.groups()) if match else frozenset()
+            if owner is type(self) or not names or not names.issubset(kwargs):
+                raise
+            raise _unexpected_keywords_error(type(self), names) from None
+
+    return __init__
 
 
 class Animatable:
@@ -481,7 +521,7 @@ class Animatable:
         # rather than left to Python so the message can name the class the user
         # typed -- not this base -- and, for a Manim spelling, the Algan one.
         if unexpected:
-            raise TypeError(_unexpected_keywords_message(type(self), unexpected))
+            raise _unexpected_keywords_error(type(self), unexpected)
         if not hasattr(self, "animatable_attrs"):
             self.animatable_attrs = []
 

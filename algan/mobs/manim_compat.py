@@ -22,7 +22,8 @@ import manim as _manim
 import numpy as np
 import torch
 
-from algan.animatable_base.mob import Mob
+from algan.animatable_base.animatable import _reports_refused_keywords
+from algan.animatable_base.mob import _MANIM_CONSTRUCTOR_HINTS, Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUTWARD
@@ -478,7 +479,16 @@ class ManimCompatMob(ManimMob):
     #: than as a ``FileNotFoundError: 'latex'`` from inside Manim after it has
     #: written a scratch file. Set by :func:`_make_manim_wrapper`.
     _needs_latex = False
+    #: The constructor takes Manim's keywords as Manim spells them, so of the
+    #: hints for Manim spellings only the ones about what no Mob constructor
+    #: takes in either library -- timing, which Algan sets with a context --
+    #: still hold.
+    _constructor_keyword_hints = {
+        name: _MANIM_CONSTRUCTOR_HINTS[name]
+        for name in ("run_time", "duration", "rate_func", "lag_ratio", "scale_factor")
+    }
 
+    @_reports_refused_keywords
     def __init__(self, *args, **kwargs):
         if self._needs_latex:
             from algan.mobs.text import _require_latex_toolchain

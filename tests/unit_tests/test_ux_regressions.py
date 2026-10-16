@@ -1117,6 +1117,48 @@ def test_a_genuine_keyword_typo_still_raises():
         square.move(algan.RIGHT, path_arc=90)
 
 
+@pytest.mark.parametrize(
+    ("build", "name"),
+    [
+        (lambda: algan.Text("x", bogus=1), "Text"),
+        (lambda: algan.MathTex("x", bogus=1), "MathTex"),
+        (lambda: algan.DecimalNumber(1.0, bogus=1), "DecimalNumber"),
+        (lambda: algan.Paragraph("a", bogus=1), "Paragraph"),
+        (lambda: algan.Axes(bogus=1), "Axes"),
+        (lambda: algan.Arc(bogus=1), "Arc"),
+        (lambda: __import__("algan.manim").manim.Circle(bogus=1), "Circle"),
+    ],
+    ids=["Text", "MathTex", "DecimalNumber", "Paragraph", "Axes", "Arc", "mn.Circle"],
+)
+def test_a_misspelled_constructor_keyword_names_the_class_it_went_to(build, name):
+    """Not whichever part the class handed its keywords to.
+
+    A composite passes its keywords on before its own constructor checks them
+    -- Text to its packed glyph circuit, a Manim-backed class to the Manim
+    constructor -- so a typo was refused down there, and the error blamed
+    ``BezierCircuitCubic()`` or ``Mobject.__init__()``: 72 public classes named
+    a class the user never wrote.
+    """
+    expected = rf"^{name}\(\) got unexpected keyword argument: `bogus`\.$"
+    with algan.Scene(), pytest.raises(TypeError, match=expected):
+        build()
+
+
+def test_a_manim_backed_class_keeps_only_the_hints_that_hold_for_it():
+    """Manim's spellings are this class's spellings, so only timing is hinted.
+
+    The table behind the hints maps Manim spellings to Algan's for Algan's own
+    classes: ``buff`` is ``buffer`` on them, but ``Axes`` takes Manim's
+    keywords, and pointing it at ``buffer=`` would send the user from one
+    refusal to the next. Timing is a context in either case.
+    """
+    with algan.Scene():
+        with pytest.raises(TypeError, match=r"with Seq\(runtime=2\)"):
+            algan.Axes(run_time=2)
+        with pytest.raises(TypeError, match=r"`buff`\.$"):
+            algan.Axes(buff=1)
+
+
 def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
     from algan.mobs.shapes_2d import Circle
 

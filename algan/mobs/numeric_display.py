@@ -19,7 +19,10 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from algan.animatable_base.animatable import animated_function
+from algan.animatable_base.animatable import (
+    _reports_refused_keywords,
+    animated_function,
+)
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     NoExtra,
@@ -199,6 +202,7 @@ class DecimalNumber(Mob):
         Scene.save_video()
     """
 
+    @_reports_refused_keywords
     def __init__(
         self,
         value: float | torch.Tensor,
