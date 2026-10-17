@@ -479,3 +479,22 @@ def test_significant_figures_round_the_stored_value_for_tensor_inputs():
         assert _displayed_value(display) == "1.8"
         scene.timeline_manager.set_state_to_times(torch.tensor([0.5, 1.5, 2.0]))
         assert [_displayed_value(display, i) for i in range(3)] == ["1.2", "1.5", "1.8"]
+
+
+@pytest.mark.parametrize("precision", [None, 3])
+def test_a_clone_shows_its_source_value_and_counts_on_its_own(precision):
+    # Cloning a DecimalNumber, which move_to_screen_position() does too,
+    # recursed until the stack ran out: the copy's generated ``set_value``
+    # shadowed the class's, which the ``value`` setter calls.
+    with Scene() as scene:
+        kwargs = {} if precision is None else {"significant_figures": precision}
+        display = DecimalNumber(-12.5, **kwargs).spawn(animate=False)
+        copy = display.clone()
+        copy.value = 3.25
+        display.value = 7
+
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0, 2.0]))
+
+        start = "-12.50" if precision is None else "-12.5"
+        assert [_displayed_value(display, frame) for frame in (0, 1)] == [start, "7.00"]
+        assert [_displayed_value(copy, frame) for frame in (0, 1)] == [start, "3.25"]

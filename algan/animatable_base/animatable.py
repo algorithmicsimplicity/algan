@@ -1049,15 +1049,16 @@ class Animatable:
             self.animation_manager.context.record_funcs and self.is_spawned_in_subtree()
         )
 
-    def _generate_animatable_attr_set_get_methods(self):
+    def _generate_animatable_attr_set_get_methods(self, attrs=None):
         """Internal: install ``set_<attr>`` / ``get_<attr>`` helpers on this object.
 
         Gives every animatable attribute a matching pair of accessors, so a
         registered ``roughness`` attribute also answers to ``mob.set_roughness(...)``
         and ``mob.get_roughness()``. Called during construction; you do not call
-        this yourself.
+        this yourself. ``attrs`` limits it to those attributes; ``None``, the
+        default, means all of them.
         """
-        for attr in self.animatable_attrs:
+        for attr in self.animatable_attrs if attrs is None else attrs:
 
             def setattr_general(value, attr=attr, self=self, recursive=True, **kwargs):
                 if kwargs:
@@ -1705,7 +1706,13 @@ class Animatable:
                 v = None
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
-        clone._generate_animatable_attr_set_get_methods()
+        # Exactly the accessors the source holds. An attribute registered after
+        # construction has none, so its class's own ``set_<attr>`` stays visible
+        # -- DecimalNumber's ``value`` setter calls ``set_value``, and a
+        # generated one shadowing it recursed until the stack ran out.
+        clone._generate_animatable_attr_set_get_methods(
+            [attr for attr in self.animatable_attrs if f"set_{attr}" in self.__dict__]
+        )
         if clone_data:
             for attr in self.animatable_attrs:
                 setattr(clone, attr, getattr(self, attr, None))

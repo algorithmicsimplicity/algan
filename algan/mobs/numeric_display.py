@@ -321,13 +321,30 @@ class DecimalNumber(Mob):
         _keep_glyph_selection(self.get_descendants())
         # self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
+    def __deepcopy__(self, memo):
+        # The placeholder lays the number out at construction, and its pack
+        # then draws the sign and point, which are views of it. A copy would
+        # be a second sign and point, drawn where this number was cloned and
+        # never updated; a clone's sign and point are copies of their own.
+        placeholder = getattr(self, "placeholder", None)
+        if placeholder is not None:
+            memo.setdefault(id(placeholder), placeholder)
+        return super().__deepcopy__(memo)
+
     @property
     def value(self):
         return self.get_animated_attribute("value")
 
     @value.setter
     def value(self, value):
-        return self.set_value(value)
+        timeline = self.scene.timeline_manager.attr_to_timeline.get("value")
+        if timeline is None or self.id not in timeline.mob_id_to_inds:
+            # A clone is filled from its source by assignment before it owns a
+            # value of its own (Animatable.__deepcopy__), and there is nothing
+            # to count from yet. Its glyphs are copies already showing it.
+            self._setattr_without_record("value", cast_to_tensor(value))
+            return
+        self.set_value(value)
 
     def on_create(self):
         with Sync(animation_manager=self.animation_manager):
