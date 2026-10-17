@@ -14,6 +14,7 @@ import contextlib
 import functools
 import inspect
 import re
+import warnings
 from collections.abc import Mapping
 from functools import wraps
 from typing import Any
@@ -27,6 +28,7 @@ from algan.animatable_base.mob import _MANIM_CONSTRUCTOR_HINTS, Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUTWARD
+from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
@@ -288,6 +290,24 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             _sync_manim_node_from_algan(algan_child, manim_child)
 
 
+def _native_text_glyphs(mob: Mob):
+    """The glyph circuits of a native :class:`~algan.mobs.text.Tex`, or None.
+
+    None for any other Mob, and for a triangulated Tex, whose glyphs are not
+    cubic circuits.
+    """
+    from algan.mobs.text import Tex
+
+    if not isinstance(mob, Tex):
+        return None
+    batch = mob._character_batch
+    if batch is None:
+        return []
+    if not isinstance(batch, BezierCircuitCubic):
+        return None
+    return list(mob.character_mobs)
+
+
 def _algan_mob_to_manim(mob: Mob):
     if isinstance(mob, ManimCompatMob):
         return mob._sync_manim_from_algan()
@@ -301,6 +321,21 @@ def _algan_mob_to_manim(mob: Mob):
         if all(isinstance(child, _manim.VMobject) for child in converted):
             return _manim.VGroup(*converted)
         return _manim.Group(*converted)
+    glyphs = _native_text_glyphs(mob)
+    if glyphs is not None:
+        # Manim draws a label as it is handed one (``get_axis_labels(x_label=
+        # Tex(...))``, ``LabeledDot(label=...)``, a MobTable entry), so the
+        # glyphs go over as outlines: the bounding box below would be drawn
+        # as a rectangle where the text should be.
+        if mob.image_mobs:
+            warnings.warn(
+                f"{type(mob).__name__}'s image characters (emoji) have no "
+                "outline to hand to Manim, so the Manim-backed Mob it was "
+                "passed to leaves them out.",
+                UnsupportedFeatureWarning,
+                stacklevel=_user_stacklevel(),
+            )
+        return _manim.VGroup(*(_algan_bezier_to_manim(glyph) for glyph in glyphs))
 
     # A number of Manim constructors accept an arbitrary Mobject only to query
     # its bounds (SurroundingRectangle, Brace, Line endpoints, and so on).
