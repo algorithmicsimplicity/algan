@@ -208,6 +208,7 @@ class MobLayoutMixin:
         torch.Tensor
             The extreme boundary point, shape ``(*, 1, 3)``.
         """
+        direction = cast_to_direction("direction", direction)
         if not recursive:
             return self._select_in_direction(self.get_boundary_points(), direction)
         return self._edge_point_recursive(direction)
@@ -1001,6 +1002,7 @@ class MobLayoutMixin:
         torch.Tensor
             Length along that direction in world units, shape ``(*, 1, 1)``.
         """
+        direction = cast_to_direction("direction", direction)
         # Get the boundary points in the positive and negative directions and calculate their distance
         return (
             self.get_boundary_point(direction) - self.get_boundary_point(-direction)
@@ -1028,6 +1030,7 @@ class MobLayoutMixin:
             ``count`` points, each of shape ``(*, 1, 3)``, ordered from the
             ``direction`` end towards the opposite end.
         """
+        direction = cast_to_direction("direction", direction)
         e, s = (
             self.get_edge_point(direction),
             self.get_edge_point(-direction),

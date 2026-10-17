@@ -491,6 +491,8 @@ class Group(Mob):
         :class:`~algan.mobs.group.Group`
             This Group, so calls can be chained.
         """
+        start = cast_to_direction("start", start)
+        end = cast_to_direction("end", end)
         if not self.children:
             return self
         dif = end - start

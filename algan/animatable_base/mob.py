@@ -298,7 +298,7 @@ _MANIM_CONSTRUCTOR_HINTS = {
     "arc_center": "pass `location=`",
     "center": "pass `location=`",
     "point": "pass `location=`",
-    "about_point": "`about=` on the transform methods (rotate, scale, ...)",
+    "about_point": "`about=` on rotate and orbit; scale resizes about the center",
     "buff": "Algan spells the spacing `buffer=`",
     "mobject": "Algan spells it `mob=`",
     "mobjects": "Algan spells it `mobs=`, or pass them positionally",
@@ -1315,8 +1315,11 @@ class Mob(
         :class:`~.Mob`
             This Mob, so calls can be chained.
         """
-        if direction is None:
-            direction = self.get_up_direction()
+        direction = (
+            self.get_up_direction()
+            if direction is None
+            else cast_to_direction("direction", direction)
+        )
         direction = direction * (-1 if reverse else 1)
         # What each part's pulse actually writes, which decides whether a finer
         # sampling can show the wave at all (see pulse_color).
