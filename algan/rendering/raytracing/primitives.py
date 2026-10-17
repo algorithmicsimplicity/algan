@@ -35,9 +35,9 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
 )
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.rendering.projection import (
-    PINHOLE,
     effective_depth,
     footprint_terms,
+    kernel_projection,
     projection_rows,
     ray_origins_for_points,
     view_directions,
@@ -206,7 +206,11 @@ class _PNCriterionInputs(NamedTuple):
     cam_origin: torch.Tensor  # [T, 3]
     screen_point: torch.Tensor  # [T, 3]
     screen_basis: torch.Tensor  # [T, 3, 3]
-    projection: torch.Tensor  # [T, 2], (persp, spread); see algan.rendering.projection
+    # The [T, 2] (persp, spread) rows and whether the kernels read them: a
+    # pinhole batch's do not, and cam_origin stands in for the rows
+    # (algan.rendering.projection.kernel_projection).
+    projection: torch.Tensor
+    projected: bool
     front_sign: torch.Tensor  # [T]
     slack: torch.Tensor  # [T], world-space accuracy of the surface; zeros = off
 
@@ -259,17 +263,6 @@ def _criterion_tensors_are_local(tensors, device_only=()):
     ) and all(taichi_launch_is_local(value.device) for value in device_only)
 
 
-def _kernel_projection(projection, cam_o):
-    """The ``[T, 2]`` projection rows a criterion kernel takes: the snapshot's,
-    or a pinhole's ``(1, 0)`` per frame when it has none.
-    """
-    if projection is None:
-        return torch.tensor(PINHOLE, dtype=cam_o.dtype, device=cam_o.device).expand(
-            cam_o.shape[0], 2
-        )
-    return projection
-
-
 def _bezier_criterion_inputs(corners, cam_o, sp, sb, projection=None):
     """Kernel inputs for the bezier chord-count search, or ``None`` for torch.
 
@@ -278,7 +271,7 @@ def _bezier_criterion_inputs(corners, cam_o, sp, sb, projection=None):
     """
     if not rt_settings.pn_criterion_kernel_active():
         return None
-    projection = _kernel_projection(projection, cam_o)
+    projection, projected = kernel_projection(projection, cam_o)
     if not _criterion_tensors_are_local((corners, cam_o, sp, sb, projection)):
         return None
     base, stride = _frame_broadcast_base(corners)
@@ -289,6 +282,7 @@ def _bezier_criterion_inputs(corners, cam_o, sp, sb, projection=None):
         sp.contiguous(),
         sb.contiguous(),
         projection.contiguous(),
+        projected,
     )
 
 
@@ -320,7 +314,7 @@ def _pn_criterion_inputs(
     # ``source_corners``.
     if slack is None:
         slack = torch.zeros_like(front_sign)
-    projection = _kernel_projection(projection, cam_o)
+    projection, projected = kernel_projection(projection, cam_o)
     tensors = (control_points, edge_controls, cam_o, sp, sb, projection, front_sign)
     if not _criterion_tensors_are_local(tensors, device_only=(slack,)):
         return None
@@ -335,6 +329,7 @@ def _pn_criterion_inputs(
         sp.contiguous(),
         sb.contiguous(),
         projection.contiguous(),
+        projected,
         front_sign.contiguous(),
         slack.to(front_sign.dtype).contiguous(),
     )
@@ -2227,6 +2222,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                     kernel.screen_point,
                     kernel.screen_basis,
                     kernel.projection,
+                    kernel.projected,
                     kernel.front_sign,
                     kernel.slack,
                     error,
@@ -2416,6 +2412,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                     kernel.screen_point,
                     kernel.screen_basis,
                     kernel.projection,
+                    kernel.projected,
                     kernel.front_sign,
                     kernel.slack,
                     error,
@@ -3443,6 +3440,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                     kernel[3],
                     kernel[4],
                     kernel[5],
+                    kernel[6],
                     max_error_squared,
                     T,
                     num_subdivisions,

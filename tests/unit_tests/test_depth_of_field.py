@@ -292,9 +292,9 @@ def _camera_arrays():
     return co, sp, pbx, pby
 
 
-def _cam_proj(co, sp, persp=1.0, spread=0.0, footprint_base=0.0):
+def _cam_proj(co, sp, persp, spread, footprint_base=0.0):
     """The tracer's per-frame ``cam_proj`` row: ``(persp, spread, footprint
-    base, screen - eye)``, a pinhole's by default.
+    base, screen - eye)``. A pinhole camera has none (``cam_proj=None``).
     """
     head = torch.tensor([[persp, spread, footprint_base]], dtype=torch.float32)
     return torch.cat((head, sp - co), -1).contiguous()
@@ -313,6 +313,7 @@ def _generate(
     near=0.0,
     cam_proj=None,
 ):
+    from algan.rendering.projection import kernel_projection
     from algan.rendering.raytracing.path_tracer_taichi import (
         NEE_META_WIDTH,
         PT_ACC_WIDTH,
@@ -321,8 +322,6 @@ def _generate(
     from algan.rendering.taichi_runtime import init_taichi
 
     init_taichi()
-    if cam_proj is None:
-        cam_proj = _cam_proj(co, sp)
     n = width * height
     slots = n * samples
     rs_ro = torch.zeros((slots, 3))
@@ -333,7 +332,7 @@ def _generate(
     pt_generate(
         slots, n, 0, 7, 0, 0, width, height,
         float(width // 2), float(height // 2),
-        co, sp, pbx, pby, cam_proj, float(near),
+        co, sp, pbx, pby, *kernel_projection(cam_proj, co), float(near),
         torch.arange(n, dtype=torch.int32),
         rs_ro, rs_rd, rs_sca, rs_pix,
         torch.zeros((NEE_META_WIDTH,)),

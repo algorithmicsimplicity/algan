@@ -173,9 +173,11 @@ def make_shadow_tracer(memory, sort_sources=None):
                     occ,
                     sort_rays,
                 )
-                kernels.shadow_queue_trace(*trace_args, 0, *arena_tail)
+                kernels.shadow_queue_trace(*trace_args, 0, *arena_tail, p["projected"])
                 if p["sec_aa"] > 1 and p["adaptive_taps"]:
-                    kernels.shadow_queue_trace(*trace_args, 1, *arena_tail)
+                    kernels.shadow_queue_trace(
+                        *trace_args, 1, *arena_tail, p["projected"]
+                    )
                 kernels.shadow_queue_reduce(
                     count, first, lights, offsets, valid, occ, p["shadow_vis"]
                 )

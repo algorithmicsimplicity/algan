@@ -79,6 +79,25 @@ def is_pinhole(projection) -> bool:
     return bool(((rows[:, 0] == 1.0) & (rows[:, 1] == 0.0)).all())
 
 
+def kernel_projection(rows, stand_in):
+    """``(table, projected)``: what a kernel takes for a batch's projection.
+
+    ``rows`` is the batch's per-frame table -- the render kernels' ``[T, 6]``
+    ``cam_proj`` (``(persp, spread, footprint base, screen - eye)``) or the
+    tessellation criteria's ``[T, 2]`` ``(persp, spread)`` -- or ``None`` for a
+    pinhole batch. A pinhole batch's kernels are compiled without the code
+    that reads the table (``raytrace_kernels_taichi.CameraProjection``,
+    ``logical_pn_taichi._frame_projection``), so a perspective render does
+    not change by a bit; ``stand_in`` then fills its slot unread. It must be a
+    2-D float32 array, so the slot keeps one compiled variant, and for a
+    kernel that binds the table through the arena it must live in that arena:
+    the launch's ``cam_origin`` is both.
+    """
+    if rows is None:
+        return stand_in, False
+    return rows, True
+
+
 def effective_depth(depth, screen_distance, persp, spread):
     """The divisor that replaces ``depth`` in the perspective divide.
 

@@ -38,6 +38,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_ROUGHNESS,
     _M_TRANSMISSION,
     NODE_ARG,
+    CameraProjection,
     _axis_cos,
     _bezier_normal,
     _bezier_plane_point,
@@ -46,6 +47,8 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _flat_triangle_color,
     _generate_ray,
     _nearest_surface_g,
+    _pixel_size_base,
+    _projected,
     _safe_inverse,
     _sample_circuit_color,
     _sample_texture,
@@ -1946,7 +1949,8 @@ def wf_finalize_aa(
 def wavefront_generate_rays(
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        cam_proj: ti.types.ndarray(),
+        cam_proj_table: ti.types.ndarray(),
+        projected: ti.template(),
         time_start: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float, max_bounces: int,
         ray_offset: int, num_primary: int, jitter_x: float, jitter_y: float,
@@ -1967,6 +1971,7 @@ def wavefront_generate_rays(
     premultiplied color/background weight into that row of ``pix_accum`` when it
     terminates.
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     num_rays = rs_ro.shape[0]
     for r in range(num_rays):
@@ -2062,6 +2067,7 @@ def wavefront_traverse_events_arena(
         # remaining initial state is implicit in the matching ``first_iter``
         # shade. ``gen_meta`` packs [jitter_x, jitter_y, half_w, half_h].
         gen_first: ti.template(),
+        projected: ti.template(),
         arena_f32: ti.types.ndarray(),
         arena_i32: ti.types.ndarray(),
         aoff: ti.types.ndarray(),
@@ -2101,7 +2107,8 @@ def wavefront_traverse_events_arena(
     pixel_basis_x = ti.static(ArenaView(arena_f32, aoff[19], (ashp[27], ashp[28])))
     pixel_basis_y = ti.static(ArenaView(arena_f32, aoff[20], (ashp[29], ashp[30])))
     gen_meta = ti.static(ArenaView(arena_f32, aoff[21], (ashp[31],)))
-    cam_proj = ti.static(ArenaView(arena_f32, aoff[22], (ashp[32], ashp[33])))
+    cam_proj_table = ti.static(ArenaView(arena_f32, aoff[22], (ashp[32], ashp[33])))
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -2151,15 +2158,14 @@ def wavefront_traverse_events_arena(
         # the current ray, so it is rebuilt from the pixel: a continuation ray
         # carries a bounce direction for which the camera axis means nothing,
         # yet the primary segment already folded into its base_dist still
-        # needs converting. pixel_size_base is the part of a pixel's world
-        # size that does not grow with depth (cam_proj column 2): zero for a
-        # pinhole camera, all of it for an orthographic one.
-        _pro, prd = _generate_ray(f, px, py, 0.5, 0.5, gen_meta[2], gen_meta[3],
-                                  cam_origin, screen_point,
-                                  pixel_basis_x, pixel_basis_y, cam_proj)
-        pixel_size_per_t = pixel_world_scale[f] * _axis_cos(f, cam_origin, prd,
-                                                            screen_point)
-        pixel_size_base = cam_proj[f, 2]
+        # needs converting.
+        pro, prd = _generate_ray(f, px, py, 0.5, 0.5, gen_meta[2], gen_meta[3],
+                                 cam_origin, screen_point,
+                                 pixel_basis_x, pixel_basis_y, cam_proj)
+        pixel_size_per_t = pixel_world_scale[f] * _axis_cos(f, pro, prd,
+                                                            screen_point,
+                                                            cam_origin,
+                                                            cam_proj)
 
         kb_t = ti.Vector([0.0] * kbuf)
         kb_layer = ti.Vector([0.0] * kbuf)
@@ -2173,7 +2179,8 @@ def wavefront_traverse_events_arena(
              hit_border, edge_hit) = _nearest_surface_g(
                 refit, has_tri, has_bez,
                 ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
-                pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
+                pixel_size_per_t, base_dist, _pixel_size_base(cam_proj, f),
+                layer_offset_triangles,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
@@ -2202,7 +2209,8 @@ def wavefront_traverse_events_arena(
                     _nearest_surface_g(
                         refit, has_tri, has_bez,
                         ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
-                        pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
+                        pixel_size_per_t, base_dist, _pixel_size_base(cam_proj, f),
+                        layer_offset_triangles,
                         ot_nodes, ot_node_miss, ot_leaf_prim,
                         ot_leaf_tspan, ot_first_leaf, tri_pos,
                         ob_nodes, ob_node_miss, ob_leaf_prim,
@@ -2217,7 +2225,8 @@ def wavefront_traverse_events_arena(
                     initial_opq_layer = -1e30
             num_hits = _collect_hits(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                pixel_size_per_t, base_dist, pixel_size_base, layer_offset_triangles,
+                pixel_size_per_t, base_dist, _pixel_size_base(cam_proj, f),
+                layer_offset_triangles,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
                 tri_pos,
@@ -2281,7 +2290,7 @@ _WAVEFRONT_TRAVERSE_EVENTS_ARENA = (
     ("pixel_basis_x", "f32", 2),
     ("pixel_basis_y", "f32", 2),
     ("gen_meta", "f32", 1),
-    ("cam_proj", "f32", 2),
+    ("cam_proj_table", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -2297,7 +2306,7 @@ _WAVEFRONT_TRAVERSE_EVENTS_PARAMS = (
     "opaque_prepass", "time_start", "width", "height", "ray_offset", "rs_ro",
     "rs_rd", "rs_sca", "rs_int", "hit_f", "hit_i", "rs_pix", "gen_first",
     "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
-    "gen_meta", "cam_proj",
+    "gen_meta", "cam_proj_table", "projected",
 )
 
 _wavefront_traverse_events_launch = arena_packed(
@@ -2513,6 +2522,7 @@ def wavefront_shade_arena(
         hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), pix_accum: ti.types.ndarray(),
         rs_alloc: ti.types.ndarray(), rs_vis: ti.types.ndarray(),
+        projected: ti.template(),
         arena_f32: ti.types.ndarray(),
         arena_i32: ti.types.ndarray(),
         aoff: ti.types.ndarray(),
@@ -2588,7 +2598,8 @@ def wavefront_shade_arena(
     # Per-frame projection rows (algan.rendering.projection): column 2 is
     # the depth-independent part of a pixel's world size, and the rest place
     # the camera ray a material stage measures from.
-    cam_proj = ti.static(ArenaView(arena_f32, aoff[27], (ashp[60], ashp[61])))
+    cam_proj_table = ti.static(ArenaView(arena_f32, aoff[27], (ashp[60], ashp[61])))
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     # Unpack the layer offset (packed into one ndarray to stay within the
     # 64-arg ceiling); the body below references this name unchanged.
@@ -2676,7 +2687,6 @@ def wavefront_shade_arena(
             drained = 0
             ff = ti.cast(f, ti.f32)
             pixel_size_per_t = pixel_world_scale[f]
-            pixel_size_base = cam_proj[f, 2]
             while drained < num_hits:
                 # Nearest unconsumed slot. The best slot's (t, layer) ride in
                 # scalars and the extraction below is a ti.static select, so
@@ -2753,9 +2763,14 @@ def wavefront_shade_arena(
                 rough = 0.0
                 tex_du, tex_dv = 0.0, 0.0
                 if htype == 1:
+                    footprint = (base_dist + t_hit) * pixel_size_per_t
+                    if ti.static(_projected(cam_proj)):
+                        # The part of a pixel's world size that does not grow
+                        # along the camera path: all of it for an
+                        # orthographic camera.
+                        footprint = cam_proj[f, 2] + footprint
                     tex_du, tex_dv = _triangle_uv_footprint(
-                        mem_trim, f, prim, rd,
-                        pixel_size_base + (base_dist + t_hit) * pixel_size_per_t,
+                        mem_trim, f, prim, rd, footprint,
                         tri_pos, tri_uvs, tri_tex_meta, num_colored_triangles)
                     w0 = 1.0 - a - b
                     color, alpha = _tri_color_g(mem_trim, f, prim, w0, a, b,
@@ -3145,7 +3160,8 @@ def wavefront_shade_arena(
                                                     refit, shadows,
                                                     sorigin, wis, f, ff,
                                                     _shadow_tmax(sorigin, wis, ldn),
-                                                    pixel_size_per_t, base_dist, pixel_size_base,
+                                                    pixel_size_per_t, base_dist,
+                                                    _pixel_size_base(cam_proj, f),
                                                     layer_offset_triangles,
                                                     has_tri, has_bez,
                                                     t_nodes, t_node_miss,
@@ -3917,7 +3933,7 @@ _WAVEFRONT_SHADE_ARENA = (
     ("light_col", "f32", 3),
     ("cam_origin", "f32", 2),
     ("tri_shell", "i32", 2),
-    ("cam_proj", "f32", 2),
+    ("cam_proj_table", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -3937,7 +3953,7 @@ _WAVEFRONT_SHADE_PARAMS = (
     "tri_mat", "light_pos", "light_col", "num_lights", "time_start", "width", "height",
     "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",
     "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin", "tri_shell",
-    "cam_proj",
+    "cam_proj_table", "projected",
 )
 
 _wavefront_shade_launch = arena_packed(

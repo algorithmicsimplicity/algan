@@ -46,6 +46,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from algan.rendering.projection import kernel_projection
+
 #: Coverage a surface needs to be recorded (Cycles' pass_alpha_threshold).
 AUX_ALPHA_THRESHOLD = 0.5
 #: ``mob_id`` of a pixel that records no surface.
@@ -181,8 +183,9 @@ def trace_aux_passes(
     camera arrays, ``pixel_world_scale`` as the render computed it (per render
     pixel, hence ``anti_alias_level``, the render's supersampling factor, which
     turns it back into one OUTPUT pixel for the texture footprint) and the
-    projection rows ``cam_proj`` beside it, and the batch-relative frame range
-    the chunk rendered. ``screen_width`` and
+    projection rows ``cam_proj`` beside it (``None`` for a pinhole batch,
+    ``projection.kernel_projection``), and the batch-relative frame range the
+    chunk rendered. ``screen_width`` and
     ``screen_height`` are the OUTPUT resolution.
 
     Scratch comes from ``memory``; the caller rewinds it afterwards. Returns
@@ -199,6 +202,7 @@ def trace_aux_passes(
         return empty_aux_passes(max(num_frames, 0), height, width)
     pixels = width * height
     refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
+    cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
 
     with memory.scope("aux_passes", aux_cells=num_frames * pixels):
         aux_depth = memory.get_tensor((num_frames, pixels), torch.float32)
@@ -261,7 +265,8 @@ def trace_aux_passes(
             pixel_world_scale,
             tri_src,
             circ_src,
-            cam_proj,
+            cam_proj_table,
+            projected,
             refit,
             int(has_tri),
             int(has_bez),

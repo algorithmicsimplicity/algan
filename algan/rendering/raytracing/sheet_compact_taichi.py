@@ -114,9 +114,11 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_BORDER_W,
     _M_CENTER,
     _M_FILLED,
+    CameraProjection,
     _axis_cos,
     _circuit_query_radius,
     _generate_ray,
+    _projected,
 )
 from algan.taichi_compat import ti
 
@@ -833,8 +835,7 @@ def pair_expand_write(
 
 @ti.func
 def _camera_terms(f, cam_origin: ti.template(), screen_point: ti.template(),
-                  pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
-                  cam_proj: ti.template()):
+                  pixel_basis_x: ti.template(), pixel_basis_y: ti.template()):
     """Frame ``f``'s camera, in the form :func:`_screen_point_of` reads."""
     ro = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
     sp = ti.math.vec3(screen_point[f, 0], screen_point[f, 1], screen_point[f, 2])
@@ -843,21 +844,20 @@ def _camera_terms(f, cam_origin: ti.template(), screen_point: ti.template(),
     nvec = pbx.cross(pby)
     big_d = (sp - ro).dot(nvec)
     dsq = ti.max(nvec.dot(nvec), 1e-30)
-    proj = ti.math.vec2(cam_proj[f, 0], cam_proj[f, 1])
-    return ro, sp, pbx, pby, nvec, big_d, dsq, proj
+    return ro, sp, pbx, pby, nvec, big_d, dsq
 
 
 @ti.func
-def _screen_point_of(w, ro, sp, pbx, pby, nvec, big_d, dsq, proj, half_w,
-                     half_h):
+def _screen_point_of(w, ro, sp, pbx, pby, nvec, big_d, dsq, half_w, half_h,
+                     f, cam_proj: ti.template()):
     """``(front, px, py)``: world point ``w`` in screen pixel coordinates.
 
     The inverse of ``_generate_ray``, exactly as the host's
     ``raster_pipeline._project_points``; ``front`` is 0 for a point not in
-    front of the camera plane. ``proj`` is the frame's ``(persp, spread)``:
-    a pinhole camera (``spread == 0``) divides by the point's depth, any other
-    by ``spread * D + persp * depth`` (``algan.rendering.projection``), a
-    constant for an orthographic camera.
+    front of the camera plane. ``cam_proj`` holds the frames' ``(persp,
+    spread)``: a pinhole camera (``spread == 0``) divides by the point's
+    depth, any other by ``spread * D + persp * depth``
+    (``algan.rendering.projection``), a constant for an orthographic camera.
     """
     front = 0
     px = 0.0
@@ -869,9 +869,10 @@ def _screen_point_of(w, ro, sp, pbx, pby, nvec, big_d, dsq, proj, half_w,
         if td > 0.0:
             front = 1
             rel = ro + td * d - sp
-            if proj[1] != 0.0:
-                rel = (d - (wpn / dsq) * nvec) * (
-                    big_d / (proj[1] * big_d + proj[0] * wpn))
+            if ti.static(_projected(cam_proj)):
+                if cam_proj[f, 1] != 0.0:
+                    rel = (d - (wpn / dsq) * nvec) * (
+                        big_d / (cam_proj[f, 1] * big_d + cam_proj[f, 0] * wpn))
             u = rel.cross(pby).dot(nvec) / dsq
             v = pbx.cross(rel).dot(nvec) / dsq
             px = u * half_h + half_w
@@ -921,11 +922,12 @@ def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
     r = _circuit_query_radius(border_w, outline_w, filled, centered) + _AA_FILTER_RADIUS
     lowest = 1.0
     for k in ti.static(range(4)):
-        _ro, rd = _generate_ray(f, 0, 0, 2.0 * half_w * (k % 2),
-                                2.0 * half_h * (k // 2), half_w, half_h,
-                                cam_origin, screen_point, pixel_basis_x,
-                                pixel_basis_y, cam_proj)
-        lowest = ti.min(lowest, _axis_cos(f, cam_origin, rd, screen_point))
+        ro, rd = _generate_ray(f, 0, 0, 2.0 * half_w * (k % 2),
+                               2.0 * half_h * (k // 2), half_w, half_h,
+                               cam_origin, screen_point, pixel_basis_x,
+                               pixel_basis_y, cam_proj)
+        lowest = ti.min(lowest, _axis_cos(f, ro, rd, screen_point,
+                                          cam_origin, cam_proj))
     return r / ti.max(lowest, 0.05) * 1.02 + 0.5
 
 
@@ -953,9 +955,8 @@ def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
         e0 = edge_accel[header + BEZIER_EDGE_START]
         e1 = edge_accel[header + BEZIER_EDGE_END]
         if e1 > e0:
-            ro, sp, pbx, pby, nvec, big_d, dsq, proj = _camera_terms(
-                f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                cam_proj)
+            ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
+                f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
             center, bu, bv = _circuit_plane(tm, c, circuit_meta)
             front = 1
             for k in range(e0, e1):
@@ -963,7 +964,8 @@ def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
                     w = (center + edges_2d[te, k, 2 * end] * bu
                          + edges_2d[te, k, 2 * end + 1] * bv)
                     ok, _px, _py = _screen_point_of(w, ro, sp, pbx, pby, nvec,
-                                                    big_d, dsq, proj, 0.0, 0.0)
+                                                    big_d, dsq, 0.0, 0.0, f,
+                                                    cam_proj)
                     front = ti.min(front, ok)
             if front == 1:
                 use_span = 1
@@ -983,8 +985,8 @@ def _circuit_span_chunks(f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h
     """Chunks the row ``y`` of a circuit span candidate expands to, and the span."""
     tm = f % circuit_meta.shape[0]
     te = f % edges_2d.shape[0]
-    ro, sp, pbx, pby, nvec, big_d, dsq, proj = _camera_terms(
-        f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y, cam_proj)
+    ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
+        f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     center, bu, bv = _circuit_plane(tm, c, circuit_meta)
     ylo = ti.cast(y, ti.f32) + 0.5 - reach
     yhi = ti.cast(y, ti.f32) + 0.5 + reach
@@ -995,9 +997,9 @@ def _circuit_span_chunks(f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h
         wa = center + edges_2d[te, k, 0] * bu + edges_2d[te, k, 1] * bv
         wb = center + edges_2d[te, k, 2] * bu + edges_2d[te, k, 3] * bv
         _fa, ax, ay = _screen_point_of(wa, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       proj, half_w, half_h)
+                                       half_w, half_h, f, cam_proj)
         _fb, bx, by = _screen_point_of(wb, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       proj, half_w, half_h)
+                                       half_w, half_h, f, cam_proj)
         if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
             t0 = 0.0
             t1 = 1.0
@@ -1042,7 +1044,8 @@ def pair_expand_count_circuits(
     screen_point: ti.types.ndarray(),
     pixel_basis_x: ti.types.ndarray(),
     pixel_basis_y: ti.types.ndarray(),
-    cam_proj: ti.types.ndarray(),
+    cam_proj_table: ti.types.ndarray(),
+    projected: ti.template(),
     circuit_meta: ti.types.ndarray(),
     edges_2d: ti.types.ndarray(),
     edge_accel: ti.types.ndarray(),
@@ -1053,6 +1056,7 @@ def pair_expand_count_circuits(
     """:func:`pair_expand_count` for circuits: each candidate's chunk count,
     row by row along its projected outline where it qualifies.
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for e in range(n):
         cnt = ti.i64(0)
         if mask[e] != 0:
@@ -1098,7 +1102,8 @@ def pair_expand_write_circuits(
     screen_point: ti.types.ndarray(),
     pixel_basis_x: ti.types.ndarray(),
     pixel_basis_y: ti.types.ndarray(),
-    cam_proj: ti.types.ndarray(),
+    cam_proj_table: ti.types.ndarray(),
+    projected: ti.template(),
     circuit_meta: ti.types.ndarray(),
     edges_2d: ti.types.ndarray(),
     edge_accel: ti.types.ndarray(),
@@ -1110,6 +1115,7 @@ def pair_expand_write_circuits(
     row's span a one-row-high box, so ``raster_bez_count`` decodes it unchanged,
     and rows ascending within a candidate, as its box's chunks were.
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for e in range(n):
         if mask[e] != 0:
             bx0 = ti.cast(x0f[e], ti.i32)

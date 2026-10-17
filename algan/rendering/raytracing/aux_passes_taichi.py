@@ -49,11 +49,14 @@ from algan.rendering.raytracing.arena_args_taichi import (
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
+    CameraProjection,
     _bezier_normal,
     _circuit_alpha,
     _collect_hits,
     _comes_after,
     _generate_ray,
+    _pixel_size_base,
+    _projected,
     _safe_inverse,
     depth_tie_epsilon,
     kbuf,
@@ -97,6 +100,9 @@ def aux_trace_arena(
         num_tri_src: ti.i32, num_circ_src: ti.i32,
         t_nodes: NODE_ARG, t_first_leaf: ti.i32,
         b_nodes: NODE_ARG, b_first_leaf: ti.i32,
+        # Whether the kernel reads cam_proj (raytrace_kernels_taichi
+        # .CameraProjection).
+        projected: ti.template(),
         refit: ti.template(), has_tri: ti.template(), has_bez: ti.template(),
         aux_depth: ti.types.ndarray(),
         aux_normal: ti.types.ndarray(),
@@ -145,7 +151,8 @@ def aux_trace_arena(
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[22], (ashp[52],)))
     tri_src = ti.static(ArenaView(arena_i32, aoff[23], (ashp[53],)))
     circ_src = ti.static(ArenaView(arena_i32, aoff[24], (ashp[54],)))
-    cam_proj = ti.static(ArenaView(arena_f32, aoff[25], (ashp[55], ashp[56])))
+    cam_proj_table = ti.static(ArenaView(arena_f32, aoff[25], (ashp[55], ashp[56])))
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     for cell in range(num_cells):
         f_rel = cell // pixels_per_frame
@@ -166,10 +173,6 @@ def aux_trace_arena(
         cos_ax = rd.dot(fwd)
         pixel_size_per_t = pixel_world_scale[f] * pixel_size_mul * cos_ax
         footprint_scale = pixel_world_scale[f] * footprint_mul
-        # The depth-independent part of a pixel's size (zero for a pinhole
-        # camera, all of it for an orthographic one), scaled alike.
-        pixel_size_base = cam_proj[f, 2] * pixel_size_mul
-        footprint_base = cam_proj[f, 2] * footprint_mul
         base_dist = 0.0
         if near_clip > 0.0:
             # The renderers' planar near plane: the origin advances to it and
@@ -200,7 +203,8 @@ def aux_trace_arena(
             kb_b = ti.Vector([0.0] * kbuf)
             num_hits = _collect_hits(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                pixel_size_per_t, base_dist, pixel_size_base,
+                pixel_size_per_t, base_dist,
+                _pixel_size_base(cam_proj, f, pixel_size_mul),
                 layer_offset_triangles,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
                 # The node_miss slots are never indexed by the gather, so the
@@ -288,9 +292,14 @@ def aux_trace_arena(
                         dv = 0.0
                         color4 = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                         if htype == 1:
+                            footprint = (base_dist + t_hit) * footprint_scale
+                            if ti.static(_projected(cam_proj)):
+                                # The depth-independent part of a pixel's
+                                # size: all of it for an orthographic camera.
+                                footprint = (cam_proj[f, 2] * footprint_mul
+                                             + footprint)
                             du, dv = _triangle_uv_footprint(
-                                0, f, prim, rd,
-                                footprint_base + (base_dist + t_hit) * footprint_scale,
+                                0, f, prim, rd, footprint,
                                 tri_pos, tri_uvs, tri_tex_meta,
                                 num_colored_triangles)
                             color4, alpha = _tri_color_g(
@@ -431,7 +440,7 @@ _AUX_TRACE_ARENA = (
     ("pixel_world_scale", "f32", 1),
     ("tri_src", "i32", 1),
     ("circ_src", "i32", 1),
-    ("cam_proj", "f32", 2),
+    ("cam_proj_table", "f32", 2),
 )
 
 #: The argument list the launch site passes (``aux_passes.trace_aux_passes``).
@@ -447,7 +456,7 @@ _AUX_TRACE_PARAMS = (
     "b_nodes", "b_leaf_prim", "b_leaf_tspan", "b_first_leaf", "circuit_meta",
     "circuit_colors", "circuit_border_colors", "edges_2d", "edge_accel",
     "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
-    "pixel_world_scale", "tri_src", "circ_src", "cam_proj",
+    "pixel_world_scale", "tri_src", "circ_src", "cam_proj_table", "projected",
     "refit", "has_tri", "has_bez", "aux_depth", "aux_normal", "aux_mob",
 )
 

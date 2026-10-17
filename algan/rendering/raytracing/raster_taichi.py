@@ -56,6 +56,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     BARYCENTRIC_EPSILON,
     INV_DEPTH_TIE_EPSILON,
     NODE_ARG,
+    CameraProjection,
     _axis_cos,
     _bezier_point_metrics,
     _camera_point,
@@ -64,6 +65,8 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _circuit_point_region,
     _circuit_query_radius,
     _generate_ray,
+    _pixel_size_base,
+    _projected,
     _sample_circuit_color_blend,
     _shadow_occluded,
     _tri_hit,
@@ -1402,8 +1405,10 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
             v2 = ti.math.vec3(vm[2, 0], vm[2, 1], vm[2, 2])
             hp = b0 * v0 + b1 * v1 + b2 * v2
             tt = (hp - cam_o).norm()
-            if cam_proj[f, 1] != 0.0:
-                tt = (hp - _camera_point(f, hp, cam_origin, cam_proj)).norm()
+            if ti.static(_projected(cam_proj)):
+                if cam_proj[f, 1] != 0.0:
+                    tt = (hp - _camera_point(f, hp, cam_origin,
+                                             cam_proj)).norm()
             if tt > min_hit_distance:
                 ok = 1
                 t = tt
@@ -1693,11 +1698,14 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
             uu = hit.dot(bu)
             vv = hit.dot(bv)
             # th is the slant range; pixel_world_scale wants perpendicular
-            # depth (see _axis_cos). cam_proj column 2 is the part of the
-            # pixel's world size that does not grow with depth: zero for a
-            # pinhole camera, all of it for an orthographic one.
-            pixel_size = (cam_proj[f, 2] + pixel_world_scale[f] * th
-                          * _axis_cos(f, cam_origin, rd, screen_point))
+            # depth (see _axis_cos). Off the pinhole cam_proj column 2 is the
+            # part of the pixel's world size that does not grow with depth:
+            # all of it for an orthographic camera.
+            pixel_size = (pixel_world_scale[f] * th
+                          * _axis_cos(f, ro, rd, screen_point, cam_origin,
+                                      cam_proj))
+            if ti.static(_projected(cam_proj)):
+                pixel_size = cam_proj[f, 2] + pixel_size
             border_w = ti.abs(
                 circuit_meta[tm, circuit, _M_BORDER_W]) * pixel_size
             outline_w = 0.6 * pixel_size
@@ -1973,7 +1981,8 @@ def raster_tri_count(
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        cam_proj: ti.types.ndarray(),
+        cam_proj_table: ti.types.ndarray(),
+        projected: ti.template(),
         time_start: int, width: int, height: int,
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
@@ -1995,6 +2004,7 @@ def raster_tri_count(
     acceptance chain -- most importantly the texture-sampling alpha fetch --
     so this kernel IS the acceptance authority the write contract points at.
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for p in range(num_pairs):
         prim = pairs[p, 0]
         f = pairs[p, 1]
@@ -2052,7 +2062,8 @@ def raster_tri_write(
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        cam_proj: ti.types.ndarray(),
+        cam_proj_table: ti.types.ndarray(),
+        projected: ti.template(),
         time_start: int, width: int, height: int,
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
@@ -2075,6 +2086,7 @@ def raster_tri_write(
     count's acceptance used the sampled share, which the bits already bake
     in).
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for p in range(num_pairs):
         prim = pairs[p, 0]
         f = pairs[p, 1]
@@ -2110,7 +2122,8 @@ def raster_bez_count(
         pairs: ti.types.ndarray(), num_pairs: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        cam_proj: ti.types.ndarray(),
+        cam_proj_table: ti.types.ndarray(),
+        projected: ti.template(),
         pixel_world_scale: ti.types.ndarray(),
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
@@ -2133,6 +2146,7 @@ def raster_bez_count(
     ``pair_accept[p]`` records the per-pixel acceptance bits the write pass
     replays (see :func:`raster_tri_count`).
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for p in range(num_pairs):
         circuit = pairs[p, 0]
         f = pairs[p, 1]
@@ -2176,7 +2190,8 @@ def raster_bez_write(
         pair_offset: ti.types.ndarray(),
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        cam_proj: ti.types.ndarray(),
+        cam_proj_table: ti.types.ndarray(),
+        projected: ti.template(),
         pixel_world_scale: ti.types.ndarray(),
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
@@ -2201,6 +2216,7 @@ def raster_bez_write(
     without analytic coverage (flat triangles today) needs no write of its
     own.
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for p in range(num_pairs):
         circuit = pairs[p, 0]
         f = pairs[p, 1]
@@ -2654,11 +2670,13 @@ def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
                         # barycentrics too, not left on the plane: see the
                         # docstring for why a point past an edge speckles.
                         hp = (c0 * si) * v0 + bj1 * v1 + bj2 * v2
-                        # From where the camera ray reaching hp starts: the
-                        # eye (``ro``) for a pinhole camera, but an
-                        # orthographic ray re-aimed from ``ro`` would tilt.
-                        rd = (hp - _camera_point(f, hp, cam_origin,
-                                                 cam_proj)).normalized()
+                        rd = (hp - ro).normalized()
+                        if ti.static(_projected(cam_proj)):
+                            # From where the camera ray reaching hp starts:
+                            # an orthographic ray re-aimed from ``ro`` would
+                            # tilt.
+                            rd = (hp - _camera_point(f, hp, cam_origin,
+                                                     cam_proj)).normalized()
                         nj = _tri_normal_g(
                             0, f, prim, c0 * si, bj1, bj2, tri_norm,
                             tri_pos, tri_uvs, tri_tex_meta, textures,
@@ -3223,7 +3241,7 @@ def _shadow_fan_cell(
                         _shadow_tmax(sorg, wis, ldn),
                         pixel_world_scale[
                             f % pixel_world_scale.shape[0]], 0.0,
-                        cam_proj[f % cam_proj.shape[0], 2],
+                        _pixel_size_base(cam_proj, f),
                         layer_offset_triangles,
                         has_tri, has_bez,
                         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
@@ -3292,6 +3310,7 @@ def raster_shadow_trace_arena(
         # rt_settings.shadow_ray_budget / shadow_bounce_rays.
         secondary: ti.i32,
         light_major: ti.template(),
+        projected: ti.template(),
         arena_f32: ti.types.ndarray(),
         arena_i32: ti.types.ndarray(),
         aoff: ti.types.ndarray(),
@@ -3360,7 +3379,8 @@ def raster_shadow_trace_arena(
         arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44])))
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[45],)))
     tri_obj = ti.static(ArenaView(arena_i32, aoff[20], (ashp[46], ashp[47])))
-    cam_proj = ti.static(ArenaView(arena_f32, aoff[21], (ashp[48], ashp[49])))
+    cam_proj_table = ti.static(ArenaView(arena_f32, aoff[21], (ashp[48], ashp[49])))
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     # One thread per (event, light) cell: every cell's fan is independent
     # (its result lands in its own ``shadow_vis[e, li]`` and all per-light
     # state initializes inside the body), so flattening the light loop into
@@ -3424,7 +3444,7 @@ _RASTER_SHADOW_TRACE_ARENA = (
     ("light_col", "f32", 3),
     ("pixel_world_scale", "f32", 1),
     ("tri_obj", "i32", 2),
-    ("cam_proj", "f32", 2),
+    ("cam_proj_table", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -3440,7 +3460,8 @@ _RASTER_SHADOW_TRACE_PARAMS = (
     "layer_offset_triangles", "refit", "has_tri", "has_bez", "event_dp",
     "event_toff", "sec_aa", "shadow_vis", "shadow_anyhit", "tri_obj",
     "event_src_prim", "eps_self", "eps_near", "shadow_identity",
-    "shadow_term", "adaptive_taps", "secondary", "light_major", "cam_proj",
+    "shadow_term", "adaptive_taps", "secondary", "light_major", "cam_proj_table",
+    "projected",
 )
 
 _raster_shadow_trace_launch = arena_packed(
@@ -3491,7 +3512,7 @@ def shadow_queue_prepare(
             0, queue_data, queue_data, queue_data,
             queue_data, 0, queue_data, queue_data,
             queue_data, queue_data, queue_data, light_pos,
-            light_col, num_lights, queue_data, queue_data, 0,
+            light_col, num_lights, queue_data, None, 0,
             0, 0, 0, event_dp,
             event_toff, sec_aa, queue_data, 0,
             queue_data, queue_data, 0, 0,
@@ -3523,6 +3544,7 @@ def shadow_queue_trace_arena(
         layout: ti.types.ndarray(), queue_data: ti.types.ndarray(),
         queue_valid: ti.types.ndarray(), order: ti.types.ndarray(),
         occ_out: ti.types.ndarray(), sort_rays: ti.template(), phase: ti.template(),
+        projected: ti.template(),
         arena_f32: ti.types.ndarray(), arena_i32: ti.types.ndarray(),
         aoff: ti.types.ndarray(), ashp: ti.types.ndarray()):
     """One traversal per worker, scattered back to immutable sample slots.
@@ -3559,7 +3581,8 @@ def shadow_queue_trace_arena(
         arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44])))
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[45],)))
     tri_obj = ti.static(ArenaView(arena_i32, aoff[20], (ashp[46], ashp[47])))
-    cam_proj = ti.static(ArenaView(arena_f32, aoff[21], (ashp[48], ashp[49])))
+    cam_proj_table = ti.static(ArenaView(arena_f32, aoff[21], (ashp[48], ashp[49])))
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
 
     for idx in range(num_rays):
         r = idx
@@ -3600,7 +3623,7 @@ def shadow_queue_trace_arena(
             occ = _shadow_occluded(
                 refit, shadow_anyhit, origin, direction, f, ti.cast(f, ti.f32),
                 queue_data[r, 6], pixel_world_scale[f % pixel_world_scale.shape[0]],
-                0.0, cam_proj[f % cam_proj.shape[0], 2],
+                0.0, _pixel_size_base(cam_proj, f),
                 layer_offset_triangles, has_tri, has_bez,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
                 tri_pos, tri_colors, tri_uvs, tri_tex_meta, textures, tri_extra,
@@ -3657,7 +3680,7 @@ _SHADOW_QUEUE_TRACE_PARAMS = (
     "t_leaf_tspan", "tri_pos", "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
     "tri_extra", "b_node_miss", "b_leaf_prim", "b_leaf_tspan", "circuit_meta",
     "circuit_colors", "circuit_border_colors", "edges_2d", "edge_accel", "light_pos",
-    "light_col", "pixel_world_scale", "tri_obj", "cam_proj",
+    "light_col", "pixel_world_scale", "tri_obj", "cam_proj_table", "projected",
 )
 _shadow_queue_trace_launch = arena_packed(
     __name__, "shadow_queue_trace_arena",

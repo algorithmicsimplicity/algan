@@ -36,6 +36,7 @@ from algan.rendering.mps_compat import (
     reduction_index_sentinel,
     taichi_accumulate_dtype,
 )
+from algan.rendering.projection import kernel_projection
 from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
@@ -1217,7 +1218,8 @@ def _circuit_pair_expand_rows(
     ``circuits`` is ``(cam_origin, screen_point, pixel_basis_x,
     pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel, half_w,
     half_h, aa_min_half_width)``: the geometry ``raster_bez_count`` itself
-    reads.
+    reads, ``cam_proj`` ``None`` for a pinhole batch
+    (``projection.kernel_projection``).
     A long diagonal stroke's box is almost all empty -- a 5,400-stroke
     network produced 8.3 M box chunks at HD for ~9 M covered pixels -- and
     every chunk pixel is a coverage test and 32 bytes of candidate row. Only
@@ -1245,12 +1247,15 @@ def _circuit_pair_expand_rows(
     ) = circuits
     span_min_area = 4 * raster_chunk
     f_abs_k = kernel_index(f_abs.contiguous())
+    cam_origin = cam_origin.contiguous()
     geometry = (
-        cam_origin.contiguous(),
+        cam_origin,
         screen_point.contiguous(),
         pbx.contiguous(),
         pby.contiguous(),
-        cam_proj.contiguous(),
+        *kernel_projection(
+            cam_proj.contiguous() if cam_proj is not None else None, cam_origin
+        ),
         circuit_meta,
         edges_2d,
         edge_accel,
@@ -2315,7 +2320,6 @@ def prepare_sparse_raster_coverage(
     layer_offset_triangles,
     env_in_composite=False,
     depth_order_eye=None,
-    projection=None,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
@@ -2346,9 +2350,9 @@ def prepare_sparse_raster_coverage(
     order.
 
     ``cam_proj`` is the batch's projection table (``[T, 6]``, see
-    ``tracer.render_batch_raytraced``), which every kernel here reads;
-    ``projection`` is ``None`` for a pinhole batch, whose host-side bounds
-    keep their historical arithmetic, and ``cam_proj`` otherwise.
+    ``tracer.render_batch_raytraced``), or ``None`` for a pinhole batch,
+    whose kernels and host-side bounds keep their historical arithmetic
+    (``projection.kernel_projection``).
     """
     device = merged["tri_pos"].device
     ppf = int(width) * int(height)
@@ -2383,7 +2387,7 @@ def prepare_sparse_raster_coverage(
                     half_w,
                     half_h,
                     device,
-                    projection=projection,
+                    projection=cam_proj,
                 )
                 if po is not None:
                     tri_opaque.append(po)
@@ -2403,7 +2407,7 @@ def prepare_sparse_raster_coverage(
                     half_w,
                     half_h,
                     device,
-                    projection=projection,
+                    projection=cam_proj,
                 )
                 if po is not None:
                     bez_opaque.append(po)
@@ -2516,7 +2520,15 @@ def prepare_sparse_raster_coverage(
             "settings (the route decision and the emission disagree)."
         )
     tri_pos = merged["tri_pos"]
-    cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y, cam_proj)
+    cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
+    cam_args = (
+        cam_origin,
+        screen_point,
+        pixel_basis_x,
+        pixel_basis_y,
+        cam_proj_table,
+        projected,
+    )
     geo_args = (
         int(time_start),
         int(width),
@@ -3041,7 +3053,7 @@ def prepare_sparse_raster_coverage(
                     band_rule="prim",
                     band_c=2.0,
                     tri_screen=tri_screen,
-                    cam_proj=projection,
+                    cam_proj=cam_proj,
                     shade_split=bool(rt_settings.sheet_shade_split),
                     positioned_depth=bool(rt_settings.sheet_positioned_depth),
                     sample_depth=bool(rt_settings.sheet_sample_depth),
@@ -3219,6 +3231,7 @@ def shade_sparse_raster_coverage(
         _rs_kf,
     ) = state
     c0, c1 = int(covered_start), int(covered_end)
+    cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
     num_covered = c1 - c0
     covered_idx = coverage["covered_idx"][c0:c1]
 
@@ -3327,7 +3340,8 @@ def shade_sparse_raster_coverage(
         rs_alloc,
         1 if dump_req else 0,
         sdump,
-        cam_proj,
+        cam_proj_table,
+        projected,
     )
     dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
     dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
@@ -3506,7 +3520,8 @@ def shade_sparse_raster_coverage(
                 # Primary hits: the soft fans take the full budget (column 16).
                 0,
                 _use_light_major(num_events, num_lights, ev_pos.device),
-                cam_proj,
+                cam_proj_table,
+                projected,
             )
         sheet_resolve_shade(
             *pre_args,
