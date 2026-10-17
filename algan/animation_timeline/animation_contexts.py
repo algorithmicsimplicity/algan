@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1281,7 +1282,10 @@ class Audio(AnimationContext):
     Parameters
     ----------
     source
-        Path to an audio file, or an already-loaded moviepy audio clip.
+        Path to an audio file, or an already-loaded moviepy audio clip. The
+        path is a ``str`` or a :class:`~pathlib.Path`; a relative one is looked
+        for in the working directory and then beside the running script, as an
+        image's is.
     wait_at_end
         Extra seconds to hold after the audio finishes, before the block ends.
         Defaults to ``0``.
@@ -1301,12 +1305,19 @@ class Audio(AnimationContext):
     :class:`~.Speech` : The same, driven by a line of narration transcript.
     """
 
-    def __init__(self, source: str, *, wait_at_end: float = 0.0, **kwargs):
+    def __init__(
+        self, source: str | os.PathLike, *, wait_at_end: float = 0.0, **kwargs
+    ):
         audio_clip = source
-        if isinstance(source, str):
+        if isinstance(source, (str, os.PathLike)):
             from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
 
-            audio_clip = AudioFileClip(source)
+            from algan.utils.file_utils import resolve_asset_path
+
+            # A Path went to ``.duration`` below as the clip itself, and a
+            # file beside the script was only found from the script's own
+            # directory, unlike every image, model and environment map.
+            audio_clip = AudioFileClip(resolve_asset_path(source))
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
         kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)

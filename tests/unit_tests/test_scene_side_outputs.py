@@ -189,6 +189,50 @@ def test_show_frame_displays_the_frame_it_rendered(scene, monkeypatch):
         pyplot.close("all")
 
 
+def _write_silence(path, seconds):
+    from scipy.io import wavfile
+
+    rate = 8000
+    wavfile.write(path, rate, np.zeros(int(rate * seconds), dtype=np.int16))
+    return path
+
+
+def test_an_audio_file_beside_the_running_script_is_found(scene, tmp_path, monkeypatch):
+    """REGRESSION. Every image, model and environment map path is looked for
+    beside the script when the working directory does not have it, which is
+    what lets a script load the file next to it from wherever it is launched.
+    ``Audio`` opened the path as given, so ``Audio("whoosh.wav")`` failed
+    unless Python was started in the script's directory.
+    """
+    from algan.settings import path_settings
+
+    project = tmp_path / "project"
+    project.mkdir()
+    script = project / "scene.py"
+    script.write_text("")
+    _write_silence(project / "whoosh.wav", 0.5)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(path_settings, "_main_script_path", lambda: str(script))
+
+    context = Audio("whoosh.wav")
+    with context:
+        Square().spawn()
+    assert context.runtime == pytest.approx(0.5, abs=0.01)
+
+
+def test_an_audio_path_may_be_a_pathlib_path(scene, tmp_path):
+    """REGRESSION. Only a ``str`` was opened: a :class:`~pathlib.Path` was
+    taken for a clip already loaded, and failed with "'PosixPath' object has
+    no attribute 'duration'".
+    """
+    context = Audio(_write_silence(tmp_path / "whoosh.wav", 0.5))
+    with context:
+        Square().spawn()
+    assert context.runtime == pytest.approx(0.5, abs=0.01)
+
+
 def _run_script(tmp_path, source: str) -> subprocess.CompletedProcess:
     script = tmp_path / "scene_script.py"
     script.write_text(textwrap.dedent(source))

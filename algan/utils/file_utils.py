@@ -1,10 +1,11 @@
-"""Locating and loading the image assets a scene refers to by name.
+"""Locating and loading the assets a scene refers to by name.
 
 Every user-facing path argument -- :class:`~algan.mobs.image_mob.ImageMob`,
 :meth:`~algan.scene.Scene.set_background`,
-:meth:`~algan.scene.Scene.set_environment_map` and the 3-D model loaders --
-routes through :func:`resolve_asset_path`, so a file sitting beside the running
-script loads regardless of the working directory.
+:meth:`~algan.scene.Scene.set_environment_map`, the 3-D model loaders and
+:class:`~algan.animation_timeline.animation_contexts.Audio` -- routes through
+:func:`resolve_asset_path`, so a file sitting beside the running script loads
+regardless of the working directory.
 """
 
 from __future__ import annotations
