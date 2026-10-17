@@ -16,7 +16,7 @@ import pytest
 import torch
 from PIL import Image
 
-from algan import SMOKE_TEST, Scene, Square
+from algan import SMOKE_TEST, TRANSPARENT, Scene, Square
 from algan.constants.color import Color, to_color
 from algan.errors import AlganConfigurationError
 
@@ -193,3 +193,34 @@ def test_a_pil_image_is_refused_with_how_to_use_it():
     ):
         scene.set_background(Image.new("RGB", (8, 8)))
 
+
+@pytest.mark.parametrize(
+    ("background", "transparent"),
+    [
+        (torch.tensor([0.1, 0.2, 0.3]), False),
+        (np.array([0.1, 0.2, 0.3]), False),
+        (torch.full((4, 6, 3), 0.25), False),
+        (torch.full((4, 6, 1), 0.25), False),
+        (torch.tensor([0.1, 0.2, 0.3, 0.5]), True),
+        (Color((0.1, 0.2, 0.3)), False),
+        (TRANSPARENT, True),
+    ],
+    ids=["rgb", "rgb array", "rgb image", "gray image", "rgba", "Color", "TRANSPARENT"],
+)
+def test_only_an_opacity_channel_makes_a_background_transparent(
+    background, transparent
+):
+    """Three channels are red, green and blue: the blue was read as opacity."""
+    with Scene(video_settings=SMOKE_TEST) as scene:
+        scene.set_background(background)
+        assert scene.background_is_transparent() is transparent
+
+
+def test_an_rgb_tensor_background_renders_into_an_mp4(tmp_path):
+    """Read as transparent, it was refused: "MP4 does not support Algan's
+    transparent output ... or choose an opaque background".
+    """
+    with Scene(video_settings=SMOKE_TEST) as scene:
+        Square(scene=scene).spawn()
+        scene.set_background(torch.tensor([0.1, 0.2, 0.3]))
+        assert scene.save_video(tmp_path / "clip.mp4").rendered

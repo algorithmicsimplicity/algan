@@ -1454,16 +1454,23 @@ class Scene(RenderLoopMixin):
 
         This decides the output format: a transparent background makes
         :meth:`~.Scene.save_video` write ``.mov`` with an alpha channel instead of
-        ``.mp4``. A procedural background is always treated as opaque.
+        ``.mp4``. A procedural background is always treated as opaque, and so is
+        a color or image with fewer than four channels, which has no opacity.
 
         Returns
         -------
         bool
             Whether any background pixel is less than fully opaque.
         """
-        if callable(self.background_frame):
+        frame = self.background_frame
+        if callable(frame):
             return False
-        return (self.background_frame[..., -1].min() < (1 - (0.5 / 255))).item()
+        if frame.shape[-1] < 4:
+            # Red, green and blue alone, or a gray level. Read as opacity, the
+            # blue made an opaque background transparent, and save_video
+            # refused an .mp4.
+            return False
+        return (frame[..., -1].min() < (1 - (0.5 / 255))).item()
 
     def _get_pixel_format(self) -> str:
         """Get the pixel format the Scene's frames should be encoded in.
