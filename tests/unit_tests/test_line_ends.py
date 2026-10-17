@@ -37,9 +37,7 @@ def test_a_pack_of_lines_reports_one_start_and_length_per_line():
         torch.testing.assert_close(
             lines.get_start()[0], torch.stack([LEFT, DOWN * 2, ORIGIN])
         )
-        torch.testing.assert_close(
-            lines.get_length()[0], torch.tensor([2.0, 4.0, 1.0])
-        )
+        torch.testing.assert_close(lines.get_length()[0], torch.tensor([2.0, 4.0, 1.0]))
         assert float(lines[1].get_length()) == pytest.approx(4)
 
 
