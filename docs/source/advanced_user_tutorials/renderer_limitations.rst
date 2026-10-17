@@ -1054,8 +1054,8 @@ fractions of the scene's own size:
      - 2e-4
      - When two hits on a shared mesh edge are merged into one.
 
-Algan's default camera sits 7 units back and frames about 7 world units of
-height at the origin, so all three are far below a pixel at ordinary scales. A
+Algan's default camera sits 20 units back and frames 8 world units of height
+at the origin, so all three are far below a pixel at ordinary scales. A
 scene authored a thousand times larger will show z-fighting and merged surfaces;
 one authored a thousand times smaller will merge surfaces that should be
 distinct, and lose contact shadows within the minimum hit distance. The offset
