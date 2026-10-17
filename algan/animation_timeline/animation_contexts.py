@@ -32,7 +32,6 @@ See :doc:`/new_user_tutorials/combining_animations`.
 from __future__ import annotations
 
 import copy
-import inspect
 import math
 import os
 import typing
@@ -53,6 +52,7 @@ from algan.utils.audio_utils import (
     _is_ffmpeg_protocol,
     _open_audio_file_clip,
 )
+from algan.utils.python_utils import callable_signature
 
 # Not ``from typing import TYPE_CHECKING``: this module is star-exported, and
 # an upper-case name would land in ``from algan import *``.
@@ -218,7 +218,7 @@ def _reject_invalid_easing(context, easing, parameter="easing"):
         )
     try:
         # Not following __wrapped__: the call binds to the outermost signature.
-        signature = inspect.signature(easing, follow_wrapped=False)
+        signature = callable_signature(easing, follow_wrapped=False)
     except (TypeError, ValueError):
         # A builtin may not say what it takes; the call itself will.
         return

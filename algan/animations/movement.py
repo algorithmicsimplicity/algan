@@ -11,7 +11,6 @@ convenience class.
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -28,6 +27,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.surfaces.surface import Surface
 from algan.utils.api_renames import _renamed_keywords
 from algan.utils.memory_utils import InsufficientMemoryException, is_out_of_memory
+from algan.utils.python_utils import callable_signature
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
@@ -143,7 +143,7 @@ def _describe_callable(function: Callable) -> str:
     try:
         # Not following __wrapped__: a decorator may take its input another
         # way than the function it wraps, and the call binds to the decorator.
-        signature = inspect.signature(function, follow_wrapped=False)
+        signature = callable_signature(function, follow_wrapped=False)
     except (TypeError, ValueError):
         return _callable_name(function)
     return f"{_callable_name(function)}{signature}"
@@ -156,7 +156,7 @@ def _accepts_positional(function: Callable, count: int) -> bool | None:
     tried.
     """
     try:
-        signature = inspect.signature(function, follow_wrapped=False)
+        signature = callable_signature(function, follow_wrapped=False)
     except (TypeError, ValueError):
         return None
     try:

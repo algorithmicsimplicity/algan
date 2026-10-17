@@ -6,6 +6,9 @@ flat list. ``downsample_nested_list`` thins such a structure while preserving it
 shape, and ``get_factors`` returns integer factor pairs, used when choosing grid
 dimensions.
 
+``callable_signature`` reads a function's parameters the way
+``inspect.signature`` does, without evaluating its annotations.
+
 ``arithmetic_operators``, ``binary_operators`` and ``other_operators`` name the
 dunder methods Algan forwards when it makes a wrapper behave like the value it
 wraps.
@@ -13,6 +16,8 @@ wraps.
 
 from __future__ import annotations
 
+import inspect
+import sys
 from collections.abc import Iterable
 from math import isqrt
 
@@ -48,6 +53,29 @@ def traverse(nested_iterable):
     else:
         for _ in nested_iterable:
             yield from traverse(_)
+
+
+def callable_signature(function, *, follow_wrapped=True):
+    """``inspect.signature(function)``, without evaluating its annotations.
+
+    Algan reads a callback's signature to check how it can be called, which
+    its annotations play no part in. From Python 3.14 annotations are
+    evaluated when they are read, so ``inspect.signature`` raised
+    ``NameError`` for one naming a type imported only under
+    ``TYPE_CHECKING``, though calling the function never evaluates it. Such
+    an annotation now reads as a forward reference. Raises ``TypeError`` or
+    ``ValueError`` where ``inspect.signature`` does, for a callable with no
+    signature Python can read.
+    """
+    if sys.version_info >= (3, 14):
+        import annotationlib
+
+        return inspect.signature(
+            function,
+            follow_wrapped=follow_wrapped,
+            annotation_format=annotationlib.Format.FORWARDREF,
+        )
+    return inspect.signature(function, follow_wrapped=follow_wrapped)
 
 
 binary_operators = [

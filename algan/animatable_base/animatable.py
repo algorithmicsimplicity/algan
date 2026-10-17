@@ -65,6 +65,7 @@ from algan.errors import (
     _warn_at,
 )
 from algan.scene import Scene
+from algan.utils.python_utils import callable_signature
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
 #: Bumped whenever an animatable property is attached to a class, so per-class
@@ -87,7 +88,7 @@ def _check_updater_signature(update_function, extra_positional):
             f"{type(update_function).__name__}."
         )
     try:
-        parameters = list(inspect.signature(update_function).parameters.values())
+        parameters = list(callable_signature(update_function).parameters.values())
     except (TypeError, ValueError):
         # A builtin or C callable has no introspectable signature; let the
         # call itself decide.

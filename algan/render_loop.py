@@ -80,6 +80,7 @@ from algan.utils.memory_utils import (
     release_torch_memory,
     scene_excluded_from_gc,
 )
+from algan.utils.python_utils import callable_signature
 
 logger = get_logger("scene")
 
@@ -754,7 +755,7 @@ def _check_post_processes(post_processes):
         try:
             # Not following __wrapped__: the call binds to the outermost
             # signature, and a decorator may be what adds the memory keyword.
-            signature = inspect.signature(process, follow_wrapped=False)
+            signature = callable_signature(process, follow_wrapped=False)
         except (TypeError, ValueError):
             # A builtin may not say what it takes; the call itself will.
             continue
@@ -800,7 +801,7 @@ def _with_memory_keyword(process):
         # A callable object: the method a call runs.
         function = type(function).__call__
     try:
-        signature = inspect.signature(function, follow_wrapped=False)
+        signature = callable_signature(function, follow_wrapped=False)
         parameters = [
             parameter.replace(annotation=parameter.empty)
             for parameter in signature.parameters.values()

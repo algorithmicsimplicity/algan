@@ -27,6 +27,7 @@ from algan.errors import (
     UnsupportedFeatureWarning,
     _user_stacklevel,
 )
+from algan.utils.python_utils import callable_signature
 
 #: The fixed parameters, by the names the convention's reference shader and
 #: every built-in one give them.
@@ -51,7 +52,7 @@ def _vertex_shader_parameters(shader):
     ``ambient_light_intensity``, ``bands`` received the ambient intensity and
     never became an attribute.
     """
-    signature = inspect.signature(shader)
+    signature = callable_signature(shader)
     parameters = signature.parameters
     if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters.values()):
         # It takes any number of values by position.

@@ -76,6 +76,7 @@ def algan_scene(function=None, *, name=None):
 
 
 from algan.utils.memory_utils import release_torch_memory
+from algan.utils.python_utils import callable_signature
 
 
 def get_file_writer(
@@ -696,7 +697,7 @@ def render_all_funcs(
                 scene_funcs = [
                     (function_name, function)
                     for function_name, function in defined_functions
-                    if len(inspect.signature(function).parameters) == 0
+                    if len(callable_signature(function).parameters) == 0
                 ]
                 if scene_funcs:
                     warnings.warn(

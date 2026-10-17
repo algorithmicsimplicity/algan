@@ -67,6 +67,7 @@ from algan.settings.video_settings import VideoSettings
 from algan.sound.audio_effect import AudioManager
 from algan.taichi_compat import is_compiler_func
 from algan.utils.file_utils import get_image
+from algan.utils.python_utils import callable_signature
 
 logger = get_logger()
 
@@ -204,7 +205,7 @@ def _coerce_background(background):
     if callable(background):
         try:
             # Not following __wrapped__: the call binds to the outermost signature.
-            signature = inspect.signature(background, follow_wrapped=False)
+            signature = callable_signature(background, follow_wrapped=False)
         except (TypeError, ValueError):
             # A builtin or a Taichi func may not say what it takes; the call
             # itself will.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import math
 from collections.abc import Callable
 from typing import Any
@@ -16,6 +15,7 @@ from algan.errors import AlganConfigurationError
 from algan.mobs.bezier_circuit import _stroke_width_in_render_pixels
 from algan.mobs.nonplanar_circuit import NonPlanarPlan, camera_eye, run_planes
 from algan.settings.renderer_settings import RENDERER_REGISTRY
+from algan.utils.python_utils import callable_signature
 from algan.utils.tensor_utils import cast_to_tensor
 
 __all__ = ["TracedPath"]
@@ -61,7 +61,7 @@ class _PointSource:
         """
         try:
             # Not following __wrapped__: the call binds to the outermost signature.
-            signature = inspect.signature(self.function, follow_wrapped=False)
+            signature = callable_signature(self.function, follow_wrapped=False)
         except (TypeError, ValueError):
             # A builtin may not say what it takes; the call itself will.
             return
