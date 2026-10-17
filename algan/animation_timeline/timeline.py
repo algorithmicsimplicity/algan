@@ -1251,6 +1251,9 @@ class AttributeTimeline:
         out = self.active_state.new_zeros(
             (n_times, key.shape[0], self.active_state.shape[2])
         )
+        if born is not None:
+            # A born row has no column in the window, however wide it is.
+            live = ~born if live is None else live & ~born
         kept = (
             torch.arange(key.shape[0], device=columns.device)
             if live is None
@@ -1424,10 +1427,12 @@ class AttributeTimeline:
                     f"reshape itself while frames are being rendered.\n\n"
                     f"Updaters can set any animatable attribute (location, "
                     f"color, opacity, ...) but not restructure a Mob. For a "
-                    f"value that counts up, use DecimalNumber, whose digits "
-                    f"animate without rebuilding geometry:\n\n"
-                    f"    tracker = ValueTracker(0).spawn()\n"
-                    f"    display = DecimalNumber(0.0).spawn()\n"
+                    f"value that counts up, use Algan's DecimalNumber, whose "
+                    f"digits animate without rebuilding geometry, with room "
+                    f"for the largest value it will show:\n\n"
+                    f"    import algan.manim as mn\n\n"
+                    f"    tracker = mn.ValueTracker(0).spawn()\n"
+                    f"    display = DecimalNumber(0.0, integer_places=2).spawn()\n"
                     f"    display.add_updater(lambda m, t: m.set_value(tracker.get_value()))\n"
                 )
 
@@ -2677,6 +2682,23 @@ class AnimationTimeline:
             return
         if isinstance(indexes, RowRanges):
             indexes = indexes.tensor()
+        timeline = self.attr_to_timeline.get(attr_name)
+        born = None if timeline is None else timeline._replay_born_rows(indexes)
+        if born is not None:
+            # Rows of a Mob this replay built, which is discarded when the
+            # replay ends: there is nothing left for the write to land on.
+            kept = (~born).nonzero().view(-1)
+            if kept.numel() == 0:
+                return
+            if (
+                torch.is_tensor(value)
+                and value.dim() >= 2
+                and value.shape[-2] == born.shape[0]
+            ):
+                value = value.index_select(-2, kept)
+            indexes = indexes[kept]
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value)
         capture[1].append((attr_name, indexes.detach().clone(), value.detach().clone()))
 
     def trace_updater_mob_access(self, mob, include_descendants=False):

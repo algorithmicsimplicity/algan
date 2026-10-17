@@ -31,6 +31,7 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     active_scene_for_new_mob,
 )
+from algan.errors import UnsupportedFeatureError
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -162,7 +163,9 @@ class DecimalNumber(Mob):
     integer_places
         Minimum digits before the decimal point. Defaults to ``None``, meaning
         take it from ``value`` (at least 1). More are allocated automatically
-        when the value grows past the reserved width. Ignored when
+        when the value grows past the reserved width -- except by an updater,
+        which cannot add digits while the video renders: give a number an
+        updater sets room for the largest value it will show. Ignored when
         ``significant_figures`` is supplied.
     significant_figures
         Positive integer count of significant digits. Defaults to ``None``,
@@ -476,6 +479,9 @@ class DecimalNumber(Mob):
         ------
         :class:`~algan.errors.AlganConfigurationError`
             If ``value`` is not finite.
+        :class:`~algan.errors.UnsupportedFeatureError`
+            If an updater sets a value with more digits before the decimal
+            point than the number has room for; see ``integer_places``.
 
         Examples
         --------
@@ -602,6 +608,23 @@ class DecimalNumber(Mob):
         required = self._required_integer_places(value)
         if required <= self.integer_places:
             return
+        if self.scene.timeline_manager.is_replaying():
+            # An updater, run for a batch of frames. A slot built now is never
+            # drawn -- the batch's Mobs were gathered before the updater ran --
+            # and is discarded with the batch while this number still holds it.
+            largest = max(
+                abs(float(item))
+                for item in cast_to_tensor(value).reshape(-1)
+                if math.isfinite(float(item))
+            )
+            raise UnsupportedFeatureError(
+                f"An updater set this DecimalNumber to {largest:.{self.decimal_places}f}, "
+                f"which needs {required} digits before the decimal point, and it "
+                f"was built with {self.integer_places}. An updater cannot add "
+                "digits while the video renders: build the number with room for "
+                "the largest value it will show, e.g. "
+                f"DecimalNumber(0, integer_places={required})."
+            )
 
         old_integer_places = self.integer_places
         source_digit = self.digit_mobs[0]

@@ -18,6 +18,7 @@ was materialized against the rows it had -- and that now says so.
 from __future__ import annotations
 
 import pytest
+import torch
 
 import algan
 import algan.manim as mn
@@ -153,3 +154,72 @@ def test_set_value_leaves_a_manim_number_visible(tmp_path):
 
     assert brightest(None) > 0
     assert brightest(3.0) > 0
+
+
+def test_a_mob_built_in_an_updater_can_be_read_outside_a_render():
+    """Materializing without a render's working set reads the whole buffer.
+
+    The rows of a Mob built during the replay lie past the end of that buffer,
+    and reading them raised ``IndexError`` -- from ``set_state_to_times``, the
+    interactive viewer, and ``remove_updater``, which all materialize this way.
+    """
+    with algan.Scene() as scene:
+        dot = algan.Dot().spawn(animate=False)
+
+        def follow(mob, t):
+            marker = algan.Dot()
+            marker.location = algan.RIGHT * 2
+            mob.move_to(marker.get_center() + algan.UP)
+
+        dot.add_updater(follow)
+        algan.Scene.wait(1)
+
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0, 0.5]))
+        assert dot.location.reshape(-1, 3).tolist() == [[2, 1, 0], [2, 1, 0]]
+
+
+def test_removing_an_updater_that_builds_a_mob():
+    """The writes kept at the removal boundary must not name the built Mob.
+
+    It is discarded once the boundary is materialized, and a write to its rows
+    sent the next materialization past the end of the buffer.
+    """
+    with algan.Scene() as scene:
+        dot = algan.Dot().spawn(animate=False)
+
+        def follow(mob, t):
+            marker = algan.Dot()
+            marker.location = algan.RIGHT * 2
+            mob.move_to(marker.get_center() + algan.UP)
+
+        dot.add_updater(follow)
+        algan.Scene.wait(1)
+        dot.remove_updater(-1)
+        algan.Scene.wait(1)
+
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.5, 1.5]))
+        assert dot.location.reshape(-1, 3).tolist() == [[2, 1, 0], [2, 1, 0]]
+
+
+def test_a_number_outgrowing_its_digits_in_an_updater_is_explained(tmp_path):
+    """Its new digit slot would never be drawn, and left a dead Mob behind.
+
+    The batch's Mobs are gathered before its updaters run, so a slot added
+    there is not drawn, and the slot is discarded with the batch while the
+    number goes on using it -- the next batch failed reading it. Room for the
+    digits up front is what works.
+    """
+    with algan.Scene(video_settings=SMOKE_TEST):
+        display = algan.DecimalNumber(0.0, decimal_places=1).spawn()
+        display.add_updater(lambda mob, t: mob.set_value(t * 20))
+        algan.Scene.wait(2)
+        with pytest.raises(UnsupportedFeatureError, match="integer_places=2"):
+            algan.Scene.save_video(str(tmp_path / "grown.mp4"), SMOKE_TEST)
+
+    with algan.Scene(video_settings=SMOKE_TEST):
+        display = algan.DecimalNumber(0.0, decimal_places=1, integer_places=2)
+        display.spawn().add_updater(lambda mob, t: mob.set_value(t * 20))
+        algan.Scene.wait(2)
+        result = algan.Scene.save_video(str(tmp_path / "roomy.mp4"), SMOKE_TEST)
+
+    assert result.status == "rendered"
