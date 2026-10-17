@@ -175,6 +175,17 @@ def warn_if_nothing_rendered(
     return True
 
 
+def _names_several_timestamps(at) -> bool:
+    """Whether ``save_frame``'s ``at`` asks for several stills, not one.
+
+    A 0-d tensor or array has ``__len__`` but holds one number, and a string
+    is a sequence of characters rather than of timestamps.
+    """
+    if at is None or isinstance(at, (str, bytes)) or getattr(at, "ndim", 1) == 0:
+        return False
+    return hasattr(at, "__len__")
+
+
 class Scene(RenderLoopMixin):
     """The container that turns recorded animations into rendered video.
 
@@ -1446,7 +1457,7 @@ class Scene(RenderLoopMixin):
         time_stamp = float(time_stamp)
         if not math.isfinite(time_stamp) or time_stamp < 0:
             wrote = ""
-            if given is not None and float(given) != time_stamp:
+            if given is not None and float(given) < 0:
                 wrote = (
                     f" ({given} counts backwards from the current authoring time, "
                     f"{self.animation_manager.context.timespan.current_time:g}s, "
@@ -1623,7 +1634,7 @@ class Scene(RenderLoopMixin):
 
         destination = _resolve_output_destination(file_path, ".png")
         _check_container_is_supported(destination, still=True)
-        if at is None or not hasattr(at, "__len__"):
+        if not _names_several_timestamps(at):
             targets = [(destination, at)]
             returns_list = False
         else:
