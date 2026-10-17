@@ -1950,8 +1950,10 @@ class Scene(RenderLoopMixin):
             Post-processing passes to apply to each frame. Defaults to ``None``,
             meaning bloom.
         codec, audio_codec, ffmpeg_params
-            Encoder overrides passed through to FFmpeg. Each defaults to
-            ``None``, letting Algan pick from the background's transparency.
+            Encoder overrides passed through to FFmpeg; ``ffmpeg_params`` is a
+            list of command-line arguments, such as ``["-crf", "18"]``. Each
+            defaults to ``None``, letting Algan pick from the background's
+            transparency.
             With no explicit ``codec``, Algan encodes with ``libx264`` or --
             when the machine's NVIDIA driver exposes NVENC -- the hardware
             ``h264_nvenc`` encoder; set the ``ALGAN_VIDEO_ENCODER``
@@ -1987,6 +1989,7 @@ class Scene(RenderLoopMixin):
         Raises
         ------
         AlganConfigurationError
+            If ``ffmpeg_params`` is not a list of command-line arguments.
             If the output container, codec or settings are invalid, a render
             pass name is unknown, or FFmpeg cannot encode the requested passes.
             All are checked before rendering starts.

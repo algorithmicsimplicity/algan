@@ -92,30 +92,16 @@ def get_file_writer(
         FFMPEG_VideoWriter,  # deferred: ~0.3 s of import algan
     )
 
-    try:
-        file_writer = FFMPEG_VideoWriter(
-            filename=temp_file_path,
-            size=video_settings_resolution,
-            codec=codec,
-            fps=fps,
-            with_mask=with_mask,
-            ffmpeg_params=ffmpeg_params,
-            audiofile=audiofile,
-            audio_codec=audio_codec,
-        )
-    except TypeError:
-        # Older moviepy releases spell the mask parameter "withmask".
-        file_writer = FFMPEG_VideoWriter(
-            filename=temp_file_path,
-            size=video_settings_resolution,
-            codec=codec,
-            fps=fps,
-            withmask=with_mask,
-            ffmpeg_params=ffmpeg_params,
-            audiofile=audiofile,
-            audio_codec=audio_codec,
-        )
-    return file_writer
+    return FFMPEG_VideoWriter(
+        filename=temp_file_path,
+        size=video_settings_resolution,
+        codec=codec,
+        fps=fps,
+        with_mask=with_mask,
+        ffmpeg_params=ffmpeg_params,
+        audiofile=audiofile,
+        audio_codec=audio_codec,
+    )
 
 
 # ‘mpeg4’ > ‘libx264’
@@ -359,6 +345,37 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
     return requested
 
 
+def _checked_ffmpeg_params(ffmpeg_params) -> list | None:
+    """``ffmpeg_params`` as a list, failing before the render if FFmpeg cannot
+    be given it.
+
+    They are spliced into FFmpeg's command line. A string went in one
+    character at a time, so FFmpeg refused the command once the render was
+    done, and a number kept FFmpeg from starting, with a ``TypeError`` from
+    ``subprocess``. A list, so checking a generator does not use it up; an
+    empty string, which spliced in nothing, is no arguments still.
+    """
+    if ffmpeg_params is None:
+        return None
+    if isinstance(ffmpeg_params, str):
+        if not ffmpeg_params.strip():
+            return []
+        raise AlganConfigurationError(
+            f"ffmpeg_params takes a list of arguments, not one string: write "
+            f"{ffmpeg_params.split()!r} for {ffmpeg_params!r}."
+        )
+    ffmpeg_params = list(ffmpeg_params)
+    for index, argument in enumerate(ffmpeg_params):
+        # What subprocess takes as an argument.
+        if not isinstance(argument, (str, bytes, os.PathLike)):
+            raise AlganConfigurationError(
+                f"ffmpeg_params[{index}] is {argument!r} "
+                f"({type(argument).__name__}); FFmpeg takes every argument as "
+                f"a string, such as {str(argument)!r}."
+            )
+    return ffmpeg_params
+
+
 def _render_scene_to_file(
     scene,
     file_path=None,
@@ -383,6 +400,7 @@ def _render_scene_to_file(
     # Validated before anything else, including an overwrite=False skip: a
     # misspelt pass name should not wait for the file to be deleted to surface.
     passes = normalize_passes(passes)
+    ffmpeg_params = _checked_ffmpeg_params(ffmpeg_params)
     # The Scene's own settings outrank SETTINGS.video when it was given them:
     # ``Scene(video_settings=...)`` and ``set_video_settings`` used to have no
     # effect here at all, while ``save_frame`` on the same Scene honoured them.

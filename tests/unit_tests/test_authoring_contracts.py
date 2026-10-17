@@ -29,6 +29,7 @@ from algan.scene_manager import SceneManager
 from algan.settings import SETTINGS
 from algan.utils.algan_utils import (
     _check_container_is_supported,
+    _checked_ffmpeg_params,
     _resolve_output_destination,
 )
 
@@ -542,6 +543,45 @@ def test_save_video_rejects_a_bad_container_without_rendering(
 
     with pytest.raises(AlganConfigurationError, match=r"video container"):
         scene.save_video("broken.xyz")
+
+
+@pytest.mark.parametrize(
+    ("ffmpeg_params", "match"),
+    [
+        # Spliced into FFmpeg's command line one character at a time.
+        ("-crf 18", r"not one string: write \['-crf', '18'\] for '-crf 18'"),
+        # Kept FFmpeg from starting, with a TypeError from subprocess.
+        (["-crf", 18], r"ffmpeg_params\[1\] is 18 \(int\).* such as '18'"),
+    ],
+)
+def test_save_video_rejects_ffmpeg_params_ffmpeg_cannot_take_without_rendering(
+    isolated_output, monkeypatch, ffmpeg_params, match
+):
+    scene = SceneManager.instance().current_scene
+    Square(scene=scene).spawn()
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("the render started despite unusable ffmpeg_params")
+
+    monkeypatch.setattr(scene, "_render_to_video", fail)
+
+    with pytest.raises(AlganConfigurationError, match=match):
+        scene.save_video("clip.mp4", ffmpeg_params=ffmpeg_params)
+
+
+def test_ffmpeg_params_take_what_a_command_line_takes():
+    arguments = ["-vf", "scale=640:-2", b"-an", Path("overlay.png")]
+    assert _checked_ffmpeg_params(arguments) == arguments
+    assert _checked_ffmpeg_params(("-crf", "18")) == ["-crf", "18"]
+    assert _checked_ffmpeg_params(None) is None
+    # Spliced in as nothing, before the check as now.
+    assert _checked_ffmpeg_params("") == []
+
+
+def test_ffmpeg_params_from_a_generator_are_not_used_up_by_the_check():
+    """Checked by iterating them, which left FFmpeg a spent generator."""
+    params = (argument for argument in ["-metadata", "title=Tour"])
+    assert _checked_ffmpeg_params(params) == ["-metadata", "title=Tour"]
 
 
 def test_audio_is_not_the_only_thing_a_wav_extension_could_mean():
