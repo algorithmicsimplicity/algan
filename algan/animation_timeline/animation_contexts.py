@@ -48,6 +48,7 @@ from algan.constants import easings
 from algan.errors import AlganConfigurationError, ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
+from algan.utils.audio_utils import _open_audio_file_clip
 
 # Not ``from typing import TYPE_CHECKING``: this module is star-exported, and
 # an upper-case name would land in ``from algan import *``.
@@ -1318,6 +1319,10 @@ def _audio_file_path(source) -> str:
     """
     path = os.fsdecode(source)
     if "://" not in path and not os.path.isfile(path):
+        if os.path.isdir(path):
+            raise IsADirectoryError(
+                f"Audio takes an audio file, and {path!r} is a directory."
+            )
         where = os.path.abspath(path)
         seen_from = (
             "" if where == path else f", which is {where!r} from the current directory"
@@ -1351,6 +1356,11 @@ class Audio(AnimationContext):
     ------
     FileNotFoundError
         If ``source`` is a path with no file at it.
+    IsADirectoryError
+        If ``source`` is the path of a directory.
+    OSError
+        If FFmpeg reads no sound from the file: it is damaged, is no audio
+        format FFmpeg knows, or is a video without a sound track.
     TypeError
         If ``source`` is neither a path nor an audio clip.
 
@@ -1375,9 +1385,7 @@ class Audio(AnimationContext):
     ):
         audio_clip = source
         if isinstance(source, (str, os.PathLike)):
-            from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
-
-            audio_clip = AudioFileClip(_audio_file_path(source))
+            audio_clip = _open_audio_file_clip(_audio_file_path(source))
         elif not hasattr(source, "duration"):
             raise TypeError(
                 "Audio takes the path of an audio file or a moviepy audio clip, "

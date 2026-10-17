@@ -7,10 +7,12 @@ import sys
 
 import numpy as np
 import pytest
+from PIL import Image
 from scipy.io import wavfile
 
 from algan.animation_timeline.animation_contexts import Audio
 from algan.mobs.shapes_2d import Square
+from algan.utils import audio_utils
 
 SAMPLE_RATE = 8000
 
@@ -65,6 +67,102 @@ def test_an_absolute_path_is_not_resolved_again(fresh_scene, tmp_path):
     with pytest.raises(FileNotFoundError) as raised:
         Audio(missing)
     assert str(raised.value) == f"Audio found no file at {str(missing)!r}."
+
+
+def _opening_error(monkeypatch, open_audio):
+    """The message ``open_audio`` raises, and what the collector printed after."""
+    unraisable = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    with pytest.raises(OSError) as raised:
+        open_audio()
+    message = str(raised.value)
+    # Let go of the traceback, whose frames keep the half-built reader alive,
+    # and collect it now.
+    del raised
+    gc.collect()
+    return message, [type(hook.exc_value).__name__ for hook in unraisable]
+
+
+@pytest.mark.parametrize(
+    "contents", [b"not audio at all\n", b"", b"RIFF"], ids=["text", "empty", "header"]
+)
+def test_a_file_ffmpeg_cannot_open_is_named_with_ffmpegs_reason(
+    fresh_scene, tmp_path, monkeypatch, contents
+):
+    """moviepy raised FFmpeg's whole report, chained to an internal TypeError,
+    and the half-built reader's __del__ then printed an AttributeError.
+    """
+    damaged = tmp_path / "whoosh.wav"
+    damaged.write_bytes(contents)
+
+    message, unraisable = _opening_error(monkeypatch, lambda: Audio(damaged))
+
+    assert message.startswith(f"Could not read {str(damaged)!r} as audio. FFmpeg says ")
+    assert "Invalid data found when processing input" in message
+    assert message.endswith(
+        "Check that it plays in another player, and if it does not, export it again."
+    )
+    assert unraisable == []
+
+
+def _silent_video(path):
+    # Written as Algan writes its videos, through moviepy's FFmpeg.
+    from moviepy import ColorClip
+
+    clip = ColorClip(size=(16, 16), color=(0, 0, 255), duration=0.4)
+    clip.write_videofile(str(path), fps=5, audio=False, logger=None)
+    clip.close()
+
+
+def _picture(path):
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(path)
+
+
+@pytest.mark.parametrize(
+    ("name", "make"),
+    [("title.mp4", _silent_video), ("chime.png", _picture)],
+    ids=["silent video", "picture"],
+)
+def test_a_file_without_a_sound_track_says_so(
+    fresh_scene, tmp_path, monkeypatch, name, make
+):
+    """A video without sound raised ``KeyError: 'audio_bitrate'``, and a
+    picture moviepy's failure to read a duration from FFmpeg's report.
+    """
+    path = tmp_path / name
+    make(path)
+
+    message, unraisable = _opening_error(monkeypatch, lambda: Audio(path))
+
+    assert message == (
+        f"Could not read {str(path)!r} as audio. FFmpeg finds a video stream in "
+        f"it, but no audio stream."
+    )
+    assert unraisable == []
+
+
+def test_a_directory_is_named_as_one(fresh_scene, tmp_path):
+    """It was "Audio found no file at", of a path that is there."""
+    with pytest.raises(IsADirectoryError) as raised:
+        Audio(tmp_path)
+    assert str(raised.value) == (
+        f"Audio takes an audio file, and {str(tmp_path)!r} is a directory."
+    )
+
+
+def test_a_recorded_narration_ffmpeg_cannot_open_is_named(tmp_path, monkeypatch):
+    recording = tmp_path / "voice.wav"
+    recording.write_bytes(b"not audio at all\n")
+    transcript = tmp_path / "script.txt"
+    transcript.write_text("Hello world", encoding="utf-8")
+
+    message, unraisable = _opening_error(
+        monkeypatch,
+        lambda: audio_utils.get_speech_generator_from_file(recording, transcript),
+    )
+
+    assert message.startswith(f"Could not read {str(recording)!r} as audio.")
+    assert unraisable == []
 
 
 def test_something_that_is_neither_a_path_nor_a_clip_is_named(fresh_scene):
