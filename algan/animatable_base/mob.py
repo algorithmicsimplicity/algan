@@ -2786,6 +2786,7 @@ class Mob(
             )
             data_sub_inds = torch.cat(
                 [torch.arange(starts[d], starts[d] + sizes[d]) for d in selected]
+                or [torch.zeros((0,), dtype=torch.long)]
             )
         else:
             sub_pbs = self.parent_batch_sizes
@@ -2793,6 +2794,13 @@ class Mob(
         self.parent_batch_sizes = sub_pbs
         for c in self.children:
             c._set_data_sub_inds(data_sub_inds)
+        # A pack's members need not all have parts: a leaf packed beside
+        # members that have some selects no rows of the packed parts. That
+        # level of the view would hold nothing, and reading it fails, so the
+        # view leaves it out.
+        if any(_selects_no_rows(c) for c in self.children):
+            self.children[:] = [c for c in self.children if not _selects_no_rows(c)]
+            self._note_hierarchy_change()
 
     def __bool__(self) -> bool:
         """A Mob is always truthy, however many batch members it has.
@@ -2853,6 +2861,11 @@ class Mob(
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
         cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)
         return cloned_mob
+
+
+def _selects_no_rows(mob: Mob) -> bool:
+    inds = getattr(mob, "data_sub_inds", None)
+    return isinstance(inds, torch.Tensor) and inds.numel() == 0
 
 
 # Verb methods that read like animatable attributes. ``mob.rotate = 90`` is the

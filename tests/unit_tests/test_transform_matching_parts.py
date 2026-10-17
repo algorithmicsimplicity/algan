@@ -176,6 +176,22 @@ def test_shape_parts_split_native_glyphs_and_duplicate_groups_once(scene):
     )
 
 
+def test_shape_parts_split_a_pack_whose_members_differ_in_parts(scene):
+    """A part with no parts of its own, packed beside one that has some.
+
+    Picking it out of the pack selected none of the packed parts' rows, and
+    the level below that concatenated nothing: ``torch.cat(): expected a
+    non-empty list of Tensors``. Matching splits a pack by picking out its
+    members, so it failed on any such drawing packed with ``batch=True``.
+    """
+    drawing = mn.VGroup(mn.Square(), mn.VGroup(mn.Dot(), mn.Line()), batch=True)
+    (_, square), (_, dot_and_line) = _shape_parts(drawing.spawn(animate=False))
+
+    assert square.get_non_component_children() == []
+    assert len(dot_and_line.get_descendants()) > len(square.get_descendants())
+    TransformMatchingShapes(drawing, Square().move(RIGHT * 2))
+
+
 @pytest.mark.parametrize("factory", [Tex, MathTex, mn.MathTex])
 def test_rearrangement_keeps_term_identity_during_replay(factory, scene):
     with Off():
