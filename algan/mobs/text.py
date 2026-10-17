@@ -31,6 +31,7 @@ from typing import NamedTuple
 
 import torch.nn.functional as F
 
+from algan.animatable_base.animatable import _reports_refused_keywords
 from algan.settings._startup import _ANIMATION_DEVICE
 
 # Deferred: manim's import chain (sympy/networkx/scipy/...) costs ~2 s of
@@ -40,7 +41,6 @@ from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 # mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
-from algan.animatable_base.animatable import _reports_refused_keywords
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     Off,
