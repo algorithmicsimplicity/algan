@@ -9,7 +9,7 @@ import torch
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants import easings
-from algan.constants.color import BLUE_B, BLUE_D, BLUE_E, GREY_BROWN, Color
+from algan.constants.color import BLUE_B, BLUE_D, BLUE_E, GREY_BROWN, Color, to_color
 from algan.errors import AlganConfigurationError
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
@@ -27,12 +27,13 @@ def _bezier_family(mobject: Mob) -> list[BezierCircuitCubic]:
 def _color_rows(colors: Sequence, reference: torch.Tensor) -> torch.Tensor:
     rows = []
     for color in colors:
-        if isinstance(color, str):
-            value = Color(color)
-        elif hasattr(color, "to_rgb"):
-            value = cast_to_tensor(color.to_rgb())
-        else:
-            value = cast_to_tensor(color)
+        if hasattr(color, "to_rgb"):
+            # A ManimColor, as Manim's AnimatedBoundary takes.
+            color = color.to_rgb()
+        # Every spelling a Mob's color takes. Read as a tensor as it was, a
+        # hex int was one channel: alone it drew a wrong color, and beside any
+        # other color it failed the render in ``torch.stack``.
+        value = cast_to_tensor(to_color(color))
         value = Color.add_defaults(value).as_subclass(torch.Tensor)
         rows.append(value.reshape(-1, value.shape[-1])[0].to(reference))
     return torch.stack(rows)
