@@ -539,6 +539,22 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "        self.chars = self.get_group_class()(*[_ for _ in self.submobjects if isinstance(_, VMobject)])\n"
             "        self.imgs = Group(*[_ for _ in self.submobjects if not isinstance(_, VMobject)])\n",
         )
+        # A `font` that is not installed as written, nor in the three
+        # capitalizations upstream tries first: upstream logs every installed
+        # family (hundreds on a Mac), even for a name installed under another
+        # case or spacing. Algan's check returns the installed spelling of
+        # such a name, and otherwise warns at the script's line with the
+        # closest installed names. Text's, then MarkupText's.
+        missing_font = (
+            '                    logger.warning(f"Font {font} not in {fonts_list}.")\n'
+        )
+        installed_font = (
+            "                    from algan.mobs.text import _installed_font\n"
+            "\n"
+            "                    font = _installed_font(font, fonts_list)\n"
+        )
+        cut(missing_font, installed_font)
+        cut(missing_font, installed_font)
 
     elif module == "mobject.svg.svg_mobject":
         cut("import os\n", "import io\nimport os\nimport tempfile\n")
@@ -1575,6 +1591,10 @@ Targeted, asserted, one dropped reference each:
     `M` there, and publish it atomically (`algan.utils.typeset_cache`),
     instead of rendering in place and rewriting the cached file on every
     construction -- `text_dir` is shared by every Algan process.
+    A `font` that is not installed goes to `algan.mobs.text._installed_font`
+    instead of logging every installed family: it returns the installed
+    spelling of a name that differs only in case or spacing, and otherwise
+    warns at the script's line, naming the closest installed fonts.
 13. `mobject/svg/svg_mobject.py` -- carry element, group and root opacity into
     imported fill/stroke coverage. Embedded rasters use the authored image
     width and height before the SVG's overall size normalization. Group

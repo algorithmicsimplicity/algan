@@ -944,6 +944,73 @@ def _pango_style(kind: str, value):
     return upper
 
 
+#: Generic family names. Pango maps each to a font of that kind (on Linux,
+#: through fontconfig's aliases) rather than looking for a font by that name,
+#: so the installed list need not contain them.
+_GENERIC_FONT_FAMILIES = frozenset(
+    {"sans", "sans-serif", "serif", "mono", "monospace", "system-ui"}
+)
+
+
+def _font_key(name: str) -> str:
+    # fontconfig matches family names ignoring case and blanks.
+    return "".join(name.split()).casefold()
+
+
+def _pango_font_families() -> list[str]:
+    """Every font family Pango has, as of this call."""
+    import manimpango
+
+    return manimpango.list_fonts()
+
+
+def _installed_font(font: str, installed) -> str:
+    """The installed spelling of ``font``, after a warning if there is none.
+
+    The vendored Manim's ``Text`` and ``MarkupText`` call this when ``font`` is
+    not in ``installed`` (their ``font_list()``) as written, nor in the three
+    capitalizations they try. A family that is installed under another case or
+    spacing (``"dejavu sans mono"``, ``"DejaVuSansMono"``) is returned as it is
+    installed. Otherwise Pango draws the text in a substitute font without a
+    word, and Manim logged the whole installed list, hundreds of names on a
+    Mac. This warns at the script's line instead, naming the installed fonts
+    closest to ``font``.
+
+    ``font_list()`` is cached for the process, so before warning this asks
+    Pango again: a font registered since (``manimpango.register_font``) is
+    installed too.
+    """
+    import difflib
+    import warnings
+
+    from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
+
+    key = _font_key(font)
+    by_key = {_font_key(name): name for name in installed}
+    if key in by_key:
+        return by_key[key]
+    if key in _GENERIC_FONT_FAMILIES:
+        return font
+    by_key = {_font_key(name): name for name in _pango_font_families()}
+    if key in by_key:
+        return by_key[key]
+    close = [by_key[match] for match in difflib.get_close_matches(key, by_key, n=3)]
+    if len(close) > 1:
+        suggestion = f" The closest installed fonts are {', '.join(map(repr, close))}."
+    elif close:
+        suggestion = f" The closest installed font is {close[0]!r}."
+    else:
+        suggestion = ""
+    warnings.warn(
+        f"No installed font is named {font!r}, so Pango draws this text in a "
+        f"substitute.{suggestion} manimpango.list_fonts() lists the installed "
+        "fonts, and warn_missing_font=False turns this warning off.",
+        UnsupportedFeatureWarning,
+        stacklevel=_user_stacklevel(),
+    )
+    return font
+
+
 def _to_pango_hex(color, color_map):
     """Convert a color spec (algan Color/tensor, hex/named string, or manim
     color) to an RGB hex string that manim's Pango renderer accepts.
@@ -1351,8 +1418,12 @@ class Text(Tex):
     tab_width
         How many spaces a tab in ``text`` expands to. Defaults to ``4``.
     warn_missing_font
-        Whether to log a warning when ``font`` is not installed. Defaults to
-        ``True``.
+        Whether to check ``font`` against the installed fonts. A name that
+        differs from an installed font only in case or spacing is then sent to
+        Pango as the installed font spells it, and a name no installed font
+        has raises an :class:`~algan.errors.UnsupportedFeatureWarning` naming
+        the closest ones, since Pango draws the text in a substitute. Defaults
+        to ``True``; ``False`` sends ``font`` to Pango as written.
     height
         Scale the finished text uniformly so it is this tall, in world units.
         Defaults to ``None``, its natural size for ``font_size``.
