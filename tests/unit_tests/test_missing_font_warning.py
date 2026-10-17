@@ -9,6 +9,7 @@ case or spacing for a missing one.
 from __future__ import annotations
 
 import itertools
+import linecache
 import re
 import warnings
 
@@ -24,7 +25,8 @@ _unique = itertools.count()
 
 
 def unique(text: str) -> str:
-    # Repeated Text skips Manim, and its font check, through Algan's memo.
+    # A repeated Text is built from outlines Algan remembers, without Manim;
+    # a new one goes through Manim's font check.
     return f"{text} {next(_unique)}"
 
 
@@ -45,6 +47,27 @@ def test_a_missing_font_warns_at_the_callers_line_naming_the_closest(pango):
     # Closest first; the other test faces may follow it.
     assert re.search(f"The closest installed fonts? (is|are) {TEST_FONT!r}", message)
     assert "warn_missing_font=False" in message
+
+
+def test_a_text_built_from_remembered_outlines_warns_at_its_own_line(pango):
+    """Algan typesets a source once per process and remembers the outlines.
+
+    A later Text of the same source is built from them without Manim, so
+    without Manim's font check, and said nothing. A warm daemon runs every
+    script in one process, so only its first run said the font was missing.
+    """
+    source = unique("remembered")
+    with pytest.warns(UnsupportedFeatureWarning) as typeset:
+        text_module.Text(source, font="Algan Test Sanz", add_to_scene=False)
+    with pytest.warns(UnsupportedFeatureWarning) as remembered:
+        text_module.Text(source, add_to_scene=False, font="Algan Test Sanz")
+    [first] = typeset
+    [second] = remembered
+    assert second.filename == __file__
+    assert linecache.getline(__file__, second.lineno).strip() == (
+        'text_module.Text(source, add_to_scene=False, font="Algan Test Sanz")'
+    )
+    assert str(second.message) == str(first.message)
 
 
 def test_warn_missing_font_false_says_nothing(pango):

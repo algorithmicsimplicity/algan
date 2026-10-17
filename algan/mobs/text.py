@@ -178,7 +178,9 @@ class _TexGlyphs(NamedTuple):
     glyphs each holds; ``points`` is each outline glyph's Manim point array
     and ``is_svg_path`` whether it came from an SVG path (which decides the
     triangulated path's orientation). ``styled_fills`` is each Pango glyph's
-    fill color and opacity (None for LaTeX).
+    fill color and opacity (None for LaTeX). ``typesetting_warnings`` are the
+    warnings typesetting raised, as ``(category, message)`` pairs, for a
+    :class:`Tex` built from these outlines to raise again.
     """
 
     tex_keys: tuple | None
@@ -186,6 +188,7 @@ class _TexGlyphs(NamedTuple):
     points: tuple
     is_svg_path: tuple
     styled_fills: tuple | None
+    typesetting_warnings: tuple = ()
 
 
 #: Typeset outlines by source, so a formula is typeset and parsed once per
@@ -456,8 +459,12 @@ class Tex(Mob):
             self.tex_strings, delimiter, tex_environment, latex, pango_kwargs, kwargs
         )
         glyphs = _TEX_GLYPH_MEMO.get(memo_key) if memo_key is not None else None
+        raised = []
         if glyphs is not None:
             t = None
+            # The outlines were remembered from typesetting this source, which
+            # is skipped now, and with it whatever typesetting warned about.
+            _raise_again(glyphs.typesetting_warnings)
         elif self.latex:
             tex_kwargs = {
                 "arg_separator": delimiter,
@@ -475,13 +482,18 @@ class Tex(Mob):
                     'package: `pip install "algan[pango]"`. Or use algan.Text, '
                     "which typesets through LaTeX's text mode without it."
                 )
-            t = mn.Text(
-                delimiter.join(self.tex_strings),
-                font_size=base_font_size,
-                # Pango defaults this off. Use Algan's existing content-keyed
-                # SVG recipe cache, just as MathTex does, for repeated labels.
-                **{"use_svg_cache": True, **(pango_kwargs or {})},
-            )
+            previous = getattr(_TYPESETTING, "warnings", None)
+            _TYPESETTING.warnings = raised
+            try:
+                t = mn.Text(
+                    delimiter.join(self.tex_strings),
+                    font_size=base_font_size,
+                    # Pango defaults this off. Use Algan's existing content-keyed
+                    # SVG recipe cache, just as MathTex does, for repeated labels.
+                    **{"use_svg_cache": True, **(pango_kwargs or {})},
+                )
+            finally:
+                _TYPESETTING.warnings = previous
 
         if latex:
             if glyphs is None:
@@ -527,6 +539,7 @@ class Tex(Mob):
                         (c.fill_color.to_hex().upper(), float(c.fill_opacity))
                         for c in outlines
                     ),
+                    tuple(raised),
                 )
                 if memo_key is not None and len(outlines) == len(chars):
                     _remember_tex_glyphs(memo_key, glyphs)
@@ -964,6 +977,22 @@ def _pango_font_families() -> list[str]:
     return manimpango.list_fonts()
 
 
+#: Per thread, while Manim typesets a Pango text: the list the warnings it
+#: raises are added to, as ``(category, message)`` pairs, so that a later Text
+#: built from the outlines remembered from it can raise them again.
+_TYPESETTING = threading.local()
+
+
+def _raise_again(raised):
+    """Raise ``(category, message)`` warnings again, at the script's line."""
+    import warnings
+
+    from algan.errors import _user_stacklevel
+
+    for category, message in raised:
+        warnings.warn(message, category, stacklevel=_user_stacklevel())
+
+
 def _installed_font(font: str, installed) -> str:
     """The installed spelling of ``font``, after a warning if there is none.
 
@@ -1001,13 +1030,15 @@ def _installed_font(font: str, installed) -> str:
         suggestion = f" The closest installed font is {close[0]!r}."
     else:
         suggestion = ""
-    warnings.warn(
+    message = (
         f"No installed font is named {font!r}, so Pango draws this text in a "
         f"substitute.{suggestion} manimpango.list_fonts() lists the installed "
-        "fonts, and warn_missing_font=False turns this warning off.",
-        UnsupportedFeatureWarning,
-        stacklevel=_user_stacklevel(),
+        "fonts, and warn_missing_font=False turns this warning off."
     )
+    raised = getattr(_TYPESETTING, "warnings", None)
+    if raised is not None:
+        raised.append((UnsupportedFeatureWarning, message))
+    warnings.warn(message, UnsupportedFeatureWarning, stacklevel=_user_stacklevel())
     return font
 
 
