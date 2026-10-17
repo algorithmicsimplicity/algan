@@ -32,7 +32,7 @@ from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group as _AlganGroup
 from algan.mobs.image_mob import ImageMob
-from algan.mobs.manim_mob import ManimMob
+from algan.mobs.manim_mob import ManimMob, _conversion_signature
 from algan.mobs.stroke_style import _stroke_style
 from algan.mobs.typst import MathTypst as _NativeMathTypst
 from algan.mobs.typst import Typst as _NativeTypst
@@ -286,9 +286,20 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
                 family=False,
             )
 
-        for algan_child, manim_child in zip(
-            algan_mob.submobjects, manim_mob.submobjects
+        for index, (algan_child, manim_child) in enumerate(
+            zip(algan_mob._drawn_parts(), manim_mob.submobjects)
         ):
+            if (
+                getattr(algan_child, "manim_mobject", None) is not manim_child
+                and not isinstance(manim_child, _manim.ImageMobject)
+                and not _stands_for(algan_child, manim_child)
+            ):
+                # ``become`` put something else in this part's place. The
+                # Manim side follows, or the next Manim edit of the whole --
+                # ``scale``, ``set_color_by_tex`` -- would bring back the part
+                # it replaced.
+                manim_mob.submobjects[index] = _algan_mob_to_manim(algan_child)
+                continue
             _sync_manim_node_from_algan(algan_child, manim_child)
 
 
@@ -616,16 +627,64 @@ def _wrapper_type_for(source) -> type[ManimCompatMob]:
     return ManimCompatMob
 
 
-def _manim_mobjects_in(value: Any):
-    """Yield every Manim Mobject reachable in a delegated call's return value."""
-    if isinstance(value, _manim.Mobject):
-        yield value
-    elif isinstance(value, Mapping):
-        for item in value.values():
-            yield from _manim_mobjects_in(item)
-    elif isinstance(value, (tuple, list, set)):
-        for item in value:
-            yield from _manim_mobjects_in(item)
+def _compat_part(source, **kwargs):
+    """Convert one submobject of a compatibility Mob as a compatibility Mob.
+
+    ``ManimMob``'s ``_part_factory``: a part built this way is both the Mob on
+    screen and one that answers Manim's methods, so ``axes.x_axis.n2p(2)`` and
+    ``axes.x_axis.set_color(RED)`` both work on the axis that is drawn.
+    """
+    wrapper = _wrapper_type_for(source)
+    part = wrapper.__new__(wrapper)
+    part._initialize_from_manim(source, **kwargs)
+    return part
+
+
+def _parts_mirror(mob, node) -> bool:
+    """Whether converting ``node``'s submobjects afresh rebuilds ``mob``'s parts.
+
+    True when every part is a conversion of a node of the same signature as the
+    one it now stands for (see ``_conversion_signature``), all the way down:
+    then the parts can be morphed into the new conversion where they stand, and
+    every Mob handed out for one of them stays the one on screen.
+    """
+    if getattr(mob, "_parts_packed", False):
+        return False
+    parts = mob._drawn_parts()
+    return len(parts) == len(node.submobjects) and all(
+        _stands_for(part, child) for part, child in zip(parts, node.submobjects)
+    )
+
+
+def _stands_for(part, node) -> bool:
+    """Whether ``part`` is a conversion of a node like ``node``, part for part."""
+    return (
+        not isinstance(node, _manim.ImageMobject)
+        and isinstance(part, ManimMob)
+        and getattr(part, "_converted_from", None) == _conversion_signature(node)
+        and _parts_mirror(part, node)
+    )
+
+
+def _rebind_parts(mob, previous, current):
+    """Point the parts drawing ``previous``'s nodes at ``current``'s.
+
+    A compatibility edit runs on a copy of the backing hierarchy and keeps the
+    edited copy, which leaves every part holding a node of the old one. Bound
+    to the new nodes, a part handed to Manim is a part Manim recognizes
+    (``formula.index_of_part(formula[1])``). A part ``become`` replaced holds
+    a node of its own and keeps it.
+    """
+    for part, old, new in zip(
+        mob._drawn_parts(), previous.submobjects, current.submobjects
+    ):
+        if (
+            isinstance(part, ManimMob)
+            and part.manim_mobject is old
+            and type(old) is type(new)
+        ):
+            part.manim_mobject = new
+            _rebind_parts(part, old, new)
 
 
 def from_manim(value: Any, *, scene=None, add_to_scene: bool = True):
@@ -687,6 +746,15 @@ class ManimCompatMob(ManimMob):
     registered with the owning Scene, so ``axes.plot(...).spawn()`` renders --
     while mutations of the backing object are immediately resynchronised into
     this Mob's geometry.
+
+    The parts are compatibility Mobs too, and a piece of this Mob's own
+    hierarchy -- ``axes.x_axis``, ``axes.get_x_axis()``, ``formula[0]``,
+    ``formula.get_part_by_tex("x")`` -- comes back as the part that draws it,
+    so editing it edits what is on screen. A part stays the one on screen
+    through edits of the whole that keep its shape (moves, recolors,
+    ``set_color_by_tex``); an edit that adds or removes parts, or changes a
+    path's point count (``add_coordinates``, a ``set_value`` with new digits),
+    rebuilds them, and they are looked up again afterwards.
     """
 
     _manim_class = _manim.VMobject
@@ -764,6 +832,7 @@ class ManimCompatMob(ManimMob):
     def _initialize_from_manim(self, source, *, batch=False, **kwargs):
         self.manim_mobject = source
         self._exposed_manim_baseline = None
+        kwargs.setdefault("_part_factory", _compat_part)
         super().__init__(source, batch=batch, **kwargs)
 
     @classmethod
@@ -810,7 +879,8 @@ class ManimCompatMob(ManimMob):
         if before_source is None:
             self._sync_manim_from_algan()
             before_source = self.manim_mobject.copy()
-        self.manim_mobject = source
+        previous, self.manim_mobject = self.manim_mobject, source
+        _rebind_parts(self, previous, source)
         # Purely intermediate: ``become`` reads the target's state into this
         # Mob's existing rows and nothing of the target survives the call, so
         # none of it may be registered as an actor.
@@ -1038,13 +1108,22 @@ class ManimCompatMob(ManimMob):
         """Refresh converted geometry after directly editing the backing object."""
         if before_source is None:
             before_source = self._exposed_manim_baseline
-        # Unlike ``_animate_to_manim``'s morph target, part of this conversion is
-        # grafted into this Mob's hierarchy below and has to render, so it is
-        # built as a registered subtree.  Only the target's own root is
-        # discarded, and an unspawned actor never reaches the renderer.
+        # An edit that only restyles or moves the parts (``set_color_by_tex``,
+        # ``put_start_and_end_on``) leaves every part a conversion of a node
+        # like the one it was built from. The morph below then brings each one
+        # to its new state in place, and a part handed out earlier -- held as
+        # ``x = formula[0]`` -- is still the one on screen afterwards. Any
+        # other edit grafts part of this conversion into the hierarchy below,
+        # where it has to render, so it is then built as a registered subtree.
+        # Only the target's own root is discarded, and an unspawned actor never
+        # reaches the renderer.
         replaying = self.scene.timeline_manager.is_replaying()
+        keep_parts = replaying or _parts_mirror(self, self.manim_mobject)
         target = ManimMob(
-            self.manim_mobject, scene=self.scene, add_to_scene=not replaying
+            self.manim_mobject,
+            scene=self.scene,
+            add_to_scene=not keep_parts,
+            _part_factory=None if keep_parts else _compat_part,
         )
         if before_source is not None:
             before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
@@ -1055,14 +1134,13 @@ class ManimCompatMob(ManimMob):
         with Off(animation_manager=self.animation_manager):
             self.become(target, detach_history=False)
 
-        if self.scene.timeline_manager.is_replaying():
-            # Called from an updater the render is re-executing (a counting
-            # DecimalNumber does this on every frame). The morph above has
-            # already put the new geometry on the rows the batch is drawing,
-            # which is the whole of what this frame can show: the batch's
-            # primitives were built from the hierarchy as authored, and
-            # restructuring it now would desynchronize the render from them
-            # and leave the Scene different afterwards from how it was written.
+        if keep_parts:
+            # Inside a replay that is all a frame can show, whatever the edit
+            # did: an updater the render is re-executing (a counting
+            # DecimalNumber does this on every frame) cannot restructure the
+            # hierarchy, since the batch's primitives were built from it as
+            # authored, and doing so would leave the Scene different afterwards
+            # from how it was written.
             self._exposed_manim_baseline = None
             return self
 
@@ -1080,6 +1158,7 @@ class ManimCompatMob(ManimMob):
         ]
         self.children[:] = list(self.components) + target_non_components
         self.submobjects = target.submobjects
+        self._parts_group = target._parts_group
         self._exposed_manim_baseline = None
         self._note_hierarchy_change()
         if self.is_spawned():
@@ -1099,27 +1178,133 @@ class ManimCompatMob(ManimMob):
             )
         return self
 
-    def _is_backing_geometry(self, value):
-        """Whether ``value`` is (or contains) part of this Mob's own hierarchy."""
-        family = {id(mob) for mob in self.manim_mobject.get_family()}
-        return any(id(mob) in family for mob in _manim_mobjects_in(value))
+    def _parts_by_node(self):
+        """Map each node of the backing Manim hierarchy to the Mob drawing it.
+
+        The converted hierarchy mirrors the Manim one part for part, which is
+        how ``_sync_manim_node_from_algan`` pairs them too, so a node's place
+        in one names its Mob in the other. A Manim node can hang in two places;
+        the first in drawing order is the one that counts. A packed conversion
+        maps only itself: its parts are scaffolding nothing draws.
+        """
+        parts = {}
+        stack = [(self, self.manim_mobject)]
+        while stack:
+            mob, node = stack.pop()
+            if id(node) in parts:
+                continue
+            parts[id(node)] = mob
+            if isinstance(mob, ManimMob) and not mob._parts_packed:
+                pairs = zip(mob._drawn_parts(), node.submobjects)
+                stack.extend(reversed(list(pairs)))
+        return parts
+
+    def _live_view(self, value, parts=None, *, add_to_scene=True):
+        """``value`` in Algan's terms, with this Mob's parts as the ones drawn.
+
+        A Manim method either builds something new (``Axes.plot``,
+        ``Brace.get_text``) or hands back a piece of this Mob's own hierarchy
+        (``Axes.get_x_axis``, ``MathTex.get_part_by_tex``, ``formula[0]``). A
+        piece of this Mob comes back as the part that draws it, so editing it
+        edits what is on screen -- a converted copy would draw nothing, or draw
+        the piece twice -- and a new Manim group of such pieces as a Group that
+        recurses over them without adopting them. New geometry is converted
+        and, unless ``add_to_scene`` is False, registered with the Scene, so
+        spawning it is enough to make it render.
+        """
+        if parts is None:
+            parts = self._parts_by_node()
+        if isinstance(value, _manim.Mobject):
+            part = parts.get(id(value))
+            if part is not None:
+                return part
+            own = [mob for mob in value.get_family() if id(mob) in parts]
+            if own and not len(value.points):
+                return _AlganGroup(
+                    [
+                        self._live_view(sub, parts, add_to_scene=add_to_scene)
+                        for sub in value.submobjects
+                    ],
+                    scene=self.scene,
+                    add_to_scene=False,
+                    link_children=False,
+                )
+            family = {id(mob) for mob in self.manim_mobject.get_family()}
+            if own or id(value) in family:
+                # Geometry this Mob already draws, in a form no part of it
+                # matches (a packed part, a new path holding old ones).
+                return from_manim(value, scene=self.scene, add_to_scene=False)
+            return from_manim(value, scene=self.scene, add_to_scene=add_to_scene)
+        if isinstance(value, Mapping):
+            return type(value)(
+                (key, self._live_view(item, parts, add_to_scene=add_to_scene))
+                for key, item in value.items()
+            )
+        if isinstance(value, (tuple, list)):
+            items = [
+                self._live_view(item, parts, add_to_scene=add_to_scene)
+                for item in value
+            ]
+            return tuple(items) if isinstance(value, tuple) else items
+        return from_manim(value, scene=self.scene, add_to_scene=add_to_scene)
 
     def _convert_delegated_result(self, result):
-        """Convert a delegated Manim method's return value into Algan values.
+        """Convert a delegated Manim method's return value into Algan values."""
+        return self._live_view(result)
 
-        A delegated method either builds something new (``Axes.plot``,
-        ``Brace.get_text``, ``Axes.get_axis_labels``) or hands back a piece of
-        this Mob's own backing hierarchy (``Axes.get_x_axis``,
-        ``Tex.get_part_by_tex``).  New geometry is registered with the owning
-        Scene so that spawning it is enough to make it render; own geometry is
-        not, because this Mob's converted children already draw it and a second
-        registration would draw it twice at the same place.
+    def _refuse_packed_parts(self):
+        if getattr(self, "_parts_packed", False):
+            raise TypeError(
+                f"{type(self).__name__} was built with batch=True, which packs "
+                "its parts into one Mob, so they cannot be picked out. Build it "
+                "without batch to index its parts."
+            )
+
+    def __getitem__(self, item):
+        """Get the part Manim's ``mobject[item]`` names, as the Mob drawing it.
+
+        Indexing follows Manim exactly -- ``formula[0]`` is the first
+        substring, ``graph[1]`` vertex 1, and a Mobject with points of its own
+        counts itself first -- and the part that comes back is the one on
+        screen: color it or move it and this Mob changes. A slice is a Group
+        that recurses over the parts it selects without adopting them; it is
+        not added to the Scene and never needs spawning.
+
+        Animation
+        ---------
+        Not animated: indexing only selects. Animate the result to change what
+        it covers.
+
+        Parameters
+        ----------
+        item
+            Whatever the backing Manim class indexes by: a position or a slice,
+            a vertex of a ``Graph``, a key of a ``VDict``.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            The selected part, or a Group view of the selected parts.
+
+        Raises
+        ------
+        TypeError
+            If this Mob was built with ``batch=True``.
         """
-        return from_manim(
-            result,
-            scene=self.scene,
-            add_to_scene=not self._is_backing_geometry(result),
-        )
+        self._refuse_packed_parts()
+        return self._live_view(self.manim_mobject[item])
+
+    def __iter__(self):
+        """Iterate over the parts Manim's ``for part in mobject`` visits."""
+        self._refuse_packed_parts()
+        parts = self._parts_by_node()
+        return iter([self._live_view(part, parts) for part in self.manim_mobject])
+
+    def __len__(self):
+        """Count the parts Manim's ``len(mobject)`` counts."""
+        if "manim_mobject" not in self.__dict__:
+            return super().__len__()
+        return len(self.manim_mobject)
 
     def __getattr__(self, name):
         # Normal Mob/Animatable attribute lookup gets first chance.  This method
@@ -1135,9 +1320,10 @@ class ManimCompatMob(ManimMob):
         if not callable(attribute):
             # Reading an attribute is a query, not construction: it must stay
             # free of side effects on the Scene, and repeated reads must not
-            # accumulate actors.  Use the method that built the geometry (or
-            # ``Scene.add_actor``) to get a renderable Mob.
-            return from_manim(attribute, scene=self.scene, add_to_scene=False)
+            # accumulate actors.  Parts of this Mob (``axes.x_axis``) come back
+            # as the parts drawn; anything else is a copy no render sees -- use
+            # the method that built it (or ``Scene.add_actor``) to draw it.
+            return self._live_view(attribute, add_to_scene=False)
 
         @wraps(attribute)
         def delegated(*args, **kwargs):

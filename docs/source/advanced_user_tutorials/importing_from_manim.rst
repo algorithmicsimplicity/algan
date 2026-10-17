@@ -75,6 +75,32 @@ Helper methods like ``plot_parametric_curve``, ``get_axis_labels``, and
 ``get_graph_label`` work the same way: they return Mobs that you can spawn and
 animate independently.
 
+What names a piece of the Mob itself -- ``axes.x_axis``, ``axes.get_x_axis()``,
+``formula[0]``, ``formula.get_part_by_tex("y")`` -- hands back the part already
+on screen instead, so editing it edits the diagram. Indexing follows Manim:
+``formula[0]`` is the first substring, ``formula[0][1]`` a glyph within it, and
+a slice is a Group of the parts it selects.
+
+.. algan:: ImportingManimParts
+
+    from algan import *
+
+    axes = Axes(x_range=[-3, 3], y_range=[-2, 2], x_length=8, y_length=3.5)
+    formula = MathTex("y", "=", "x^2").scale(1.5).move(UP * 2.7)
+    Group(axes, formula).spawn()
+
+    with Sync():
+        axes.x_axis.color = YELLOW
+        formula[2].color = YELLOW
+        formula.get_part_by_tex("y").move(LEFT * 0.5)
+
+    Scene.save_video()
+
+A part stays the one on screen through an edit of the whole that keeps its
+shape -- a move, a recolor, ``set_color_by_tex``. An edit that adds or removes
+parts, such as ``add_coordinates``, rebuilds them: look a part up again after
+one.
+
 Importing a finished Manim diagram
 ==================================
 

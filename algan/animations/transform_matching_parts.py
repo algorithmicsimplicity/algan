@@ -78,7 +78,14 @@ def _shape_parts(root):
             parts.extend(mob.character_mobs)
             parts.extend(mob.image_mobs)
         elif mob._morph_family is not None and not getattr(mob, "empty", False):
-            parts.extend([mob[i] for i in range(len(mob))] if len(mob) > 1 else [mob])
+            # A pack's members, by Mob's own indexing: a Manim-backed Mob
+            # indexes the way Manim does, by part rather than by batch member.
+            members = Mob.__len__(mob)
+            parts.extend(
+                [Mob.__getitem__(mob, i) for i in range(members)]
+                if members > 1
+                else [mob]
+            )
         else:
             for child in mob.get_non_component_children():
                 visit(child)
