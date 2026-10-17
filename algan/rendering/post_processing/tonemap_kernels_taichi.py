@@ -45,7 +45,8 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
         if ti.static(method == 1):
             c = pbr_neutral_tonemap(c * exposure)
         elif ti.static(method == 2):
-            c = agx_tonemap(c * exposure)
+            # Linearized exactly when the OETF below encodes it.
+            c = agx_tonemap(c * exposure, linear_color)
         else:
             # Exposure applies here too, not just under a curve: it is the
             # documented "the whole scene is too dark" control, and with
