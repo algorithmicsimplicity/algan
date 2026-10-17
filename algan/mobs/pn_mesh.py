@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
@@ -84,11 +83,12 @@ class PNMesh(Mob):
         colors[..., -1:] *= self.opacity
         colors[..., -2:-1] += self.glow
         normals = F.normalize(self.normals, p=2, dim=-1)
+        # The glow is already in ``colors``; a ``glow`` argument would add it a
+        # second time (see ``Surface.get_render_primitives``).
         primitive = LogicalPNTrianglePrimitive(
             corners=self.location,
             colors=colors,
             normals=normals,
-            glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             render_tolerance_pixels=self.render_tolerance_pixels,
             geometry_slack_ratio=self.geometry_slack_ratio,

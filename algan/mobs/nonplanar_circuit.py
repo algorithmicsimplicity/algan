@@ -805,11 +805,12 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
     vertex_colors[..., -1:] *= _per_item(opacity, vertex_member, frames)
     vertex_colors[..., -2:-1] += _per_item(glow, vertex_member, frames)
 
+    # The glow is already in ``vertex_colors``; a ``glow`` argument would add
+    # it a second time (see ``Surface.get_render_primitives``).
     primitive = LogicalPNTrianglePrimitive(
         corners=position[:, tri_index, :],
         colors=vertex_colors.as_subclass(Color),
         normals=normals[:, tri_index, :],
-        glow=vertex_colors[..., -2:-1].as_subclass(torch.Tensor),
         shader=circuit.shader,
         render_tolerance_pixels=PATCH_RENDER_TOLERANCE_PIXELS,
         # The patches ARE the surface here: there is no analytic shape behind

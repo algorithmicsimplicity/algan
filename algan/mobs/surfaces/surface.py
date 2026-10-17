@@ -3823,11 +3823,13 @@ class Surface(Mob):
             LogicalPNTrianglePrimitive,
         )
 
+        # ``colors`` already carries the glow (``compute_grid_color``), so no
+        # ``glow`` is passed: the primitive adds that to the same lane, and a
+        # Surface used to glow twice as strongly as a 2-D Mob with its glow.
         primitive = LogicalPNTrianglePrimitive(
             corners=corners,
             colors=colors,
             normals=normals,
-            glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             uvs=uvs,
             texture_map=texture_map,
