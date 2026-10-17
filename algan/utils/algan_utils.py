@@ -396,11 +396,19 @@ def _render_scene_to_file(
     which carries the user-facing signature and documentation.
     """
     from algan._render_passes import VideoPassJob, normalize_passes
+    from algan.render_loop import _check_post_processes
 
     # Validated before anything else, including an overwrite=False skip: a
     # misspelt pass name should not wait for the file to be deleted to surface.
     passes = normalize_passes(passes)
     ffmpeg_params = _checked_ffmpeg_params(ffmpeg_params)
+    post_processes = kwargs.get("post_processes")
+    if post_processes is not None and not callable(post_processes):
+        # A tuple, so checking a generator here does not use it up.
+        kwargs["post_processes"] = post_processes = tuple(post_processes)
+    # The render checks these too, but only after the audio is rendered and
+    # FFmpeg started.
+    _check_post_processes(post_processes)
     # The Scene's own settings outrank SETTINGS.video when it was given them:
     # ``Scene(video_settings=...)`` and ``set_video_settings`` used to have no
     # effect here at all, while ``save_frame`` on the same Scene honoured them.

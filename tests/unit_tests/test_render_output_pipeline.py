@@ -13,11 +13,17 @@ core, so they sit outside the fast suite.
 
 from __future__ import annotations
 
+import functools
+from functools import partial
+
 import pytest
 import torch
 
 from algan import SETTINGS, SMOKE_TEST, Off, Scene, Square
 from algan.constants.color import BLUE
+from algan.errors import AlganConfigurationError
+from algan.render_loop import _check_post_processes
+from algan.rendering.post_processing.bloom import bloom_filter
 
 
 @pytest.fixture
@@ -253,3 +259,88 @@ def test_save_frame_writes_a_png_at_the_requested_resolution(render_scene, tmp_p
     assert result.rendered
     with Image.open(result.output_path) as still:
         assert still.size == SMOKE_TEST.resolution
+
+
+def _desaturate(frames):
+    return frames
+
+
+@pytest.mark.parametrize("save", ["save_video", "save_frame"])
+def test_a_pass_without_the_memory_keyword_is_refused_before_the_render(
+    render_scene, monkeypatch, save
+):
+    """Algan calls every pass as ``process(frames, memory=arena)``.
+
+    A pass written without the keyword failed with ``got an unexpected keyword
+    argument 'memory'`` once frames were rendered, and ``save_video`` got as
+    far as the render with every pass, after rendering the audio and starting
+    FFmpeg.
+    """
+    scene = render_scene()
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("the render started with a pass it cannot call")
+
+    monkeypatch.setattr(scene, "_render_to_video", fail)
+    monkeypatch.setattr("algan._still_frames._StillBatch.render", fail)
+    with pytest.raises(
+        AlganConfigurationError,
+        match=r"^post_processes\[1\] takes no memory keyword, .* ignore: "
+        r"def _desaturate\(frames, memory=None\)$",
+    ):
+        getattr(scene, save)("out", post_processes=(bloom_filter, _desaturate))
+
+
+class _Tint:
+    def __call__(self, frames):
+        return frames
+
+
+def _scale(frames, factor, memory=None):
+    return frames * factor
+
+
+@pytest.mark.parametrize(
+    ("process", "fix"),
+    [
+        (lambda f: f, r"ignore: lambda f, memory=None: \.\.\.$"),
+        (_Tint(), r"ignore: def __call__\(self, frames, memory=None\)$"),
+        (partial(_desaturate), r"ignore: def _desaturate\(frames, memory=None\)$"),
+        (
+            _scale,
+            r"memory=arena\), as Algan calls every pass: missing a required "
+            r"argument: 'factor'\. Bind its other arguments first with partial",
+        ),
+    ],
+    ids=["lambda", "callable object", "partial", "missing argument"],
+)
+def test_a_pass_algan_cannot_call_is_refused_with_its_fix(process, fix):
+    with pytest.raises(AlganConfigurationError, match=fix):
+        _check_post_processes((process,))
+
+
+def test_every_way_of_taking_the_memory_keyword_is_accepted():
+    def takes_memory(function):
+        # A decorator can be what gives a pass its keyword: the call binds to
+        # the wrapper, not to the function it wraps.
+        @functools.wraps(function)
+        def wrapper(frames, memory=None):
+            return function(frames)
+
+        return wrapper
+
+    class Tint:
+        def __call__(self, frames, memory=None):
+            return frames
+
+    _check_post_processes(
+        (
+            bloom_filter,
+            partial(bloom_filter, glow_spread=0.015),
+            partial(_scale, factor=2),
+            lambda frames, memory: frames,
+            lambda frames, **kwargs: frames,
+            takes_memory(_desaturate),
+            Tint(),
+        )
+    )

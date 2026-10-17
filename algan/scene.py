@@ -1948,7 +1948,10 @@ class Scene(RenderLoopMixin):
             ``SETTINGS.style.fade_out_on_scene_end`` (``False``).
         post_processes
             Post-processing passes to apply to each frame. Defaults to ``None``,
-            meaning bloom.
+            meaning bloom. Algan calls each pass as
+            ``process(frames, memory=arena)``, so a custom one takes a
+            ``memory`` keyword even if it ignores it, such as
+            ``def desaturate(frames, memory=None)``.
         codec, audio_codec, ffmpeg_params
             Encoder overrides passed through to FFmpeg; ``ffmpeg_params`` is a
             list of command-line arguments, such as ``["-crf", "18"]``. Each
@@ -1989,7 +1992,9 @@ class Scene(RenderLoopMixin):
         Raises
         ------
         AlganConfigurationError
-            If ``ffmpeg_params`` is not a list of command-line arguments.
+            If ``ffmpeg_params`` is not a list of command-line arguments, or a
+            pass in ``post_processes`` cannot be called as
+            ``process(frames, memory=arena)``.
             If the output container, codec or settings are invalid, a render
             pass name is unknown, or FFmpeg cannot encode the requested passes.
             All are checked before rendering starts.
