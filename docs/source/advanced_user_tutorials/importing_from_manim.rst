@@ -7,8 +7,10 @@ Algan supports all of the same Mobjects that Manim does
 If you prefer, you can also create Mobjects using Manim
 and then import them to Algan using :class:`~.ManimMob`.
 
-Manim is a dependency of Algan, so ``import manim`` works out of the box; there
-is nothing extra to install.
+Algan ships the geometry half of Manim with it, so there is nothing extra to
+install. ``import manim`` reaches that copy once Algan is imported: put
+``from algan import *`` first, as every example here does. Before Algan is
+imported, ``import manim`` does not find Algan's copy.
 
 .. note::
 
