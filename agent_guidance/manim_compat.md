@@ -153,8 +153,12 @@ Part identity is what a script holds, so two rules keep it:
   `_sync_manim_node_from_algan` splices its conversion into the graph, so the next Manim
   edit of the whole does not bring back the part it replaced.
 
-A packed conversion (`batch=True`) keeps plain parts: they are scaffolding the one batched
-Mob draws in place of, and indexing it raises.
+A packed conversion (`batch=True`) keeps plain parts: they are scaffolding the one batched Mob
+draws in place of, and indexing it raises. The scaffolding keeps the pose it was converted in,
+so never sync Manim from it: `_sync_packed_parts_to_manim` reads each node's rows back out of
+the pack, level by level, taking only row counts and fill flags from the scaffolding. Every
+edit converts its target packed the same way (`batch=packed`), so the rows line up and a Manim
+edit never unpacks the Mob.
 
 ## Known upstream quirk
 

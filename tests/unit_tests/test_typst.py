@@ -275,8 +275,9 @@ def test_compatibility_delegated_edits_rebind_selections(compiler, scene, batch)
     equation.shift(RIGHT)
     selected = equation.select(0)[0]
     assert torch.allclose(selected.control_points.location, before + RIGHT, atol=1e-5)
-    assert any(p is selected for p in equation.get_descendants())
-    assert selected in scene.actors
+    # Drawn by this Mob: the path itself, or (packed) a view of the pack's rows.
+    assert any(p.id == selected.id for p in equation.get_descendants())
+    assert any(actor.id == selected.id for actor in scene.actors)
     equation.select(0).move(UP)
     assert torch.allclose(
         selected.control_points.location, before + RIGHT + UP, atol=1e-5

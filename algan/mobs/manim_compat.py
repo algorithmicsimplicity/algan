@@ -220,6 +220,127 @@ def _sync_image_geometry_to_manim(algan_mob: ImageMob, manim_mob):
         manim_mob.set_opacity(opacity)
 
 
+def _push_shape_to_manim(manim_mob, points, style, *, filled):
+    """Give one Manim node the points and style an Algan Mob draws it with.
+
+    ``points`` are the Mob's control points, an ``(n, 3)`` array, or None when
+    the node has none to take; ``style`` holds its color, opacity, stroke
+    color, stroke opacity and stroke width rows, of which the first counts.
+    """
+    # Parent transforms cannot change a Manim path's point count.  If an
+    # Algan-only structural morph has done so, keeping the semantic Manim
+    # object's original topology is safer than assigning an incompatible point
+    # layout to a class such as NumberLine/Axes.
+    if (
+        len(manim_mob.points) > 0
+        and points is not None
+        and len(points) == len(manim_mob.points)
+    ):
+        manim_mob.points = points.copy()
+
+    # Style is synchronized only onto nodes that draw something. A Manim
+    # node with no points of its own has no appearance -- its style is a
+    # template that ``init_colors`` and ``match_style`` broadcast over the
+    # family whenever Manim rebuilds it. The matching Algan node is a bare
+    # container whose color and opacity rows are placeholders, so writing
+    # them here hands Manim a template that erases the real geometry:
+    # ``DecimalNumber.set_value`` rebuilds its glyphs and then calls
+    # ``init_colors()``, which is what made every ``set_value`` render an
+    # invisible number.
+    if len(manim_mob.points) == 0:
+        return
+    color, opacity, stroke_color, stroke_opacity, stroke_width = style
+    if hasattr(manim_mob, "set_fill"):
+        fill_color, fill_opacity = _uniform_color_and_opacity(color, opacity)
+        manim_mob.set_fill(
+            fill_color,
+            opacity=fill_opacity if filled else 0.0,
+            family=False,
+        )
+    if hasattr(manim_mob, "set_stroke"):
+        stroke_color, stroke_opacity = _uniform_color_and_opacity(
+            stroke_color, stroke_opacity
+        )
+        manim_mob.set_stroke(
+            stroke_color,
+            width=float(stroke_width.reshape(-1)[0].detach().cpu())
+            * SETTINGS.style.manim_stroke_width_ratio,
+            opacity=stroke_opacity,
+            family=False,
+        )
+
+
+def _row_style(mob):
+    return (
+        mob.color,
+        mob.opacity,
+        mob.stroke_color,
+        mob.border_grid.opacity,
+        mob.stroke_width,
+    )
+
+
+def _packed_child(mob):
+    """The one Mob a pack (or a packed conversion) holds the next level in."""
+    children = mob.get_non_component_children()
+    return children[0] if len(children) == 1 else None
+
+
+def _member_rows(values, count):
+    """``values`` as one row per member of a ``count``-member pack, or None."""
+    width = values.shape[-1]
+    if values.numel() % (count * width):
+        return None
+    return values.reshape(-1, count, width)[0]
+
+
+def _sync_packed_parts_to_manim(algan_mob, manim_mob):
+    """Push a packed conversion's live rows into its Manim submobjects.
+
+    Packed, a conversion's parts are scaffolding: they keep the pose they were
+    converted in, while one batched Mob per level of the hierarchy draws in
+    their place. ``batch_mobs`` lays that Mob's rows out node by node in
+    drawing order -- a node's points as its control-point rows, a row of style
+    each -- and the scaffolding still says how many rows every node has, so
+    each node can read its own back.
+    """
+    cap, join, limit = _stroke_style(
+        algan_mob.cap_style, algan_mob.joint_type, algan_mob.miter_limit
+    )
+    parts, nodes = list(algan_mob.submobjects), list(manim_mob.submobjects)
+    pack = _packed_child(algan_mob)
+    while parts and pack is not None:
+        if (
+            len(parts) != len(nodes)
+            or not all(isinstance(part, ManimMob) for part in parts)
+            or any(isinstance(node, _manim.ImageMobject) for node in nodes)
+            or not isinstance(pack, ManimMob)
+        ):
+            return
+        sizes = [len(part.control_points.location.reshape(-1, 3)) for part in parts]
+        points = pack.control_points.location.reshape(-1, 3).detach().cpu().numpy()
+        style = [_member_rows(values, len(parts)) for values in _row_style(pack)]
+        if len(points) != sum(sizes) or any(rows is None for rows in style):
+            return
+        start = 0
+        for index, (part, node, size) in enumerate(zip(parts, nodes, sizes)):
+            node.cap_style = _manim.CapStyleType[cap.upper()]
+            node.joint_type = _manim.LineJointType[join.upper()]
+            node.miter_limit = limit
+            _push_shape_to_manim(
+                node,
+                points[start : start + size],
+                [rows[index : index + 1] for rows in style],
+                filled=part.filled,
+            )
+            start += size
+        parts = [child for part in parts for child in part._drawn_parts()]
+        nodes = [child for node in nodes for child in node.submobjects]
+        # Each member's parts hang in a Group, and the Groups are packed too.
+        groups = _packed_child(pack)
+        pack = None if groups is None else _packed_child(groups)
+
+
 def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
     """Mutate one retained Manim node to match its current Algan counterpart.
 
@@ -239,53 +360,18 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
         manim_mob.cap_style = _manim.CapStyleType[cap.upper()]
         manim_mob.joint_type = _manim.LineJointType[join.upper()]
         manim_mob.miter_limit = limit
-        if len(manim_mob.points) > 0:
-            points = (
-                algan_mob.control_points.location.reshape(-1, 3).detach().cpu().numpy()
-            )
-            # Parent transforms cannot change a Manim path's point count.  If
-            # an Algan-only structural morph has done so, keeping the semantic
-            # Manim object's original topology is safer than assigning an
-            # incompatible point layout to a class such as NumberLine/Axes.
-            if len(points) == len(manim_mob.points):
-                manim_mob.points = points.copy()
+        points = (
+            algan_mob.control_points.location.reshape(-1, 3).detach().cpu().numpy()
+            if len(manim_mob.points) > 0
+            else None
+        )
+        _push_shape_to_manim(
+            manim_mob, points, _row_style(algan_mob), filled=algan_mob.filled
+        )
 
-        # Style is synchronized only onto nodes that draw something. A Manim
-        # node with no points of its own has no appearance -- its style is a
-        # template that ``init_colors`` and ``match_style`` broadcast over the
-        # family whenever Manim rebuilds it. The matching Algan node is a bare
-        # container whose color and opacity rows are placeholders, so writing
-        # them here hands Manim a template that erases the real geometry:
-        # ``DecimalNumber.set_value`` rebuilds its glyphs and then calls
-        # ``init_colors()``, which is what made every ``set_value`` render an
-        # invisible number.
-        styles_own_geometry = len(manim_mob.points) > 0
-        if styles_own_geometry and hasattr(manim_mob, "set_fill"):
-            fill_color, fill_opacity = _uniform_color_and_opacity(
-                algan_mob.color, algan_mob.opacity
-            )
-            manim_mob.set_fill(
-                fill_color,
-                opacity=fill_opacity if algan_mob.filled else 0.0,
-                family=False,
-            )
-
-        if styles_own_geometry and hasattr(manim_mob, "set_stroke"):
-            border_opacity_source = algan_mob.border_grid.opacity
-            stroke_color, stroke_opacity = _uniform_color_and_opacity(
-                algan_mob.stroke_color, border_opacity_source
-            )
-            stroke_width = (
-                float(algan_mob.stroke_width.reshape(-1)[0].detach().cpu())
-                * SETTINGS.style.manim_stroke_width_ratio
-            )
-            manim_mob.set_stroke(
-                stroke_color,
-                width=stroke_width,
-                opacity=stroke_opacity,
-                family=False,
-            )
-
+        if getattr(algan_mob, "_parts_packed", False):
+            _sync_packed_parts_to_manim(algan_mob, manim_mob)
+            return
         for index, (algan_child, manim_child) in enumerate(
             zip(algan_mob._drawn_parts(), manim_mob.submobjects)
         ):
@@ -651,10 +737,10 @@ def _parts_mirror(mob, node) -> bool:
     True when every part is a conversion of a node of the same signature as the
     one it now stands for (see ``_conversion_signature``), all the way down:
     then the parts can be morphed into the new conversion where they stand, and
-    every Mob handed out for one of them stays the one on screen.
+    every Mob handed out for one of them stays the one on screen. A packed
+    conversion's parts are the scaffolding its pack was laid out from, so the
+    same test says whether a new pack would lay its rows out the same way.
     """
-    if getattr(mob, "_parts_packed", False):
-        return False
     parts = mob._drawn_parts()
     return len(parts) == len(node.submobjects) and all(
         _stands_for(part, child) for part, child in zip(parts, node.submobjects)
@@ -888,9 +974,13 @@ class ManimCompatMob(ManimMob):
         _rebind_parts(self, previous, source)
         # Purely intermediate: ``become`` reads the target's state into this
         # Mob's existing rows and nothing of the target survives the call, so
-        # none of it may be registered as an actor.
-        target = ManimMob(source, scene=self.scene, add_to_scene=False)
-        before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
+        # none of it may be registered as an actor. Packed the way this Mob
+        # is, its rows line up with this Mob's own.
+        packed = getattr(self, "_parts_packed", False)
+        target = ManimMob(source, batch=packed, scene=self.scene, add_to_scene=False)
+        before = ManimMob(
+            before_source, batch=packed, scene=self.scene, add_to_scene=False
+        )
         _preserve_algan_state_unchanged_by_manim(self, before, target)
         return self.become(target, detach_history=False)
 
@@ -1124,14 +1214,19 @@ class ManimCompatMob(ManimMob):
         # reaches the renderer.
         replaying = self.scene.timeline_manager.is_replaying()
         keep_parts = replaying or _parts_mirror(self, self.manim_mobject)
+        # A packed Mob stays packed: the new conversion is packed too.
+        packed = getattr(self, "_parts_packed", False)
         target = ManimMob(
             self.manim_mobject,
+            batch=packed,
             scene=self.scene,
             add_to_scene=not keep_parts,
             _part_factory=None if keep_parts else _compat_part,
         )
         if before_source is not None:
-            before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
+            before = ManimMob(
+                before_source, batch=packed, scene=self.scene, add_to_scene=False
+            )
             _preserve_algan_state_unchanged_by_manim(self, before, target)
         # The target only has to supply geometry, and an unspawned Mob is a
         # perfectly good source for that. Only the part grafted in below is
@@ -1164,6 +1259,9 @@ class ManimCompatMob(ManimMob):
         self.children[:] = list(self.components) + target_non_components
         self.submobjects = target.submobjects
         self._parts_group = target._parts_group
+        for name in ("_matching_tex_keys", "_matching_tex_batch"):
+            if name in target.__dict__:
+                setattr(self, name, target.__dict__[name])
         self._exposed_manim_baseline = None
         self._note_hierarchy_change()
         if self.is_spawned():
@@ -1179,7 +1277,9 @@ class ManimCompatMob(ManimMob):
             # Delegated edits graft a freshly converted hierarchy. Selections
             # must follow those live paths rather than the retired source rows.
             self._setup_typst_parts(
-                self.manim_mobject, batch=False, parts=target.submobjects
+                self.manim_mobject,
+                batch=packed,
+                parts=None if packed else target.submobjects,
             )
         return self
 
