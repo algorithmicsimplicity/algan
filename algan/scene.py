@@ -28,6 +28,7 @@ The active-Scene stack itself lives in
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import math
 import sys
@@ -138,6 +139,27 @@ _SCENES_CREATED = 0
 def scenes_created() -> int:
     """The number of Scenes this process has constructed so far."""
     return _SCENES_CREATED
+
+
+def script_exit_status(exiting: SystemExit) -> int:
+    """The status a script's ``SystemExit`` gives its process, as Python does.
+
+    ``None`` is success and an int is the status. Anything else is a message,
+    as in ``sys.exit("could not find data.csv")``, which the interpreter prints
+    on stderr before exiting with 1. So does this: a runner that catches the
+    exit to keep running would otherwise end the run failed, without the
+    reason the script gave.
+    """
+    code = exiting.code
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return code
+    # As the interpreter does, a message that cannot be printed -- its __str__
+    # raises, or stderr is closed -- still exits with 1.
+    with contextlib.suppress(Exception):
+        print(code, file=sys.stderr)
+    return 1
 
 
 def warn_if_nothing_rendered(

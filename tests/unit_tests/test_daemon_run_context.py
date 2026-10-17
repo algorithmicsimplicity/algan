@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -237,3 +238,65 @@ def test_the_report_is_skipped_without_cuda(monkeypatch):
     monkeypatch.setattr(d, "_torch_reserved_bytes", lambda: None)
     d._release_run_memory()
     assert said == []
+
+
+def test_a_scripts_exit_is_the_one_it_has_as_its_own_process(tmp_path):
+    """A message passed to ``sys.exit`` is printed, as the interpreter prints it.
+
+    The daemon took anything but an int for status 1 and dropped it, so a
+    script that stopped with ``sys.exit("could not find data.csv")`` failed
+    through the daemon without a word.
+    """
+    exits = {
+        "message.py": 'sys.exit("could not find data.csv")',
+        "status.py": "sys.exit(3)",
+        "success.py": "sys.exit()",
+    }
+    for name, call in exits.items():
+        (tmp_path / name).write_text(f"import sys\n{call}\n", encoding="utf-8")
+    home = tmp_path / "daemon-home"
+    env = {
+        **os.environ,
+        "ALGAN_HOME": str(home),
+        "ALGAN_USE_DAEMON": "0",
+        "ALGAN_DAEMON_CHILD": "1",
+        "ALGAN_PRECOMPILE_JOBS": "0",
+    }
+    client = (
+        "import json, sys\nfrom algan.daemon_client import run_remote\n"
+        "with open(sys.argv[1]) as f: state = json.load(f)\n"
+        "sys.exit(run_remote(state, sys.argv[2], argv=[]))\n"
+    )
+    with (tmp_path / "daemon.log").open("w") as log:
+        daemon = subprocess.Popen(
+            [sys.executable, "-m", "algan.daemon", "--port", "0"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+        )
+        try:
+            state = home / "daemon.json"
+            deadline = time.monotonic() + 120
+            while not state.exists():
+                assert daemon.poll() is None, "the daemon exited before serving"
+                assert time.monotonic() < deadline, "the daemon never came up"
+                time.sleep(0.05)
+            for name in exits:
+                script = str(tmp_path / name)
+                alone = subprocess.run(
+                    [sys.executable, script], env=env, capture_output=True, text=True
+                )
+                served = subprocess.run(
+                    [sys.executable, "-c", client, str(state), script],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                assert (served.returncode, served.stderr) == (
+                    alone.returncode,
+                    alone.stderr,
+                ), name
+        finally:
+            daemon.terminate()
+            daemon.wait(timeout=30)

@@ -1437,7 +1437,7 @@ def main(argv=None):
             scene_module.warn_if_nothing_rendered(path, renders_before)
             _say(f"run #{run_count} finished in {time.perf_counter() - started:.1f} s")
         except SystemExit as e:
-            code = 0 if e.code is None else (e.code if isinstance(e.code, int) else 1)
+            code = scene_module.script_exit_status(e)
             _say(
                 f"run #{run_count} exited (code {code}) after "
                 f"{time.perf_counter() - started:.1f} s"
