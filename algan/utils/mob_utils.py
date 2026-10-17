@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 from algan.animation_timeline.animation_contexts import *
 from algan.errors import AlganConfigurationError
-from algan.utils.python_utils import traverse
+from algan.utils.python_utils import integer_or_none, traverse
 
 
 class BatchedMobViewSequence(Sequence):
@@ -72,10 +72,12 @@ class BatchedMobViewSequence(Sequence):
     def __getitem__(self, item):
         if isinstance(item, slice):
             return [self[i] for i in range(*item.indices(self.size))]
-        if not isinstance(item, int):
+        index = integer_or_none(item)
+        if index is None:
             raise TypeError(
                 f"batch indices must be integers or slices, not {type(item).__name__}"
             )
+        item = index
         if item < 0:
             item += self.size
         if item < 0 or item >= self.size:

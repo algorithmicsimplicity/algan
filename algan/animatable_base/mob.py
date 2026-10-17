@@ -68,6 +68,7 @@ from algan.geometry.geometry import (
     map_local_to_global_coords,
 )
 from algan.utils.animation_utils import animate_lagged_by_location
+from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import (
     cast_to_direction,
     cast_to_tensor,
@@ -2859,7 +2860,8 @@ class Mob(
             add_to_scene=False, clone_data=False, recursive=True, spawn=False
         )
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
-        cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)
+        index = integer_or_none(item)
+        cloned_mob._set_data_sub_inds(item if index is None else [index])
         return cloned_mob
 
 

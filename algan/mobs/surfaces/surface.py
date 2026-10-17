@@ -60,6 +60,7 @@ from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.file_utils import get_image
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
+from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
     cast_to_tensor,
@@ -137,8 +138,9 @@ _RESOLUTION_SHRINK_MARGIN = 0.1
 
 
 def _surface_resolution_pair(resolution):
-    if isinstance(resolution, int):
-        return int(resolution), int(resolution)
+    count = integer_or_none(resolution)
+    if count is not None:
+        return count, count
     u_resolution, v_resolution = resolution
     return int(u_resolution), int(v_resolution)
 
