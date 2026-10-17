@@ -345,6 +345,33 @@ def _write_frame(file_writer, array):
         file_writer.write_frame(array)
 
 
+def _close_encoder(file_writer):
+    """Close the encoder, raising if FFmpeg did not write the video.
+
+    moviepy's ``close`` discards FFmpeg's error output and its exit status, so
+    only a failed frame write could report anything. A clip whose frames all
+    fit in the pipe's buffer never has one fail: a muxer that refused the
+    stream -- H.264 into a GIF -- left an empty file, published as rendered.
+    """
+    proc = getattr(file_writer, "proc", None)
+    stderr = getattr(proc, "stderr", None)
+    if proc is None or stderr is None:
+        file_writer.close()
+        return
+    # Read before moviepy closes the pipe unread; the read ends when FFmpeg
+    # exits, which it does once its input is closed and the video finished.
+    proc.stdin.close()
+    message = stderr.read().decode(errors="replace").strip()
+    file_writer.close()
+    if proc.returncode:
+        # Not named by file: what was written is a temporary, removed on the
+        # way out, and the muxer's complaint says what was wrong with it.
+        raise OSError(
+            f"FFmpeg could not encode the video with {file_writer.codec} "
+            f"(exit status {proc.returncode}): {message or 'it gave no reason'}"
+        )
+
+
 def _opt_disabled_render_loop(name):
     from algan.animation_timeline.timeline import _opt_disabled
 
@@ -4858,7 +4885,7 @@ class RenderLoopMixin:
         own stage instead of leaving it in the profile's unaccounted bucket.
         """
         writer.finish()
-        writer.file_writer.close()
+        _close_encoder(writer.file_writer)
 
     def _recorded_end_time_for_render(self):
         """End of everything recorded so far, in seconds.

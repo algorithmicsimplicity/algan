@@ -54,21 +54,13 @@ you get an error rather than a silently opaque video.
     scene.save_video("out", background=TRANSPARENT)       # -> out.mov
     scene.save_video("out.mp4", background=TRANSPARENT)   # error
 
-.. warning::
-
-    Do not pass a bare ``.webm`` path. Algan's default codec for transparent
-    output is ``png``, which ffmpeg cannot put in a WebM container: the render
-    reports success and writes a file that will not play. WebM needs its codec
-    stated explicitly.
+A ``.webm`` path works too, for a browser: Algan encodes it with VP9 and its
+alpha channel, and the soundtrack with Opus. The alpha is lossy at object edges,
+so prefer ``.mov`` for compositing.
 
 .. code-block:: python
 
-    scene.save_video(
-        "out.webm",
-        background=TRANSPARENT,
-        codec="libvpx-vp9",
-        ffmpeg_params=["-pix_fmt", "yuva420p"],
-    )
+    scene.save_video("out.webm", background=TRANSPARENT)  # VP9 with alpha
 
 Codec and encoder options can be overridden through ``save_video``'s ``codec``,
 ``audio_codec`` and ``ffmpeg_params`` arguments if your compositing tool wants

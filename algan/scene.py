@@ -2014,6 +2014,10 @@ class Scene(RenderLoopMixin):
             ``h264_nvenc`` encoder; set the ``ALGAN_VIDEO_ENCODER``
             environment variable to ``software`` or ``nvenc`` to pin that
             choice (see :doc:`/advanced_user_tutorials/saving_videos_and_images`).
+            ``.webm`` and ``.gif`` cannot hold H.264, so they are encoded with
+            ``libvpx-vp9`` and as a GIF with a palette drawn from each frame.
+            The audio is ``mp3``, or ``libopus`` in a ``.webm``; a ``.gif`` has
+            no audio track, so its soundtrack is left out, with a warning.
             A transparent background picks from the container instead:
             lossless ``png`` for ``.mov`` (also ``.mkv``, ``.avi``), and
             ``libvpx-vp9`` for ``.webm``, whose alpha rides in a 4:2:0 chroma
@@ -2047,6 +2051,10 @@ class Scene(RenderLoopMixin):
             If the output container, codec or settings are invalid, a render
             pass name is unknown, or FFmpeg cannot encode the requested passes.
             All are checked before rendering starts.
+        OSError
+            If FFmpeg refuses the video, as a container refuses a ``codec`` it
+            cannot hold. Nothing is written to ``file_path``, and a file
+            already there is kept.
 
         Examples
         --------

@@ -34,6 +34,7 @@ from typing import Literal
 from algan.animation_timeline.animation_contexts import Off
 from algan.errors import (
     AlganConfigurationError,
+    AlganWarning,
     LegacySceneDiscoveryWarning,
     NeverSpawnedMobWarning,
     _user_stacklevel,
@@ -259,6 +260,36 @@ _TRANSPARENT_CODECS = {
         ["-pix_fmt", "yuva420p", "-crf", "20", "-b:v", "0", "-row-mt", "1"],
     ),
 }
+
+
+#: Containers whose muxer refuses H.264, and what opaque output is encoded as
+#: there instead. Both have been offered since ``_SUPPORTED_VIDEO_CONTAINERS``
+#: was written, but the codec was chosen without them, and libx264 went into
+#: every container: FFmpeg refused it once the render had paid for its frames
+#: or -- for a clip small enough to sit in its input pipe -- left an empty file
+#: that was reported rendered.
+_OPAQUE_CONTAINER_CODECS = {
+    # The opaque counterpart of the transparent WebM encoding above: the same
+    # rate control, in plain 4:2:0, which every player decodes.
+    ".webm": (
+        "libvpx-vp9",
+        ["-pix_fmt", "yuv420p", "-crf", "20", "-b:v", "0", "-row-mt", "1"],
+    ),
+    # A palette per frame, drawn from that frame: FFmpeg's fixed default
+    # palette dithers flat fills into noise. Per frame rather than one for the
+    # clip, so frames stream through instead of being held until the end.
+    ".gif": (
+        "gif",
+        [
+            "-vf",
+            "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1",
+        ],
+    ),
+}
+
+#: Audio codecs for containers whose muxer refuses MP3, the default elsewhere.
+#: ``None`` is a container that has no audio track at all.
+_CONTAINER_AUDIO_CODECS = {".webm": "libopus", ".gif": None}
 
 
 def _transparent_encoder(suffix, premultiplied_over=False):
@@ -494,6 +525,12 @@ def _render_scene_to_file(
             scene_finalized = False
 
         transparent = scene.background_is_transparent()
+        if codec is None and not transparent and suffix in _OPAQUE_CONTAINER_CODECS:
+            # Before selection, which would otherwise pick H.264 for any
+            # container; a codec named here passes through it untouched.
+            codec, container_params = _OPAQUE_CONTAINER_CODECS[suffix]
+            if ffmpeg_params is None:
+                ffmpeg_params = list(container_params)
         # Selection sees the raw arguments, before defaults are filled in:
         # an explicit codec must win verbatim, caller-supplied parameters
         # must not be confused with Algan's own, and its software fallback
@@ -523,8 +560,9 @@ def _render_scene_to_file(
         encode_binary = resolve_encode_binary(codec)
         if codec is None:
             codec = "libx264"
+        container_has_audio = _CONTAINER_AUDIO_CODECS.get(suffix, "mp3") is not None
         if audio_codec is None:
-            audio_codec = "mp3"
+            audio_codec = _CONTAINER_AUDIO_CODECS.get(suffix, "mp3")
         if ffmpeg_params is None:
             ffmpeg_params = [] if transparent else ["-crf", "17", "-preset", "slower"]
         logger.info(f"Encoding video with {codec}")
@@ -537,12 +575,22 @@ def _render_scene_to_file(
 
         logger.info(f"Began rendering {destination}")
         start_time = time.perf_counter()
-        audiofile = scene.save_audio(
-            str(audio_file_path),
-            video_settings.audio_sample_rate,
-            nbytes=4,
-            codec="pcm_s32le",
-        )
+        audiofile = None
+        if container_has_audio:
+            audiofile = scene.save_audio(
+                str(audio_file_path),
+                video_settings.audio_sample_rate,
+                nbytes=4,
+                codec="pcm_s32le",
+            )
+        elif scene.effects:
+            warnings.warn(
+                f"{suffix.lstrip('.').upper()} has no audio track, so this "
+                f"Scene's audio is left out of {destination.name}. Write it "
+                f"with Scene.save_audio, or save the video as .mp4 or .webm.",
+                AlganWarning,
+                stacklevel=_user_stacklevel(),
+            )
         if audiofile is not None:
             if not getattr(scene, "_suppress_automatic_transcript", False):
                 script_file_path.write_text(
