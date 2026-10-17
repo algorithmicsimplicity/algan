@@ -25,7 +25,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from algan import DOWN, LEFT, RIGHT, SETTINGS, UP, SceneManager, Square
+from algan import DOWN, LEFT, ORIGIN, RIGHT, SETTINGS, UP, SceneManager, Square
+from algan.errors import AlganConfigurationError
 
 EDGES = {"up": UP, "down": DOWN, "left": LEFT, "right": RIGHT}
 
@@ -122,3 +123,26 @@ def test_move_to_edge_leaves_the_other_axes_alone(edge_name):
     torch.testing.assert_close(
         mob.get_center().reshape(-1, 3)[0][off_axis], start[off_axis], atol=2e-5, rtol=0
     )
+
+
+@pytest.mark.parametrize(
+    "corner",
+    [UP + RIGHT, [1, 1, 0], [UP + RIGHT]],
+    ids=["diagonal", "list", "diagonal-in-a-list"],
+)
+def test_move_to_screen_corner_takes_the_diagonal_into_it(corner):
+    """Manim's ``to_corner(UR)`` spelling.
+
+    A bare diagonal raised, iterated as three numbers, and one inside a list
+    cast a ray along itself that left the frame through the top edge, well
+    short of the right one.
+    """
+    mob = Square().move_to_screen_corner(corner)
+
+    assert _signed_inset(mob, UP) == pytest.approx(_buffer(), abs=2e-5)
+    assert _signed_inset(mob, RIGHT) == pytest.approx(_buffer(), abs=2e-5)
+
+
+def test_move_to_screen_corner_needs_an_edge():
+    with pytest.raises(AlganConfigurationError, match="UP \\+ RIGHT"):
+        Square().move_to_screen_corner(ORIGIN)

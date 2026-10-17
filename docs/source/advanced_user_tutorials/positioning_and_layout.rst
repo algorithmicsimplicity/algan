@@ -118,7 +118,8 @@ from the camera instead of drifting towards or away from the viewer:
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge`
      - Rest against one screen edge, ``buffer`` away from it.
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_corner`
-     - Rest in a corner, named by its two edges.
+     - Rest in a corner, named by its two edges or by the diagonal into it
+       (``UP + LEFT``).
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_position`
      - Place at fractional screen coordinates: ``(0, 0)`` bottom-left,
        ``(1, 1)`` top-right.
