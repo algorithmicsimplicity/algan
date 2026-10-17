@@ -411,8 +411,12 @@ def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
     unsq = unsquish(syn_bas, -1, 3)
     up_row = unsq[..., 1, :]
     scale = unsq.norm(p=2, dim=-1, keepdim=False)
-    off_a = up_row * 0.5
-    off_b = (F.normalize(up_row, p=2, dim=-1) * scale[..., 1].unsqueeze(-1)) * 0.5
+    # Cylinder's own expressions, built height included: the side spans
+    # ``height`` times the up row.
+    off_a = up_row * (plan.height * 0.5)
+    off_b = (F.normalize(up_row, p=2, dim=-1) * scale[..., 1].unsqueeze(-1)) * (
+        plan.height * 0.5
+    )
     variant = plan.variant.view(1, n_syn, 1).to(off_a.device)
     offset = torch.where(variant, off_b, off_a)
     current_end = syn_loc + offset
@@ -439,7 +443,7 @@ def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
     d_mid = mid - syn_loc
     new_syn_loc = syn_loc + d_mid
     new_basis = torch.cat(
-        (right_b * scale[..., :1], sep, forward_b * scale[..., 2:]), -1
+        (right_b * scale[..., :1], sep / plan.height, forward_b * scale[..., 2:]), -1
     )
 
     d_mid_g = d_mid.unsqueeze(2)  # [B, S, 1, 3]
