@@ -334,8 +334,9 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
                         elif hasattr(mob, 'set_opacity'):
                             mob.set_opacity(opacity)
                         result.append(mob)
-                        for parent_name in vgroup_stack[:-1]:
-                            vgroups[parent_name].add(mob)
+                        if isinstance(mob, VMobject):
+                            for parent_name in vgroup_stack[:-1]:
+                                vgroups[parent_name].add(mob)
             except Exception as e:
                 logger.error(f"Exception occurred in 'get_mobjects_from'. Details: {e}")
 

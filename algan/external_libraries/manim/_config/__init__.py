@@ -3,10 +3,16 @@
 Upstream also builds a ``rich``-backed logger here and installs it on the
 *root* logger at import time. Algan owns its own console output and must not
 have a library reconfigure logging out from under the importing application,
-so this copy hands out a plain :mod:`logging` logger with a ``NullHandler``
-and a ``console`` that is a thin ``print`` wrapper. That is everything the
-vendored geometry subset asks for, and it keeps ``rich`` out of Algan's
-dependency set.
+so this copy hands out a plain :mod:`logging` logger and a ``console`` that is
+a thin ``print`` wrapper. That is everything the vendored geometry subset asks
+for, and it keeps ``rich`` out of Algan's dependency set.
+
+The logger is ``algan.manim``, a child of Algan's own, so what Manim warns
+about -- an SVG element it cannot import, a deprecated argument -- prints on
+Algan's console at Algan's level, and its ``INFO`` only at ``DEBUG`` (see
+``algan/logging/logger.py``). On a ``manim`` logger, which only upstream's own
+setup gives a handler, those records were dropped unless the application had
+configured the root logger.
 """
 
 from __future__ import annotations
@@ -44,9 +50,8 @@ class _Console:
         print(text, file=self._stream, **kwargs)
 
 
-#: Reachable as ``manim.logger`` or ``logging.getLogger("manim")``.
-logger = logging.getLogger("manim")
-logger.addHandler(logging.NullHandler())
+#: Reachable as ``manim.logger`` or ``logging.getLogger("algan.manim")``.
+logger = logging.getLogger("algan.manim")
 
 console = _Console(sys.stdout)
 error_console = _Console(sys.stderr)

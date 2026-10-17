@@ -36,6 +36,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DST = REPO_ROOT / "algan" / "external_libraries" / "manim"
 
+# What the vendored copy logs on, in place of upstream's "manim": a child of
+# Algan's own logger, so its records print on Algan's console. See
+# CONFIG_INIT_PY, and algan/logging/logger.py, which names it too.
+VENDORED_LOGGER = "algan.manim"
+
 # --------------------------------------------------------------------------
 # What is kept.
 #
@@ -323,6 +328,11 @@ def apply_targeted_patches(text: str, module: str) -> str:
         )
 
     elif module == "_config.utils":
+        # The same logger as _config/__init__.py's; see CONFIG_INIT_PY.
+        cut(
+            'logger = logging.getLogger("manim")\n',
+            f'logger = logging.getLogger("{VENDORED_LOGGER}")\n',
+        )
         # The vendored subset ships no OpenGL renderer, and the base-swapping
         # this setter does would rebase the geometry classes onto the inert
         # stand-ins in mobject/opengl/.
@@ -336,6 +346,13 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "                \"renderer cannot be set to 'opengl'. Algan renders \"\n"
             '                "Manim geometry with its own ray tracer."\n'
             "            )\n",
+        )
+
+    elif module == "utils.deprecation":
+        # The same logger as _config/__init__.py's; see CONFIG_INIT_PY.
+        cut(
+            'logger = logging.getLogger("manim")\n',
+            f'logger = logging.getLogger("{VENDORED_LOGGER}")\n',
         )
 
     elif module == "mobject.types.image_mobject":
@@ -572,6 +589,18 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "                        elif hasattr(mob, 'set_opacity'):\n"
             "                            mob.set_opacity(opacity)\n"
             "                        result.append(mob)\n",
+        )
+        # A VGroup takes only VMobjects, and an embedded raster (se.Image,
+        # added below) is an ImageMobject: adding one raised inside the
+        # try around this, which logged an error for every emoji in a Text.
+        # The image is in `result` either way; the groups only index the
+        # vector shapes, for MathTex to find its parts by.
+        cut(
+            "                        for parent_name in vgroup_stack[:-1]:\n"
+            "                            vgroups[parent_name].add(mob)\n",
+            "                        if isinstance(mob, VMobject):\n"
+            "                            for parent_name in vgroup_stack[:-1]:\n"
+            "                                vgroups[parent_name].add(mob)\n",
         )
         cut(
             '__all__ = ["SVGMobject", "VMobjectFromSVGPath"]\n',
@@ -858,10 +887,16 @@ CONFIG_INIT_PY = '''\
 Upstream also builds a ``rich``-backed logger here and installs it on the
 *root* logger at import time. Algan owns its own console output and must not
 have a library reconfigure logging out from under the importing application,
-so this copy hands out a plain :mod:`logging` logger with a ``NullHandler``
-and a ``console`` that is a thin ``print`` wrapper. That is everything the
-vendored geometry subset asks for, and it keeps ``rich`` out of Algan's
-dependency set.
+so this copy hands out a plain :mod:`logging` logger and a ``console`` that is
+a thin ``print`` wrapper. That is everything the vendored geometry subset asks
+for, and it keeps ``rich`` out of Algan's dependency set.
+
+The logger is ``algan.manim``, a child of Algan's own, so what Manim warns
+about -- an SVG element it cannot import, a deprecated argument -- prints on
+Algan's console at Algan's level, and its ``INFO`` only at ``DEBUG`` (see
+``algan/logging/logger.py``). On a ``manim`` logger, which only upstream's own
+setup gives a handler, those records were dropped unless the application had
+configured the root logger.
 """
 
 from __future__ import annotations
@@ -899,9 +934,8 @@ class _Console:
         print(text, file=self._stream, **kwargs)
 
 
-#: Reachable as ``manim.logger`` or ``logging.getLogger("manim")``.
-logger = logging.getLogger("manim")
-logger.addHandler(logging.NullHandler())
+#: Reachable as ``manim.logger`` or ``logging.getLogger("algan.manim")``.
+logger = logging.getLogger("algan.manim")
 
 console = _Console(sys.stdout)
 error_console = _Console(sys.stderr)
@@ -1508,8 +1542,11 @@ Rewritten wholesale:
 
 6. `_config/__init__.py`. Upstream builds a `rich` logger and installs it on
    the **root** logger at import time. This copy hands out a plain
-   `logging.getLogger("manim")` with a `NullHandler`, which is also how `rich`
-   stays out of Algan's dependency set.
+   `logging.getLogger("algan.manim")`, which is also how `rich` stays out of
+   Algan's dependency set. Being a child of Algan's own logger, it prints on
+   Algan's console at Algan's level, where a `manim` logger would print only
+   if the application had configured the root logger.
+   `algan/logging/logger.py` holds its `INFO` back to `DEBUG`.
 7. `__init__.py`, to export the kept subset, with the Pango classes withheld
    unless `manimpango` imports (see `PANGO_AVAILABLE`).
 
@@ -1526,6 +1563,7 @@ Targeted, asserted, one dropped reference each:
     import (it is re-imported under `TYPE_CHECKING` a few lines below).
 11. `_config/utils.py` -- `ManimConfig.renderer`'s setter rejects `"opengl"`
     outright rather than rebasing the geometry classes onto the stand-ins.
+    It logs on `algan.manim`, as in 6.
 12. `mobject/text/text_mobject.py` -- `manimpango` is reached through the lazy
     proxies in `manim/_pango.py`, so the module imports without the optional
     extra. It has to: `Text` is `Brace`'s default label class and `Paragraph`
@@ -1541,10 +1579,12 @@ Targeted, asserted, one dropped reference each:
     imported fill/stroke coverage. Embedded rasters use the authored image
     width and height before the SVG's overall size normalization. Group
     opacity is applied per shape; overlapping shapes do not form an isolated
-    SVG compositing layer. The restyled SVG is parsed from memory rather than
-    from a fixed-name scratch file beside the source, which concurrent
-    processes parsing one cached SVG deleted from under each other; embedded
-    rasters go through a private temporary file.
+    SVG compositing layer. Embedded rasters stay out of the `VGroup`s that
+    index the SVG's groups, which take only vector shapes: adding one raised,
+    and logged an error for every emoji in a `Text`. The restyled SVG is
+    parsed from memory rather than from a fixed-name scratch file beside the
+    source, which concurrent processes parsing one cached SVG deleted from
+    under each other; embedded rasters go through a private temporary file.
 14. `utils/tex_file_writing.py` -- `tex_to_svg_file` hands the build to
     `algan.utils.typeset_cache.build_tex_svg`. Upstream compiles in `tex_dir`
     and then deletes every non-`.svg`/`.tex` file there; Algan shares that
@@ -1552,6 +1592,7 @@ Targeted, asserted, one dropped reference each:
     flight. Each formula is now compiled in a private directory and its
     `.svg` published with an atomic rename, under the same content-addressed
     name.
+15. `utils/deprecation.py` -- logs on `algan.manim`, as in 6.
 """
 
 
