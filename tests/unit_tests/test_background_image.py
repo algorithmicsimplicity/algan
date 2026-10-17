@@ -17,7 +17,7 @@ import pytest
 import torch
 from PIL import Image
 
-from algan import PREVIEW, CameraView, Square
+from algan import PREVIEW, CameraView, Color, Square
 from algan.errors import AlganConfigurationError
 from algan.render_loop import _prepare_background_for_chunk
 from algan.rendering.raytracing.scene_builder import (
@@ -313,3 +313,86 @@ def test_a_pathlib_path_is_an_image_path(tmp_path, quadrants):
             scene.set_background(tmp_path / "missing.png")
 
     _assert_shows_the_quadrants(frame)
+
+
+#: One color, in each spelling a Mob's color takes.
+SLATE = (0.1, 0.2, 0.3)
+SLATE_SPELLINGS = {
+    "tuple": SLATE,
+    "list": list(SLATE),
+    "hex int": 0x1A334D,
+    "hex string": "#1A334D",
+    "rgb tensor": torch.tensor(SLATE),
+    "Color": Color(SLATE),
+}
+
+
+@pytest.mark.parametrize("spelling", SLATE_SPELLINGS)
+def test_every_color_spelling_is_an_opaque_background(tmp_path, spelling):
+    """REGRESSION. Only a string went through the color parser. A tuple, a
+    list or a hex int failed the render with "tuple indices must be integers"
+    (or "'int' object is not subscriptable"), and an RGB tensor's blue was read
+    as its alpha: the output came out transparent, an RGBA PNG and a ``.mov``.
+    """
+    with Scene(video_settings=STILL) as scene:
+        scene.set_background(SLATE_SPELLINGS[spelling])
+        assert not scene.background_is_transparent()
+        _small_square()
+        result = scene.save_frame(tmp_path / "slate.png")
+
+    with Image.open(result.output_path) as image:
+        assert image.mode == "RGB"
+        corner = image.getpixel((2, 2))
+    assert np.abs(np.subtract(corner, (26, 51, 77))).max() <= 1
+
+
+def test_an_rgb_tensor_background_makes_an_mp4(tmp_path):
+    """REGRESSION. See above: the RGB tensor's video was a transparent ``.mov``."""
+    with Scene(video_settings=STILL) as scene:
+        scene.set_background(torch.tensor(SLATE))
+        _small_square()
+        result = scene.save_video(tmp_path / "slate")
+
+    assert result.output_path.suffix == ".mp4"
+
+
+def test_the_constructors_grid_callback_is_an_image_a_video_can_use(tmp_path):
+    """REGRESSION. ``Scene(background=callable)`` calls the callable once with a
+    grid of pixel indices, row 0 at the bottom, and keeps the image it returns.
+    Stored as returned, ``[height, width, channels]``, a video read its rows as
+    frames and failed on every batch of more than one frame; and its blue,
+    being last, was read as alpha.
+    """
+    cv2 = pytest.importorskip("cv2")
+
+    def bottom_blue_top_red(grid):
+        rows = grid[..., :1].float() / (grid.shape[0] - 1)
+        return torch.cat((rows, torch.zeros_like(rows), 1 - rows), -1)
+
+    clip = STILL.set(frames_per_second=10)
+    with Scene(clip, background=bottom_blue_top_red) as scene:
+        assert not scene.background_is_transparent()
+        square = _small_square()
+        square.move((0.5, 0, 0))
+        result = scene.save_video(tmp_path / "gradient")
+
+    assert result.output_path.suffix == ".mp4"
+    capture = cv2.VideoCapture(str(result.output_path))
+    try:
+        frames = []
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            frames.append(frame[..., ::-1].astype(np.int16))
+    finally:
+        capture.release()
+    assert len(frames) > 1
+    # Red at the top and blue at the bottom of every frame: the image the
+    # callback drew, the right way up, in each batch.
+    for frame in frames:
+        top, bottom = frame[1, 2], frame[-2, 2]
+        assert top[0] > 200, top
+        assert top[2] < 40, top
+        assert bottom[2] > 200, bottom
+        assert bottom[0] < 40, bottom

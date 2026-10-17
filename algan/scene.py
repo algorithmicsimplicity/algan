@@ -1822,8 +1822,11 @@ class Scene(RenderLoopMixin):
         ----------
         background
             A color, a path to an image, or a procedural callable
-            ``(x, y, time) -> color``. A color with alpha below 1 makes the output
-            transparent. ``None`` leaves the background unchanged.
+            ``(x, y, time) -> color``. The color takes any spelling a Mob's color
+            does: a :class:`~.Color`, a hex string or int, a CSS name, or an RGB
+            or RGBA sequence of floats in ``[0, 1]``. A color with alpha below 1
+            makes the output transparent. ``None`` leaves the background
+            unchanged.
 
             The path is a ``str`` or a :class:`~pathlib.Path`; a relative one is
             looked for in the working directory and then beside the running script.
@@ -1887,6 +1890,19 @@ class Scene(RenderLoopMixin):
                 background = to_color(background)
             except InvalidColorError as not_a_color:
                 background = self._background_image_frame(background, not_a_color)
+        elif not callable(background):
+            # Every other color spelling a Mob takes means the same here: an
+            # RGB tuple, a hex int, a tensor without glow and opacity. Kept as
+            # given, a tuple or an int failed the render with "tuple indices
+            # must be integers", and an RGB tensor's blue was read as its
+            # alpha, so the output came out transparent -- a .mov, not an .mp4.
+            background = to_color(background)
+            if torch.is_tensor(background) and background.dim() == 3:
+                # [height, width, channels], rows bottom-up: an image, as the
+                # constructor's coordinate-grid callback returns one. Stored as
+                # one frame of it, like every image background; as it was, a
+                # video read it as frames and failed on any batch of more.
+                background = background.unsqueeze(0)
         self.background_frame = self.background = background
         self.background_is_set = True
         return self
