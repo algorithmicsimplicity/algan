@@ -15,6 +15,7 @@ through one shared path.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import warnings
@@ -36,6 +37,7 @@ from algan.mobs.three_d_models.scene_data import (
     NodeData,
     SceneData,
 )
+from algan.utils.memory_utils import is_out_of_memory
 
 
 def _to_tensor(array, dtype=torch.float32):
@@ -413,11 +415,46 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         return static_nodes, []
 
 
+@contextlib.contextmanager
+def _reading(file_path):
+    """Raise a failure to parse ``file_path`` as one that names the file.
+
+    pygltflib and trimesh report a damaged file by whatever it tripped --
+    ``struct.error`` for an empty glB, ``chunk was not expected length!`` for
+    a truncated one, an ``IndexError`` from a broken OBJ -- and not by the file.
+    """
+    try:
+        yield
+    except Exception as exc:
+        if (
+            isinstance(exc, ImportError)
+            or is_out_of_memory(exc)
+            or (isinstance(exc, OSError) and exc.errno is not None)
+        ):
+            # A parser that is not installed, memory running out, or a file
+            # that could not be opened or read: nothing to do with what it holds.
+            raise
+        suffix = os.path.splitext(file_path)[1].lower()
+        kind = type(exc).__qualname__
+        if type(exc).__module__ != "builtins":
+            # struct.error, not a bare "error".
+            kind = f"{type(exc).__module__}.{kind}"
+        # OSError, as the assimp loader raises for a file it cannot import.
+        raise OSError(
+            f"Could not read {file_path!r} as a {suffix} model ({kind}: {exc}). "
+            f"Check that it opens in another 3D viewer, and if it does not, "
+            f"export it again."
+        ) from exc
+
+
 def load_scene(file_path):
     """Parse ``file_path`` (glTF/glB/OBJ/PLY/... anything trimesh reads) into a
     :class:`SceneData`. Node-instance world transforms from the scene graph are
     baked into flat root nodes (parent -1), which the shared model builder then
     applies to the geometry.
+
+    Raises :class:`FileNotFoundError` if the model file does not exist, and
+    :class:`OSError` naming the file if it cannot be parsed.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
@@ -430,7 +467,8 @@ def load_scene(file_path):
     if suffix in (".glb", ".gltf"):
         from pygltflib import GLTF2
 
-        gltf = GLTF2().load(file_path)
+        with _reading(file_path):
+            gltf = GLTF2().load(file_path)
         if gltf.animations:
             # trimesh preserves mesh extras on every primitive. Carry identity
             # through that boundary instead of guessing from vertex/face counts
@@ -448,7 +486,8 @@ def load_scene(file_path):
                 "resolver": trimesh.resolvers.FilePathResolver(file_path),
                 "merge_primitives": False,
             }
-    loaded = trimesh.load(source, process=False, force="scene", **load_options)
+    with _reading(file_path):
+        loaded = trimesh.load(source, process=False, force="scene", **load_options)
 
     meshes: list[MeshData] = []
     materials: list[MaterialData] = []
