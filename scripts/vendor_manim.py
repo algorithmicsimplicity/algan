@@ -557,7 +557,7 @@ def apply_targeted_patches(text: str, module: str) -> str:
         cut(missing_font, installed_font)
 
     elif module == "mobject.svg.svg_mobject":
-        cut("import os\n", "import io\nimport os\nimport tempfile\n")
+        cut("import os\n", "import io\nimport os\nimport tempfile\nimport textwrap\n")
         # Upstream writes its restyled copy to one fixed scratch name beside
         # the SVG and deletes it after parsing. Algan's Tex/Text SVGs live in a
         # cache every process shares, so two processes parsing the same file
@@ -674,6 +674,25 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "        return mob\n\n"
             "    @staticmethod\n"
             "    def rect_to_mobject(rect: se.Rect) -> Rectangle:\n",
+        )
+        # Upstream names only the element's class ("Unsupported element type:
+        # <class 'svgelements.svgelements.Text'>"). Say which text is left out
+        # and how to keep it; an element with no text to draw says nothing. A
+        # <tspan> is an element of its own, so its <text> often has none.
+        cut(
+            '        logger.warning(f"Unsupported element type: {type(text)}")\n'
+            "        return  # type: ignore[return-value]\n",
+            '        shown = textwrap.shorten(text.text or "", width=60)\n'
+            '        if shown == "[...]":\n'
+            "            # A first word longer than the line, which shorten drops whole.\n"
+            '            shown = text.text.strip()[:54] + " [...]"\n'
+            "        if shown:\n"
+            "            logger.warning(\n"
+            '                f"SVG text is not imported, so {shown!r} is left out. To "\n'
+            '                "keep it, convert the text to paths in the SVG (Inkscape: "\n'
+            '                "Path > Object to Path; Illustrator: Type > Create Outlines)."\n'
+            "            )\n"
+            "        return  # type: ignore[return-value]\n",
         )
 
     elif module == "mobject.types.vectorized_mobject":
@@ -1605,6 +1624,8 @@ Targeted, asserted, one dropped reference each:
     parsed from memory rather than from a fixed-name scratch file beside the
     source, which concurrent processes parsing one cached SVG deleted from
     under each other; embedded rasters go through a private temporary file.
+    An SVG `<text>` element, which is not imported, is reported by its text
+    and with how to keep it, where upstream named only its class.
 14. `utils/tex_file_writing.py` -- `tex_to_svg_file` hands the build to
     `algan.utils.typeset_cache.build_tex_svg`. Upstream compiles in `tex_dir`
     and then deletes every non-`.svg`/`.tex` file there; Algan shares that

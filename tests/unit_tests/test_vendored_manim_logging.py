@@ -100,39 +100,89 @@ def test_manims_own_verbosity_does_not_override_algans_level(capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_an_image_in_an_svg_is_imported_without_an_error(tmp_path):
+@pytest.fixture
+def parse_svg(tmp_path):
+    """Import an SVG through Manim's parser; return it and what it logged."""
+    # An SVG another run already parsed is replayed from Algan's cache, and
+    # never reaches the parser these tests are about.
+    SETTINGS.paths.set(cache_directory=str(tmp_path / "cache"))
+    saved = dict(svg_cache._MEM_CACHE)
+    svg_cache._MEM_CACHE.clear()
+
+    def parse(name, source):
+        path = tmp_path / name
+        path.write_text(source)
+        recorder = _Recorder()
+        manim.logger.addHandler(recorder)
+        try:
+            svg = manim.SVGMobject(str(path))
+        finally:
+            manim.logger.removeHandler(recorder)
+        return svg, [record.getMessage() for record in recorder.records]
+
+    try:
+        yield parse
+    finally:
+        svg_cache._MEM_CACHE.clear()
+        svg_cache._MEM_CACHE.update(saved)
+
+
+def test_an_image_in_an_svg_is_imported_without_an_error(parse_svg):
     """A VGroup takes only vector shapes, and adding the image to one raised.
 
     The image was still drawn, but the error was logged for every emoji in a
     Text, which now prints.
     """
-    # An SVG another run already parsed is replayed from Algan's cache, and
-    # never reaches the parser this is about.
-    SETTINGS.paths.set(cache_directory=str(tmp_path / "cache"))
-    saved = dict(svg_cache._MEM_CACHE)
-    svg_cache._MEM_CACHE.clear()
-    path = tmp_path / "emoji.svg"
-    path.write_text(
+    svg, said = parse_svg(
+        "emoji.svg",
         '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="16" '
         'viewBox="0 0 48 16">'
         '<path d="M0 12 L5 0 L10 12 Z" fill="#fff"/>'
         '<g id="glyph"><image x="18" y="0" width="12" height="12" '
         f'href="data:image/png;base64,{_PNG}"/></g>'
         '<path d="M36 0 L46 0 L46 12 L36 12 Z" fill="#fff"/>'
-        "</svg>"
+        "</svg>",
     )
-    recorder = _Recorder()
-    manim.logger.addHandler(recorder)
-    try:
-        svg = manim.SVGMobject(str(path))
-    finally:
-        manim.logger.removeHandler(recorder)
-        svg_cache._MEM_CACHE.clear()
-        svg_cache._MEM_CACHE.update(saved)
 
-    assert [record.getMessage() for record in recorder.records] == []
+    assert said == []
     assert [type(mob).__name__ for mob in svg.submobjects] == [
         "VMobjectFromSVGPath",
         "ImageMobject",
         "VMobjectFromSVGPath",
+    ]
+
+
+def test_svg_text_left_out_is_named_with_how_to_keep_it(parse_svg):
+    """Manim does not import an SVG's ``<text>``, which it reported only as
+    ``Unsupported element type: <class 'svgelements.svgelements.Text'>``.
+    """
+    _, said = parse_svg(
+        "labels.svg",
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+        '<rect x="0" y="0" width="100" height="10" fill="#fff"/>'
+        '<text x="10" y="20">Label</text>'
+        # Each <tspan> is an element of its own, and their <text> has no text.
+        '<text x="10" y="40"><tspan>Alpha</tspan> <tspan dy="10">Beta</tspan></text>'
+        '<text x="10" y="60">   </text>'
+        '<text x="10" y="70"/>'
+        '<text x="10" y="80">\n    A caption that runs on\n    for a good few lines,'
+        "\n    longer than a warning should quote.\n</text>"
+        f'<text x="10" y="90">{"https://example.com/" + "a" * 60}</text>'
+        "</svg>",
+    )
+
+    how = (
+        " is left out. To keep it, convert the text to paths in the SVG "
+        "(Inkscape: Path > Object to Path; Illustrator: Type > Create Outlines)."
+    )
+    assert said == [
+        f"SVG text is not imported, so {text!r}{how}"
+        for text in (
+            "Label",
+            "Alpha",
+            "Beta",
+            "A caption that runs on for a good few lines, longer [...]",
+            # One word, which shortening by words would leave as "[...]".
+            "https://example.com/" + "a" * 34 + " [...]",
+        )
     ]

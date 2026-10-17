@@ -450,7 +450,9 @@ def test_a_replayed_svg_logs_what_its_parse_logged(isolated_svg_cache):
 
     parsed = logged_by_import()
     assert [message for _, message in parsed] == [
-        "Unsupported element type: <class 'svgelements.svgelements.Text'>"
+        "SVG text is not imported, so 'Label' is left out. To keep it, convert "
+        "the text to paths in the SVG (Inkscape: Path > Object to Path; "
+        "Illustrator: Type > Create Outlines)."
     ]
     assert logged_by_import() == parsed, "the replay from memory said nothing"
     svg_cache._MEM_CACHE.clear()

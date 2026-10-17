@@ -133,6 +133,8 @@ Targeted, asserted, one dropped reference each:
     parsed from memory rather than from a fixed-name scratch file beside the
     source, which concurrent processes parsing one cached SVG deleted from
     under each other; embedded rasters go through a private temporary file.
+    An SVG `<text>` element, which is not imported, is reported by its text
+    and with how to keep it, where upstream named only its class.
 14. `utils/tex_file_writing.py` -- `tex_to_svg_file` hands the build to
     `algan.utils.typeset_cache.build_tex_svg`. Upstream compiles in `tex_dir`
     and then deletes every non-`.svg`/`.tex` file there; Algan shares that
