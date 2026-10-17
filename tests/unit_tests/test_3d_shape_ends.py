@@ -88,12 +88,15 @@ def _assert_ring(ring, centre, axis, radius):
 
 
 def test_a_cone_reports_its_base_and_tip(scene):
+    """REGRESSION. ``get_direction()`` returned the ``direction`` argument as
+    given, so a cone built along a vector three units long reported that
+    vector rather than which way it points.
+    """
     direction = F.normalize(torch.tensor([1.0, 2.0, 3.0]), dim=0)
     cone = Cone(radius=0.5, height=2, direction=direction * 3)
 
     _assert_point(cone.get_start(), -direction)
     _assert_point(cone.get_end(), direction)
-    # A direction, not the vector it was given as.
     _assert_point(cone.get_direction(), direction)
 
     base, tip = _end_rings(cone, direction)
