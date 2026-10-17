@@ -418,6 +418,12 @@ def test_new_scaffolds_a_runnable_script(tmp_path, capsys):
     compile(target.read_text(encoding="utf-8"), str(target), "exec")
 
 
+def test_new_creates_the_folders_it_names(tmp_path, capsys):
+    target = tmp_path / "scenes" / "chapter_1" / "intro.py"
+    assert cli.main(["new", str(target)]) == 0
+    assert target.is_file()
+
+
 def test_check_reports_the_environment(capsys):
     assert cli.main(["check"]) == 0
     printed = capsys.readouterr().out

@@ -388,6 +388,9 @@ def construct():
 if __name__ == "__main__":
     construct()
 '''
+    # `algan new scenes/intro.py` in a fresh project names a folder that does
+    # not exist yet; without this the write died as a raw FileNotFoundError.
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(template, encoding="utf-8")
     print(f"Created new scene file: {target.resolve()}")
     print(f"To render: algan render {target}")
