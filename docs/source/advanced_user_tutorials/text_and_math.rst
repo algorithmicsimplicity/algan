@@ -344,7 +344,8 @@ changing notation.
 
 ``significant_figures`` must be a positive integer or ``None``. Zero and negative
 precision raise ``ValueError``; booleans, floats (including ``3.0``), and other
-non-integers raise ``TypeError``. Significant-figures mode requires finite values.
+non-integers raise ``TypeError``. In either mode the value must be finite: there
+is no glyph to show NaN or infinity.
 
 Assigning ``value`` before spawning prepares the number without showing it or
 adding animation time. Updates driven by another animation or updater also

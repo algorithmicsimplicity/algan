@@ -194,7 +194,7 @@ class DecimalNumber(Mob):
     ValueError
         If ``significant_figures`` is less than one.
     :class:`~algan.errors.AlganConfigurationError`
-        If a value is not finite in significant-figures mode.
+        If a value is not finite: no glyph shows NaN or infinity.
 
     Examples
     --------
@@ -249,7 +249,10 @@ class DecimalNumber(Mob):
         self.decimal_places = decimal_places
         if significant_figures is not None:
             value = value.to(dtype=torch.get_default_dtype())
-            reject_non_finite("value", value)
+        # Neither mode has a glyph for NaN or infinity, and decimal places
+        # showed them as 0.00 and as the largest number its slots hold.
+        reject_non_finite("value", value)
+        if significant_figures is not None:
             self._init_significant_display(value, kwargs)
             return
         required_integer_places = self._required_integer_places(value)
@@ -472,7 +475,7 @@ class DecimalNumber(Mob):
         Raises
         ------
         :class:`~algan.errors.AlganConfigurationError`
-            If ``value`` is not finite in significant-figures mode.
+            If ``value`` is not finite.
 
         Examples
         --------
@@ -488,11 +491,11 @@ class DecimalNumber(Mob):
             Scene.save_video()
         """
         value = cast_to_tensor(value)
+        if self.significant_figures is not None:
+            value = value.to(dtype=self.value.dtype)
+        reject_non_finite("value", value)
         if self.significant_figures is None:
             self._ensure_integer_places(value)
-        else:
-            value = value.to(dtype=self.value.dtype)
-            reject_non_finite("value", value)
         return self._set_value(value, interpolation=interpolation)
 
     @animated_function(animated_args={"interpolation": 0})

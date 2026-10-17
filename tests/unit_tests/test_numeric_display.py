@@ -424,6 +424,21 @@ def test_significant_figures_require_finite_values(value):
         assert _displayed_value(display) == "1.00"
 
 
+@pytest.mark.parametrize("value", [float("inf"), -float("inf"), float("nan")])
+def test_decimal_places_require_finite_values(value):
+    # No glyph shows NaN or infinity: a NaN was drawn as 0.00, and an infinity
+    # as the largest number the digit slots hold (9.99).
+    from algan.errors import AlganConfigurationError
+
+    with Scene():
+        with pytest.raises(AlganConfigurationError, match="value must be finite"):
+            DecimalNumber(value)
+        display = DecimalNumber(1)
+        with pytest.raises(AlganConfigurationError, match="value must be finite"):
+            display.value = value
+        assert _displayed_value(display) == "1.00"
+
+
 @pytest.mark.parametrize(
     ("initial", "target", "expected"),
     [
