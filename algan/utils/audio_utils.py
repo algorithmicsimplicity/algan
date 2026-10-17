@@ -613,6 +613,37 @@ def _lazy_audio_file_clip_class():
     return LazyAudioFileClip
 
 
+def _clip_frames(clip, times, fps):
+    """``clip.get_frame(times)``, in pieces a short file's decoder can serve.
+
+    moviepy's file reader buffers at most ``n_frames + 1`` samples, and when
+    the times asked for span more than half that buffer it splits the request
+    -- recursing with its boolean in-range mask in place of the times, which
+    it then refuses as ``Accessing time t=1.00-1.00 seconds``. A clip shorter
+    than about two mixing chunks (90 ms at 44.1 kHz: a click, a tick) hit that
+    on every render. Asking in pieces no wider than half the buffer never
+    takes moviepy's split; a piece wholly outside the clip is silence, which
+    the caller's mask would have made it anyway.
+    """
+    import numpy as np
+
+    limit = getattr(clip, "buffersize", None)
+    clip_fps = getattr(clip, "fps", None)
+    if not limit or not clip_fps:
+        return clip.get_frame(times)
+    piece = max(1, int((limit // 2) * fps / clip_fps) - 1)
+    if len(times) <= piece:
+        return clip.get_frame(times)
+    frames = []
+    for first in range(0, len(times), piece):
+        span = times[first : first + piece]
+        if ((span >= 0) & (span < clip.duration)).any():
+            frames.append(clip.get_frame(span))
+        else:
+            frames.append(np.zeros((len(span), clip.nchannels)))
+    return np.concatenate(frames)
+
+
 def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=2000):
     """Write a ``CompositeAudioClip`` as its ``write_audiofile`` would, faster.
 
@@ -727,7 +758,7 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
                 part = 1 * (t >= start)
                 if end is not None:
                     part *= t <= end
-                sounds.append(clip.get_frame(t - start) * np.array([part]).T)
+                sounds.append(_clip_frames(clip, t - start, fps) * np.array([part]).T)
             # CompositeAudioClip.frame_function and AudioClip.to_soundarray.
             frame = np.zeros((len(t), nchannels)) + sum(sounds)
             frame = np.maximum(-0.99, np.minimum(0.99, frame))

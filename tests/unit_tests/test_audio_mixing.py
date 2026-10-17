@@ -139,3 +139,33 @@ def test_probed_reader_matches_the_probing_constructor(tones):
             assert np.array_equal(probing.get_frame(chunk), probed.get_frame(chunk))
         probing.close()
         probed.close()
+
+
+def _samples(path):
+    import wave
+
+    with wave.open(str(path), "rb") as audio:
+        data = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+        return data.reshape(-1, audio.getnchannels()).astype(int)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_a_clip_shorter_than_two_mixing_chunks_is_mixed(tmp_path, lazy):
+    """A 50 ms click raised ``Accessing time t=1.00-1.00 seconds``.
+
+    moviepy's reader buffers no more samples than the file holds, and splits a
+    wider request by recursing with its in-range mask where the times belong.
+    """
+    click = _tone(tmp_path / "click.wav", 0.05, 1000.0)
+    composite = _composite([click], [0.25], 0.6, lazy=lazy)
+    mixed_path = tmp_path / "mixed.wav"
+    assert audio_utils.write_composite_audio(
+        composite, str(mixed_path), fps=44100, nbytes=2, codec="pcm_s16le"
+    )
+    composite.close()
+
+    mixed, source = _samples(mixed_path), _samples(click)
+    start = round(0.25 * 44100)
+    np.testing.assert_allclose(mixed[start : start + len(source)], source, atol=1)
+    assert not mixed[: start - 1].any()
+    assert not mixed[start + len(source) + 1 :].any()
