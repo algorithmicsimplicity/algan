@@ -1683,11 +1683,28 @@ class ValueTracker(Mob):
         self._init_default_attr("value", tensor)
 
     def get_value(self):
-        return float(self.value.reshape(-1)[0])
+        """The tracked value, as a float.
+
+        A render replays an updater that reads it once per frame, so the
+        updater gets each frame's value, as it does in Manim, whatever it does
+        with it -- ``math.sin``, an f-string, an ``if``.
+        """
+        timeline = self.scene.timeline_manager
+        timeline.replay_running_updater_one_frame_at_a_time()
+        values = self.value.reshape(-1)
+        if timeline.is_replaying() and bool((values != values[0]).any()):
+            # Frames with different values at once: an updater that first read
+            # the tracker during this render. It is replayed one frame at a
+            # time from its next batch on; for this one, a value per frame, in
+            # the shape of its ``t``.
+            return self.value.reshape(-1, 1, 1)
+        return float(values[0])
 
     def set_value(self, value):
-        self.value = torch.as_tensor(value, dtype=torch.get_default_dtype()).reshape(
-            1, 1
+        value = torch.as_tensor(value, dtype=torch.get_default_dtype())
+        # One value per frame when an updater sets it from its ``t``.
+        self.value = (
+            value.reshape(-1, 1, 1) if value.numel() > 1 else value.reshape(1, 1)
         )
         return self
 
@@ -1701,7 +1718,8 @@ class ValueTracker(Mob):
         return self.increment_value(-value)
 
     def __float__(self):
-        return self.get_value()
+        value = self.get_value()
+        return float(value.reshape(-1)[0]) if torch.is_tensor(value) else value
 
 
 class ComplexValueTracker(Mob):
@@ -1718,10 +1736,27 @@ class ComplexValueTracker(Mob):
         self._init_default_attr("complex_value", tensor)
 
     def get_value(self):
-        value = self.complex_value.reshape(-1)
-        return complex(float(value[0]), float(value[1]))
+        """The tracked value, as a complex number.
+
+        As :meth:`ValueTracker.get_value`, an updater that reads it gets each
+        frame's value.
+        """
+        timeline = self.scene.timeline_manager
+        timeline.replay_running_updater_one_frame_at_a_time()
+        values = self.complex_value.reshape(-1, 2)
+        if timeline.is_replaying() and bool((values != values[:1]).any()):
+            # As in ValueTracker.get_value.
+            return torch.complex(values[:, 0], values[:, 1]).reshape(-1, 1, 1)
+        return complex(float(values[0, 0]), float(values[0, 1]))
 
     def set_value(self, value):
+        if isinstance(value, torch.Tensor) and value.numel() > 1:
+            # One value per frame when an updater sets it from its ``t``.
+            value = value.to(torch.complex64).reshape(-1, 1)
+            self.complex_value = torch.stack((value.real, value.imag), -1).to(
+                torch.get_default_dtype()
+            )
+            return self
         value = complex(value)
         self.complex_value = torch.tensor(
             (value.real, value.imag), dtype=torch.get_default_dtype()
@@ -1732,7 +1767,8 @@ class ComplexValueTracker(Mob):
         return self.set_value(self.get_value() + d_value)
 
     def __complex__(self):
-        return self.get_value()
+        value = self.get_value()
+        return complex(value.reshape(-1)[0]) if torch.is_tensor(value) else value
 
 
 _MANIM_WRAPPER_REGISTRY["ValueTracker"] = ValueTracker

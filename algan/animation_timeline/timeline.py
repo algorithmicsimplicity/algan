@@ -2225,6 +2225,7 @@ class UpdaterEvent:
         "_invocation_cache",
         "_known_clone_ids",
         "_known_clone_version",
+        "one_frame_at_a_time",
     )
 
     def __init__(self, function, caller, args, kwargs, time):
@@ -2252,6 +2253,10 @@ class UpdaterEvent:
         # AnimationTimeline._register_known_history_clones).
         self._known_clone_ids = {}
         self._known_clone_version = -1
+        # Replay it once per frame rather than once over a batch: it reads a
+        # value its code uses as a Python number. See
+        # AnimationTimeline.replay_running_updater_one_frame_at_a_time.
+        self.one_frame_at_a_time = False
 
     def register_history_clone(self, original, clone):
         entry = self._history_clones.setdefault(id(original), (original, []))
@@ -2639,6 +2644,21 @@ class AnimationTimeline:
 
     def end_updater_dependency_trace(self, previous):
         self._active_updater_trace = previous
+
+    def replay_running_updater_one_frame_at_a_time(self):
+        """Replay the updater that is running now once per frame from here on.
+
+        For a Mob whose value an updater reads as a plain Python number --
+        Manim's ``ValueTracker``, whose ``get_value()`` goes into ``math.sin``,
+        an f-string or an ``if``. Replayed over a batch, such a value can only
+        hold the batch's first frame; one frame at a time, it holds each frame's.
+        Does nothing outside an updater. An updater that first reads such a
+        value while a render replays it is replayed one frame at a time from
+        its next batch on.
+        """
+        event = self._active_updater_trace
+        if event is not None:
+            event.one_frame_at_a_time = True
 
     def begin_updater_write_capture(self, event):
         """Capture attribute writes made by one updater during replay."""
@@ -4193,7 +4213,9 @@ class AnimationTimeline:
             for signature, group_time_inds in (
                 (signature, frames)
                 for signature, time_inds in groups
-                for frames in self._replay_frame_groups(time_inds)
+                for frames in self._replay_frame_groups(
+                    time_inds, f.one_frame_at_a_time
+                )
             ):
                 group_selector = (
                     group_time_inds
@@ -4239,11 +4261,12 @@ class AnimationTimeline:
         steps.sort(key=lambda step: step[0])
         return [step for _, step in steps]
 
-    def _replay_frame_groups(self, active_time_inds):
+    def _replay_frame_groups(self, active_time_inds, one_frame_at_a_time=False):
         """The ``[k, 1]`` frame-index groups a replay runs over, in order.
 
         One group of every active frame, or -- under
-        ``replay_frame_by_frame`` -- one group per frame. A recorded function
+        ``replay_frame_by_frame``, or for an updater marked
+        ``one_frame_at_a_time`` -- one group per frame. A recorded function
         rebuilds each frame from that frame's state alone, but its arithmetic
         is not shape-blind: a basis change spreads over a large subtree through
         an einsum whose GEMM rounds a frame's rows differently for a different
@@ -4254,7 +4277,7 @@ class AnimationTimeline:
         """
         if active_time_inds.numel() == 0:
             return []
-        if not self.replay_frame_by_frame:
+        if not (self.replay_frame_by_frame or one_frame_at_a_time):
             return [active_time_inds]
         return list(active_time_inds.split(1))
 

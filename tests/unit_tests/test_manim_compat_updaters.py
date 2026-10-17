@@ -9,12 +9,18 @@ answered for the authored pose on every frame. ``c2p``, ``n2p`` and friends,
 handed an updater's ``t``, came back in Manim's own array shapes -- ``c2p`` as
 a ``(3, frames)`` column that ``move_to`` cannot take even when the updater is
 first applied -- and ``point_from_proportion`` raised.
+
+A ``ValueTracker`` read there held the batch's first frame on every frame, so a
+dot steered by one stood still for a whole batch and then jumped.
 """
+
+import math
 
 import numpy as np
 import pytest
 import torch
 
+import algan.manim as mn
 from algan import (
     DOWN,
     LEFT,
@@ -24,6 +30,8 @@ from algan import (
     Arrow,
     Axes,
     Brace,
+    ComplexPlane,
+    DecimalNumber,
     Dot,
     Group,
     MathTex,
@@ -31,7 +39,9 @@ from algan import (
     Scene,
     Seq,
     Square,
+    Sync,
     Vector,
+    easings,
 )
 
 FRAMES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0])
@@ -178,5 +188,84 @@ def test_a_dot_and_its_labels_follow_a_graph_through_a_render(tmp_path):
         Scene.wait(2)
 
         result = scene.save_video(tmp_path / "follow.mp4", SMOKE_TEST)
+
+    assert result.status == "rendered"
+
+
+def test_a_tracker_read_as_a_number_holds_each_frames_value():
+    """Manim code uses ``get_value()`` as a Python number, frame by frame."""
+    with Scene() as scene:
+        tracker = mn.ValueTracker(0).spawn(animate=False)
+        display = DecimalNumber(0.0, decimal_places=1)
+        sine, lifted = Dot(), Dot()
+        Group(display, sine, lifted).spawn(animate=False)
+        labels = []
+
+        def show(mob, t):
+            value = tracker.get_value()
+            labels.append(f"{value:.1f}")
+            mob.set_value(value)
+
+        display.add_updater(show)
+        sine.add_updater(lambda m, t: m.move_to(RIGHT * math.sin(tracker.get_value())))
+        lifted.add_updater(lambda m, t: m.move_to(UP * float(tracker)))
+        with Seq(runtime=2, easing=easings.linear):
+            tracker.set_value(4)
+        labels.clear()
+
+        scene.timeline_manager.set_state_to_times(FRAMES)
+        values = FRAMES * 2
+        assert labels == [f"{value:.1f}" for value in values.tolist()]
+        _close(display.value, values)
+        _close(sine.get_center()[..., 0], torch.sin(values))
+        _close(lifted.get_center()[..., 1], values)
+
+
+def test_a_complex_tracker_holds_each_frames_value():
+    with Scene() as scene:
+        z = mn.ComplexValueTracker(0).spawn(animate=False)
+        plane = ComplexPlane()
+        on_plane, by_parts = Dot(), Dot()
+        Group(plane, on_plane, by_parts).spawn(animate=False)
+        on_plane.add_updater(lambda m, t: m.move_to(plane.n2p(z.get_value())))
+        by_parts.add_updater(
+            lambda m, t: m.move_to(RIGHT * z.get_value().real + UP * z.get_value().imag)
+        )
+        with Seq(runtime=2, easing=easings.linear):
+            z.set_value(2 + 4j)
+
+        scene.timeline_manager.set_state_to_times(FRAMES)
+        expected = torch.stack([FRAMES, FRAMES * 2, torch.zeros(5)], -1)
+        _close(by_parts.get_center(), expected)
+        _close(
+            on_plane.get_center(),
+            torch.stack(
+                [
+                    torch.as_tensor(plane.n2p(complex(x, y)))
+                    for x, y in expected[:, :2].tolist()
+                ]
+            ),
+        )
+
+
+def test_a_dot_steered_by_a_tracker_renders(tmp_path):
+    with Scene() as scene:
+        axes = Axes(x_range=[0, 10], y_range=[0, 100, 10])
+        x = mn.ValueTracker(0)
+
+        def height(value):
+            return 2 * (value - 5) ** 2
+
+        graph = axes.plot(height)
+        dot = Dot(axes.c2p(0, height(0)))
+        Group(axes, graph, dot).spawn(animate=False)
+        x.spawn(animate=False)
+        dot.add_updater(
+            lambda m, t: m.move_to(axes.c2p(x.get_value(), height(x.get_value())))
+        )
+        with Sync(runtime=2):
+            x.set_value(5)
+
+        result = scene.save_video(tmp_path / "tracker.mp4", SMOKE_TEST)
 
     assert result.status == "rendered"

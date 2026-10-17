@@ -125,6 +125,17 @@ Video batches tolerate that; stills sharing a render batch must not
 `test_batched_stills.py::test_a_still_batch_replays_each_frame_as_it_would_alone`
 is the guard.
 
+One updater can also be replayed a frame at a time on its own:
+`UpdaterEvent.one_frame_at_a_time`, set by
+`replay_running_updater_one_frame_at_a_time()` from inside the updater. The
+compat `ValueTracker`/`ComplexValueTracker` set it from `get_value()`, because
+Manim code uses that value as a Python number (`math.sin`, f-strings, `if`),
+which a batched call can only give the batch's first frame. The flag is set
+during the updater's authoring-time application, so every replay of it is per
+frame; only an updater that first reads a tracker during a render is batched
+(and handed a per-frame tensor) for that one batch. Other updaters and the
+recorded functions stay batched. `test_manim_compat_updaters.py` guards it.
+
 ### Why `reset=False` is safe
 
 Render-state preservation and `timeline_manager.clear_buffers()` restore authored
