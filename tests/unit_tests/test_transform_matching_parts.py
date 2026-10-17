@@ -132,6 +132,18 @@ def test_batched_manim_tex_reads_live_rows(scene):
         assert torch.allclose(end, start + UP * 2, atol=1e-5)
 
 
+def test_a_title_keys_its_underline_apart_from_its_text(scene):
+    # Manim's Title is a Tex with an underline added as one more part, and
+    # reading a LaTeX key off every part raised AttributeError on the Line:
+    # no Title could be built.
+    title = algan.Title("Hello", "World")
+    assert [key for key, _ in _tex_parts(title)] == ["Hello", "World", None]
+    with Off():
+        title.spawn(False)
+    result = TransformMatchingTex(title, algan.Title("World", "Hello"))
+    assert [key for key, _ in _tex_parts(result)] == ["World", "Hello", None]
+
+
 def test_explicit_mapping_overrides_identity_and_combines_repetitions():
     pairs, outgoing, incoming = _match_buckets(
         {"x": [1, 2], "y": [3], "a": [4]},
