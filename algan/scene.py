@@ -938,7 +938,9 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         file_path
-            Where to write the audio.
+            Destination using the same path rules as :meth:`save_video`: a bare
+            filename goes in the output directory, a missing extension becomes
+            ``.wav``, and missing directories are made.
         sample_rate
             Sample rate in Hz. Defaults to ``44100``.
         codec
@@ -948,8 +950,15 @@ class Scene(RenderLoopMixin):
 
         Returns
         -------
-        str or pathlib.Path or None
-            The path written, or ``None`` if the Scene has no audio effects.
+        pathlib.Path or None
+            The absolute path written, or ``None`` if the Scene has no audio
+            effects.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If FFmpeg wrote no file, as it does for an extension that names no
+            audio format it can write with ``codec``.
         """
         # Asking for the audio on its own is asking for output, as
         # save_subtitles is: without this a script ending in save_audio was
@@ -957,6 +966,13 @@ class Scene(RenderLoopMixin):
         _note_render_requested()
         if len(self.effects) == 0:
             return None
+        from algan.utils.algan_utils import _resolve_output_destination
+
+        # The rules every other output follows. Written as given, a bare name
+        # landed in the working directory rather than beside the video, and a
+        # missing directory or extension wrote nothing at all -- FFmpeg failed
+        # where nobody looked, and the path came back as if it had worked.
+        destination = _resolve_output_destination(file_path, ".wav")
 
         clips_to_compose = []
         start_time = self.scene_times[-1][0] / self.video_settings.frames_per_second
@@ -977,13 +993,21 @@ class Scene(RenderLoopMixin):
         # The same samples either way (write_composite_audio says why it is
         # faster); ALGAN_OPT_DISABLE=audiomix writes through moviepy for A/B.
         if _opt_disabled("audiomix") or not write_composite_audio(
-            audio_clip, str(file_path), fps=sample_rate, nbytes=nbytes, codec=codec
+            audio_clip, str(destination), fps=sample_rate, nbytes=nbytes, codec=codec
         ):
             audio_clip.write_audiofile(
-                file_path, fps=sample_rate, codec=codec, nbytes=nbytes
+                str(destination), fps=sample_rate, codec=codec, nbytes=nbytes
             )
         audio_clip.close()
-        return file_path
+        # FFmpeg's exit status goes unread by the writer, so a failure shows
+        # only as a missing file.
+        if not destination.exists():
+            raise AlganConfigurationError(
+                f"FFmpeg wrote no audio to {destination}. Check that "
+                f"{destination.suffix!r} is an audio format it can write with "
+                f"codec {codec!r}, such as '.wav' for the default codec."
+            )
+        return destination
 
     @active_scene_method
     def add_subcaption(

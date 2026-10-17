@@ -27,6 +27,7 @@ import torch
 
 from algan import RED, RIGHT, SMOKE_TEST, Off, Scene, Square
 from algan.animation_timeline.animation_contexts import Audio
+from algan.errors import AlganConfigurationError
 from algan.scene import renders_requested
 
 moviepy = pytest.importorskip("moviepy")
@@ -117,6 +118,67 @@ def test_the_mix_is_written_at_the_sample_rate_asked_for(scene, tmp_path):
     rate, samples = _read_wav(target)
     assert rate == 22050
     assert len(samples) == pytest.approx(2.0 * 22050, abs=1)
+
+
+@pytest.fixture
+def output_directory(tmp_path):
+    """Algan's output directory, pointed into ``tmp_path`` for the test."""
+    from algan import SETTINGS
+
+    snapshot = SETTINGS.snapshot()
+    SETTINGS.paths.set(output_root=str(tmp_path), output_directory="outputs")
+    try:
+        yield tmp_path / "outputs"
+    finally:
+        SETTINGS.restore(snapshot)
+
+
+def test_a_bare_name_lands_in_the_output_directory(
+    scene, tmp_path, monkeypatch, output_directory
+):
+    """REGRESSION. The path was handed to FFmpeg as given, so a bare name
+    landed in the working directory, while ``save_video``, ``save_frame`` and
+    ``save_subtitles`` all put one in the output directory.
+    """
+    _scene_with_a_clip_at_one_second()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    written = scene.save_audio("mix.wav")
+
+    assert written == output_directory / "mix.wav"
+    assert written.is_file()
+    assert not (elsewhere / "mix.wav").exists()
+
+
+@pytest.mark.parametrize(
+    ("asked", "expected"),
+    [("new/folder/mix.wav", "new/folder/mix.wav"), ("new/mix", "new/mix.wav")],
+)
+def test_a_missing_directory_or_extension_still_writes_the_file(
+    scene, tmp_path, asked, expected
+):
+    """REGRESSION. A directory that did not exist yet, or a name without an
+    extension, made FFmpeg fail, but the writer does not read its exit status:
+    ``save_audio`` wrote nothing and returned the path as if it had. As for a
+    video, the directories are now made and the extension defaults (``.wav``).
+    """
+    _scene_with_a_clip_at_one_second()
+
+    written = scene.save_audio(tmp_path / asked)
+
+    assert written == tmp_path / expected
+    assert _read_wav(written)[0] == 44100
+
+
+def test_a_file_ffmpeg_cannot_write_is_an_error_not_a_path(scene, tmp_path):
+    """And where FFmpeg still writes nothing -- an extension that is no audio
+    format -- the call says so rather than returning the path.
+    """
+    _scene_with_a_clip_at_one_second()
+    with pytest.raises(AlganConfigurationError, match="wrote no audio"):
+        scene.save_audio(tmp_path / "mix.not-a-format")
 
 
 def test_save_audio_on_the_class_mixes_the_active_scene(scene, tmp_path):
@@ -295,11 +357,11 @@ def test_a_script_that_only_saves_its_audio_is_not_told_it_rendered_nothing(
         square = Square().spawn()
         with Audio(tone):
             square.move(RIGHT)
-        Scene.save_audio("narration.wav")
+        print(Scene.save_audio("narration.wav"))
         """,
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "narration.wav").exists()
+    assert Path(result.stdout.strip().splitlines()[-1]).exists()
     assert NOTHING_RENDERED not in result.stderr
 
 
