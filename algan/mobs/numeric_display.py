@@ -36,7 +36,9 @@ from algan.geometry.geometry import (
     map_local_to_global_coords,
 )
 from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.mobs.group import Group
 from algan.mobs.text import Tex
+from algan.utils.mob_utils import batch_mobs
 from algan.utils.tensor_utils import cast_to_tensor, reject_non_finite
 
 
@@ -79,6 +81,25 @@ def _show_glyphs(circuit, shown, alphas):
             part.set_animated_attribute("color", colors, recursive=False)
     finally:
         scene._writing_component_alpha = previous
+
+
+def _drawn_members(circuit):
+    """Which members of a packed glyph circuit :func:`_show_glyphs` draws.
+
+    One flag per member: whether the alpha of its fill or stroke color is
+    above zero anywhere in its block of texels.
+    """
+    drawn = None
+    for part in (circuit.grid, circuit.border_grid):
+        alpha = part.get_animated_attribute("color")[..., -1]
+        alpha = alpha.reshape(-1, alpha.shape[-1]).amax(0) > 0
+        sizes = part.parent_batch_sizes
+        if sizes is not None and int(sizes.sum()) == alpha.shape[-1]:
+            alpha = torch.stack(
+                [block.any() for block in torch.split(alpha, sizes.tolist())]
+            )
+        drawn = alpha if drawn is None else drawn | alpha
+    return drawn
 
 
 def _keep_glyph_selection(mobs):
@@ -330,6 +351,38 @@ class DecimalNumber(Mob):
         if placeholder is not None:
             memo.setdefault(id(placeholder), placeholder)
         return super().__deepcopy__(memo)
+
+    def _morphs_through_stand_in(self):
+        return True
+
+    def _morph_stand_in(self):
+        """The glyphs this number draws, packed as a Tex packs its own, for
+        ``become`` to morph.
+
+        Each digit slot holds every glyph it can show and draws one of them
+        (:func:`_show_glyphs`), so a morph of the slots themselves pairs the
+        target with glyphs that are never drawn and ends invisible.
+        """
+        glyphs = []
+        for circuit in self.get_descendants():
+            if not isinstance(circuit, BezierCircuitCubic):
+                continue
+            drawn = _drawn_members(circuit)
+            if circuit.data_sub_inds is not None:
+                # The sign or the point: a glyph of the placeholder.
+                members = [circuit] if bool(drawn.any()) else []
+            else:
+                members = [circuit[int(k)] for k in torch.nonzero(drawn).flatten()]
+            glyphs.extend(
+                member.clone(add_to_scene=False, spawn=False) for member in members
+            )
+        if not glyphs:
+            # Nothing drawn (a fully transparent color): the target grows
+            # from nothing, as from an empty Group.
+            return Group(scene=self.scene)
+        # Left to right, as the glyphs of the text the number reads as.
+        glyphs.sort(key=lambda glyph: float(glyph.get_center().reshape(-1)[0]))
+        return batch_mobs(glyphs)
 
     @property
     def value(self):
