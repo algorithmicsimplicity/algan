@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from collections.abc import Callable
 from typing import Any
@@ -32,6 +33,15 @@ def _positive_seconds(value, name):
     return result
 
 
+def _described(value):
+    """``value`` as an error message shows what a callable returned."""
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        return f"a {type(value).__name__} of shape {tuple(shape)}"
+    text = repr(value)
+    return text if len(text) <= 60 else f"{text[:57]}..."
+
+
 class _PointSource:
     """Cloning a trail keeps its source, without cloning an external Mob."""
 
@@ -41,17 +51,50 @@ class _PointSource:
     def __deepcopy__(self, memo):
         return self
 
-    def points(self, frames):
+    def check(self):
+        """Refuse a callable that cannot be called with no arguments.
+
+        TracedPath calls it once for the trail's anchor, and then once for each
+        batch of up to 32 sampled times, with the scene in that batch's state.
+        One that takes the time, as in ``lambda t: ...``, failed with Python's
+        arity error, reported as a callable that "must return one 3-D point".
+        """
         try:
-            points = cast_to_tensor(self.function())
-        except (TypeError, ValueError) as exc:
+            # Not following __wrapped__: the call binds to the outermost signature.
+            signature = inspect.signature(self.function, follow_wrapped=False)
+        except (TypeError, ValueError):
+            # A builtin may not say what it takes; the call itself will.
+            return
+        try:
+            signature.bind()
+        except TypeError as error:
+            name = (
+                getattr(self.function, "__name__", None) or type(self.function).__name__
+            )
             raise AlganConfigurationError(
-                "TracedPath's callable must return one 3-D point per sampled time"
-            ) from exc
-        if points.shape[-1:] != (3,) or points.numel() not in (3, frames * 3):
+                f"TracedPath calls its callable with no arguments, with the scene "
+                f"in the state of the times it samples, but {name}{signature} "
+                f"cannot be: {error}. Read the point from a Mob, which holds those "
+                f"times' state, as in lambda: dot.location."
+            ) from None
+
+    def points(self, frames):
+        # Called bare: an error inside the function is its own, not a sign
+        # that it returned the wrong thing.
+        returned = self.function()
+        try:
+            points = None if returned is None else cast_to_tensor(returned)
+        except (TypeError, ValueError):
+            points = None
+        if (
+            not torch.is_tensor(points)
+            or points.shape[-1:] != (3,)
+            or points.numel() not in (3, frames * 3)
+        ):
             raise AlganConfigurationError(
                 "TracedPath's callable must return one 3-D point per sampled time; "
-                "use shape (3,), (T, 3) or (T, 1, 3), not a pack of points"
+                "use shape (3,), (T, 3) or (T, 1, 3), not a pack of points. It "
+                f"returned {_described(returned)}."
             )
         if not bool(torch.isfinite(points).all()):
             raise AlganConfigurationError("TracedPath points must be finite")
@@ -113,7 +156,9 @@ class TracedPath(Mob):
     Raises
     ------
     :class:`.AlganConfigurationError`
-        If the source, point shape, timing options or Scene ownership is invalid.
+        If the source, point shape, timing options or Scene ownership is invalid,
+        or the callable cannot be called with no arguments. An error raised
+        inside the callable is raised as it is.
 
     Examples
     --------
@@ -166,6 +211,7 @@ class TracedPath(Mob):
         if not callable(traced_point_func):
             raise AlganConfigurationError("TracedPath needs a Mob or a point callable")
         self._point_source = _PointSource(traced_point_func)
+        self._point_source.check()
         self._trace_anchor = self._point_source.points(1).reshape(1, 1, 3)
         self._trace_points = None
         self._sample_interval = sample_interval
