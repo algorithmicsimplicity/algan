@@ -136,6 +136,49 @@ def _keep_pass_parents(root, parents):
         root._pass_parents = tuple(parents)
 
 
+def _resample_texels_as_drawn(value, old_size, new_size):
+    """Move per-texel circuit values onto a ``new_size`` grid, drawn the same.
+
+    ``value`` is ``[..., N * width * height, C]`` for ``N`` circuits, laid out
+    with the width axis outermost. The renderer draws texel ``i`` of an
+    ``n``-texel axis ``i / n`` of the way across the circuit's frame and holds
+    the last one out to the far edge (``_circuit_texture_color``), so each new
+    texel takes the old grid's value where it will be drawn. A five-channel
+    value is a colour, whose RGB the renderer decodes before it blends texels
+    in the linear working space, so there its RGB is blended in linear light
+    too. Where a new size is a multiple of the old one, the fill is drawn
+    exactly as before.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.utils.color_space import linear_to_srgb, srgb_to_linear
+
+    decode = value.shape[-1] == 5 and rt_settings.linear_color_space
+    if decode:
+        value = torch.cat((srgb_to_linear(value[..., :3]), value[..., 3:]), -1)
+    leading, channels = value.shape[:-2], value.shape[-1]
+    grid = value.reshape(-1, *old_size, channels)
+    for axis, (old, new) in enumerate(zip(old_size, new_size), start=1):
+        if old == new:
+            continue
+        index = torch.arange(new, dtype=value.dtype, device=value.device)
+        position = (index * (old / new)).clamp(max=old - 1)
+        low = position.floor().long()
+        high = (low + 1).clamp(max=old - 1)
+        shape = [1] * grid.dim()
+        shape[axis] = new
+        weight = (position - low).view(shape)
+        grid = (
+            grid.index_select(axis, low) * (1 - weight)
+            + grid.index_select(axis, high) * weight
+        )
+    resampled = grid.reshape(*leading, -1, channels)
+    if decode:
+        resampled = torch.cat(
+            (linear_to_srgb(resampled[..., :3]), resampled[..., 3:]), -1
+        )
+    return resampled
+
+
 def _sample_grid_bilinearly(samples, uv):
     """Bilinearly read ``samples`` (``[W, H, C]``) at ``uv`` (``[..., 2]``).
 
@@ -951,6 +994,45 @@ class MobMorphMixin:
         self._reconcile_grid_members(mine, theirs)
 
     @staticmethod
+    def _reconcile_texture_grids(mine, theirs):
+        """Give two circuits' fill textures one ``width x height`` grid.
+
+        A circuit painted per texel (``set_color_by_function``,
+        ``wave_color``) draws its fill from a grid of texels whose size is
+        plain metadata, read once per render, while the morph pairs the two
+        grids' texels row by row. A plain Square, one texel, becoming a painted
+        8 x 8 one had its texel padded out to 64 and morphed into the target's,
+        then drew them as the one texel it still declared: the morph ended one
+        flat colour and stayed that way. A 4 x 4 painting becoming an 8 x 8 one
+        ended drawing the target's first 16 texels as its own grid. Both sides
+        are now resampled to the finer grid along each axis first
+        (``_resample_texels_as_drawn``), so the morph starts on what the source
+        drew and ends on what the target draws -- exactly, where the finer size
+        is a multiple of the coarser one.
+
+        A side without a texture grid, or a packed view into another Mob's
+        rows, keeps the row-by-row pairing.
+        """
+        sides = (mine, theirs)
+        for side in sides:
+            if (
+                side.num_texture_points < 1
+                or side.data_sub_inds is not None
+                or side.grid.data_sub_inds is not None
+                or side.border_grid.data_sub_inds is not None
+                or side.grid.location.shape[-2]
+                != side.location.shape[-2] * side.num_texture_points
+            ):
+                return
+        width = max(side.grid_width for side in sides)
+        height = max(side.grid_height for side in sides)
+        for side in sides:
+            if (side.grid_width, side.grid_height) != (width, height):
+                side._set_texture_grid_resolution(
+                    width, height, _resample_texels_as_drawn
+                )
+
+    @staticmethod
     def _reconcile_grid_members(mine, theirs):
         """Pad whichever surface holds fewer grids with whole grids.
 
@@ -1109,6 +1191,8 @@ class MobMorphMixin:
     def _prepare_same_kind_node(self, mine, theirs, minimize_movement):
         if mine._morph_family == "grid":
             self._reconcile_grid_pair(mine, theirs)
+        elif mine._morph_family == "bezier":
+            self._reconcile_texture_grids(mine, theirs)
 
         my_children = mine.get_non_component_children()
         their_children = theirs.get_non_component_children()

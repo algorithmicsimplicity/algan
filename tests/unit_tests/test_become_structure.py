@@ -17,8 +17,10 @@ A feature test, so it sits outside the fast suite: it only breaks when
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 import algan.manim as mn
 from algan import (
@@ -711,6 +713,94 @@ def test_a_solid_becomes_a_painted_shape_through_its_painted_colours(scene):
     assert float(corners[:, 2].abs().max()) < 1e-3
     assert float(opacity.min()) == pytest.approx(1.0)
     _assert_painted_ramp(corners, colors, when="on the soup's last frame")
+
+
+def _purple_ramp(uv):
+    """Blue at ``v = 0``, purple at ``v = 1``: a ramp along the other axis."""
+    v = uv[..., 1:2]
+    return torch.cat((0.6 * v, torch.zeros_like(v), 1 - 0.4 * v), -1)
+
+
+def _painted(width, height, paint):
+    def make():
+        square = Square(size=3, grid_width=width, grid_height=height)
+        square.set_color_by_function(paint)
+        return square
+
+    return make
+
+
+#: Source and target, each painted on a grid whose size along both axes is a
+#: multiple of the other's, so the texels a side is resampled to draw exactly
+#: what it drew.
+TEXTURE_GRID_PAIRS = {
+    "plain to 8x8": (lambda: Square(size=3, color=BLUE), _painted(8, 8, _gradient)),
+    "4x4 to 8x8": (_painted(4, 4, _purple_ramp), _painted(8, 8, _gradient)),
+    "8x8 to 4x4": (_painted(8, 8, _purple_ramp), _painted(4, 4, _gradient)),
+    "4x16 to 8x8": (_painted(4, 16, _purple_ramp), _painted(8, 8, _gradient)),
+}
+
+
+def _stills(scene, path, at):
+    results = scene.save_frame(
+        path, SMOKE_TEST.set(resolution=(160, 90)), at=list(at), overwrite=True
+    )
+    return [
+        np.asarray(Image.open(result.output_path)).astype(np.int16)[..., :3]
+        for result in results
+    ]
+
+
+def _largest_difference(a, b) -> int:
+    return int(np.abs(a - b).max())
+
+
+@pytest.mark.parametrize(
+    "pair", TEXTURE_GRID_PAIRS.values(), ids=TEXTURE_GRID_PAIRS.keys()
+)
+def test_a_painted_shape_morphs_between_texture_grids(tmp_path, pair):
+    """REGRESSION. A painted shape kept the texture grid it was built with.
+
+    How many texels a circuit has, and how they are laid out, is read once
+    per render, while the morph pairs the two grids' texels row by row. A
+    plain square becoming an 8 x 8 painting had its one texel padded out to
+    64 and morphed into the painting's, then drew them as one texel: the
+    morph ended one flat colour and stayed that way. A grid of another size,
+    or of the same size laid out differently, ended drawing the target's
+    texels on the source's layout. Each morph here has to start on what the
+    source draws alone and end on what the target draws alone.
+    """
+    make_source, make_target = pair
+    with Scene() as alone:
+        with Off():
+            source = make_source().spawn()
+        alone.wait(1)
+        with Off():
+            source.despawn()
+            make_target().spawn()
+        alone.wait(1)
+        source_alone, target_alone = _stills(alone, tmp_path / "alone.png", (0.5, 1.5))
+
+    with Scene() as scene:
+        with Off():
+            source = make_source().spawn()
+        scene.wait(1)
+        with Off():
+            target = make_target()
+        _, start, end = _morph(scene, source, target)
+        scene.wait(1)
+        before, first, last = _stills(
+            scene, tmp_path / "morph.png", (start - 0.5, start, end + 0.5)
+        )
+
+    assert _largest_difference(source_alone, target_alone) > 100
+    assert _largest_difference(before, source_alone) <= 2
+    assert _largest_difference(first, source_alone) <= 2, (
+        "the morph's first frame is not what the source drew"
+    )
+    assert _largest_difference(last, target_alone) <= 2, (
+        "the morph did not end on what the target draws"
+    )
 
 
 def test_text_becomes_a_solid_starting_from_each_letters_fill_and_colour(scene):

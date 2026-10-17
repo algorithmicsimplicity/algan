@@ -1217,15 +1217,19 @@ class BezierCircuitCubic(Mob):
 
         return restore
 
-    def _set_texture_grid_resolution(self, width, height):
+    def _set_texture_grid_resolution(self, width, height, resample=None):
         """Internal: rebuild the texture grid at ``width x height`` per circuit.
 
         The grid is laid out exactly as the constructor lays it out, so the
         renderer's texture lookup is unchanged: ``width`` samples along the first
         basis vector, each holding ``height`` samples along the second. Existing
-        per-texel values are resampled onto the new grid. Row counts change, so
+        per-texel values are resampled onto the new grid, by
+        ``resample(value, old_size, new_size)`` when it is given and bilinearly
+        between the texels' positions otherwise. Row counts change, so
         callers must be prepared for the history split this performs.
         """
+        if resample is None:
+            resample = _resample_texture_grid
         old_size = (self.grid_width, self.grid_height)
         old_points = self.num_texture_points
         objects = self.location.shape[-2]
@@ -1270,7 +1274,7 @@ class BezierCircuitCubic(Mob):
                 if attr == "location" or value.shape[-2] != objects * old_points:
                     continue
                 texture_mob._setattr_and_rebatch_without_record(
-                    attr, _resample_texture_grid(value, old_size, (width, height))
+                    attr, resample(value, old_size, (width, height))
                 )
 
             if texture_mob.parent_batch_sizes is not None:
