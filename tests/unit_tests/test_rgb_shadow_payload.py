@@ -361,35 +361,31 @@ print("gate-off probe ok")
 """
 
 
-def test_gate_off_ignores_the_tint():
+def test_gate_off_ignores_the_tint(tmp_path):
     """With ALGAN_RGB_SHADOW_TINT=0 the producer returns today's achromatic
     value in every channel -- the green tint above must NOT appear. The
     environment variable seeds the module default during the import, so this
     arm is its own process however the gate reaches the kernels (see
     rgb_shadow_tint).
     """
-    import tempfile
-
     env = dict(os.environ)
     env["ALGAN_RGB_SHADOW_TINT"] = "0"
     env.setdefault("ALGAN_USE_DAEMON", "0")
     env.setdefault("ALGAN_AUTO_DAEMON", "0")
-    # Taichi's inspector needs real source: run from a temp file, not -c.
-    with tempfile.NamedTemporaryFile(
-        "w", suffix="_gate_off_probe.py", delete=False
-    ) as f:
-        f.write(_GATE_OFF_PROBE)
-        path = f.name
-    try:
-        result = subprocess.run(
-            [sys.executable, path],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-    finally:
-        os.unlink(path)
+    # Taichi's inspector needs real source: run from a file, not -c. The file's
+    # path is part of the probe kernel's source key, so its name is fixed: a
+    # random one added an index entry to the kernel cache on every run that no
+    # later run could find. pytest's temporary path is the same from session to
+    # session on a fresh machine, which is where CI restores its kernel cache.
+    path = tmp_path / "gate_off_probe.py"
+    path.write_text(_GATE_OFF_PROBE, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
     assert result.returncode == 0, result.stderr
 
 
