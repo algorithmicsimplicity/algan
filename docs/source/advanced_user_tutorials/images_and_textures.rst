@@ -40,9 +40,8 @@ Image paths are resolved against the working directory and then against the
 directory holding your script, so an image sitting beside your ``.py`` file loads
 regardless of where you launch Python from. The same resolution applies to
 :meth:`~algan.scene.Scene.set_background`,
-:meth:`~algan.scene.Scene.set_environment_map`,
-:class:`~algan.mobs.three_d_models.model_mob.Model3D` and the sound files
-:class:`~algan.animation_timeline.animation_contexts.Audio` plays.
+:meth:`~algan.scene.Scene.set_environment_map` and
+:class:`~algan.mobs.three_d_models.model_mob.Model3D`.
 
 Instead of a path you can pass a ``[H, W, 4]`` or ``[H, W, 5]`` tensor, which is how
 you texture something with data you computed rather than loaded.

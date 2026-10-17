@@ -6,8 +6,6 @@ nothing to stretch and took no time, so the sound played over what came next:
 two lines of narration with nothing animated under the first started together.
 """
 
-import wave
-
 import numpy as np
 import pytest
 from moviepy import AudioClip
@@ -66,26 +64,3 @@ def test_a_sound_inside_off_still_takes_no_time():
             pass
 
         assert scene.animation_manager.context.timespan.original_end == start
-
-
-def _write_wav(path, seconds):
-    with wave.open(str(path), "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(8000)
-        audio.writeframes(b"\x00\x00" * int(8000 * seconds))
-
-
-def test_a_sound_is_found_beside_the_script_and_by_path(tmp_path, monkeypatch):
-    """As an image is: by name beside the script, and as a ``pathlib.Path``."""
-    from algan.settings import path_settings
-
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    _write_wav(scripts / "click.wav", 0.25)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(path_settings, "_main_script_path", lambda: scripts / "v.py")
-
-    with Scene():
-        assert Audio("click.wav").audio_clip.duration == pytest.approx(0.25)
-        assert Audio(scripts / "click.wav").audio_clip.duration == pytest.approx(0.25)
