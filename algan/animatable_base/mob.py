@@ -1188,6 +1188,11 @@ class Mob(
         --------
         :meth:`~.Mob.wave_color` : Run the same pulse across the Mob as a travelling wave.
         """
+        # Parsed as an assigned color is, and before anything is recorded: the
+        # pulse writes these straight into the color rows, so only a 5-channel
+        # Color used to survive -- a hex int was taken for every channel.
+        color = to_color(color)
+        new_color = to_color(new_color)
         with Sync(animation_manager=self.animation_manager):
             if color is not None:
                 # new_color=None restores each part to its own current color

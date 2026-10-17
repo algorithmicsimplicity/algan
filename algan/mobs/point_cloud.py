@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
-from algan.constants.color import BLACK, WHITE, YELLOW, Color
+from algan.constants.color import BLACK, WHITE, YELLOW, Color, to_color
 from algan.constants.spatial import ORIGIN
 from algan.errors import AlganConfigurationError
 from algan.mobs.group import Group
@@ -43,6 +43,9 @@ def _as_points(points) -> torch.Tensor:
 def _as_rgba(color, alpha=1.0) -> torch.Tensor:
     if color is None:
         color = YELLOW
+    # Every spelling a Mob's color takes -- a CSS name, a hex string or int, an
+    # (r, g, b) sequence -- arrives below as a Color or a 5-wide tensor.
+    color = to_color(color)
     if isinstance(color, Color):
         rgb = color.rgb.detach().to(dtype=torch.get_default_dtype())
         opacity = color.opacity.detach().reshape(-1)[0] * alpha

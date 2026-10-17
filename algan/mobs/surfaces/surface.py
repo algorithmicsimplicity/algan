@@ -75,8 +75,23 @@ def _as_member_colors(colors, count):
 
     Accepts RGB, RGBA or the full five channels, matching what
     :class:`~algan.constants.color.Color` stores, so a point cloud's RGBA array
-    and a list of named colors both work.
+    and a list of named colors both work. So does one color for every member,
+    and a list whose entries are any spelling a Mob's ``color`` takes.
     """
+    if isinstance(colors, (list, tuple)) and not all(
+        isinstance(channel, (int, float)) for channel in colors
+    ):
+        # One color per member. Cast as a whole, a list of Colors failed with
+        # "only one element tensors can be converted to Python scalars", and a
+        # list of strings with "too many dimensions 'str'".
+        colors = torch.stack(
+            [
+                Color.add_defaults(cast_to_tensor(to_color(c)).reshape(-1))
+                for c in colors
+            ]
+        )
+    else:
+        colors = to_color(colors)
     colors = cast_to_tensor(colors).reshape(-1, cast_to_tensor(colors).shape[-1])
     if len(colors) == 1 and count > 1:
         colors = colors.expand(count, -1)

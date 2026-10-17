@@ -11,6 +11,7 @@ the glyph-wise shorthand for the same effect, staggering it across characters.
 from __future__ import annotations
 
 from algan.animation_timeline.animation_contexts import *
+from algan.constants.color import to_color
 
 
 def _with_opacity(color, opacity):
@@ -95,6 +96,9 @@ def DrawBorderThenFill(
         mobs.reverse()
     if not mobs:
         return mobs
+    # Any color spelling a Mob's ``stroke_color`` takes; ``_with_opacity`` below
+    # needs a tensor.
+    stroke_color = to_color(stroke_color)
 
     animation_manager = mobs[0].animation_manager
     length = len(mobs)

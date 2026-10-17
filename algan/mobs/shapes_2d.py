@@ -58,6 +58,10 @@ def _coerce_algan_color(value, opacity=None):
     if isinstance(value, str):
         named = globals().get(value.upper())
         value = named if isinstance(named, Color) else Color(value)
+    else:
+        # A hex int or an RGB sequence, which a bare cast took for a tensor of
+        # channels -- 0xFF0000 for every one of them.
+        value = to_color(value)
     value = cast_to_tensor(value)
     value = Color.add_defaults(value).as_subclass(Color)
     if opacity is not None:
@@ -556,7 +560,11 @@ class TriangleVertices(Mob):
             del kwargs2["location"]
         kwargs2["location"] = corner_locations.reshape(-1, 3)
         if "color" in kwargs2:
-            kwargs2["color"] = kwargs2["color"].reshape(-1, kwargs2["color"].shape[-1])
+            # Parsed here, as a circuit's color is: the reshape needs a tensor,
+            # so a hex string or an RGB tuple failed every polyhedron with
+            # "'str' object has no attribute 'reshape'".
+            color = to_color(kwargs2["color"])
+            kwargs2["color"] = color.reshape(-1, color.shape[-1])
         if normals is not None:
             normals = normals.reshape(-1, 3)
         super().__init__(**kwargs2)

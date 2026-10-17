@@ -185,6 +185,24 @@ def _preserve_algan_state_unchanged_by_manim(
         )
 
 
+def _as_manim_color_arg(value):
+    """A color keyword as one :class:`Color`, which ``to_manim`` converts.
+
+    ``to_color`` widens a bare RGB tensor to five channels without making it a
+    ``Color``, and ``to_manim`` recognizes only the subclass: the five numbers
+    reached Manim as they were, which ``ManimColor`` refuses ("only accepts
+    lists/tuples/arrays of length 3 or 4, not 5").
+    """
+    value = to_color(value)
+    if (
+        torch.is_tensor(value)
+        and not isinstance(value, Color)
+        and value.shape[-1:] == (5,)
+    ):
+        value = value.as_subclass(Color)
+    return value
+
+
 def _uniform_color_and_opacity(color, opacity):
     """Return one Manim-compatible RGB string and effective opacity."""
     color = color.reshape(-1, color.shape[-1])[0]
@@ -506,7 +524,7 @@ class ManimCompatMob(ManimMob):
         # -- a Color, a hex string, a hex int, an RGB sequence -- becomes one
         # Color here, and to_manim renders that as a value Manim does take.
         kwargs = {
-            key: (to_color(value) if "color" in key else value)
+            key: (_as_manim_color_arg(value) if "color" in key else value)
             for key, value in kwargs.items()
         }
         manim_kwargs = {key: to_manim(value) for key, value in kwargs.items()}

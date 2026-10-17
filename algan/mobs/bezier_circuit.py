@@ -1019,7 +1019,9 @@ class BezierCircuitCubic(Mob):
 
             # control_points = torch.cat((control_points, texture_triangle_vertices), -2)
         self.stroke_width = cast_to_tensor(stroke_width)
-        stroke_color = cast_to_tensor(stroke_color)
+        # Parsed as ``color`` is above: a hex int cast as it stands is one
+        # channel of 16711680, and a string cannot have its alpha set below.
+        stroke_color = cast_to_tensor(to_color(stroke_color))
         if self.empty:
             stroke_color = stroke_color.as_subclass(Color).set_opacity(0)
 
