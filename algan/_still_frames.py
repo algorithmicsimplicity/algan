@@ -81,6 +81,7 @@ class _StillBatch:
     ):
         from algan._render_passes import check_pass_encoders, normalize_passes
         from algan.render_loop import _check_post_processes
+        from algan.scene import _coerce_background
 
         passes = normalize_passes(passes)
         if passes:
@@ -98,6 +99,9 @@ class _StillBatch:
         if post_processes is not None and not callable(post_processes):
             post_processes = tuple(post_processes)
         _check_post_processes(post_processes)
+        # The render applies it with set_background, which a deferred batch
+        # reaches only after authoring; what it would refuse is refused now.
+        background = _coerce_background(background)
         context = scene.animation_manager.context
         cursor = context.timespan.current_time
         captured = []
