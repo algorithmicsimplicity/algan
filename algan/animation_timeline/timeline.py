@@ -2535,6 +2535,9 @@ class AnimationTimeline:
         # Packed members share one lifespan. Partial spawns hide the remaining
         # opacity rows and retain their targets until those members are spawned.
         self._pending_packed_spawns = {}
+        # The mirror for despawns: opacity rows a despawned selection hid while
+        # the rest of its pack stayed on screen, one flag per row.
+        self._despawned_packed_rows = {}
         # Edit attribution state: a global execution counter for edits, the
         # function application the currently-executing animated function was
         # recorded as (edits made while it runs attach to it), and the most
