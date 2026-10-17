@@ -46,7 +46,9 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import importlib
+import logging
 import os
+import threading
 from functools import wraps
 from pathlib import Path
 
@@ -73,7 +75,13 @@ _SKIP_KEYS = ("path_obj", "submobjects", "updaters")
 # letters while permanently omitting the raster glyph even though the source
 # SVG on disk is now parseable correctly.
 # v4 preserves inherited SVG opacity and authored image viewport dimensions.
+# A v4 recipe may carry a fourth element, the warnings its parse logged (see
+# _warnings_logged); one written before it did has none to log again, which is
+# not worth every cached SVG being parsed afresh to recover.
 _RECIPE_TAG = "algan-manim-svg-recipe-v4"
+
+#: The logger the vendored Manim logs on (see its ``_config/__init__.py``).
+_MANIM_LOGGER = "algan.manim"
 
 # Process-local memo of already-loaded recipes, keyed by the stable hash. This
 # replaces Manim's SVG_HASH_TO_MOB_MAP for the patched path: a cache hit rebuilds
@@ -235,10 +243,14 @@ def _extract_groups(svg_mob) -> dict[str, list[int]] | None:
     }
 
 
-def _extract(svg_mob) -> tuple:
-    """Recipe for an SVGMobject's parsed children (its top-level glyphs)."""
+def _extract(svg_mob, said=()) -> tuple:
+    """Recipe for an SVGMobject's parsed children (its top-level glyphs).
+
+    ``said`` is what the parse logged, as ``(level, message)`` pairs, for a
+    replay of the recipe to log again.
+    """
     nodes = tuple(_extract_node(sm) for sm in svg_mob.submobjects)
-    return (_RECIPE_TAG, nodes, _extract_groups(svg_mob))
+    return (_RECIPE_TAG, nodes, _extract_groups(svg_mob), tuple(said))
 
 
 def _parse_recipe(recipe) -> tuple[tuple, dict[str, list[int]] | None]:
@@ -248,9 +260,50 @@ def _parse_recipe(recipe) -> tuple[tuple, dict[str, list[int]] | None]:
     element is a node 4-tuple rather than the string tag, so the two layouts are
     never confusable.
     """
-    if len(recipe) == 3 and recipe[0] == _RECIPE_TAG:
+    if len(recipe) in (3, 4) and recipe[0] == _RECIPE_TAG:
         return recipe[1], recipe[2]
     return recipe, None
+
+
+def _recipe_warnings(recipe) -> tuple:
+    """The ``(level, message)`` pairs the parse a recipe came from logged."""
+    if len(recipe) == 4 and recipe[0] == _RECIPE_TAG:
+        return recipe[3]
+    return ()
+
+
+@contextlib.contextmanager
+def _warnings_logged():
+    """Collect what this thread logs on Manim's logger, from WARNING up.
+
+    Yields the list of ``(level, message)`` pairs, filled as they are logged.
+    Manim logs what it cannot import from an SVG (a ``<text>`` element, say)
+    as it parses, and a replayed recipe skips the parse: kept with the recipe,
+    it is logged again on every replay, where it was said only the first time
+    the SVG was ever parsed. The filter collecting it goes ahead of the one
+    holding Manim to Algan's level, so a parse made while Algan is quiet still
+    keeps what a louder run would show.
+    """
+    log = logging.getLogger(_MANIM_LOGGER)
+    thread = threading.get_ident()
+    said = []
+
+    def collect(record):
+        if record.levelno >= logging.WARNING and record.thread == thread:
+            said.append((record.levelno, record.getMessage()))
+        return True
+
+    log.filters.insert(0, collect)
+    try:
+        yield said
+    finally:
+        log.removeFilter(collect)
+
+
+def _log_again(said) -> None:
+    log = logging.getLogger(_MANIM_LOGGER)
+    for level, message in said:
+        log.log(level, message)
 
 
 def _restore_value(v):
@@ -428,17 +481,20 @@ def _patched_init_svg_mobject(self, use_svg_cache: bool):
         else:
             try:
                 _rebuild(self, nodes, groups)
-                return self
             except Exception as e:  # noqa: BLE001 - a stale recipe is recoverable
                 get_logger().warning(
                     f"manim_svg_cache: could not replay {key[:12]} ({e}); reparsing"
                 )
                 _MEM_CACHE.pop(key, None)
                 self.submobjects = []
+            else:
+                _log_again(_recipe_warnings(recipe))
+                return self
 
     # Cold (or unusable recipe): parse for real, then persist the result.
-    self.generate_mobject()
-    _MEM_CACHE[key] = _extract(self)
+    with _warnings_logged() as said:
+        self.generate_mobject()
+    _MEM_CACHE[key] = _extract(self, said)
     _save_disk(key, _MEM_CACHE[key])
     return self
 

@@ -10,6 +10,7 @@ succeeded and every later one died on ``KeyError: 'root'``.
 
 from __future__ import annotations
 
+import logging
 import pathlib
 
 import manim as mn
@@ -412,3 +413,45 @@ def test_a_cache_hit_reproduces_glyph_geometry_bit_for_bit(isolated_svg_cache):
             f"the {label} replay differs from the cold parse by "
             f"{np.abs(warm - cold).max():.3e}"
         )
+
+
+def test_a_replayed_svg_logs_what_its_parse_logged(isolated_svg_cache):
+    """A replay stands in for the parse, so it says what the parse said.
+
+    Manim cannot import an SVG ``<text>`` element and logs that as it parses.
+    A replayed recipe is not parsed, so once an SVG was cached -- in memory,
+    and on disk for every later run -- its text was left out without a word.
+    """
+    path = isolated_svg_cache / "label.svg"
+    path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        'viewBox="0 0 100 100">'
+        '<rect x="10" y="10" width="80" height="50" fill="#3080ff"/>'
+        '<text x="20" y="85" font-size="16">Label</text>'
+        "</svg>"
+    )
+
+    class Recorder(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.said = []
+
+        def emit(self, record):
+            self.said.append((record.levelno, record.getMessage()))
+
+    def logged_by_import():
+        recorder = Recorder()
+        mn.logger.addHandler(recorder)
+        try:
+            mn.SVGMobject(str(path))
+        finally:
+            mn.logger.removeHandler(recorder)
+        return recorder.said
+
+    parsed = logged_by_import()
+    assert [message for _, message in parsed] == [
+        "Unsupported element type: <class 'svgelements.svgelements.Text'>"
+    ]
+    assert logged_by_import() == parsed, "the replay from memory said nothing"
+    svg_cache._MEM_CACHE.clear()
+    assert logged_by_import() == parsed, "the replay from disk said nothing"
