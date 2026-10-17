@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import threading
+import traceback
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -278,6 +280,47 @@ def test_authoring_failure_restores_context_and_can_be_retried(
         get(handle, "/api/scene?id=1", method="POST")
         assert calls == ["broken", "broken", "good", "broken"]
     assert SceneManager.instance().scene_stack == before
+
+
+def test_an_authoring_failure_logs_where_it_was_raised(
+    fresh_scene, tmp_path, fake_frames
+):
+    """The page shows the error's one line, and the traceback went nowhere, so
+    an error in the scene's own code could not be placed.
+    """
+
+    def broken():
+        Square().spawn(animate=False)
+        undefined_helper()  # noqa: F821 -- the bug the terminal has to place
+
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    capture = _Capture(level=logging.ERROR)
+    algan_logger = logging.getLogger("algan")
+    algan_logger.addHandler(capture)
+    project = Project([broken], video_settings=TINY, file_path=tmp_path / "out.mp4")
+    try:
+        with project.view(open_browser=False, block=False) as handle:
+            for _ in range(2):
+                with pytest.raises(urllib.error.HTTPError) as error:
+                    get(handle, "/api/scene?id=0", method="POST")
+                assert error.value.code == 500
+                assert "NameError" in json.load(error.value)["error"]
+    finally:
+        algan_logger.removeHandler(capture)
+
+    logged = [record for record in records if record.exc_info]
+    # Each click authors the scene again, and each failure is logged.
+    assert [record.getMessage() for record in logged] == [
+        "The viewer could not load project scene 0_broken:"
+    ] * 2
+    kind, _, trace = logged[0].exc_info
+    assert kind is NameError
+    assert traceback.extract_tb(trace)[-1].name == "broken"
 
 
 def test_project_render_settings_are_snapshotted_per_scene(

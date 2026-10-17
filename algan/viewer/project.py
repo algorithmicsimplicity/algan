@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import threading
 
+from algan.logging.logger import get_logger
 from algan.viewer.session import ViewerSession
+
+logger = get_logger()
 
 
 class ProjectViewerSession:
@@ -90,12 +93,19 @@ class ProjectViewerSession:
                     previous.close(timeout=None)
                 session = self._open(scene_id)
             except Exception as exc:
+                name = self._scenes[scene_id]
                 message = (
-                    f"Could not load project scene {self._scenes[scene_id]}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"Could not load project scene {name}: {type(exc).__name__}: {exc}"
                 )
                 with self._lock:
                     self._error = message
+                # The page shows that one line, so the traceback goes to the
+                # terminal, as a failed render's does: an error in the scene's
+                # own code is otherwise impossible to place. Authoring runs
+                # again only when the tab is clicked again, so each is logged.
+                logger.error(
+                    "The viewer could not load project scene %s:", name, exc_info=exc
+                )
                 raise RuntimeError(message) from exc
             finally:
                 with self._lock:
