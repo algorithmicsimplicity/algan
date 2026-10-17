@@ -65,7 +65,7 @@ from algan.settings import SETTINGS
 from algan.settings.video_settings import VideoSettings
 from algan.sound.audio_effect import AudioManager
 from algan.taichi_compat import is_compiler_func
-from algan.utils.file_utils import get_image, resolve_asset_path
+from algan.utils.file_utils import get_image
 
 logger = get_logger()
 
@@ -682,6 +682,8 @@ class Scene(RenderLoopMixin):
             import numpy as np
             from PIL import Image, UnidentifiedImageError
 
+            from algan.utils.file_utils import resolve_asset_path
+
             # Found beside the script as well as in the working directory, as
             # an image or a background is.
             env = resolve_asset_path(env)
@@ -1234,9 +1236,6 @@ class Scene(RenderLoopMixin):
         missing file has to say that the string was neither -- otherwise the
         two mistakes are indistinguishable.
         """
-        # Beside the script as well as in the working directory: get_image
-        # would find it there, so the existence check has to look there too.
-        path = resolve_asset_path(path)
         if not Path(path).exists():
             raise AlganConfigurationError(
                 f"background {path!r} is neither a color Algan "
@@ -1302,17 +1301,6 @@ class Scene(RenderLoopMixin):
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
         self._video_settings_explicit = _explicit
-        image = getattr(self, "_background_image", None)
-        if image is not None and self.background is image[1]:
-            a = video_settings.supersampling
-            fitted = tuple(image[1].shape[1:3])
-            if fitted != (
-                self.num_pixels_screen_height * a,
-                self.num_pixels_screen_width * a,
-            ):
-                refit = self._background_image_frame(image[0], None)
-                self.background_frame = self.background = refit
-                self._background_image = (image[0], refit)
         return self
 
     def _resolve_video_settings(self, override):
@@ -1851,11 +1839,7 @@ class Scene(RenderLoopMixin):
         """
         if (background is None) or (self.background_is_set and not overwrite):
             return self
-        image_path = None
-        if isinstance(background, os.PathLike):
-            image_path = os.fspath(background)
-            background = self._background_image_frame(image_path, None)
-        elif isinstance(background, str):
+        if isinstance(background, str):
             # A string is a color first and an image path second. Read as a
             # path unconditionally, ``set_background("blue")`` answered
             # ``No such file or directory: 'blue'`` -- blaming the filesystem
@@ -1864,13 +1848,8 @@ class Scene(RenderLoopMixin):
             try:
                 background = to_color(background)
             except InvalidColorError as not_a_color:
-                image_path = background
                 background = self._background_image_frame(background, not_a_color)
         self.background_frame = self.background = background
-        # An image is fitted to the frame it is set for. Remembering where it
-        # came from lets a render at another resolution fit it again from the
-        # file rather than resample the fitted copy.
-        self._background_image = (image_path, background) if image_path else None
         self.background_is_set = True
         return self
 
