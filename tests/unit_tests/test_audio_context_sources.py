@@ -1,0 +1,94 @@
+"""What ``Audio`` takes as its source, and how it says when it cannot."""
+
+from __future__ import annotations
+
+import gc
+import sys
+
+import numpy as np
+import pytest
+from scipy.io import wavfile
+
+from algan.animation_timeline.animation_contexts import Audio
+from algan.mobs.shapes_2d import Square
+
+SAMPLE_RATE = 8000
+
+
+@pytest.fixture
+def half_second_wav(tmp_path):
+    path = tmp_path / "half_a_second.wav"
+    wavfile.write(path, SAMPLE_RATE, np.zeros(SAMPLE_RATE // 2, dtype=np.int16))
+    return path
+
+
+def test_a_path_object_is_read_like_a_string(fresh_scene, half_second_wav):
+    """Only a ``str`` was opened; anything else was taken for a clip.
+
+    ``Audio(Path(...))`` failed with "'PosixPath' object has no attribute
+    'duration'".
+    """
+    context = Audio(half_second_wav)
+    with context:
+        Square().spawn()
+
+    assert context.runtime == pytest.approx(0.5, abs=0.01)
+
+
+def test_a_missing_file_names_where_it_was_looked_for(
+    fresh_scene, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    unraisable = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+
+    with pytest.raises(FileNotFoundError) as raised:
+        Audio("whoosh.wav")
+    message = str(raised.value)
+    context = type(raised.value.__context__)
+    # Let go of the traceback, whose frames would keep a half-built reader
+    # alive, and collect it now.
+    del raised
+    gc.collect()
+
+    assert "'whoosh.wav'" in message
+    assert repr(str(tmp_path / "whoosh.wav")) in message
+    # moviepy found out only after FFmpeg had failed: its error came chained
+    # to an internal TypeError, and the half-built reader's __del__ printed an
+    # AttributeError once the traceback had gone.
+    assert context is type(None)
+    assert [type(hook.exc_value).__name__ for hook in unraisable] == []
+
+
+def test_an_absolute_path_is_not_resolved_again(fresh_scene, tmp_path):
+    missing = tmp_path / "whoosh.wav"
+    with pytest.raises(FileNotFoundError) as raised:
+        Audio(missing)
+    assert str(raised.value) == f"Audio found no file at {str(missing)!r}."
+
+
+def test_something_that_is_neither_a_path_nor_a_clip_is_named(fresh_scene):
+    with pytest.raises(TypeError, match="path of an audio file .* got int"):
+        Audio(3)
+
+
+def test_a_url_is_left_for_ffmpeg_to_fetch(fresh_scene, monkeypatch):
+    import moviepy
+
+    opened = []
+
+    class FakeClip:
+        duration = 2.0
+
+        def __init__(self, source):
+            opened.append(source)
+
+    monkeypatch.setattr(moviepy, "AudioFileClip", FakeClip)
+    url = "https://example.com/whoosh.wav"
+
+    context = Audio(url)
+    with context:
+        Square().spawn()
+
+    assert opened == [url]
+    assert context.runtime == pytest.approx(2.0)

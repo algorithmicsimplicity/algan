@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import copy
 import math
+import os
+import typing
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -45,6 +47,11 @@ from algan.constants import easings
 from algan.errors import AlganConfigurationError, ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
+
+# Not ``from typing import TYPE_CHECKING``: this module is star-exported, and
+# an upper-case name would land in ``from algan import *``.
+if typing.TYPE_CHECKING:
+    from moviepy import AudioClip
 
 DEFAULT_RUNTIME = 1
 DEFAULT_EASING = easings.smooth
@@ -1259,6 +1266,24 @@ class Seq(Lag):
         super().__init__(ratio=1, runtime=runtime, **kwargs)
 
 
+def _audio_file_path(source) -> str:
+    """``source`` as the string moviepy opens, raising if no file is there.
+
+    moviepy checks only after FFmpeg has failed to read the file, so its
+    ``FileNotFoundError`` arrived chained to an internal ``TypeError``, and the
+    half-built reader then printed an ``AttributeError`` from its ``__del__``.
+    A URL is left for FFmpeg to fetch.
+    """
+    path = os.fsdecode(source)
+    if "://" not in path and not os.path.isfile(path):
+        where = os.path.abspath(path)
+        seen_from = (
+            "" if where == path else f", which is {where!r} from the current directory"
+        )
+        raise FileNotFoundError(f"Audio found no file at {path!r}{seen_from}.")
+    return path
+
+
 class Audio(AnimationContext):
     """Play a sound, and fit the block's animations to its length.
 
@@ -1270,13 +1295,22 @@ class Audio(AnimationContext):
     Parameters
     ----------
     source
-        Path to an audio file, or an already-loaded moviepy audio clip.
+        Path to an audio file, as a string or a path object, or an
+        already-loaded moviepy audio clip. A relative path is taken from the
+        current directory.
     wait_at_end
         Extra seconds to hold after the audio finishes, before the block ends.
         Defaults to ``0``.
     **kwargs
         Passed to :class:`~.AnimationContext`. Note ``runtime`` is set from the
         audio and should not be passed.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``source`` is a path with no file at it.
+    TypeError
+        If ``source`` is neither a path nor an audio clip.
 
     Examples
     --------
@@ -1290,12 +1324,23 @@ class Audio(AnimationContext):
     :class:`~.Speech` : The same, driven by a line of narration transcript.
     """
 
-    def __init__(self, source: str, *, wait_at_end: float = 0.0, **kwargs):
+    def __init__(
+        self,
+        source: str | os.PathLike | AudioClip,
+        *,
+        wait_at_end: float = 0.0,
+        **kwargs,
+    ):
         audio_clip = source
-        if isinstance(source, str):
+        if isinstance(source, (str, os.PathLike)):
             from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
 
-            audio_clip = AudioFileClip(source)
+            audio_clip = AudioFileClip(_audio_file_path(source))
+        elif not hasattr(source, "duration"):
+            raise TypeError(
+                "Audio takes the path of an audio file or a moviepy audio clip, "
+                f"got {type(source).__name__}."
+            )
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
         kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
