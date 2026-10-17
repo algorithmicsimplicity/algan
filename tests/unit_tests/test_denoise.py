@@ -287,6 +287,63 @@ def test_unparseable_weights_degrade_to_denoise_off(tmp_path):
     assert denoise_mod.get_denoiser(torch.device("cpu")) is None
 
 
+@pytest.mark.usefixtures("_fresh_weight_state")
+@pytest.mark.parametrize(
+    "shortage",
+    [
+        torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 4 MiB"),
+        MemoryError(),
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:117] data. DefaultCPUAllocator: can't "
+            "allocate memory: you tried to allocate 8589934592 bytes."
+        ),
+    ],
+    ids=["CUDA", "MemoryError", "CPU"],
+)
+def test_running_out_of_memory_while_loading_is_forgotten_by_the_next_render(
+    tmp_path, monkeypatch, shortage
+):
+    """It used to turn denoising off for the rest of the process, so every
+    later render on a warm daemon was noisy.
+    """
+    weights = tmp_path / "rt.tza"
+    weights.write_bytes(_build_tza({"conv": torch.zeros(1, 1, 3, 3)}))
+    SETTINGS.raytracing.experimental.set(denoise_weights=str(weights))
+    loads = []
+
+    def out_of_memory(*args, **kwargs):
+        loads.append(1)
+        raise shortage
+
+    monkeypatch.setattr(denoise_mod, "OidnUNet", out_of_memory)
+    warned = []
+    monkeypatch.setattr(denoise_mod.logger, "warning", warned.append)
+    assert denoise_mod.get_denoiser(torch.device("cpu")) is None
+    # The rest of the job renders without it, rather than trying each batch.
+    assert denoise_mod.get_denoiser(torch.device("cpu")) is None
+    assert len(loads) == 1
+    assert warned == [
+        f"Ran out of memory loading the denoiser ({shortage}); rendering without "
+        f"denoising. The next render tries again."
+    ]
+
+    monkeypatch.setattr(denoise_mod, "OidnUNet", lambda *args, **kwargs: object())
+    denoise_mod._begin_render_job()
+    assert isinstance(
+        denoise_mod.get_denoiser(torch.device("cpu")), denoise_mod.Denoiser
+    )
+
+
+@pytest.mark.usefixtures("_fresh_weight_state")
+def test_a_render_job_does_not_retry_weights_that_cannot_be_parsed(tmp_path):
+    weights = tmp_path / "rt.tza"
+    weights.write_bytes(b"not a tza file")
+    SETTINGS.raytracing.experimental.set(denoise_weights=str(weights))
+    assert denoise_mod.get_denoiser(torch.device("cpu")) is None
+    denoise_mod._begin_render_job()
+    assert list(denoise_mod._denoisers.values()) == [""]
+
+
 # ---------------------------------------------------------------------------
 # The AOV guides, through a real render (no weights needed: spy denoiser)
 # ---------------------------------------------------------------------------

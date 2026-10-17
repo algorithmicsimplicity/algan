@@ -43,7 +43,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animation_timeline.timeline import EditRecord, _opt_disabled
 from algan.constants.color import *
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, _user_stacklevel
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -59,6 +59,7 @@ from algan.rendering.logical_pn import (
 from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.file_utils import get_image
+from algan.utils.memory_utils import is_out_of_memory
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
@@ -141,6 +142,21 @@ def _surface_resolution_pair(resolution):
         return int(resolution), int(resolution)
     u_resolution, v_resolution = resolution
     return int(u_resolution), int(v_resolution)
+
+
+def _grid_could_explain(exc: Exception) -> bool:
+    """Whether a grid-sizing probe's error might be that grid's alone.
+
+    A probe that raises counts its grid as not good enough, and the search
+    moves on to a finer one. An undefined name or a failed import in the
+    surface's function is raised on every grid, and exhausted memory only
+    grows on a finer one, so those are raised instead: they used to drive the
+    search to ``max_grid_resolution``, warn that the tolerance could not be
+    met, and remember that grid for the geometry.
+    """
+    return not isinstance(
+        exc, (NameError, ImportError, RecursionError)
+    ) and not is_out_of_memory(exc)
 
 
 def _resolution_cache_callable_key(function):
@@ -2465,7 +2481,9 @@ class Surface(Mob):
                 verdict = bool(
                     torch.isfinite(error).item() and error.item() <= tolerance
                 )
-            except Exception:
+            except Exception as exc:
+                if not _grid_could_explain(exc):
+                    raise
                 verdict = False
             measured[key] = verdict
             return verdict
@@ -2527,7 +2545,7 @@ class Surface(Mob):
                 "Logical PN construction reached max_grid_resolution before "
                 "meeting geometry_tolerance.",
                 RuntimeWarning,
-                stacklevel=3,
+                stacklevel=_user_stacklevel(),
             )
         return result
 
@@ -2617,7 +2635,7 @@ class Surface(Mob):
                         "Logical PN construction reached max_grid_resolution before "
                         "meeting geometry_tolerance.",
                         RuntimeWarning,
-                        stacklevel=3,
+                        stacklevel=_user_stacklevel(),
                     )
                 return cached
 
@@ -2636,7 +2654,9 @@ class Surface(Mob):
         def acceptable(width, height):
             try:
                 error = self._compute_error(surface_function, width, height)
-            except Exception:
+            except Exception as exc:
+                if not _grid_could_explain(exc):
+                    raise
                 return False
             return bool(torch.isfinite(error).item() and error.item() <= tolerance)
 

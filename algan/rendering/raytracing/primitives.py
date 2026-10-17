@@ -77,6 +77,7 @@ from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, unsquish
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.settings import *  # noqa: F403 -- re-export for callers of this module
 from algan.settings.kernel_settings import KERNEL_REGISTRY
+from algan.utils.python_utils import callable_signature
 
 _SAMPLE_TENSOR_CACHE = {}
 
@@ -882,9 +883,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         built by the no-material fallback, so its mob has nothing registered),
         and only then to the shader signature's default.
         """
-        import inspect
-
-        sig = inspect.signature(self.shader).parameters
+        sig = callable_signature(self.shader).parameters
         num_fixed = SHADER_FIXED_PARAM_COUNT
         extra_names = list(sig.keys())[num_fixed:]
 

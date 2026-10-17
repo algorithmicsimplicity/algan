@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import copy
 import math
+import os
+import typing
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -45,6 +47,17 @@ from algan.constants import easings
 from algan.errors import AlganConfigurationError, ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
+from algan.utils.audio_utils import (
+    _FFMPEG_PROTOCOL,
+    _is_ffmpeg_protocol,
+    _open_audio_file_clip,
+)
+from algan.utils.python_utils import callable_signature
+
+# Not ``from typing import TYPE_CHECKING``: this module is star-exported, and
+# an upper-case name would land in ``from algan import *``.
+if typing.TYPE_CHECKING:
+    from moviepy import AudioClip
 
 DEFAULT_RUNTIME = 1
 DEFAULT_EASING = easings.smooth
@@ -180,6 +193,44 @@ def _reject_context_kwargs(kwargs):
             f"    with {call}:\n"
             f"        ...\n"
         )
+
+
+def _reject_invalid_easing(context, easing, parameter="easing"):
+    """Refuse an easing the replay cannot call, at the line that gave it.
+
+    An easing is first called when its animations are replayed for a render,
+    so a name, a number or a function that cannot take the progress failed
+    there, inside the timeline -- ``'str' object is not callable`` -- naming
+    neither the context nor the easing.
+    """
+    if easing is None:
+        return
+    owner = f"{type(context).__name__}'s {parameter}"
+    if not callable(easing):
+        hint = (
+            f" Pass the function itself: easings.{easing}."
+            if isinstance(easing, str) and easing in easings.__all__
+            else ""
+        )
+        raise AlganConfigurationError(
+            f"{owner} is {easing!r} ({type(easing).__name__}), but an easing is "
+            f"a function of the progress t, such as easings.smooth.{hint}"
+        )
+    try:
+        # Not following __wrapped__: the call binds to the outermost signature.
+        signature = callable_signature(easing, follow_wrapped=False)
+    except (TypeError, ValueError):
+        # A builtin may not say what it takes; the call itself will.
+        return
+    try:
+        signature.bind(None)
+    except TypeError as error:
+        name = getattr(easing, "__name__", None) or type(easing).__name__
+        raise AlganConfigurationError(
+            f"{owner}, {name}, cannot be called as easing(t): {error}. Algan "
+            f"calls an easing with the progress t, a tensor of values from 0 to "
+            f"1, and plays the animation at the progress it returns."
+        ) from None
 
 
 def _reject_invalid_runtime(name, value):
@@ -462,7 +513,8 @@ class AnimationContext:
         If ``runtime`` or ``runtime_per_part`` is not finite and non-negative,
         or a parameter is
         spelled the way Manim or an older Algan spelled it (``duration``,
-        ``run_time``, ``rate_func``).
+        ``run_time``, ``rate_func``). Also if ``easing`` or ``composed_easing``
+        is not a function that can be called with the progress alone.
     :class:`.ContextReuseError`
         If the same context object is entered by a second ``with`` block.
     """
@@ -489,6 +541,8 @@ class AnimationContext:
     def __post_init__(self):
         _reject_invalid_runtime("runtime", self.runtime)
         _reject_invalid_runtime("runtime_per_part", self.runtime_per_part)
+        _reject_invalid_easing(self, self.easing)
+        _reject_invalid_easing(self, self.composed_easing, "composed_easing")
         if self.new_mobs is None:
             self.new_mobs = []
         if self.child_contexts is None:
@@ -1259,6 +1313,33 @@ class Seq(Lag):
         super().__init__(ratio=1, runtime=runtime, **kwargs)
 
 
+def _audio_file_path(source) -> str:
+    """``source`` as the string moviepy opens, raising if no file is there.
+
+    moviepy checks only after FFmpeg has failed to read the file, so its
+    ``FileNotFoundError`` arrived chained to an internal ``TypeError``, and the
+    half-built reader then printed an ``AttributeError`` from its ``__del__``.
+    A URL, or another of FFmpeg's protocols such as ``concat:``, is left for
+    FFmpeg to open.
+    """
+    path = os.fsdecode(source)
+    if not os.path.isfile(path) and not _is_ffmpeg_protocol(path):
+        if os.path.isdir(path):
+            raise IsADirectoryError(
+                f"Audio takes an audio file, and {path!r} is a directory."
+            )
+        where = os.path.abspath(path)
+        seen_from = (
+            "" if where == path else f", which is {where!r} from the current directory"
+        )
+        raise FileNotFoundError(f"Audio found no file at {path!r}{seen_from}.")
+    if _FFMPEG_PROTOCOL.match(path) and not _is_ffmpeg_protocol(path):
+        # A file named like take:2.wav, which FFmpeg would take for a protocol;
+        # an absolute path it reads as a file.
+        return os.path.abspath(path)
+    return path
+
+
 class Audio(AnimationContext):
     """Play a sound, and fit the block's animations to its length.
 
@@ -1270,13 +1351,27 @@ class Audio(AnimationContext):
     Parameters
     ----------
     source
-        Path to an audio file, or an already-loaded moviepy audio clip.
+        Path to an audio file, as a string or a path object, or an
+        already-loaded moviepy audio clip. A relative path is taken from the
+        current directory.
     wait_at_end
         Extra seconds to hold after the audio finishes, before the block ends.
         Defaults to ``0``.
     **kwargs
         Passed to :class:`~.AnimationContext`. Note ``runtime`` is set from the
         audio and should not be passed.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``source`` is a path with no file at it.
+    IsADirectoryError
+        If ``source`` is the path of a directory.
+    OSError
+        If FFmpeg reads no sound from the file: it is damaged, is no audio
+        format FFmpeg knows, or is a video without a sound track.
+    TypeError
+        If ``source`` is neither a path nor an audio clip.
 
     Examples
     --------
@@ -1290,12 +1385,21 @@ class Audio(AnimationContext):
     :class:`~.Speech` : The same, driven by a line of narration transcript.
     """
 
-    def __init__(self, source: str, *, wait_at_end: float = 0.0, **kwargs):
+    def __init__(
+        self,
+        source: str | os.PathLike | AudioClip,
+        *,
+        wait_at_end: float = 0.0,
+        **kwargs,
+    ):
         audio_clip = source
-        if isinstance(source, str):
-            from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
-
-            audio_clip = AudioFileClip(source)
+        if isinstance(source, (str, os.PathLike)):
+            audio_clip = _open_audio_file_clip(_audio_file_path(source))
+        elif not hasattr(source, "duration"):
+            raise TypeError(
+                "Audio takes the path of an audio file or a moviepy audio clip, "
+                f"got {type(source).__name__}."
+            )
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
         kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)

@@ -85,6 +85,7 @@ import torch.nn.functional as F
 from algan.environment import env_flag
 from algan.rendering.mps_compat import reduction_index_dtype
 from algan.rendering.raytracing.utils import _circuit_scale, _cubics_disconnected
+from algan.utils.python_utils import callable_signature
 
 #: A sub-path counts as planar when ``sqrt(lambda_min / lambda_max)`` of its
 #: control points' covariance -- RMS spread off the best-fit plane as a fraction
@@ -963,7 +964,7 @@ def _shaded_border_colors(circuit, x, plan, border, frames):
 
     from algan.rendering.raytracing.primitives import SHADER_FIXED_PARAM_COUNT
 
-    signature = inspect.signature(shader).parameters
+    signature = callable_signature(shader).parameters
     params = []
     for name in list(signature.keys())[SHADER_FIXED_PARAM_COUNT:]:
         if name in material_params:

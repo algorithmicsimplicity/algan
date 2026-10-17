@@ -28,8 +28,10 @@ The active-Scene stack itself lives in
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import math
+import os
 import sys
 from collections.abc import Callable, Sequence
 from functools import wraps
@@ -65,6 +67,7 @@ from algan.settings.video_settings import VideoSettings
 from algan.sound.audio_effect import AudioManager
 from algan.taichi_compat import is_compiler_func
 from algan.utils.file_utils import get_image
+from algan.utils.python_utils import callable_signature
 
 logger = get_logger()
 
@@ -138,6 +141,95 @@ _SCENES_CREATED = 0
 def scenes_created() -> int:
     """The number of Scenes this process has constructed so far."""
     return _SCENES_CREATED
+
+
+def script_exit_status(exiting: SystemExit) -> int:
+    """The status a script's ``SystemExit`` gives its process, as Python does.
+
+    ``None`` is success and an int is the status. Anything else is a message,
+    as in ``sys.exit("could not find data.csv")``, which the interpreter prints
+    on stderr before exiting with 1. So does this: a runner that catches the
+    exit to keep running would otherwise end the run failed, without the
+    reason the script gave.
+    """
+    code = exiting.code
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return code
+    # As the interpreter does, a message that cannot be printed -- its __str__
+    # raises, or stderr is closed -- still exits with 1.
+    with contextlib.suppress(Exception):
+        print(code, file=sys.stderr)
+    return 1
+
+
+def _neither_color_nor_image(path, not_a_color):
+    """The refusal of a background string that is no color and no image file."""
+    error = AlganConfigurationError(
+        f"background {path!r} is neither a color Algan recognises nor the path "
+        f"of an image file that exists. Pass a Color such as BLUE, a hex string "
+        f"('#101820'), or the path of an image to use as the background."
+    )
+    error.__cause__ = not_a_color
+    return error
+
+
+def _coerce_background(background):
+    """``background`` as the Scene stores it, refusing one it cannot draw.
+
+    Stored as given, an ``(r, g, b)`` tuple, a list or a hex int -- colors
+    everywhere else in Algan -- failed once the render began, with
+    ``'tuple' indices must be integers or slices, not tuple``; and a callable
+    taking other than ``(x, y, time)`` failed as the first frame's background
+    was filled. A path object failed there too, and is the string of its path.
+    A string is left to :meth:`Scene.set_background`, which reads it as a color
+    or else as an image path, once it is known to be one or the other.
+    """
+    if isinstance(background, os.PathLike):
+        background = os.fspath(background)
+    if isinstance(background, str):
+        try:
+            to_color(background)
+        except InvalidColorError as not_a_color:
+            if not Path(background).exists():
+                raise _neither_color_nor_image(background, not_a_color) from not_a_color
+        return background
+    if hasattr(background, "getbands") and hasattr(background, "convert"):
+        # A PIL image, told by its methods so as not to import PIL.
+        raise AlganConfigurationError(
+            "background is a PIL image, which Algan does not read as one. Save "
+            "it to a file and pass the file's path, which is scaled to the "
+            "frame."
+        )
+    if callable(background):
+        try:
+            # Not following __wrapped__: the call binds to the outermost signature.
+            signature = callable_signature(background, follow_wrapped=False)
+        except (TypeError, ValueError):
+            # A builtin or a Taichi func may not say what it takes; the call
+            # itself will.
+            return background
+        try:
+            signature.bind(None, None, None)
+        except TypeError as error:
+            raise AlganConfigurationError(
+                f"The background callable cannot be called as "
+                f"background(x, y, time): {error}. Algan calls it with the "
+                f"pixel grids x and y and the frames' times; see "
+                f"Scene.set_background."
+            ) from None
+        return background
+    if isinstance(background, (int, float, tuple, list)):
+        color = to_color(background)
+        if not torch.is_tensor(color):
+            raise AlganConfigurationError(
+                f"background {background!r} is not a color. Give a Color such "
+                f"as BLUE, a hex string or int such as '#112233' or 0x112233, "
+                f"or 3 to 5 channels in [0, 1] such as (0.1, 0.2, 0.3)."
+            )
+        return color
+    return background
 
 
 def warn_if_nothing_rendered(
@@ -1219,12 +1311,7 @@ class Scene(RenderLoopMixin):
         two mistakes are indistinguishable.
         """
         if not Path(path).exists():
-            raise AlganConfigurationError(
-                f"background {path!r} is neither a color Algan "
-                f"recognises nor the path of an image file that exists. Pass a "
-                f"Color such as BLUE, a hex string ('#101820'), or the path of "
-                f"an image to use as the background."
-            ) from not_a_color
+            raise _neither_color_nor_image(path, not_a_color)
         a = self.video_settings.supersampling
         # get_image returns [height, width, channels]; interpolate wants
         # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
@@ -1368,16 +1455,23 @@ class Scene(RenderLoopMixin):
 
         This decides the output format: a transparent background makes
         :meth:`~.Scene.save_video` write ``.mov`` with an alpha channel instead of
-        ``.mp4``. A procedural background is always treated as opaque.
+        ``.mp4``. A procedural background is always treated as opaque, and so is
+        a color or image with fewer than four channels, which has no opacity.
 
         Returns
         -------
         bool
             Whether any background pixel is less than fully opaque.
         """
-        if callable(self.background_frame):
+        frame = self.background_frame
+        if callable(frame):
             return False
-        return (self.background_frame[..., -1].min() < (1 - (0.5 / 255))).item()
+        if frame.shape[-1] < 4:
+            # Red, green and blue alone, or a gray level. Read as opacity, the
+            # blue made an opaque background transparent, and save_video
+            # refused an .mp4.
+            return False
+        return (frame[..., -1].min() < (1 - (0.5 / 255))).item()
 
     def _get_pixel_format(self) -> str:
         """Get the pixel format the Scene's frames should be encoded in.
@@ -1777,8 +1871,10 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         background
-            A color, a path to an image (scaled to the frame), or a procedural
-            callable ``(x, y, time) -> color``. A color with alpha below 1 makes the
+            A color -- a :class:`~.Color` such as ``BLUE``, a name or hex string,
+            a hex int, or an ``(r, g, b)`` tuple of floats in ``[0, 1]`` -- a path
+            to an image (scaled to the frame), or a procedural callable
+            ``(x, y, time) -> color``. A color with alpha below 1 makes the
             output transparent. ``None`` leaves the background unchanged.
 
             The callable is evaluated on the **render device** and receives
@@ -1807,6 +1903,13 @@ class Scene(RenderLoopMixin):
         :class:`~.Scene`
             This Scene, so calls can be chained.
 
+        Raises
+        ------
+        AlganConfigurationError
+            If ``background`` is none of these: a string that is neither a color
+            nor an image file that exists, a value that is no color, or a
+            callable that cannot be called as ``(x, y, time)``.
+
         Examples
         --------
         .. code-block:: python
@@ -1821,6 +1924,8 @@ class Scene(RenderLoopMixin):
         """
         if (background is None) or (self.background_is_set and not overwrite):
             return self
+        if isinstance(background, os.PathLike):
+            background = os.fspath(background)
         if isinstance(background, str):
             # A string is a color first and an image path second. Read as a
             # path unconditionally, ``set_background("blue")`` answered
@@ -1831,6 +1936,8 @@ class Scene(RenderLoopMixin):
                 background = to_color(background)
             except InvalidColorError as not_a_color:
                 background = self._background_image_frame(background, not_a_color)
+        else:
+            background = _coerce_background(background)
         self.background_frame = self.background = background
         self.background_is_set = True
         return self
@@ -1926,10 +2033,15 @@ class Scene(RenderLoopMixin):
             ``SETTINGS.style.fade_out_on_scene_end`` (``False``).
         post_processes
             Post-processing passes to apply to each frame. Defaults to ``None``,
-            meaning bloom.
+            meaning bloom. Algan calls each pass as
+            ``process(frames, memory=arena)``, so a custom one takes a
+            ``memory`` keyword even if it ignores it, such as
+            ``def desaturate(frames, memory=None)``.
         codec, audio_codec, ffmpeg_params
-            Encoder overrides passed through to FFmpeg. Each defaults to
-            ``None``, letting Algan pick from the background's transparency.
+            Encoder overrides passed through to FFmpeg; ``ffmpeg_params`` is a
+            list of command-line arguments, such as ``["-crf", "18"]``. Each
+            defaults to ``None``, letting Algan pick from the background's
+            transparency.
             With no explicit ``codec``, Algan encodes with ``libx264`` or --
             when the machine's NVIDIA driver exposes NVENC -- the hardware
             ``h264_nvenc`` encoder; set the ``ALGAN_VIDEO_ENCODER``
@@ -1965,6 +2077,9 @@ class Scene(RenderLoopMixin):
         Raises
         ------
         AlganConfigurationError
+            If ``ffmpeg_params`` is not a list of command-line arguments, or a
+            pass in ``post_processes`` cannot be called as
+            ``process(frames, memory=arena)``.
             If the output container, codec or settings are invalid, a render
             pass name is unknown, or FFmpeg cannot encode the requested passes.
             All are checked before rendering starts.

@@ -155,6 +155,27 @@ def test_a_scripts_exit_code_is_the_cli_s(tmp_path):
     assert cli.main(["render", str(script), "-q", "ld"]) == 3
 
 
+def test_a_scripts_exit_message_is_printed(tmp_path, capsys):
+    """As the interpreter prints it, rather than failing without a word."""
+    script = tmp_path / "quits.py"
+    script.write_text('raise SystemExit("could not find data.csv")\n', encoding="utf-8")
+    assert cli.main(["render", str(script), "-q", "ld"]) == 1
+    assert capsys.readouterr().err == "could not find data.csv\n"
+
+
+def test_an_exit_message_that_cannot_be_printed_still_fails_the_run(tmp_path):
+    """Printing it raised instead, from the runner, as the interpreter does not."""
+    script = tmp_path / "quits.py"
+    script.write_text(
+        "class Reason:\n"
+        "    def __str__(self):\n"
+        "        raise ValueError('no words')\n"
+        "raise SystemExit(Reason())\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["render", str(script), "-q", "ld"]) == 1
+
+
 def test_settings_are_not_left_behind_by_a_failed_run(tmp_path):
     """A script that raises must not take the CLI's cleanup down with it."""
     script = tmp_path / "boom.py"

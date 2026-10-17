@@ -20,6 +20,7 @@ from algan.errors import AlganConfigurationError
 from algan.logging.logger import get_logger
 from algan.settings import SETTINGS
 from algan.settings.video_settings import _PRESETS_BY_NAME, VideoSettings
+from algan.utils.python_utils import callable_signature
 
 if TYPE_CHECKING:
     from algan.viewer.viewer import ViewerHandle
@@ -393,7 +394,7 @@ class Project:
                     f"Project scene entry {scene_id} is not callable"
                 )
             try:
-                signature = inspect.signature(function)
+                signature = callable_signature(function)
             except (TypeError, ValueError) as exc:
                 raise AlganConfigurationError(
                     f"Could not inspect Project scene entry {scene_id}"

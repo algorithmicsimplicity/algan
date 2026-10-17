@@ -61,9 +61,11 @@ from algan.errors import (
     HierarchyError,
     NeverVisibleMobWarning,
     _user_location,
+    _user_stacklevel,
     _warn_at,
 )
 from algan.scene import Scene
+from algan.utils.python_utils import callable_signature
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
 #: Bumped whenever an animatable property is attached to a class, so per-class
@@ -86,7 +88,7 @@ def _check_updater_signature(update_function, extra_positional):
             f"{type(update_function).__name__}."
         )
     try:
-        parameters = list(inspect.signature(update_function).parameters.values())
+        parameters = list(callable_signature(update_function).parameters.values())
     except (TypeError, ValueError):
         # A builtin or C callable has no introspectable signature; let the
         # call itself decide.
@@ -1822,7 +1824,7 @@ class Animatable:
                     f"    ...\n"
                     f"    spare.spawn()\n",
                     DespawnedMobWarning,
-                    stacklevel=2,
+                    stacklevel=_user_stacklevel(),
                 )
             elif not self.animation_manager.context.spawn_at_end:
                 self._spawn_packed_rows(animate)

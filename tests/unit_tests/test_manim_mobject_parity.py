@@ -267,6 +267,68 @@ def test_renderer_specific_surface_equivalents():
     assert len(mesh) > 0
 
 
+def _uv_grid():
+    return torch.meshgrid(
+        torch.linspace(0, 1, 4), torch.linspace(0, 1, 5), indexing="ij"
+    )
+
+
+@pytest.mark.parametrize(
+    "shortage",
+    [
+        torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"),
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:117] data. DefaultCPUAllocator: can't "
+            "allocate memory: you tried to allocate 8589934592 bytes."
+        ),
+    ],
+    ids=["CUDA", "CPU"],
+)
+def test_running_out_of_memory_in_a_uv_function_is_not_retried_point_by_point(
+    shortage,
+):
+    """It used to be retried on the CPU, one (u, v) at a time, where a function
+    written for tensors then failed with an unrelated TypeError.
+    """
+    from algan.mobs.opengl_compat import _call_uv_function
+
+    calls = []
+
+    def uv_func(u, v):
+        calls.append(type(u))
+        raise shortage
+
+    with pytest.raises(type(shortage)) as caught:
+        _call_uv_function(uv_func, *_uv_grid())
+    assert caught.value is shortage
+    assert calls == [torch.Tensor]
+
+
+def test_a_uv_function_that_fails_both_ways_shows_both_errors():
+    """The scalar calls ran after the vectorized call's error was dropped, so
+    only their own error reached the traceback.
+    """
+    from algan.mobs.opengl_compat import _call_uv_function
+
+    def uv_func(u, v):
+        if isinstance(u, torch.Tensor):
+            raise RuntimeError("mat1 and mat2 shapes cannot be multiplied")
+        raise TypeError("sin(): argument 'input' must be Tensor, not float")
+
+    with pytest.raises(TypeError, match="must be Tensor") as caught:
+        _call_uv_function(uv_func, *_uv_grid())
+    assert isinstance(caught.value.__context__, RuntimeError)
+    assert "cannot be multiplied" in str(caught.value.__context__)
+
+
+def test_a_manim_uv_function_is_still_called_one_point_at_a_time():
+    from algan.mobs.opengl_compat import _call_uv_function
+
+    u, v = _uv_grid()
+    points = _call_uv_function(lambda a, b: np.array([a, b, a * b]), u, v)
+    torch.testing.assert_close(points, torch.stack((u, v, u * v), dim=-1))
+
+
 def test_svg_and_vector_field_families_convert_nested_geometry(tmp_path):
     svg_path = tmp_path / "triangle.svg"
     svg_path.write_text(

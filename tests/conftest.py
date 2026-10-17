@@ -99,6 +99,37 @@ def _register_test_fonts():
 
 _register_test_fonts()
 
+# DejaVu is what the LaTeX text fallback is calibrated against
+# (``test_text_without_pango.py``): fontconfig falls back to it on Linux. macOS
+# has no DejaVu, so the faces matplotlib ships are registered where it is
+# missing, and here at import for the same reason the vendored faces are.
+# Pango's default font map keeps the font list it was created with, so a face
+# registered after the process's first layout is never set, although
+# ``manimpango.list_fonts()`` -- which builds a fresh map -- lists it. The
+# test used to register DejaVu itself, which worked when it ran alone and
+# measured a substitute in a full run, after other tests had set text.
+DEJAVU_FAMILIES = ("DejaVu Sans", "DejaVu Sans Mono")
+
+
+def _register_dejavu_where_missing():
+    import manimpango
+
+    missing = [name for name in DEJAVU_FAMILIES if name not in manimpango.list_fonts()]
+    if not missing:
+        return
+    try:
+        import matplotlib
+    except ImportError:
+        return  # The tests that need DejaVu skip without it.
+    faces = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+    for name in missing:
+        face = faces / f"{name.replace(' ', '')}.ttf"
+        if not manimpango.register_font(str(face)):
+            raise RuntimeError(f"could not register matplotlib's {face}")
+
+
+_register_dejavu_where_missing()
+
 # The fast suite is meant to stay inside a development loop. This is reported,
 # not enforced: the number moves with machine load and thermal state, and a
 # timing-based failure would be a flake. A run that exceeds it means the

@@ -290,7 +290,14 @@ To write your own, declare the fixed parameters and append your own:
     mob.set_shader(my_shader)   # before spawning
     mob.banding = 8.0           # now animatable
 
-Every fixed parameter must be declared even if you ignore it.
+Every fixed parameter must be declared even if you ignore it: all nine are
+passed by position, and so are the material parameters after them.
+``set_shader`` refuses a shader that takes fewer than nine parameters, or one
+by keyword only. It warns about a shader that would be given the wrong
+values: one that puts a fixed parameter in another place, or another
+parameter with a default in a fixed one's, as
+``def toon(memory, ..., light_intensity, bands=4)`` does by leaving out
+``ambient_light_intensity``.
 Read the source of ``basic_material_shader`` (in
 ``algan/rendering/shaders/material_shaders.py``) and
 :func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader` for

@@ -15,6 +15,15 @@ import warnings
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _in_algan(filename: str) -> bool:
+    """Whether code from ``filename`` is part of this package.
+
+    Inside its directory, that is, not merely named like it: a script in an
+    ``algan_scenes`` folder beside an editable checkout is the user's.
+    """
+    return os.path.abspath(filename).startswith(_PACKAGE_DIR + os.sep)
+
+
 def _user_stacklevel(default: int = 2) -> int:
     """Frames from the caller out to the first frame outside algan.
 
@@ -29,7 +38,7 @@ def _user_stacklevel(default: int = 2) -> int:
     frame = sys._getframe(1)
     level = 1
     while frame is not None:
-        if not os.path.abspath(frame.f_code.co_filename).startswith(_PACKAGE_DIR):
+        if not _in_algan(frame.f_code.co_filename):
             return level
         frame = frame.f_back
         level += 1
@@ -44,9 +53,7 @@ def _user_location():
     final -- but should still point at that line. Pass it to :func:`_warn_at`.
     """
     frame = sys._getframe(1)
-    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(
-        _PACKAGE_DIR
-    ):
+    while frame is not None and _in_algan(frame.f_code.co_filename):
         frame = frame.f_back
     if frame is None:
         return None

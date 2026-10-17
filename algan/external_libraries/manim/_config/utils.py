@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 __all__ = ["config_file_paths", "make_config_parser", "ManimConfig", "ManimFrame"]
 
-logger = logging.getLogger("manim")
+logger = logging.getLogger("algan.manim")
 
 
 def config_file_paths() -> list[Path]:

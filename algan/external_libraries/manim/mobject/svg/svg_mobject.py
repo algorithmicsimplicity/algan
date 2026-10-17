@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any
 from ..._compat import Self
@@ -334,8 +335,9 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
                         elif hasattr(mob, 'set_opacity'):
                             mob.set_opacity(opacity)
                         result.append(mob)
-                        for parent_name in vgroup_stack[:-1]:
-                            vgroups[parent_name].add(mob)
+                        if isinstance(mob, VMobject):
+                            for parent_name in vgroup_stack[:-1]:
+                                vgroups[parent_name].add(mob)
             except Exception as e:
                 logger.error(f"Exception occurred in 'get_mobjects_from'. Details: {e}")
 
@@ -528,7 +530,16 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
         text
             The parsed SVG text.
         """
-        logger.warning(f"Unsupported element type: {type(text)}")
+        shown = textwrap.shorten(text.text or "", width=60)
+        if shown == "[...]":
+            # A first word longer than the line, which shorten drops whole.
+            shown = text.text.strip()[:54] + " [...]"
+        if shown:
+            logger.warning(
+                f"SVG text is not imported, so {shown!r} is left out. To "
+                "keep it, convert the text to paths in the SVG (Inkscape: "
+                "Path > Object to Path; Illustrator: Type > Create Outlines)."
+            )
         return  # type: ignore[return-value]
 
     def move_into_position(self) -> Self:

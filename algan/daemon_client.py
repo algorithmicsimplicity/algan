@@ -862,34 +862,49 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         cleanup.callback(restore)
         stream.write(b"run\n" + struct.pack("!I", len(payload)) + payload)
         stream.flush()
-        for kind, data in read_frames(stream):
-            if kind is None:
-                if started:
-                    raise DaemonRunFailed(
-                        "the algan daemon stopped responding mid-run. The "
-                        "script may have partially completed; re-run it "
-                        "deliberately rather than assuming it did nothing."
-                    )
-                raise DaemonUnreachable("the daemon closed the connection")
-            if kind == FRAME_REFUSE:
-                raise DaemonUnavailable(data.decode("utf-8", "replace"))
-            if kind == FRAME_ACCEPT:
-                accepted()
-            if kind == FRAME_START:
-                started = True
-                accepted()
-            elif kind == FRAME_INFO:
-                err.write(b"[algan-daemon] " + data + b"\n")
-                _flush(err)
-            elif kind == FRAME_STDOUT:
-                out.write(data)
-                _flush(out)
-            elif kind == FRAME_STDERR:
-                err.write(data)
-                _flush(err)
-            elif kind == FRAME_EXIT:
-                (code,) = struct.unpack("!i", data)
-                return code
+        try:
+            for kind, data in read_frames(stream):
+                if kind is None:
+                    if started:
+                        raise DaemonRunFailed(
+                            "the algan daemon stopped responding mid-run. The "
+                            "script may have partially completed; re-run it "
+                            "deliberately rather than assuming it did nothing."
+                        )
+                    raise DaemonUnreachable("the daemon closed the connection")
+                if kind == FRAME_REFUSE:
+                    raise DaemonUnavailable(data.decode("utf-8", "replace"))
+                if kind == FRAME_ACCEPT:
+                    accepted()
+                if kind == FRAME_START:
+                    started = True
+                    accepted()
+                elif kind == FRAME_INFO:
+                    err.write(b"[algan-daemon] " + data + b"\n")
+                    _flush(err)
+                elif kind == FRAME_STDOUT:
+                    out.write(data)
+                    _flush(out)
+                elif kind == FRAME_STDERR:
+                    err.write(data)
+                    _flush(err)
+                elif kind == FRAME_EXIT:
+                    (code,) = struct.unpack("!i", data)
+                    return code
+        except Exception as exc:
+            # Whatever ends a run once its script has started -- a connection
+            # reset, which is what a killed daemon gives on Windows, or output
+            # this client can no longer write -- leaves it unsafe to run the
+            # script again here, which any other exception would let
+            # maybe_handoff do.
+            if not started or isinstance(exc, DaemonRunFailed):
+                raise
+            raise DaemonRunFailed(
+                "the run on the algan daemon was interrupted "
+                f"({type(exc).__name__}: {exc}). The script may have partially "
+                "completed; re-run it deliberately rather than assuming it did "
+                "nothing."
+            ) from exc
 
 
 def log_path():

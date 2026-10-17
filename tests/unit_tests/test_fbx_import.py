@@ -13,13 +13,14 @@ use). Layers checked:
    parse + build assertions; skipped if the asset is absent.
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
-from algan import SceneManager
+from algan import SceneManager, UnsupportedFeatureWarning
 from algan.mobs.three_d_models import Model3D, TriangleMesh
 from algan.mobs.three_d_models.mesh import image_to_normal_map, image_to_texture_map
 from algan.mobs.three_d_models.scene_data import (
@@ -189,6 +190,64 @@ def test_assimp_loader_missing_file():
         load_scene("does_not_exist.fbx")
 
 
+@pytest.fixture
+def stand_in_pyassimp(tmp_path, monkeypatch):
+    """The directory of an importable stand-in ``pyassimp`` package.
+
+    Its ``AssimpError`` derives from ``BaseException``, as pyassimp's does; each
+    test writes the package's ``__init__`` to fail the way it needs.
+    """
+
+    def pyassimp_modules():
+        return [m for m in sys.modules if m == "pyassimp" or m.startswith("pyassimp.")]
+
+    for name in pyassimp_modules():
+        monkeypatch.delitem(sys.modules, name)
+    package = tmp_path / "pyassimp"
+    package.mkdir()
+    (package / "errors.py").write_text("class AssimpError(BaseException):\n    pass\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield package
+    for name in pyassimp_modules():
+        del sys.modules[name]
+
+
+def test_assimp_loader_without_the_native_library_says_how_to_install_it(
+    stand_in_pyassimp, tmp_path
+):
+    from algan.mobs.three_d_models.assimp_loader import load_scene
+
+    # pyassimp's import raises this when it finds no native library.
+    (stand_in_pyassimp / "__init__.py").write_text(
+        "from .errors import AssimpError\n"
+        "raise AssimpError('assimp library not found')\n"
+    )
+    model = tmp_path / "model.fbx"
+    model.write_bytes(b"")
+    with pytest.raises(ImportError, match="then install the native library"):
+        load_scene(str(model))
+
+
+def test_assimp_loader_names_a_file_assimp_cannot_import(stand_in_pyassimp, tmp_path):
+    from algan.mobs.three_d_models.assimp_loader import load_scene
+
+    (stand_in_pyassimp / "postprocess.py").write_text(
+        "def __getattr__(name):\n    return 0\n"
+    )
+    (stand_in_pyassimp / "__init__.py").write_text(
+        "from contextlib import contextmanager\n"
+        "from .errors import AssimpError\n"
+        "@contextmanager\n"
+        "def load(filename, file_type=None, processing=0):\n"
+        "    raise AssimpError('Could not import file!')\n"
+        "    yield\n"
+    )
+    model = tmp_path / "model.fbx"
+    model.write_bytes(b"not a model")
+    with pytest.raises(OSError, match="model.fbx"):
+        load_scene(str(model))
+
+
 # --- Phase 2: PBR materials + normal maps + node access ---------------------
 def test_normal_map_conversion():
     """glTF rgb normal map -> engine [-1, 1] tangent map, transposed/flipped
@@ -255,6 +314,58 @@ def test_normal_maps_and_pbr_can_be_disabled():
     mesh = model.mesh_mobs[0]
     assert mesh.normal_texture_map is None
     assert mesh.shader is not standard_shader
+
+
+def _quad_scene(material):
+    v, f, n, uv = _quad()
+    mesh = MeshData(
+        vertices=v, faces=f, normals=n, uvs=uv, material_index=0, name="quad"
+    )
+    node = NodeData(name="quad_node", parent=-1, mesh_indices=[0])
+    return SceneData(
+        meshes=[mesh], materials=[material], nodes=[node], source_path="synthetic"
+    )
+
+
+def test_a_texture_file_that_cannot_be_loaded_is_named_in_a_warning(tmp_path):
+    """A missing or unreadable texture used to leave the model untextured
+    without a word, typically when a model file refers to textures by a path
+    on the machine it was made on.
+    """
+    SceneManager.reset()
+    missing = tmp_path / "wood.png"
+    with pytest.warns(UnsupportedFeatureWarning, match="wood.png.*no such file"):
+        model = Model3D(
+            scene_data=_quad_scene(MaterialData(diffuse_texture=str(missing)))
+        )
+    assert model.mesh_mobs[0].texture_map is None
+
+    unreadable = tmp_path / "bump.png"
+    unreadable.write_bytes(b"not an image")
+    with pytest.warns(
+        UnsupportedFeatureWarning, match="bump.png.*UnidentifiedImageError"
+    ):
+        model = Model3D(
+            scene_data=_quad_scene(MaterialData(normal_texture=str(unreadable)))
+        )
+    assert model.mesh_mobs[0].normal_texture_map is None
+
+
+def test_an_embedded_texture_that_cannot_be_decoded_is_named_in_a_warning():
+    from types import SimpleNamespace
+
+    from algan.mobs.three_d_models.gltf_loader import _convert_material
+
+    out_of_range = np.full((2, 2, 3), 2.0)
+    visual = SimpleNamespace(
+        material=SimpleNamespace(name="scales", baseColorTexture=out_of_range)
+    )
+    with pytest.warns(
+        UnsupportedFeatureWarning,
+        match="base color texture of material 'scales'.*must be in",
+    ):
+        material = _convert_material(visual)
+    assert material.diffuse_image is None
 
 
 def test_node_part_access():

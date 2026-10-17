@@ -14,6 +14,10 @@ raise verbosity, either:
 Levels are thresholds, not selectors: a level shows itself and everything more
 severe, so ``INFO`` also shows warnings and errors.
 
+The copy of Manim that Algan vendors logs on the child logger
+``"algan.manim"``, so the same level governs it: its warnings and errors print
+with Algan's own, and its ``INFO`` messages only at ``DEBUG``.
+
 Algan adds one level of its own, :data:`PERF`, between ``DEBUG`` and ``INFO``::
 
     ALGAN_LOG_LEVEL = PERF  # or set_log_level("PERF")
@@ -122,6 +126,38 @@ def _quiet_third_party():
 
 
 _quiet_third_party()
+
+
+#: What the copy of Manim in ``algan/external_libraries`` logs on. A child of
+#: ``"algan"``, so it prints through Algan's handler at Algan's level; its
+#: ``_config/__init__.py`` says why it is not upstream's ``"manim"``.
+_VENDORED_MANIM_LOGGER = "algan.manim"
+
+
+class _VendoredManimFilter(_AlganLevelFilter):
+    """Hold the vendored Manim to Algan's level, and its ``INFO`` to ``DEBUG``.
+
+    The level has to be a filter here too: Manim's ``config.verbosity`` sets
+    its logger's own level, to ``INFO`` from ``default.cfg`` as the config is
+    built, and to whatever a script or a ``tempconfig`` sets it to after that,
+    which leaving the ``tempconfig`` does not undo.
+
+    Its warnings and errors are about the script -- an SVG element it cannot
+    import, a deprecated argument -- and show at their own level. Its ``INFO``
+    is a running account Algan does not ask for (which config files it read,
+    each Typst file it compiles), and at Algan's default level it would print
+    in among the render progress.
+    """
+
+    def filter(self, record):
+        if record.levelno < logging.WARNING:
+            return logger.isEnabledFor(logging.DEBUG)
+        return super().filter(record)
+
+
+_vendored_manim = logging.getLogger(_VENDORED_MANIM_LOGGER)
+if not any(isinstance(f, _VendoredManimFilter) for f in _vendored_manim.filters):
+    _vendored_manim.addFilter(_VendoredManimFilter())
 
 
 def get_logger(name=None):
@@ -273,7 +309,9 @@ def set_log_level(level):
     Notes
     -----
     This also holds the noisier third-party loggers Algan pulls in (currently
-    Manim's) to the same level, so one call quiets the whole console.
+    an installed Manim's) to the same level, so one call quiets the whole
+    console. The copy of Manim Algan vendors logs on ``"algan.manim"`` and is
+    held to this level too; its ``INFO`` messages show only at ``DEBUG``.
     """
     logger.setLevel(level.upper() if isinstance(level, str) else level)
     _quiet_third_party()

@@ -65,6 +65,24 @@ def is_cuda_oom(exc):
     return False
 
 
+def is_out_of_memory(exc):
+    """True if ``exc`` is memory running out on any device, CPU included.
+
+    :func:`is_cuda_oom` matches the GPU's allocators. Python's own
+    :class:`MemoryError` and torch's CPU allocator are the others; the latter
+    raises a plain :class:`RuntimeError` ("DefaultCPUAllocator: can't allocate
+    memory", or "not enough memory" on Windows) that the GPU's strings miss.
+    For telling a shortage from a bug in a user's function, where both mean the
+    function is not at fault; the render loop's retries still match only the
+    GPU, whose batches a smaller window can make fit.
+    """
+    return (
+        isinstance(exc, MemoryError)
+        or is_cuda_oom(exc)
+        or (isinstance(exc, RuntimeError) and "DefaultCPUAllocator" in str(exc))
+    )
+
+
 #: Fraction of Metal's ``recommendedMaxWorkingSetSize`` held back from the free
 #: figure, standing in for what Taichi allocates outside torch (which
 #: ``current_allocated_memory`` cannot see). Calibrated on two Mac jobs, which

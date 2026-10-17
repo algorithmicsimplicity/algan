@@ -236,8 +236,8 @@ def _log_excerpt_or_note(log_file: Path, builds: Path) -> str:
 def _log_errors(lines: list[str]) -> list[str]:
     """Each ``! error`` of a LaTeX log, through the ``l.<n>`` line locating it.
 
-    Manim's own report went through its logger, which Algan's vendored copy
-    leaves silent, so the exception message is the only place it can appear.
+    Manim's own build logs these as it fails. This one puts them in the
+    exception instead, which goes wherever the failure goes.
     """
     from manim.utils.tex_file_writing import LATEX_ERROR_INSIGHTS
 

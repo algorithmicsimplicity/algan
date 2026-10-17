@@ -235,3 +235,38 @@ def test_unreachable_tolerance_still_warns():
         surf = _Superellipsoid(geometry_tolerance=1e-7, max_grid_resolution=8)
     assert surf.grid_width == 8
     assert surf.grid_height == 8
+
+
+class _Ridge(Surface):
+    """A surface whose function fails one way on every grid it is given."""
+
+    def __init__(self, error, **kwargs):
+        self.error = error
+        super().__init__(**kwargs)
+
+    def coord_function(self, uv):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        NameError("name 'height' is not defined"),
+        torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"),
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:117] data. DefaultCPUAllocator: can't "
+            "allocate memory: you tried to allocate 8589934592 bytes."
+        ),
+    ],
+    ids=["NameError", "OutOfMemoryError", "CPU"],
+)
+def test_an_error_no_grid_explains_is_raised_from_the_sizing_search(error):
+    """It used to read as "this grid is too coarse": the search climbed to
+    max_grid_resolution, warned that the tolerance was out of reach and cached
+    that grid for the geometry.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(type(error)) as caught:
+            _Ridge(error)
+    assert caught.value is error

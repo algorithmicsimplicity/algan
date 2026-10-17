@@ -17,6 +17,7 @@ from __future__ import annotations
 import bisect
 import collections
 import contextlib
+import inspect
 import itertools
 import logging
 import math
@@ -79,6 +80,7 @@ from algan.utils.memory_utils import (
     release_torch_memory,
     scene_excluded_from_gc,
 )
+from algan.utils.python_utils import callable_signature
 
 logger = get_logger("scene")
 
@@ -726,11 +728,13 @@ def _decode_light_rgb(rgb, frame_local):
 
 
 def _check_post_processes(post_processes):
-    """Reject a non-callable pass before the render rather than after it.
+    """Reject, before the render rather than after it, a pass Algan cannot call.
 
     Each pass is applied to finished frames, so a bad entry used to surface as
     ``TypeError: 'int' object is not callable`` once the whole render had
-    already been paid for.
+    already been paid for -- and a pass written ``def desaturate(frames)``,
+    with no ``memory`` keyword, as ``got an unexpected keyword argument
+    'memory'``.
     """
     if post_processes is None:
         return
@@ -748,6 +752,81 @@ def _check_post_processes(post_processes):
                 f"partial(bloom_filter, glow_spread=0.015). Pass () for no "
                 f"post-processing."
             )
+        try:
+            # Not following __wrapped__: the call binds to the outermost
+            # signature, and a decorator may be what adds the memory keyword.
+            signature = callable_signature(process, follow_wrapped=False)
+        except (TypeError, ValueError):
+            # A builtin may not say what it takes; the call itself will.
+            continue
+        problem = _bind_error(signature.bind, None, memory=None)
+        if problem is None:
+            continue
+        if _bind_error(signature.bind, None) is None:
+            # It takes the frames, so the memory keyword is all it lacks.
+            raise AlganConfigurationError(
+                f"post_processes[{index}] takes no memory keyword, but Algan calls "
+                f"every pass as process(frames, memory=arena). Give it one it may "
+                f"ignore: {_with_memory_keyword(process)}"
+            )
+        # When only arguments are missing, partial can supply them.
+        hint = (
+            ""
+            if _bind_error(signature.bind_partial, None, memory=None)
+            else " Bind its other arguments first with partial, as in "
+            "partial(bloom_filter, glow_spread=0.015)."
+        )
+        raise AlganConfigurationError(
+            f"post_processes[{index}] cannot be called as "
+            f"process(frames, memory=arena), as Algan calls every pass: "
+            f"{problem}.{hint}"
+        )
+
+
+def _bind_error(bind, *args, **kwargs):
+    """The ``TypeError`` binding these arguments raises, or None."""
+    try:
+        bind(*args, **kwargs)
+    except TypeError as error:
+        return error
+    return None
+
+
+def _with_memory_keyword(process):
+    """``process``'s own definition with ``memory=None`` added, to quote."""
+    function = process.func if isinstance(process, partial) else process
+    # A bound method is quoted with its self, as it is written.
+    function = getattr(function, "__func__", function)
+    if not inspect.isfunction(function):
+        # A callable object: the method a call runs.
+        function = type(function).__call__
+    try:
+        signature = callable_signature(function, follow_wrapped=False)
+        parameters = [
+            parameter.replace(annotation=parameter.empty)
+            for parameter in signature.parameters.values()
+        ]
+        keyword_only = any(
+            parameter.kind in (parameter.VAR_POSITIONAL, parameter.KEYWORD_ONLY)
+            for parameter in parameters
+        )
+        parameters.append(
+            inspect.Parameter(
+                "memory",
+                inspect.Parameter.KEYWORD_ONLY
+                if keyword_only
+                else inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=None,
+            )
+        )
+        shown = str(
+            signature.replace(parameters=parameters, return_annotation=signature.empty)
+        )
+    except (TypeError, ValueError):
+        return "def my_pass(frames, memory=None)"
+    if function.__name__ == "<lambda>":
+        return f"lambda {shown[1:-1]}: ..."
+    return f"def {function.__name__}{shown}"
 
 
 def _framewise_post_process(process, batch_native=True):
@@ -3340,16 +3419,12 @@ class RenderLoopMixin:
         by ``_render_primitive_batch``; on any failure the un-projected remainder
         (and the merge) simply runs on the render thread as before.
         """
-        try:
-            from algan.rendering.raytracing.primitives import (
-                RayTracedBezierCircuitPrimitive,
-                RayTracedTrianglePrimitive,
-            )
-            from algan.rendering.raytracing.scene_builder import (
-                upload_primitive_source,
-            )
-        except Exception:
-            return
+        from algan.rendering.raytracing.primitives import (
+            RayTracedBezierCircuitPrimitive,
+            RayTracedTrianglePrimitive,
+        )
+        from algan.rendering.raytracing.scene_builder import upload_primitive_source
+
         if not primitives or not isinstance(
             primitives[0], (RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
         ):
@@ -4032,6 +4107,11 @@ class RenderLoopMixin:
         _rt_settings = SETTINGS.raytracing
 
         _rt_settings._begin_render_job()
+        # A denoiser that ran out of memory loading in the last job loads again;
+        # until a render has loaded one, there is nothing to forget.
+        denoise_module = sys.modules.get("algan.rendering.denoise.denoise")
+        if denoise_module is not None:
+            denoise_module._begin_render_job()
 
         with self._batch_prep_context():
             current_time_ind = start_time_ind
@@ -4205,7 +4285,7 @@ class RenderLoopMixin:
                     build(batch[0], batch[2])
                 except Exception as e:
                     logger.warning(
-                        f"{what} failed (deferring to the render thread): {e}"
+                        f"{what} failed (deferring to the render thread): {e!r}"
                     )
                 if source is not None:
                     # Anything short of a fully projected copy (declined,

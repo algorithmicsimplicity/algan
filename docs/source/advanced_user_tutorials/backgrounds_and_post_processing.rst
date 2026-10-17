@@ -240,9 +240,9 @@ Frames arrive as a torch tensor on the render device.
 
 The ``memory`` keyword is **required**, not optional: Algan always calls a pass as
 ``process(frames, memory=arena)``, so a pass declared as ``def desaturate(frames)``
-raises ``TypeError`` part way through the render. Give it a default of ``None`` and
-ignore it, as above, or accept ``**kwargs``. Use it when you want to allocate from
-Algan's render arena rather than the torch allocator -- see
+is refused with an ``AlganConfigurationError`` before anything renders. Give it a
+default of ``None`` and ignore it, as above, or accept ``**kwargs``. Use it when you
+want to allocate from Algan's render arena rather than the torch allocator -- see
 :doc:`performance_and_quality`.
 
 See Also

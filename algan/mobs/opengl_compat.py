@@ -19,6 +19,7 @@ from algan.constants.color import GREY, WHITE
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Line
 from algan.mobs.surfaces.surface import Surface
+from algan.utils.memory_utils import is_out_of_memory
 from algan.utils.tensor_utils import unsquish
 
 
@@ -30,24 +31,47 @@ def _resolution_pair(resolution, default=(101, 101)):
     return tuple(int(value) for value in resolution)
 
 
+def _uv_points(result, u):
+    """``result`` as one point per ``(u, v)``, or None if it is not that."""
+    if isinstance(result, torch.Tensor):
+        result = result.to(device=u.device, dtype=u.dtype)
+        if result.shape[-1] == 3:
+            return result
+        if result.shape[0] == 3 and result.shape[1:] == u.shape:
+            return result.movedim(0, -1)
+    array = np.asarray(result)
+    if array.shape[-1:] == (3,) and array.shape[:-1] == tuple(u.shape):
+        return torch.as_tensor(array, device=u.device, dtype=u.dtype)
+    return None
+
+
 def _call_uv_function(function, u, v):
-    """Call either a torch-vectorized or ordinary scalar Manim UV function."""
+    """Call either a torch-vectorized or ordinary scalar Manim UV function.
+
+    The function is called on the whole ``u`` and ``v`` tensors first. If that
+    raises a TypeError, ValueError or RuntimeError, or does not return one point
+    per ``(u, v)``, the function is taken to be one that takes a pair of floats
+    at a time, as Manim's do, and is called that way. An error from those calls
+    is chained to the first one, so the traceback shows both. Running out of
+    memory is raised at once: it says nothing about how the function takes its
+    input, and calling it point by point on the CPU instead would hide it.
+    """
     if function is None:
         return torch.stack((u, v, torch.zeros_like(u)), dim=-1)
     try:
-        result = function(u, v)
-        if isinstance(result, torch.Tensor):
-            result = result.to(device=u.device, dtype=u.dtype)
-            if result.shape[-1] == 3:
-                return result
-            if result.shape[0] == 3 and result.shape[1:] == u.shape:
-                return result.movedim(0, -1)
-        array = np.asarray(result)
-        if array.shape[-1:] == (3,) and array.shape[:-1] == tuple(u.shape):
-            return torch.as_tensor(array, device=u.device, dtype=u.dtype)
-    except (TypeError, ValueError, RuntimeError):
-        pass
+        points = _uv_points(function(u, v), u)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        if is_out_of_memory(exc):
+            raise
+        # Inside the handler, so an error from the scalar calls is chained to
+        # this one.
+        return _call_uv_function_on_each_point(function, u, v)
+    if points is None:
+        return _call_uv_function_on_each_point(function, u, v)
+    return points
 
+
+def _call_uv_function_on_each_point(function, u, v):
     flat_u = u.detach().cpu().reshape(-1).numpy()
     flat_v = v.detach().cpu().reshape(-1).numpy()
     points = [
