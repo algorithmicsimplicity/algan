@@ -289,3 +289,12 @@ def test_empty_content_is_valid(compiler, scene, factory):
     empty = factory("")
     assert len(empty._typst_parts) == 0
     assert empty.baseline_frames == []
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_a_moved_typst_reaches_manim_where_it_is(compiler, scene, batch):
+    """Manim got the paths as typeset, so it framed the text where it started."""
+    text = Typst("hello", batch=batch)
+    text.move(RIGHT * 3)
+    box = mn.SurroundingRectangle(text)
+    torch.testing.assert_close(box.get_center(), text.get_center(), atol=1e-4, rtol=0)

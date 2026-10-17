@@ -322,10 +322,15 @@ def _native_text_glyphs(mob: Mob):
 
 
 def _algan_mob_to_manim(mob: Mob):
-    if isinstance(mob, ManimCompatMob):
+    if isinstance(mob, (ManimCompatMob, _TypstSelection)):
         return mob._sync_manim_from_algan()
-    source = getattr(mob, "manim_mobject", None)
-    if source is not None:
+    if isinstance(mob, ManimMob):
+        # A plain conversion keeps the Mobject it was built from, as it was
+        # built: handed over as it is, a ManimMob moved since would be framed,
+        # braced and lined up where it started. Manim gets a copy where it is
+        # now, and the caller's own Mobject is left alone.
+        source = mob.manim_mobject.copy()
+        _sync_manim_node_from_algan(mob, source)
         return source
     if isinstance(mob, BezierCircuitCubic):
         return _algan_bezier_to_manim(mob)

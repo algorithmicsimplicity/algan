@@ -5,7 +5,9 @@ Manim draws a label as it is handed one: ``Axes.get_axis_labels``,
 draw it. A native :class:`~algan.mobs.text.Tex` or
 :class:`~algan.mobs.text.Text` used to reach Manim as its bounding box, so the
 label drew as a rectangle where the text should have been. So did a native
-:class:`~algan.mobs.group.Group`, whatever it held.
+:class:`~algan.mobs.group.Group`, whatever it held, and a
+:class:`~algan.mobs.manim_mob.ManimMob` reached Manim where it was built,
+wherever it had moved since.
 """
 
 import manim as mn
@@ -14,12 +16,15 @@ import pytest
 
 import algan.manim as amn
 from algan import (
+    BLUE,
     RED,
     RIGHT,
+    UP,
     Axes,
     Circle,
     Group,
     LabeledDot,
+    ManimMob,
     Scene,
     Square,
     Tex,
@@ -108,3 +113,25 @@ def test_a_group_reaches_manim_as_its_members():
 
         wrapped = amn.VGroup(pair)
         assert len(wrapped.manim_mobject.get_family()) > 2
+
+
+def test_a_moved_manim_mob_reaches_manim_where_it_is():
+    """Manim got the Mobject the ManimMob was built from, as it was built.
+
+    So ``SurroundingRectangle`` framed the ManimMob where it started. The
+    Mobject is the caller's own: it is left where they put it.
+    """
+    with Scene():
+        source = mn.VGroup(mn.Square(), mn.Circle().shift(mn.RIGHT * 3))
+        pair = ManimMob(source)
+        pair.move(UP * 2)
+        pair.submobjects[1].color = BLUE
+
+        converted = to_manim(pair)
+        np.testing.assert_allclose(converted.get_center(), [1.5, 2, 0], atol=1e-5)
+        assert converted[1].get_color().to_hex() == to_manim(BLUE)
+        box = amn.SurroundingRectangle(pair)
+        np.testing.assert_allclose(
+            box.get_center().reshape(-1).cpu().numpy(), [1.5, 2, 0], atol=1e-4
+        )
+        np.testing.assert_allclose(source.get_center(), [1.5, 0, 0], atol=1e-5)
