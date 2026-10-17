@@ -32,6 +32,7 @@ See :doc:`/new_user_tutorials/combining_animations`.
 from __future__ import annotations
 
 import copy
+import inspect
 import math
 import os
 import typing
@@ -187,6 +188,44 @@ def _reject_context_kwargs(kwargs):
             f"    with {call}:\n"
             f"        ...\n"
         )
+
+
+def _reject_invalid_easing(context, easing, parameter="easing"):
+    """Refuse an easing the replay cannot call, at the line that gave it.
+
+    An easing is first called when its animations are replayed for a render,
+    so a name, a number or a function that cannot take the progress failed
+    there, inside the timeline -- ``'str' object is not callable`` -- naming
+    neither the context nor the easing.
+    """
+    if easing is None:
+        return
+    owner = f"{type(context).__name__}'s {parameter}"
+    if not callable(easing):
+        hint = (
+            f" Pass the function itself: easings.{easing}."
+            if isinstance(easing, str) and easing in easings.__all__
+            else ""
+        )
+        raise AlganConfigurationError(
+            f"{owner} is {easing!r} ({type(easing).__name__}), but an easing is "
+            f"a function of the progress t, such as easings.smooth.{hint}"
+        )
+    try:
+        # Not following __wrapped__: the call binds to the outermost signature.
+        signature = inspect.signature(easing, follow_wrapped=False)
+    except (TypeError, ValueError):
+        # A builtin may not say what it takes; the call itself will.
+        return
+    try:
+        signature.bind(None)
+    except TypeError as error:
+        name = getattr(easing, "__name__", None) or type(easing).__name__
+        raise AlganConfigurationError(
+            f"{owner}, {name}, cannot be called as easing(t): {error}. Algan "
+            f"calls an easing with the progress t, a tensor of values from 0 to "
+            f"1, and plays the animation at the progress it returns."
+        ) from None
 
 
 def _reject_invalid_runtime(name, value):
@@ -469,7 +508,8 @@ class AnimationContext:
         If ``runtime`` or ``runtime_per_part`` is not finite and non-negative,
         or a parameter is
         spelled the way Manim or an older Algan spelled it (``duration``,
-        ``run_time``, ``rate_func``).
+        ``run_time``, ``rate_func``). Also if ``easing`` or ``composed_easing``
+        is not a function that can be called with the progress alone.
     :class:`.ContextReuseError`
         If the same context object is entered by a second ``with`` block.
     """
@@ -496,6 +536,8 @@ class AnimationContext:
     def __post_init__(self):
         _reject_invalid_runtime("runtime", self.runtime)
         _reject_invalid_runtime("runtime_per_part", self.runtime_per_part)
+        _reject_invalid_easing(self, self.easing)
+        _reject_invalid_easing(self, self.composed_easing, "composed_easing")
         if self.new_mobs is None:
             self.new_mobs = []
         if self.child_contexts is None:
