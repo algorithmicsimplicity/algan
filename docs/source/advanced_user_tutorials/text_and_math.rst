@@ -228,12 +228,12 @@ isolate terms with double braces, such as ``Tex(r"{{x}} + {{y}}")``. An ungroupe
 
     equation = Tex("x", "+", "y", "=", "z", font_size=64).spawn()
     equation.get_segment(0).color = YELLOW
-    target = Tex("z", "-", "y", "=", "x", font_size=64)
+    target = Tex("z", "-", "y", "=", "x", font_size=64, add_to_scene=False)
     target.get_segment(4).color = YELLOW
     equation = TransformMatchingTex(equation, target, runtime=2)
     equation = TransformMatchingTex(
         equation,
-        Tex("z", "-", "y", "=", "a", font_size=64),
+        Tex("z", "-", "y", "=", "a", font_size=64, add_to_scene=False),
         key_map={"x": "a"},
     )
     Scene.save_video()

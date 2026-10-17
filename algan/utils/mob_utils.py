@@ -234,7 +234,9 @@ def batch_mobs(
 
         from algan import *
 
-        tiles = batch_mobs([Square(size=0.5).move(RIGHT * x) for x in (-2, 0, 2)])
+        tiles = batch_mobs(
+            [Square(size=0.5, add_to_scene=False).move(RIGHT * x) for x in (-2, 0, 2)]
+        )
         tiles.spawn()
         tiles[1].color = BLUE
         Scene.save_video()

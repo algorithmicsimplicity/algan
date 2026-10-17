@@ -386,7 +386,9 @@ def TransformMatchingTex(
 
         equation = Tex("x", "+", "y", font_size=72).spawn()
         equation = TransformMatchingTex(
-            equation, Tex("y", "+", "x", font_size=72), runtime=2
+            equation,
+            Tex("y", "+", "x", font_size=72, add_to_scene=False),
+            runtime=2,
         )
         equation.move(UP)
         Scene.save_video()
@@ -480,7 +482,9 @@ def TransformMatchingShapes(
         from algan import *
 
         word = Text("STOP", font_size=72).spawn()
-        word = TransformMatchingShapes(word, Text("POST", font_size=72), runtime=2)
+        word = TransformMatchingShapes(
+            word, Text("POST", font_size=72, add_to_scene=False), runtime=2
+        )
         Scene.save_video()
     """
     return _transform_matching(
