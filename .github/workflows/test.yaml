@@ -229,9 +229,9 @@ jobs:
       # stay the cold-compile control -- the one place a stale entry served
       # under a key that missed a change would still show up -- and they save
       # what they compiled, so the next pull request starts from it. Within a
-      # pull request, each run restores the previous one's cache first. If an
-      # entry is ever suspected, bump `kernels-v1` in both steps and every arm
-      # starts cold.
+      # pull request, a run restores the newest cache an earlier run of the
+      # same pull request saved, before the base branch's. If an entry is ever
+      # suspected, bump `kernels-v1` in both steps and every arm starts cold.
       #
       # Only the compiled kernels are kept. The content caches beside them
       # (LaTeX, SVG, tessellations) are keyed by their inputs and a
@@ -254,6 +254,15 @@ jobs:
           restore-keys: |
             kernels-v1-${{ runner.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}-${{ hashFiles('uv.lock') }}-
             kernels-v1-${{ runner.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}-
+
+      # What the cache held before the tests, so that "Save compiled kernels"
+      # can tell whether this run compiled anything. Empty on a push, which
+      # restores nothing.
+      - name: List the restored kernels
+        run: |
+          mkdir -p ~/.algan/cache/quadrants
+          find ~/.algan/cache/quadrants -type f ! -name algan_kernel_specs.json | sort > "$RUNNER_TEMP/kernels-before.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/kernels-before.txt" | tr -d ' ') files restored"
 
       # A required MPS check must not be able to go green after silently running
       # on CPU. Ask Algan's startup resolver -- the same source the renderer
@@ -374,15 +383,33 @@ jobs:
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast ${{ matrix.coverage && '--cov=algan --cov-report=xml' || '' }} -n 1
 
+      # A compile writes new files: the compiler names an artifact by its key,
+      # and so does the source-keyed index. No new file means this run loaded
+      # everything it used from what it restored.
+      - name: Count newly compiled kernels
+        id: new-kernels
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p ~/.algan/cache/quadrants
+          touch "$RUNNER_TEMP/kernels-before.txt"
+          find ~/.algan/cache/quadrants -type f ! -name algan_kernel_specs.json | sort > "$RUNNER_TEMP/kernels-after.txt"
+          new=$(comm -13 "$RUNNER_TEMP/kernels-before.txt" "$RUNNER_TEMP/kernels-after.txt" | wc -l | tr -d ' ')
+          echo "$new new files in the kernel cache"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+
       # Saved whether the tests passed or failed: what the compiler wrote is
       # sound either way (see "Restore compiled kernels"), and an arm that is
       # red for an unrelated reason would otherwise compile from nothing on
       # every run. A cancelled run is left out, since its last kernels may
-      # not have reached the disk. `path` must stay identical to the restore
-      # step's: the cache's version is derived from it, and a save under
-      # another `path` is one the restore never finds.
+      # not have reached the disk, and so is a run that compiled nothing new:
+      # it would store another copy of what it restored, and every copy counts
+      # against the repository's 10 GB of Actions cache, which evicts the
+      # least recently used entries, other workflows' included, once full.
+      # `path` must stay identical to the restore step's: the cache's version
+      # is derived from it, and a save under another `path` is one the restore
+      # never finds.
       - name: Save compiled kernels
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.new-kernels.outputs.new != '0' }}
         uses: actions/cache/save@v6
         with:
           path: |
