@@ -681,6 +681,25 @@ def _prepare_background_for_chunk(
     else:
         background = torch.as_tensor(background, device=device)
 
+    if (
+        background.dim() == 4
+        and background.shape[0] == 1
+        and tuple(background.shape[1:3]) != (height, width)
+    ):
+        # An image background is fitted to the frame it was set for. Rendered
+        # at another resolution or supersampling -- a preset passed to
+        # save_video or save_frame -- it is fitted again rather than refused.
+        background = (
+            torch.nn.functional.interpolate(
+                background.permute(0, 3, 1, 2).float(),
+                (height, width),
+                mode="bilinear",
+                antialias=True,
+            )
+            .permute(0, 2, 3, 1)
+            .to(background.dtype)
+        )
+
     if background.dim() > 1:
         if background.shape[0] == 1:
             from algan.animation_timeline.timeline import _opt_disabled
