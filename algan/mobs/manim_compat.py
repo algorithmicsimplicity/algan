@@ -16,6 +16,7 @@ import inspect
 import re
 import warnings
 from collections.abc import Mapping
+from contextvars import ContextVar
 from functools import wraps
 from typing import Any
 
@@ -718,13 +719,115 @@ def _wrapper_type_for(source) -> type[ManimCompatMob]:
     return ManimCompatMob
 
 
+#: The compatibility Mobs handed to the Manim call whose result is being
+#: converted now, keyed by the id of the Mobject each one handed Manim, each
+#: with a copy of that Mobject as it was handed over. See ``_handed_over``.
+_HANDED_OVER: ContextVar[dict | None] = ContextVar("_HANDED_OVER", default=None)
+
+
+def _handed_over(values) -> dict:
+    """The compatibility Mobs among ``values`` that a Manim result may take in.
+
+    Manim builds a group out of the very Mobjects it is handed: in
+    ``VGroup(a, b)`` or ``LabeledDot(label)``, ``a``'s Mobject is a submobject
+    of the result, and arranging the group moves it. The result's conversion
+    therefore takes in the Mob the script holds as the part that draws it --
+    see ``_adopt_handed_mob`` -- rather than a copy, which left ``a`` an
+    unspawned double that edits went to and nothing drew. Only a Mob that is
+    not yet part of anything or on screen can be taken in.
+    """
+    handed = {}
+
+    def visit(value):
+        if isinstance(value, ManimCompatMob):
+            if (
+                not value.parents
+                and not value.is_spawned_in_subtree()
+                and not getattr(value, "_parts_packed", False)
+            ):
+                source = value._sync_manim_from_algan()
+                handed[id(source)] = (value, source.copy())
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                visit(item)
+
+    for value in values:
+        visit(value)
+    return handed
+
+
+@contextlib.contextmanager
+def _taking_in(handed):
+    token = _HANDED_OVER.set(handed or None)
+    try:
+        yield
+    finally:
+        _HANDED_OVER.reset(token)
+
+
+def _draws_alike(before, after) -> bool:
+    """Whether two copies of one Mobject family have the same points and style."""
+    family_before, family_after = before.get_family(), after.get_family()
+    if len(family_before) != len(family_after):
+        return False
+    for old, new in zip(family_before, family_after):
+        for name in ("points", "fill_rgbas", "stroke_rgbas"):
+            old_value = getattr(old, name, None)
+            new_value = getattr(new, name, None)
+            if (old_value is None) != (new_value is None) or (
+                old_value is not None and not np.array_equal(old_value, new_value)
+            ):
+                return False
+        if getattr(old, "stroke_width", None) != getattr(new, "stroke_width", None):
+            return False
+    return True
+
+
+def _adopt_handed_mob(source, scene, add_to_scene):
+    """The Mob handed to Manim as ``source``, brought up to date, or None.
+
+    None unless ``source`` is the very Mobject a Mob handed to the current call
+    holds (see ``_handed_over``), and that Mob can stand where it is wanted:
+    in the same Scene, registered as the conversion would be, and still free.
+    Manim may have moved or restyled it while building (``LabeledDot`` centres
+    its label), which the Mob catches up on here, before it is drawn.
+    """
+    handed = _HANDED_OVER.get()
+    if not handed or id(source) not in handed:
+        return None
+    mob, baseline = handed[id(source)]
+    if (
+        mob.manim_mobject is not source
+        or mob.scene is not scene
+        or bool(getattr(mob, "_added_to_scene", True)) != bool(add_to_scene)
+        or mob.parents
+        or mob.is_spawned_in_subtree()
+        or not _stands_for(mob, source)
+    ):
+        return None
+    # Taken in once: a Mobject Manim lists twice is drawn by the second copy.
+    del handed[id(source)]
+    if not _draws_alike(baseline, source):
+        mob.sync_from_manim(before_source=baseline)
+    return mob
+
+
 def _compat_part(source, **kwargs):
     """Convert one submobject of a compatibility Mob as a compatibility Mob.
 
     ``ManimMob``'s ``_part_factory``: a part built this way is both the Mob on
     screen and one that answers Manim's methods, so ``axes.x_axis.n2p(2)`` and
-    ``axes.x_axis.set_color(RED)`` both work on the axis that is drawn.
+    ``axes.x_axis.set_color(RED)`` both work on the axis that is drawn. A
+    submobject that a Mob handed to the call holds is that Mob.
     """
+    adopted = _adopt_handed_mob(
+        source, kwargs.get("scene"), kwargs.get("_add_to_scene", True)
+    )
+    if adopted is not None:
+        return adopted
     wrapper = _wrapper_type_for(source)
     part = wrapper.__new__(wrapper)
     part._initialize_from_manim(source, **kwargs)
@@ -790,6 +893,11 @@ def from_manim(value: Any, *, scene=None, add_to_scene: bool = True):
     if isinstance(value, _manim.ImageMobject):
         return ImageMob(value, scene=scene, add_to_scene=add_to_scene)
     if isinstance(value, _manim.Mobject):
+        # ``ax.get_graph_label(graph, label)`` hands back the label it was
+        # given, moved beside the graph.
+        adopted = _adopt_handed_mob(value, scene, add_to_scene)
+        if adopted is not None:
+            return adopted
         return _wrapper_type_for(value)._from_manim(
             value, scene=scene, add_to_scene=add_to_scene
         )
@@ -912,11 +1020,13 @@ class ManimCompatMob(ManimMob):
         for key, value in tuple(manim_kwargs.items()):
             if key.endswith("_range") and isinstance(value, tuple):
                 manim_kwargs[key] = list(value)
+        handed = _handed_over((*args, *kwargs.values()))
         source = self._manim_class(
             *(to_manim(arg) for arg in args),
             **manim_kwargs,
         )
-        self._initialize_from_manim(source, batch=batch, **algan_kwargs)
+        with _taking_in(None if batch else handed):
+            self._initialize_from_manim(source, batch=batch, **algan_kwargs)
         for key, value in component_opacity.items():
             setattr(self, key, value)
 
@@ -1452,6 +1562,7 @@ class ManimCompatMob(ManimMob):
                 for mob in self.manim_mobject.get_family()
             )
             current_attribute = getattr(self.manim_mobject, name)
+            handed = _handed_over((*args, *kwargs.values()))
             result = current_attribute(
                 *(to_manim(arg) for arg in args),
                 **{key: to_manim(value) for key, value in kwargs.items()},
@@ -1468,7 +1579,8 @@ class ManimCompatMob(ManimMob):
             )
             if after_topology != before_topology:
                 self.sync_from_manim(before_source=before_source)
-            return self._convert_delegated_result(result)
+            with _taking_in(handed):
+                return self._convert_delegated_result(result)
 
         return delegated
 

@@ -103,6 +103,14 @@ shape -- a move, a recolor, ``set_color_by_tex``. An edit that adds or removes
 parts, such as ``add_coordinates``, rebuilds them: look a part up again after
 one.
 
+The same goes for what you hand to a Manim-backed class. In
+``group = mn.VGroup(a, b)`` (with ``import algan.manim as mn``), ``a`` and
+``b`` become the group's parts, as in Manim: arranging the group moves them,
+and editing ``a`` edits the group on screen. So do a ``Table``'s labels, the
+entries of a ``MobjectMatrix``, a ``LabeledDot``'s label and the label
+``get_graph_label`` places. A Mob that is already spawned is left where it is,
+and the group draws a copy of it.
+
 Importing a finished Manim diagram
 ==================================
 
