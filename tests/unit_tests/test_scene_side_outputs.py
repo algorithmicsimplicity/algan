@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import math
 import os
+import struct
 import subprocess
 import sys
 import textwrap
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -42,12 +42,28 @@ def _tone(seconds: float, rate: int = 44100):
 
 
 def _read_wav(path):
-    """A 32-bit PCM file as ``(frame rate, [samples, channels] in [-1, 1])``."""
-    with wave.open(str(path)) as handle:
-        assert handle.getsampwidth() == 4
-        rate, channels = handle.getframerate(), handle.getnchannels()
-        raw = handle.readframes(handle.getnframes())
-    samples = np.frombuffer(raw, dtype="<i4").reshape(-1, channels)
+    """A 32-bit PCM file as ``(frame rate, [samples, channels] in [-1, 1])``.
+
+    Read by hand: FFmpeg writes 32-bit PCM as ``WAVE_FORMAT_EXTENSIBLE``, which
+    the standard library's ``wave`` reads only from Python 3.12.
+    """
+    data = Path(path).read_bytes()
+    assert data[:4] == b"RIFF"
+    assert data[8:12] == b"WAVE"
+    chunks, offset = {}, 12
+    while offset + 8 <= len(data):
+        name = data[offset : offset + 4]
+        (size,) = struct.unpack_from("<I", data, offset + 4)
+        chunks.setdefault(name, data[offset + 8 : offset + 8 + size])
+        offset += 8 + size + size % 2
+    fmt = chunks[b"fmt "]
+    tag, channels, rate = struct.unpack_from("<HHI", fmt)
+    bits = struct.unpack_from("<H", fmt, 14)[0]
+    if tag == 0xFFFE:
+        # The extensible header names the real format in its sub-format GUID.
+        tag = struct.unpack_from("<H", fmt, 24)[0]
+    assert (tag, bits) == (1, 32)
+    samples = np.frombuffer(chunks[b"data"], dtype="<i4").reshape(-1, channels)
     return rate, samples.astype(np.float64) / 2**31
 
 
@@ -176,10 +192,15 @@ def test_show_frame_displays_the_frame_it_rendered(scene, monkeypatch):
 def _run_script(tmp_path, source: str) -> subprocess.CompletedProcess:
     script = tmp_path / "scene_script.py"
     script.write_text(textwrap.dedent(source))
-    env = dict(os.environ)
     # The report arms itself only for a plain script run: not under pytest,
     # and not handed to a render daemon, where atexit handlers do not run.
-    env.pop("PYTEST_CURRENT_TEST", None)
+    # pytest-cov's subprocess hook, armed by its COV_CORE_ variables, imports
+    # pytest into the child, so it goes too.
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name != "PYTEST_CURRENT_TEST" and not name.startswith("COV_CORE_")
+    }
     env["ALGAN_USE_DAEMON"] = "0"
     env["ALGAN_AUTO_DAEMON"] = "0"
     # Import the checkout under test, not whichever one is installed.
