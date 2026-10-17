@@ -1,8 +1,10 @@
-"""``Surface``'s per-vertex painters: a checkerboard, a height map, a shape.
+"""``Surface``'s painters: a checkerboard, a height map, an image, a shape.
 
 ``set_checkerboard_colors`` and ``set_color_by_axis`` paint the grid's own
 vertices, so a surface's grid is the thing to read back: its rows run u-major,
 row ``u * grid_height + v`` being the vertex at ``(u, v)``.
+``set_color_by_image`` lays a picture over the surface as its color texture,
+indexed the same way, ``[u, v]``, and bakes it into the vertices too.
 ``set_location_by_function`` is the primitive that shapes a surface and that
 ``set_shape_to`` morphs through.
 
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -281,3 +284,101 @@ def test_a_recorded_shape_change_morphs_through_the_frames_between(scene):
     assert torch.allclose(heights[0], torch.zeros(9))
     assert torch.allclose(heights[1], torch.full((9,), 0.5), atol=1e-4)
     assert torch.allclose(heights[-1], torch.ones(9))
+
+
+# --- set_color_by_image -----------------------------------------------------
+
+#: Two rows of three pixels, every one a different color, as an image is laid
+#: out: the first row is the top of the picture.
+PICTURE = [
+    [(255, 0, 0), (0, 255, 0), (0, 0, 255)],
+    [(255, 255, 255), (0, 0, 0), (255, 255, 0)],
+]
+
+
+def _picture(alpha=None):
+    pixels = np.array(PICTURE, dtype=np.uint8)
+    if alpha is not None:
+        pixels = np.concatenate(
+            (pixels, np.full((*pixels.shape[:2], 1), alpha, dtype=np.uint8)), -1
+        )
+    return pixels
+
+
+def _texels(surface) -> torch.Tensor:
+    """The color texture as ``[u, v, (r, g, b, glow, alpha)]``, last frame."""
+    texture = surface.color_texture.as_subclass(torch.Tensor)
+    return texture.reshape(-1, *texture.shape[-3:])[-1]
+
+
+def _assert_laid_out_like_the_picture(texels):
+    # u runs left to right across the picture and v from its bottom to its top.
+    assert texels.shape[:2] == (3, 2)
+    for row, pixels in enumerate(PICTURE):
+        for column, pixel in enumerate(pixels):
+            expected = torch.tensor(pixel, dtype=torch.float32) / 255
+            torch.testing.assert_close(texels[column, 1 - row, :3], expected)
+
+
+def test_an_image_is_laid_over_the_surface_the_right_way_up(scene):
+    surface = Surface(_flat, grid_width=5, grid_height=4)
+    assert surface.color_texture is None
+
+    assert surface.set_color_by_image(_picture()) is surface
+    _assert_laid_out_like_the_picture(_texels(surface))
+    # Opaque and without glow, as the picture had neither.
+    torch.testing.assert_close(
+        _texels(surface)[..., 3:], torch.tensor([0.0, 1.0]).expand(3, 2, 2)
+    )
+
+    # The vertex colors are baked from the same picture, the same way up: the
+    # corners of the grid take the picture's corners.
+    rgb = _vertex_rgb(surface)
+    torch.testing.assert_close(rgb[0, 0], torch.tensor([1.0, 1.0, 1.0]))
+    torch.testing.assert_close(rgb[0, -1], torch.tensor([1.0, 0.0, 0.0]))
+    torch.testing.assert_close(rgb[-1, 0], torch.tensor([1.0, 1.0, 0.0]))
+    torch.testing.assert_close(rgb[-1, -1], torch.tensor([0.0, 0.0, 1.0]))
+
+
+def test_an_image_keeps_its_transparency(scene):
+    surface = Surface(_flat, grid_width=5, grid_height=4)
+    surface.set_color_by_image(_picture(alpha=51))
+
+    torch.testing.assert_close(
+        _texels(surface)[..., 4], torch.full((3, 2), 0.2), atol=1e-6, rtol=0
+    )
+
+
+@pytest.mark.parametrize("spelling", ["path", "str", "relative"])
+def test_an_image_can_come_from_a_file(scene, tmp_path, monkeypatch, spelling):
+    from PIL import Image
+
+    image_path = tmp_path / "picture.png"
+    Image.fromarray(_picture()).save(image_path)
+    monkeypatch.chdir(tmp_path)
+    source = {"path": image_path, "str": str(image_path), "relative": "picture.png"}
+
+    surface = Surface(_flat, grid_width=5, grid_height=4)
+    surface.set_color_by_image(source[spelling])
+    _assert_laid_out_like_the_picture(_texels(surface))
+
+
+def test_a_recorded_image_cross_fades_in_from_what_was_there(scene):
+    with Off():
+        surface = Surface(_flat, grid_width=5, grid_height=4, color=GREEN).spawn()
+    surface.set_color_by_image(_picture())
+
+    scene.timeline_manager.set_state_to_times(TIMES)
+    texture = surface.color_texture.as_subclass(torch.Tensor)
+    texture = texture.reshape(len(TIMES), 3, 2, 5)
+    green = _rgb(GREEN).expand(3, 2, 3)
+    picture = torch.tensor(PICTURE, dtype=torch.float32).flip(0).transpose(0, 1) / 255
+
+    torch.testing.assert_close(texture[0, ..., :3], green)
+    torch.testing.assert_close(texture[-1, ..., :3], picture)
+    halfway = texture[1, ..., :3]
+    assert not torch.allclose(halfway, green)
+    assert not torch.allclose(halfway, picture)
+    # Every texel stays between where it started and where it ends.
+    low, high = torch.minimum(green, picture), torch.maximum(green, picture)
+    assert bool(((halfway >= low - 1e-6) & (halfway <= high + 1e-6)).all())
