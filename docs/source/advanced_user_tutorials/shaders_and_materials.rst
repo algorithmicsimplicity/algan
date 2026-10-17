@@ -78,23 +78,23 @@ All of the Three.js mesh materials are provided, with matching default settings:
       - ``color``
     * - :class:`~algan.rendering.shaders.materials.MeshLambertMaterial`
       - Diffuse (Lambert)
-      - ``color``, ``emissive`` (0x000000), ``emissiveIntensity`` (1)
+      - ``color``, ``emissive`` (0x000000), ``emissive_intensity`` (1)
     * - :class:`~algan.rendering.shaders.materials.MeshPhongMaterial`
       - Blinn-Phong specular
       - ``specular`` (0x111111), ``shininess`` (30), ``emissive``
     * - :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`
       - PBR metalness/roughness
-      - ``roughness`` (1), ``metalness`` (0), ``emissive``, ``envMapIntensity`` (1)
+      - ``roughness`` (1), ``metalness`` (0), ``emissive``, ``env_map_intensity`` (1)
     * - :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`
       - PBR + clearcoat/sheen/transmission
-      - adds ``clearcoat`` (0), ``ior`` (1.5), ``specularIntensity`` (1),
+      - adds ``clearcoat`` (0), ``ior`` (1.5), ``specular_intensity`` (1),
         ``sheen`` (0), ``transmission`` (0), ...
     * - :class:`~algan.rendering.shaders.materials.MeshToonMaterial`
       - Cel / banded diffuse
       - ``color``, ``bands`` (3), ``emissive``
     * - :class:`~algan.rendering.shaders.materials.MeshNormalMaterial`
       - Normal-as-color
-      - ``flatShading`` (False)
+      - ``flat_shading`` (False)
     * - :class:`~algan.rendering.shaders.materials.MeshMatcapMaterial`
       - Material capture (approx.)
       - ``color``
@@ -152,10 +152,10 @@ constants (``RED``), or RGB tuples.
 
 .. note::
 
-    The animatable attribute names on the Mob use Python ``snake_case``
-    (``mob.emissive_intensity``, ``mob.metalness``), while the material
-    constructors accept the Three.js ``camelCase`` names
-    (``MeshStandardMaterial(emissiveIntensity=2)``).
+    Property names are Python ``snake_case`` throughout, where Three.js writes
+    ``camelCase``: the constructors take
+    ``MeshStandardMaterial(emissive_intensity=2)``, and the Mob's animatable
+    attributes are ``mob.emissive_intensity``, ``mob.metalness`` and so on.
 
 Vertex shading vs. fragment shading
 -----------------------------------
@@ -243,7 +243,7 @@ could be, and texturing the corners instead would be worse than refusing.
 The remaining image slots (``env_map``, ``matcap``, ``gradient_map``,
 ``ao_map``, ``transmission_map``, ...) have no channel in the renderer. They are
 still accepted so a Three.js material transcribes without edits, then dropped
-with a warning naming them. ``wireframe``, ``vertexColors`` and non-default
+with a warning naming them. ``wireframe``, ``vertex_colors`` and non-default
 ``side`` are likewise unsupported, and the matcap, normal and depth materials use
 documented approximations (matcap has no image; normals are world-space rather
 than view-space).
