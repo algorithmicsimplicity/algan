@@ -572,7 +572,7 @@ def taichi_accumulate_dtype():
     ``ti.static``: Taichi specialises on template arguments, so the two widths
     compile to two kernel variants and a process that renders both ways gets
     both. A ``ti.static`` gate is resolved once, at the first compile, and the
-    second arm would silently reuse the first arm's code (``CLAUDE.md``).
+    second arm would silently reuse the first arm's code (``AGENTS.md``).
     Returned through :func:`~algan.taichi_compat.template_dtype`, which is what
     a dtype template argument needs on Quadrants.
     """

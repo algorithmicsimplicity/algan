@@ -38,7 +38,7 @@ to keep the loop under a minute.  The PN family is covered behaviourally by
 ``test_logical_pn_tessellation.py`` and ``test_surface_autotune.py``, and in
 pixels by ``tests/full_renders/solids_and_camera`` — both outside the fast
 suite, so a tessellation change is one of the few things this loop cannot see
-(``CLAUDE.md`` says so under performance discipline).  Use a ``Polyhedron``
+(``AGENTS.md`` says so under performance discipline).  Use a ``Polyhedron``
 subclass when adding a solid here, never a ``Surface`` one.
 
 Deliberately *not* here for the same reason: shadows, refraction, glow, Monte

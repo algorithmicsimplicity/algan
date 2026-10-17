@@ -19,7 +19,7 @@ EVERY ARM IS ITS OWN PROCESS. The glossy mode reaches the resolve as a
 ``ti.static`` gate, resolved when the kernel compiles; a second arm in this
 process would silently reuse the first arm's compiled code and report its
 numbers as its own. That failure has produced two wrong measurements in this
-repo already (see CLAUDE.md's Taichi gotchas).
+repo already (see AGENTS.md's Taichi gotchas).
 """
 
 import json

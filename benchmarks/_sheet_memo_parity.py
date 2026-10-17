@@ -21,7 +21,7 @@ Three arms, one process:
 In-process flipping is legal here: ``memo`` reaches the kernel as a
 ``ti.template()`` ARGUMENT, which Taichi specialises on (a fresh variant per
 value), not as a module-level ``ti.static`` gate resolved once per process --
-see CLAUDE.md's Taichi gotchas.
+see AGENTS.md's Taichi gotchas.
 
 Fixture notes. ``max_bounces`` is pinned to 0 so no continuation ever reaches
 the shared pool: a pixel carrying three or more branches is not byte-

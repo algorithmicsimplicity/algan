@@ -36,7 +36,7 @@ The 0.8-count gap between the two 1024-spp references is the bias bound: they
 are two estimators of one emitter and they agree to well under a channel
 count, so the 2.09x is variance and nothing else.
 
-Not memory-capped: these are real renders, and ``CLAUDE.md`` says a cap on a
+Not memory-capped: these are real renders, and ``AGENTS.md`` says a cap on a
 real render segfaults inside the GPU allocator rather than raising.
 """
 

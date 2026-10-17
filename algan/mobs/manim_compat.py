@@ -363,7 +363,7 @@ def _scale_factor_to_manim(scale_factor):
     and coupling a per-axis multiplier to that conversion would be wrong by
     category -- Algan's ``OUTWARD`` is ``-z`` where Manim's ``OUT`` is ``+z``
     (see
-    "The z mirror" in CLAUDE.md), so any coordinate-style treatment of the
+    "The z mirror" in AGENTS.md), so any coordinate-style treatment of the
     forward component would negate the one stretch the user asked for.
 
     The result is also flattened to a bare ``(3,)`` array (or a scalar): Algan
