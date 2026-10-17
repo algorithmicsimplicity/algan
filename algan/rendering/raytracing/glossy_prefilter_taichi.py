@@ -19,6 +19,8 @@ allocate the buffers otherwise.
 """
 
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    CameraProjection,
+    _projected,
     finalize_pixel_color,
 )
 from algan.taichi_compat import ti
@@ -174,7 +176,9 @@ def gloss_scatter(
         covered_idx: ti.types.ndarray(),
         pix_accum: ti.types.ndarray(),
         gl_main: ti.types.ndarray(), gl_pyr: ti.types.ndarray(),
-        out: ti.types.ndarray(), row_base: int):
+        out: ti.types.ndarray(), row_base: int,
+        cam_proj_table: ti.types.ndarray(), projected: ti.template(),
+        frame: int):
     """Move one drained tile's glossy pixels into the frame's buffers.
 
     Must run BEFORE ``wf_composite_accum_sparse`` for the same tile: both read
@@ -193,7 +197,18 @@ def gloss_scatter(
     same expression and this pass must stop one step short of that -- the
     glossy pixel's final value is not known until the frame's prefilter has
     run, and a tonemap is not something you can add to afterwards.
+
+    ``cam_proj_table[frame]`` is the frame's projection, read only when
+    ``projected`` (:class:`CameraProjection`; ``algan.rendering
+    .projection``). Off the pinhole a pixel at camera path length ``s`` is
+    ``B + C * s`` world units across, ``C`` zero for an orthographic camera,
+    so the resolve stores the lobe's scale per unit of ``B`` instead of per
+    unit of ``C`` (``sheet_resolve_taichi``), and the cone factor becomes
+    ``(d_tot - d_p) / (1 + d_tot * C / B)``: a blur that grows with the
+    distance past the reflector and, with no perspective, never shrinks
+    with distance from the camera.
     """
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for ri in range(num_covered):
         r = ri + row_base
         gr = r + gloss_base
@@ -235,6 +250,20 @@ def gloss_scatter(
             k_cone = ti.math.clamp(1.0 - d_p / ti.max(d_tot, 1e-6), 0.0, 1.0)
         gl_main[p, GL_MAIN_SIGMA] = ti.min(k_cone * sigma_scale,
                                            sigma_max)
+        if ti.static(_projected(cam_proj)):
+            spread = cam_proj[frame, 1]
+            if spread != 0.0:
+                sd = ti.math.vec3(cam_proj[frame, 3], cam_proj[frame, 4],
+                                  cam_proj[frame, 5])
+                inv_virtual = cam_proj[frame, 0] / (
+                    spread * ti.max(sd.norm(), 1e-30))
+                sigma = sigma_max
+                if d_tot < 1e29:
+                    sigma = (ti.max(d_tot - d_p, 0.0) * sigma_scale
+                             / (1.0 + inv_virtual * d_tot))
+                elif inv_virtual > 0.0:
+                    sigma = sigma_scale / inv_virtual
+                gl_main[p, GL_MAIN_SIGMA] = ti.min(sigma, sigma_max)
 
 
 @ti.kernel

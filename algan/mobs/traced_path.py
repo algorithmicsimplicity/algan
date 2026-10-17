@@ -13,7 +13,12 @@ from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
 from algan.constants.color import WHITE, Color
 from algan.errors import AlganConfigurationError
 from algan.mobs.bezier_circuit import _stroke_width_in_render_pixels
-from algan.mobs.nonplanar_circuit import NonPlanarPlan, camera_eye, run_planes
+from algan.mobs.nonplanar_circuit import (
+    NonPlanarPlan,
+    camera_eye,
+    camera_projection,
+    run_planes,
+)
 from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.utils.tensor_utils import cast_to_tensor
 
@@ -262,7 +267,9 @@ class TracedPath(Mob):
             torch.arange(segments, device=x.device),
             torch.ones(segments, device=x.device, dtype=torch.long),
         )
-        centre, first, second, normal = run_planes(x, plan, camera_eye(self))
+        centre, first, second, normal = run_planes(
+            x, plan, camera_eye(self), camera_projection(self)
+        )
         # A segment outside this frame's trail has coincident endpoints. Keep
         # its invisible plane nonsingular while sharing topology across frames.
         first = torch.where(live, first, x.new_tensor([1, 0, 0]))

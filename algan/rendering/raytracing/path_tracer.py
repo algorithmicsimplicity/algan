@@ -62,6 +62,7 @@ import torch
 
 from algan.logging.logger import PERF, get_logger
 from algan.rendering.mps_compat import accumulate_dtype
+from algan.rendering.projection import kernel_projection
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.area_light_quads import NO_QUAD_BASE
 from algan.rendering.raytracing.blue_noise import blue_noise_tile
@@ -1140,6 +1141,7 @@ def path_trace_render(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
+    cam_proj,
     time_start,
     time_end,
     width,
@@ -1199,6 +1201,11 @@ def path_trace_render(
     ``pt_generate``). ``None`` is a pinhole: a one-row zero tensor stands in so
     the kernel keeps a single variant.
 
+    ``cam_proj`` is the batch's ``[T, 6]`` projection table
+    (``tracer.render_batch_raytraced`` builds it; ``algan.rendering
+    .projection``), or ``None`` for a pinhole batch, whose kernels keep their
+    pinhole arithmetic (``projection.kernel_projection``).
+
     ``accum_odd`` is the adaptive sampler's stopping-rule buffer -- a zeroed
     ``[frames, pixels, 4]`` float32 tensor the caller allocates exactly when
     :func:`pt_adaptive_active` says so, into which ``pt_reduce`` sums the RGB
@@ -1228,6 +1235,9 @@ def path_trace_render(
     seed_root = int(rt_settings.pt_seed) & 0xFFFFFFFF
     animated_seed = 1 if rt_settings.pt_animated_seed else 0
     bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
+    # The projection rows and their compile-time switch, as every kernel
+    # launched below takes them (projection.kernel_projection).
+    cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
     # Compile-time shadow mode of every visibility ray pt_shade spawns, the
     # deterministic renderer's decision (tracer.py) reduced to the two modes
     # worth having here: 3 = opaque any-hit (the ordered march compiled out)
@@ -1423,6 +1433,8 @@ def path_trace_render(
                     screen_point,
                     pixel_basis_x,
                     pixel_basis_y,
+                    cam_proj_table,
+                    projected,
                     float(near_clip),
                     pix_list,
                     rs_ro,
@@ -1505,6 +1517,8 @@ def path_trace_render(
                             pixel_basis_x,
                             pixel_basis_y,
                             gen_meta,
+                            cam_proj_table,
+                            projected,
                         )
                         pt_shade(
                             active,
@@ -1588,6 +1602,8 @@ def path_trace_render(
                             nee_inf_cdf,
                             nee_inf_ref,
                             pt_glass_energy,
+                            cam_proj_table,
+                            projected,
                         )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1

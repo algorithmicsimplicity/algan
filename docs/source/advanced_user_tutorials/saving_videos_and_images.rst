@@ -338,7 +338,7 @@ colour or look one up by name.
 
 What every pass samples, and what that implies:
 
-* **One ray through each pixel's centre, from the pinhole camera.** Passes are
+* **One ray through each pixel's centre, with no lens.** Passes are
   not anti-aliased -- object edges are stair-stepped, which is what an ID matte
   needs (each pixel belongs to exactly one object) -- and they ignore
   ``camera.aperture``, so the depth pass stays sharp for depth-of-field done in

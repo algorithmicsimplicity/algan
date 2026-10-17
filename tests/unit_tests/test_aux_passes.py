@@ -22,6 +22,8 @@ aux trace or its plumbing, which is this feature's own code.
 
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import pytest
 import torch
@@ -536,10 +538,12 @@ def test_the_out_of_memory_split_keeps_passes_in_lockstep(monkeypatch):
     reference = _joined(reference)
 
     real_trace = aux_module.trace_aux_passes
+    signature = inspect.signature(real_trace)
     failed = []
 
     def flaky(*args, **kwargs):
-        frames_in_chunk = int(args[10]) - int(args[9])
+        bound = signature.bind(*args, **kwargs).arguments
+        frames_in_chunk = int(bound["time_end"]) - int(bound["time_start"])
         if frames_in_chunk > 1 and not failed:
             failed.append(frames_in_chunk)
             raise InsufficientMemoryException

@@ -1,6 +1,7 @@
 """Shadows under a distant camera: no shadow ray starts below the surface it shades.
 
-A near-orthographic camera (``Camera.set_near_orthographic``) puts its eye thousands of
+A camera pulled back for a flat look -- what ``Camera.set_near_orthographic`` did before
+Algan had an orthographic camera -- puts its eye thousands of
 units out, where float32 positions are about 1e-3 apart. A point formed as
 ``eye + t * dir`` is rounded that coarsely in every direction, off the surface as well
 as along it, while a shadow ray's origin is lifted only 256 ULPs of the scene's own
@@ -15,7 +16,9 @@ and, under a moving camera, the speckle was re-rolled every frame (the
 backpropagation video's loss landscape, its eye 16,000 units out).
 
 Each route renders one lit plane twice, from the default camera and from 10,000 units
-out, and the far plane must be as evenly lit as the near one. The plane is tilted on
+out, and the far plane must be as evenly lit as the near one -- as must the plane seen
+through the orthographic camera, whose shadow rays leave from hits on rays that each
+start on the camera's plane. The plane is tilted on
 purpose: an axis-aligned plane's normal is exact, its dot products round nothing, and
 it stayed clean before the fix. Before it, the far renders here had 79% (sheet) and
 47% (wavefront) of the plane's pixels off, by up to 56 and 187 levels, and the path
@@ -44,6 +47,7 @@ from algan import (
     Surface,
     VideoSettings,
 )
+from tests.unit_tests.distant_camera import pull_back
 
 VIDEO = VideoSettings(resolution=(160, 90), frames_per_second=10, supersampling=1)
 FAR = 10000.0
@@ -77,8 +81,9 @@ def _plane():
 def _plane_values(route, distance):
     """The plane's interior pixels (mean of RGB), rendered by ``route``.
 
-    ``distance`` is how far out the near-orthographic eye goes; 0 keeps the
-    default camera.
+    ``distance`` is how far from its screen the eye is pulled back
+    (``distant_camera.pull_back``); 0 keeps the default camera, and
+    ``"orthographic"`` switches it to the orthographic projection.
     """
     config = ROUTES[route]
     SETTINGS.raytracing.set(
@@ -93,8 +98,10 @@ def _plane_values(route, distance):
             DirectionalLight(location=UP * 7 + LEFT * 5 + IN * 3, target=UP).spawn()
             _plane().spawn()
             camera = scene.camera
-            if distance:
-                camera.set_near_orthographic(distance=distance)
+            if distance == "orthographic":
+                camera.set_orthographic()
+            elif distance:
+                pull_back(camera, distance)
             camera.rotate(-40, RIGHT, about=ORIGIN)
             camera.rotate(30, UP, about=ORIGIN)
         frame = torch.cat([f.cpu() for f in scene.get_frames(0, 1)]).float()[0]
@@ -109,10 +116,11 @@ def _plane_values(route, distance):
     return rgb[interior].mean(-1)
 
 
+@pytest.mark.parametrize("view", [FAR, "orthographic"])
 @pytest.mark.parametrize("route", list(ROUTES))
-def test_a_distant_camera_lights_a_plane_as_evenly_as_a_near_one(route):
+def test_a_distant_camera_lights_a_plane_as_evenly_as_a_near_one(route, view):
     near = _plane_values(route, 0.0)
-    far = _plane_values(route, FAR)
+    far = _plane_values(route, view)
     if ROUTES[route]["samples"] == 1:
         # Deterministic: one value across the whole plane, the near camera's.
         level = near.median()

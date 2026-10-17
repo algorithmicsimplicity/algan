@@ -49,11 +49,14 @@ from algan.rendering.raytracing.arena_args_taichi import (
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
+    CameraProjection,
     _bezier_normal,
     _circuit_alpha,
     _collect_hits,
     _comes_after,
     _generate_ray,
+    _pixel_size_base,
+    _projected,
     _safe_inverse,
     depth_tie_epsilon,
     kbuf,
@@ -97,6 +100,9 @@ def aux_trace_arena(
         num_tri_src: ti.i32, num_circ_src: ti.i32,
         t_nodes: NODE_ARG, t_first_leaf: ti.i32,
         b_nodes: NODE_ARG, b_first_leaf: ti.i32,
+        # Whether the kernel reads cam_proj (raytrace_kernels_taichi
+        # .CameraProjection).
+        projected: ti.template(),
         refit: ti.template(), has_tri: ti.template(), has_bez: ti.template(),
         aux_depth: ti.types.ndarray(),
         aux_normal: ti.types.ndarray(),
@@ -145,6 +151,8 @@ def aux_trace_arena(
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[22], (ashp[52],)))
     tri_src = ti.static(ArenaView(arena_i32, aoff[23], (ashp[53],)))
     circ_src = ti.static(ArenaView(arena_i32, aoff[24], (ashp[54],)))
+    cam_proj_table = ti.static(ArenaView(arena_f32, aoff[25], (ashp[55], ashp[56])))
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     for cell in range(num_cells):
         f_rel = cell // pixels_per_frame
@@ -154,9 +162,11 @@ def aux_trace_arena(
         px = p - py * width
         ro, rd = _generate_ray(f, px, py, 0.5, 0.5, half_screen_w,
                                half_screen_h, cam_origin, screen_point,
-                               pixel_basis_x, pixel_basis_y)
+                               pixel_basis_x, pixel_basis_y, cam_proj)
         # The camera basis, from the CAMERA origin (before any near-clip
         # advance -- the same forward _axis_cos and the near plane use).
+        # Every ray starts on the camera plane, so ``(base_dist + t) * cos``
+        # below is the depth from that plane under any projection.
         cam = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
         fwd = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
                             screen_point[f, 2]) - cam).normalized()
@@ -193,7 +203,9 @@ def aux_trace_arena(
             kb_b = ti.Vector([0.0] * kbuf)
             num_hits = _collect_hits(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                pixel_size_per_t, base_dist, layer_offset_triangles,
+                pixel_size_per_t, base_dist,
+                _pixel_size_base(cam_proj, f, pixel_size_mul),
+                layer_offset_triangles,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
                 # The node_miss slots are never indexed by the gather, so the
                 # leaf array stands in for them rather than binding two more.
@@ -280,8 +292,14 @@ def aux_trace_arena(
                         dv = 0.0
                         color4 = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                         if htype == 1:
+                            footprint = (base_dist + t_hit) * footprint_scale
+                            if ti.static(_projected(cam_proj)):
+                                # The depth-independent part of a pixel's
+                                # size: all of it for an orthographic camera.
+                                footprint = (cam_proj[f, 2] * footprint_mul
+                                             + footprint)
                             du, dv = _triangle_uv_footprint(
-                                0, f, prim, rd, (base_dist + t_hit) * footprint_scale,
+                                0, f, prim, rd, footprint,
                                 tri_pos, tri_uvs, tri_tex_meta,
                                 num_colored_triangles)
                             color4, alpha = _tri_color_g(
@@ -422,6 +440,7 @@ _AUX_TRACE_ARENA = (
     ("pixel_world_scale", "f32", 1),
     ("tri_src", "i32", 1),
     ("circ_src", "i32", 1),
+    ("cam_proj_table", "f32", 2),
 )
 
 #: The argument list the launch site passes (``aux_passes.trace_aux_passes``).
@@ -437,7 +456,7 @@ _AUX_TRACE_PARAMS = (
     "b_nodes", "b_leaf_prim", "b_leaf_tspan", "b_first_leaf", "circuit_meta",
     "circuit_colors", "circuit_border_colors", "edges_2d", "edge_accel",
     "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
-    "pixel_world_scale", "tri_src", "circ_src",
+    "pixel_world_scale", "tri_src", "circ_src", "cam_proj_table", "projected",
     "refit", "has_tri", "has_bez", "aux_depth", "aux_normal", "aux_mob",
 )
 

@@ -159,7 +159,13 @@ class CameraView(ImageMob):
                 )
                 camera.screen.location = main.screen.location
                 camera.screen.basis = main.screen.basis
-                camera.orthographic = main.orthographic
+                # The projection too: an orthographic main view's inset is
+                # orthographic, with the same frame.
+                if not main._is_pinhole():
+                    camera.set_non_recursive(
+                        _perspective_weight=main._perspective_weight,
+                        _parallel_half_height=main._parallel_half_height,
+                    )
         self.camera = camera
         if camera is not scene.camera:
             # Framing queries on the view's camera (``visible_size_at``,
