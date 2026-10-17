@@ -121,8 +121,9 @@ Targeted, asserted, one dropped reference each:
     construction -- `text_dir` is shared by every Algan process.
     A `font` that is not installed goes to `algan.mobs.text._installed_font`
     instead of logging every installed family: it returns the installed
-    spelling of a name that differs only in case or spacing, and otherwise
-    warns at the script's line, naming the closest installed fonts.
+    spelling of a name that differs only in case or spacing, and otherwise,
+    if Pango would draw the text in its fallback font, warns at the script's
+    line, naming the closest installed fonts.
 13. `mobject/svg/svg_mobject.py` -- carry element, group and root opacity into
     imported fill/stroke coverage. Embedded rasters use the authored image
     width and height before the SVG's overall size normalization. Group

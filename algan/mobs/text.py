@@ -957,12 +957,35 @@ def _pango_style(kind: str, value):
     return upper
 
 
-#: Generic family names. Pango maps each to a font of that kind (on Linux,
-#: through fontconfig's aliases) rather than looking for a font by that name,
-#: so the installed list need not contain them.
+#: Generic family names: CSS's, and the shorter ones fontconfig knows. Pango
+#: maps each to a font of that kind (on Linux through fontconfig's aliases)
+#: rather than looking for a font by that name, so whichever font it picks,
+#: possibly its fallback, is the one asked for.
 _GENERIC_FONT_FAMILIES = frozenset(
-    {"sans", "sans-serif", "serif", "mono", "monospace", "system-ui"}
+    {
+        "sans",
+        "sans-serif",
+        "serif",
+        "mono",
+        "monospace",
+        "cursive",
+        "fantasy",
+        "math",
+        "emoji",
+        "fangsong",
+        "system-ui",
+        "ui-sans-serif",
+        "ui-serif",
+        "ui-monospace",
+        "ui-rounded",
+    }
 )
+
+#: A family no font has, so Pango draws it in its fallback.
+_NO_SUCH_FONT = "Algan No Such Font"
+
+#: What :func:`_pango_draws_a_substitute` draws in each font it compares.
+_FONT_SAMPLE = "Hamburgefonstiv"
 
 
 def _font_key(name: str) -> str:
@@ -970,11 +993,47 @@ def _font_key(name: str) -> str:
     return "".join(name.split()).casefold()
 
 
-def _pango_font_families() -> list[str]:
-    """Every font family Pango has, as of this call."""
+def _pango_drawing(family: str) -> bytes:
+    """The SVG Pango draws :data:`_FONT_SAMPLE` as in ``family``."""
+    import tempfile
+    from pathlib import Path
+
     import manimpango
 
-    return manimpango.list_fonts()
+    with tempfile.TemporaryDirectory(prefix="algan-font-") as directory:
+        path = Path(directory) / "sample.svg"
+        manimpango.text2svg(
+            [
+                manimpango.TextSetting(
+                    0, len(_FONT_SAMPLE), family, "NORMAL", "NORMAL", 0
+                )
+            ],
+            48,
+            0,
+            False,
+            str(path),
+            30,
+            20,
+            1000,
+            200,
+            _FONT_SAMPLE,
+        )
+        return path.read_bytes()
+
+
+def _pango_draws_a_substitute(font: str) -> bool:
+    """Whether Pango draws ``font`` in the font it falls back to.
+
+    Neither the installed families nor the name can say: fontconfig maps many
+    names it has no font by to one it has of the same kind or metrics
+    ("Arial" to Liberation Sans, "Helvetica" to Nimbus Sans), and takes the
+    first installed family of a list such as ``"Nope, DejaVu Serif"``, and a
+    font registered since the families were listed is drawn too. So a line is
+    drawn in ``font`` and in a name no font has, and compared. Each takes a
+    millisecond or so, and only a name that is not installed as written gets
+    here.
+    """
+    return _pango_drawing(font) == _pango_drawing(_NO_SUCH_FONT)
 
 
 #: Per thread, while Manim typesets a Pango text: the list the warnings it
@@ -994,20 +1053,18 @@ def _raise_again(raised):
 
 
 def _installed_font(font: str, installed) -> str:
-    """The installed spelling of ``font``, after a warning if there is none.
+    """The installed spelling of ``font``, after a warning if Pango has none.
 
     The vendored Manim's ``Text`` and ``MarkupText`` call this when ``font`` is
     not in ``installed`` (their ``font_list()``) as written, nor in the three
     capitalizations they try. A family that is installed under another case or
     spacing (``"dejavu sans mono"``, ``"DejaVuSansMono"``) is returned as it is
-    installed. Otherwise Pango draws the text in a substitute font without a
-    word, and Manim logged the whole installed list, hundreds of names on a
-    Mac. This warns at the script's line instead, naming the installed fonts
-    closest to ``font``.
-
-    ``font_list()`` is cached for the process, so before warning this asks
-    Pango again: a font registered since (``manimpango.register_font``) is
-    installed too.
+    installed. Otherwise Pango may still draw it -- a generic family, a name
+    fontconfig maps to an installed font, a comma-separated list, a font
+    registered since ``font_list()`` was cached -- or may draw a substitute
+    without a word, where Manim logged the whole installed list, hundreds of
+    names on a Mac. Only then does this warn, at the script's line, naming the
+    installed fonts closest to ``font``.
     """
     import difflib
     import warnings
@@ -1018,11 +1075,12 @@ def _installed_font(font: str, installed) -> str:
     by_key = {_font_key(name): name for name in installed}
     if key in by_key:
         return by_key[key]
-    if key in _GENERIC_FONT_FAMILIES:
+    families = [_font_key(family) for family in font.split(",")]
+    if any(family in _GENERIC_FONT_FAMILIES or family in by_key for family in families):
+        # Pango takes the list's first family it has, so this one is drawn.
         return font
-    by_key = {_font_key(name): name for name in _pango_font_families()}
-    if key in by_key:
-        return by_key[key]
+    if not _pango_draws_a_substitute(font):
+        return font
     close = [by_key[match] for match in difflib.get_close_matches(key, by_key, n=3)]
     if len(close) > 1:
         suggestion = f" The closest installed fonts are {', '.join(map(repr, close))}."

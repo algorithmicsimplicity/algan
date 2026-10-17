@@ -94,39 +94,61 @@ def test_a_font_installed_under_another_case_or_spacing_is_sent_as_installed(
     assert text.font == TEST_FONT
 
 
-@pytest.fixture
-def pango_has(monkeypatch):
-    """Make ``fonts`` every family Pango has, whatever this machine has."""
-
-    def set_fonts(*fonts):
-        monkeypatch.setattr(text_module, "_pango_font_families", lambda: list(fonts))
-        return list(fonts)
-
-    return set_fonts
-
-
-def test_the_check_returns_the_installed_spelling_and_knows_generic_names(
-    pango_has,
-):
-    installed = pango_has("DejaVu Sans", "DejaVu Sans Mono")
+def test_the_check_returns_the_installed_spelling_and_knows_generic_names(pango):
+    installed = ["DejaVu Sans", "DejaVu Sans Mono"]
     with warnings.catch_warnings():
         warnings.simplefilter("error", UnsupportedFeatureWarning)
         assert text_module._installed_font("dejavusansmono", installed) == (
             "DejaVu Sans Mono"
         )
-        # Pango maps these to a font of that kind, listed or not.
-        for generic in ("mono", "Monospace", "serif", "system-ui"):
+        # Pango maps these to a font of that kind, whichever it picks.
+        for generic in ("mono", "Monospace", "serif", "system-ui", "emoji", "cursive"):
             assert text_module._installed_font(generic, installed) == generic
 
 
-def test_a_font_registered_after_manim_listed_the_fonts_is_installed(pango_has):
-    """Manim's ``Text.font_list()`` is cached for the process."""
-    pango_has("DejaVu Sans", "Registered Later")
+@pytest.mark.parametrize(
+    "font",
+    [
+        # Registered after Manim cached its font list, as by register_font.
+        TEST_FONT,
+        # Under fontconfig, a list takes its first family Pango has.
+        f"Algan Test Sanz, {TEST_FONT}",
+        "Algan Test Sanz, serif",
+    ],
+)
+def test_a_font_pango_draws_though_it_is_not_listed_is_not_warned_about(pango, font):
+    if font.endswith(f", {TEST_FONT}") and text_module._pango_drawing(
+        font
+    ) != text_module._pango_drawing(TEST_FONT):
+        # As on macOS, where the warning is then right to say so.
+        pytest.skip("this Pango does not draw a family list in the first font it has")
     with warnings.catch_warnings():
         warnings.simplefilter("error", UnsupportedFeatureWarning)
-        assert text_module._installed_font("registered later", ["DejaVu Sans"]) == (
-            "Registered Later"
-        )
+        assert text_module._installed_font(font, ["DejaVu Sans"]) == font
+
+
+def test_a_name_fontconfig_maps_to_an_installed_font_is_not_warned_about(
+    pango, monkeypatch
+):
+    """Where Liberation Sans is installed, Arial is drawn in it, which the
+    list of installed families cannot say; the drawing does.
+    """
+    asked = []
+
+    def draws_a_substitute(font):
+        asked.append(font)
+        return False
+
+    monkeypatch.setattr(text_module, "_pango_draws_a_substitute", draws_a_substitute)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UnsupportedFeatureWarning)
+        assert text_module._installed_font("Arial", ["Liberation Sans"]) == "Arial"
+    assert asked == ["Arial"]
+
+
+def test_pango_tells_a_font_it_has_from_one_it_does_not(pango):
+    assert not text_module._pango_draws_a_substitute(TEST_FONT)
+    assert text_module._pango_draws_a_substitute("Algan Test Sanz")
 
 
 @pytest.mark.parametrize(
@@ -137,11 +159,11 @@ def test_a_font_registered_after_manim_listed_the_fonts_is_installed(pango_has):
             "The closest installed fonts are 'DejaVu Sans', 'DejaVu Sans Mono'.",
         ),
         ("Inte", "The closest installed font is 'Inter'."),
-        ("Zapfino", None),
+        ("Qwxzv Display", None),
     ],
 )
-def test_the_warning_names_the_closest_installed_fonts(pango_has, font, suggestion):
-    installed = pango_has("DejaVu Sans", "DejaVu Sans Mono", "Inter")
+def test_the_warning_names_the_closest_installed_fonts(pango, font, suggestion):
+    installed = ["DejaVu Sans", "DejaVu Sans Mono", "Inter"]
     with pytest.warns(UnsupportedFeatureWarning) as caught:
         assert text_module._installed_font(font, installed) == font
     message = str(caught[0].message)
