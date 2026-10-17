@@ -195,11 +195,14 @@ def _run_script(tmp_path, source: str) -> subprocess.CompletedProcess:
     # The report arms itself only for a plain script run: not under pytest,
     # and not handed to a render daemon, where atexit handlers do not run.
     # pytest-cov's subprocess hook, armed by its COV_CORE_ variables, imports
-    # pytest into the child, so it goes too.
+    # pytest into the child, so it goes too. So does ALGAN_DAEMON_CHILD:
+    # importing algan.daemon sets it, the daemon tests import it at
+    # collection, and a child that inherits it runs as a daemon's script.
     env = {
         name: value
         for name, value in os.environ.items()
-        if name != "PYTEST_CURRENT_TEST" and not name.startswith("COV_CORE_")
+        if name not in ("PYTEST_CURRENT_TEST", "ALGAN_DAEMON_CHILD")
+        and not name.startswith("COV_CORE_")
     }
     env["ALGAN_USE_DAEMON"] = "0"
     env["ALGAN_AUTO_DAEMON"] = "0"
