@@ -152,6 +152,7 @@ import sysconfig
 import threading
 import time
 import traceback
+import warnings
 
 # This process *is* a daemon: it must never hand its own work to another one,
 # and neither must the scripts it executes. Set before algan is imported,
@@ -650,8 +651,12 @@ def _run_context(job):
     """Make one run look as much like its own process as a warm one can.
 
     Reproduced: stdout and stderr at the descriptor level (so subprocess and
-    C-level output reach the client), their tty-ness, and the caller's full
-    environment. Not reproduced, deliberately: ``stdin``, which is connected to
+    C-level output reach the client), their tty-ness, the caller's full
+    environment, and a fresh record of the warnings shown: Python shows a
+    warning once per place it is raised, so without it a warning a run raises
+    -- a missing font, a CUDA device that cannot be used -- was shown to the
+    first client only. The warning filters a run changes are put back after
+    it, too. Not reproduced, deliberately: ``stdin``, which is connected to
     ``os.devnull`` because the daemon's own stdin is its re-render trigger.
 
     ``job`` is ``None`` for a locally triggered re-run, where there is no
@@ -693,7 +698,10 @@ def _run_context(job):
                 handles.append(_swap_std_handle(fd))
                 run_streams.append(_RunStream(fd, isatty))
             sys.stdout, sys.stderr = run_streams
-        yield
+        # Entering resets which warnings count as already shown, and leaving
+        # restores the filters as the run found them.
+        with warnings.catch_warnings():
+            yield
     finally:
         sys.stdout, sys.stderr = saved_out, saved_err
         # Close the run's streams while their descriptors still point at the

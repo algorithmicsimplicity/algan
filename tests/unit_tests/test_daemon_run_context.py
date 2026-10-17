@@ -98,6 +98,39 @@ def test_the_clients_tty_ness_is_what_the_script_sees(isatty):
     assert (seen_out, seen_err) == (isatty, isatty)
 
 
+def _warn_from_one_place():
+    import warnings
+
+    warnings.warn("the same place every run", UserWarning, stacklevel=1)
+
+
+def test_a_warning_is_shown_to_every_run_that_raises_it():
+    """Python shows a warning once per place it is raised, so a warm daemon
+    showed each to its first client only.
+    """
+    import warnings
+
+    shown = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("default")
+        for run in range(2):
+            with d._run_context(_FakeJob()):
+                # In place of printing it, which pytest's capture would take.
+                warnings.showwarning = lambda *shown_args, run=run: shown.append(run)
+                _warn_from_one_place()
+                _warn_from_one_place()
+    assert shown == [0, 1]
+
+
+def test_warning_filters_a_run_sets_are_not_left_behind():
+    import warnings
+
+    before = list(warnings.filters)
+    with d._run_context(_FakeJob()):
+        warnings.simplefilter("ignore")
+    assert warnings.filters == before
+
+
 def test_streams_are_restored_afterwards():
     before = (sys.stdout, sys.stderr, sys.stdin)
     with d._run_context(_FakeJob()):
