@@ -307,6 +307,12 @@ _MANIM_CONSTRUCTOR_HINTS = {
     "rate_func": "easing is a context in Algan: `with Seq(easing=...): ...`",
     "lag_ratio": "staggering is a context in Algan: `with Lag(ratio=0.5): ...`",
     "scale_factor": "build it, then call `.scale(2)`",
+    # Manim's Text names its span maps by abbreviation; Algan's spells them out.
+    "t2c": "Text spells it `color_map=`",
+    "t2f": "Text spells it `font_map=`",
+    "t2g": "Text spells it `gradient_map=`",
+    "t2s": "Text spells it `slant_map=`",
+    "t2w": "Text spells it `weight_map=`",
 }
 
 

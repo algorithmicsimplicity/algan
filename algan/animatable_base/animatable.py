@@ -28,6 +28,7 @@ import warnings
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import wraps
 
 import torch
@@ -393,6 +394,34 @@ def _unexpected_keywords_message(owner, unexpected) -> str:
     return f"{owner.__name__}() got unexpected keyword argument{plural}: {listed}{tail}"
 
 
+#: The class an unexpected-keyword error names while a composite Mob builds
+#: its parts from the keywords it was handed. ``Text("a", t2c=...)`` passes its
+#: keywords to the glyphs it builds, whose constructor sees them first, so the
+#: error named ``BezierCircuitCubic``: a class the script never mentions.
+_KEYWORDS_OWNER: ContextVar[type | None] = ContextVar("_KEYWORDS_OWNER", default=None)
+
+
+def _names_itself_in_keyword_errors(init):
+    """Decorate a composite's ``__init__`` so keyword errors name its class.
+
+    The outermost decorated constructor wins: a ``DecimalNumber`` builds a
+    ``Tex``, which builds glyphs, and a keyword none of them takes was handed
+    to the ``DecimalNumber``.
+    """
+
+    @wraps(init)
+    def wrapper(self, *args, **kwargs):
+        if _KEYWORDS_OWNER.get() is not None:
+            return init(self, *args, **kwargs)
+        token = _KEYWORDS_OWNER.set(type(self))
+        try:
+            return init(self, *args, **kwargs)
+        finally:
+            _KEYWORDS_OWNER.reset(token)
+
+    return wrapper
+
+
 class Animatable:
     """Anything whose state can change over the course of a video.
 
@@ -482,7 +511,8 @@ class Animatable:
         # rather than left to Python so the message can name the class the user
         # typed -- not this base -- and, for a Manim spelling, the Algan one.
         if unexpected:
-            raise TypeError(_unexpected_keywords_message(type(self), unexpected))
+            owner = _KEYWORDS_OWNER.get() or type(self)
+            raise TypeError(_unexpected_keywords_message(owner, unexpected))
         if not hasattr(self, "animatable_attrs"):
             self.animatable_attrs = []
 

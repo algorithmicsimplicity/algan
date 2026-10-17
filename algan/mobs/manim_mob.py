@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import torch
 
+from algan.animatable_base.animatable import _names_itself_in_keyword_errors
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
 from algan.constants.color import BLACK, Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
@@ -75,6 +76,7 @@ class ManimMob(BezierCircuitCubic):
 
     """
 
+    @_names_itself_in_keyword_errors
     def __init__(self, manim_mob, batch=False, _add_to_scene=None, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()

@@ -40,6 +40,7 @@ from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 # mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
+from algan.animatable_base.animatable import _names_itself_in_keyword_errors
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     Off,
@@ -420,6 +421,7 @@ class Tex(Mob):
 
     triangulated = False
 
+    @_names_itself_in_keyword_errors
     def __init__(
         self,
         *tex_strings,
@@ -1694,6 +1696,7 @@ class MarkupText(Text):
 class Paragraph(Group):
     """A group of individually addressable text lines."""
 
+    @_names_itself_in_keyword_errors
     def __init__(self, *text, line_spacing=None, alignment=None, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
