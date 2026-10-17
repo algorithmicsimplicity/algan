@@ -12,7 +12,7 @@ An external invariant is the only kind that would have caught it.
 # Deliberately no ``from __future__ import annotations``: this module defines a
 # ``@ti.kernel``, and the future import turns its runtime-evaluated
 # ``ti.types.ndarray()`` annotations into strings, which Taichi rejects at
-# compile time. It is the same hazard CLAUDE.md records for ``*_taichi.py``
+# compile time. It is the same hazard AGENTS.md records for ``*_taichi.py``
 # files (ruff's ``I002`` is disabled there for exactly this reason) -- it
 # applies to any module with a kernel in it, tests included.
 

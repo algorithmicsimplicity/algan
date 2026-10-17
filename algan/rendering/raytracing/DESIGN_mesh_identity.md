@@ -341,7 +341,7 @@ compile surface (§4.4 — the deleted variant was never compiled).
 0.1 STARTING A SESSION FROM THIS FILE ALONE
 ================================================================================
 
-Everything needed to resume is here. `CLAUDE.md` is the repo-wide contract and
+Everything needed to resume is here. `AGENTS.md` is the repo-wide contract and
 still governs; this section is what is specific to *this* work.
 
 **Run everything through the venv.** `<venv-python>` below is
@@ -897,7 +897,7 @@ flat meshes do not move, and **both scenes carrying `Surface`/PN geometry do**.
 `_weld_check` renders a *single static frame*; the full renders move a camera over
 adaptively diced PN surfaces, and the dice level is chosen per patch per frame from
 projected size, so a different triangle list can land on a different level. That is
-precisely the class `CLAUDE.md` warns is "invisible to `--fast`".
+precisely the class `AGENTS.md` warns is "invisible to `--fast`".
 
 So the honest statement is: the weld is byte-identical on a static frame, including
 textured and normal-mapped closed surfaces, and it **does** move a moving PN scene.

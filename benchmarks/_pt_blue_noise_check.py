@@ -58,7 +58,7 @@ arm and inside one standard error -- real, and small. The bar for defaulting
 section 7 explains why one tile shared by every dimension pair cannot do
 better, and what a per-dimension version would cost.
 
-Not memory-capped: these are real renders (``CLAUDE.md``).
+Not memory-capped: these are real renders (``AGENTS.md``).
 """
 
 from __future__ import annotations

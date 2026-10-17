@@ -195,6 +195,6 @@ def test_the_asset_listing_never_raises(tmp_path):
 # a suite the repository has -- is already pinned by
 # test_baseline_store.py::test_the_committed_pointer_file_is_well_formed. Not
 # repeated here: two tests asserting one fact means one of them stops being
-# maintained. Nothing here is marked `fast`; per CLAUDE.md that mark is for
+# maintained. Nothing here is marked `fast`; per AGENTS.md that mark is for
 # tests a change *elsewhere* is liable to break, and these fail only when the
 # gate itself changes.

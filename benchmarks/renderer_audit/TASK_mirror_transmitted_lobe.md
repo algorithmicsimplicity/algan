@@ -159,7 +159,7 @@ In the as-authored (grey background) scene the same thing reads as:
 ### 3.1 Environment
 
 Algan renders need the project venv (this is the only place the path is
-written down; see `CLAUDE.md`):
+written down; see `AGENTS.md`):
 
 | Platform | `<venv-python>` |
 | --- | --- |
@@ -332,7 +332,7 @@ Each was ruled out by measurement, not by reading code.
 
 ## 7. Hazards specific to this codebase
 
-Read `CLAUDE.md` in full before changing kernel code. The ones that bite here:
+Read `AGENTS.md` in full before changing kernel code. The ones that bite here:
 
 * **Never edit a `*_taichi.py` file while a render is running** — the JIT reads
   sources at first launch and can compile half-edited code.

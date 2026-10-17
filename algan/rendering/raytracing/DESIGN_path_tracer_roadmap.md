@@ -1869,7 +1869,7 @@ indirect noise is still the limit.
 survey calls it optional for RGB-sufficient work, and Algan has no
 live-action plates to match); OpenPBR/MaterialX as the material model (Algan's
 public surface is deliberately Three.js-shaped, per the API rules in
-`CLAUDE.md` — adopting OpenPBR would be an API decision, not a renderer one);
+`AGENTS.md` — adopting OpenPBR would be an API decision, not a renderer one);
 and BDPT/VCM/MLT, which the survey advises against as a primary integrator and
 which §1 already rules out for this architecture.
 

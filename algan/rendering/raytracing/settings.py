@@ -2861,7 +2861,7 @@ direct_specular_lobe = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 # Gate: a ``ti.template()`` argument of ``wavefront_shade`` (the kernel is at
 # Taichi's runtime-argument ceiling; see the packed-ndarray comments there),
 # read live per batch at the call sites -- so flipping it mid-process
-# compiles the other variant rather than baking (CLAUDE.md's ti.static
+# compiles the other variant rather than baking (AGENTS.md's ti.static
 # hazard). OFF compiles today's kernel body exactly.
 weight_floor_exit = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
 
@@ -2873,7 +2873,7 @@ weight_floor_exit = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
 # block's ``no_shadow_receive`` slot is left at its 0.0 default. Both kernel
 # tests then read a bit that is never set and a slot that is always zero, which
 # is bit-for-bit what they did before the flags existed -- so no kernel variant
-# changes and there is no ti.static gate to go stale mid-process (CLAUDE.md's
+# changes and there is no ti.static gate to go stale mid-process (AGENTS.md's
 # hazard). The flags stay settable on a Mob with this off; they just do nothing,
 # which is the same thing ``SETTINGS.raytracing.shadows = False`` does to them.
 per_mob_shadow_flags = env_flag("ALGAN_PER_MOB_SHADOW_FLAGS", True)

@@ -77,6 +77,6 @@ uv sync --locked --all-extras --dev
 # Torch here is the CUDA build the lockfile pins, on a VM that has no GPU. That
 # is fine -- Algan detects the absence and runs on CPU -- and it is currently
 # the only option, because the CPU-only wheels live on download.pytorch.org,
-# which the default Trusted network policy blocks. See CLAUDE.md if you want to
+# which the default Trusted network policy blocks. See AGENTS.md if you want to
 # allowlist it.
 log "ready: $(uv run python -c 'import algan, torch; print("torch", torch.__version__, "| cuda", torch.cuda.is_available())' 2>/dev/null | tail -1)"

@@ -331,7 +331,7 @@ class MobOrientationMixin:
 
     #: The three direction getters also answer to a bare property, so
     #: ``mob.up`` reads as well as ``mob.get_up_direction()``. This is the one
-    #: place ``Mob`` carries a deliberate alias (see ``CLAUDE.md``); the basis
+    #: place ``Mob`` carries a deliberate alias (see ``AGENTS.md``); the basis
     #: getters have no property spelling on purpose, because they carry the
     #: Mob's scale and a scaled vector reads wrongly as ``mob.up``. They are
     #: read-only, and say so when assigned (``_ReadOnlyProperty``).

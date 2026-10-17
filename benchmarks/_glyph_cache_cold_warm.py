@@ -1,6 +1,6 @@
 """Does the glyph geometry cache change the render? -- the trap ssB.2 fell into.
 
-``CLAUDE.md`` records this for a cloud container: the FIRST render on a machine
+``AGENTS.md`` records this for a cloud container: the FIRST render on a machine
 populates the Manim Tex/SVG geometry cache, and its glyph antialiasing differs
 from every run after it -- 18 channel values over 100 frames of
 ``text_and_media``, against a tolerance of 2. The same hazard is restated in
