@@ -48,7 +48,11 @@ from algan.constants import easings
 from algan.errors import AlganConfigurationError, ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
-from algan.utils.audio_utils import _open_audio_file_clip
+from algan.utils.audio_utils import (
+    _FFMPEG_PROTOCOL,
+    _is_ffmpeg_protocol,
+    _open_audio_file_clip,
+)
 
 # Not ``from typing import TYPE_CHECKING``: this module is star-exported, and
 # an upper-case name would land in ``from algan import *``.
@@ -1315,10 +1319,11 @@ def _audio_file_path(source) -> str:
     moviepy checks only after FFmpeg has failed to read the file, so its
     ``FileNotFoundError`` arrived chained to an internal ``TypeError``, and the
     half-built reader then printed an ``AttributeError`` from its ``__del__``.
-    A URL is left for FFmpeg to fetch.
+    A URL, or another of FFmpeg's protocols such as ``concat:``, is left for
+    FFmpeg to open.
     """
     path = os.fsdecode(source)
-    if "://" not in path and not os.path.isfile(path):
+    if not os.path.isfile(path) and not _is_ffmpeg_protocol(path):
         if os.path.isdir(path):
             raise IsADirectoryError(
                 f"Audio takes an audio file, and {path!r} is a directory."
@@ -1328,6 +1333,10 @@ def _audio_file_path(source) -> str:
             "" if where == path else f", which is {where!r} from the current directory"
         )
         raise FileNotFoundError(f"Audio found no file at {path!r}{seen_from}.")
+    if _FFMPEG_PROTOCOL.match(path) and not _is_ffmpeg_protocol(path):
+        # A file named like take:2.wav, which FFmpeg would take for a protocol;
+        # an absolute path it reads as a file.
+        return os.path.abspath(path)
     return path
 
 

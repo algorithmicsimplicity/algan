@@ -190,3 +190,36 @@ def test_a_url_is_left_for_ffmpeg_to_fetch(fresh_scene, monkeypatch):
 
     assert opened == [url]
     assert context.runtime == pytest.approx(2.0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="FFmpeg's concat splits on |")
+def test_ffmpegs_other_protocols_are_left_for_it_to_open(fresh_scene, half_second_wav):
+    """Only ``://`` was taken for FFmpeg's, so ``concat:`` and ``file:`` sources
+    were refused as files that are not there.
+    """
+    # concat: joins the files' bytes, so FFmpeg reads the first WAV's header.
+    joined = Audio(f"concat:{half_second_wav}|{half_second_wav}")
+    with joined:
+        Square().spawn()
+    assert joined.runtime > 0
+
+    single = Audio(f"file:{half_second_wav}")
+    with single:
+        Square().spawn()
+    assert single.runtime == pytest.approx(0.5, abs=0.01)
+
+
+def test_a_file_whose_name_has_a_colon_is_still_a_file(
+    fresh_scene, tmp_path, monkeypatch, half_second_wav
+):
+    if sys.platform == "win32":
+        pytest.skip("Windows file names cannot hold a colon")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "take:2.wav").write_bytes(half_second_wav.read_bytes())
+    context = Audio("take:2.wav")
+    with context:
+        Square().spawn()
+    assert context.runtime == pytest.approx(0.5, abs=0.01)
+
+    with pytest.raises(FileNotFoundError, match="'C:/missing.wav'"):
+        Audio("C:/missing.wav")

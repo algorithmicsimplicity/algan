@@ -347,6 +347,20 @@ def _write_alignment_cache(path, rows):
                 temporary.unlink(missing_ok=True)
 
 
+#: A source FFmpeg opens through one of its protocols -- ``https://...``,
+#: ``concat:a.mp3|b.mp3``, ``file:a.mp3`` -- rather than as a path. A scheme is two
+#: characters or more, so a Windows drive (``C:\voice.wav``) is still a path.
+_FFMPEG_PROTOCOL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
+
+
+def _is_ffmpeg_protocol(source):
+    """Whether FFmpeg, not the file system, should resolve ``source``.
+
+    A file that exists by that name is a file, colon or not.
+    """
+    return bool(_FFMPEG_PROTOCOL.match(source)) and not os.path.isfile(source)
+
+
 #: The line ``ffmpeg -i`` ends on once it has opened its input, since it was
 #: given no output: that is how moviepy probes a file, not why one failed.
 _FFMPEG_NO_OUTPUT = "At least one output file must be specified"
@@ -373,7 +387,7 @@ def _open_audio_file_clip(path):
     try:
         return AudioFileClip(path)
     except (OSError, KeyError) as error:
-        if "://" in path or getattr(error, "errno", None) is not None:
+        if _is_ffmpeg_protocol(path) or getattr(error, "errno", None) is not None:
             # A URL FFmpeg could not fetch, FFmpeg itself not starting, or a
             # file that could not be opened: the error says which.
             raise
