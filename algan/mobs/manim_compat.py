@@ -437,6 +437,174 @@ def _scaled_natively_during_replay(scale):
     return wrapper
 
 
+# A render replays an updater over a batch of frames at once, so the rows a
+# compatibility Mob reads there hold one pose per frame, while its backing
+# Mobject holds one pose -- the one it was authored in, since it cannot be
+# synchronized from a batch. A Manim method that moves the Mob would fail on a
+# point per frame, or rebuild the Mob mid-render, and one that measures it
+# would answer for the authored pose on every frame. The translations and
+# bounding-box measurements below are plain arithmetic on the rows, so while
+# replaying they are answered there instead, for every frame of the batch. The
+# Algan and Manim bounding boxes of a compatibility Mob agree exactly.
+
+
+def _critical_point(mob: Mob, direction) -> torch.Tensor:
+    """Manim's ``get_critical_point`` read from the Mob's rows, shape ``(*, 1, 3)``.
+
+    Per axis: the far side of the bounding box where ``direction`` is positive,
+    the near side where it is negative, the middle where it is zero.
+    """
+    corners = mob.get_bounding_box()
+    low = corners.amin(-2, keepdim=True)
+    high = corners.amax(-2, keepdim=True)
+    direction = cast_to_tensor(direction).to(corners)
+    return torch.where(
+        direction > 0, high, torch.where(direction < 0, low, (low + high) * 0.5)
+    )
+
+
+def _point_of(target, direction) -> torch.Tensor:
+    """A Manim ``mobject_or_point`` argument as a point: a Mob's critical point."""
+    if isinstance(target, Mob):
+        return _critical_point(target, direction)
+    if isinstance(target, _manim.Mobject):
+        return cast_to_tensor(target.get_critical_point(to_manim(direction)))
+    return cast_to_tensor(target)
+
+
+def _manim_arguments(mob: ManimCompatMob, name: str, args, kwargs) -> dict:
+    """``args`` and ``kwargs`` bound to the backing Mobject's ``name``, defaults filled."""
+    method = getattr(type(mob.manim_mobject), name)
+    bound = inspect.signature(method).bind(mob.manim_mobject, *args, **kwargs)
+    bound.apply_defaults()
+    return bound.arguments
+
+
+def _shift_now(mob, *vectors):
+    return mob._translate_now(sum((cast_to_tensor(v) for v in vectors), 0.0))
+
+
+def _next_to_now(mob, *args, **kwargs):
+    given = _manim_arguments(mob, "next_to", args, kwargs)
+    if (
+        given["submobject_to_align"] is not None
+        or given["index_of_submobject_to_align"] is not None
+    ):
+        return NotImplemented
+    direction = cast_to_tensor(given["direction"])
+    edge = cast_to_tensor(given["aligned_edge"])
+    target = _point_of(given["mobject_or_point"], edge + direction)
+    offset = target - _critical_point(mob, edge - direction)
+    offset = (offset + given["buff"] * direction) * cast_to_tensor(given["coor_mask"])
+    return mob._translate_now(offset)
+
+
+def _align_to_now(mob, *args, **kwargs):
+    given = _manim_arguments(mob, "align_to", args, kwargs)
+    direction = cast_to_tensor(given["direction"])
+    point = _point_of(given["mobject_or_point"], direction)
+    offset = point - _critical_point(mob, direction)
+    return mob._translate_now(offset * (direction != 0))
+
+
+def _coordinate_now(dim):
+    def coordinate(mob, direction=_manim.ORIGIN):
+        return _critical_point(mob, direction)[..., dim : dim + 1]
+
+    return coordinate
+
+
+def _length_over_dim_now(mob, dim):
+    return (
+        _critical_point(mob, _manim.UR + _manim.OUT)
+        - _critical_point(mob, _manim.DL + _manim.IN)
+    )[..., dim : dim + 1]
+
+
+def _edge_now(direction):
+    return lambda mob: _critical_point(mob, direction)
+
+
+#: Manim methods answered from the rows while a render replays an updater.
+_ANSWERED_FROM_ROWS_DURING_REPLAY = {
+    "shift": _shift_now,
+    "next_to": _next_to_now,
+    "align_to": _align_to_now,
+    "get_critical_point": _critical_point,
+    "get_edge_center": _critical_point,
+    "get_corner": _critical_point,
+    "get_top": _edge_now(_manim.UP),
+    "get_bottom": _edge_now(_manim.DOWN),
+    "get_right": _edge_now(_manim.RIGHT),
+    "get_left": _edge_now(_manim.LEFT),
+    "get_zenith": _edge_now(_manim.OUT),
+    "get_nadir": _edge_now(_manim.IN),
+    "get_x": _coordinate_now(0),
+    "get_y": _coordinate_now(1),
+    "get_z": _coordinate_now(2),
+    "length_over_dim": _length_over_dim_now,
+}
+
+
+# Manim queries that look a value up on the backing Mobject's geometry. An
+# Algan number carries a leading frame axis -- an updater's ``t`` is ``(frames,
+# 1, 1)`` -- which Manim reads as an array of inputs and answers in a shape of
+# its own: ``c2p`` returns a ``(3, frames)`` column, ``n2p`` a ``(frames, 3)``
+# block that reads as one Mob's rows, and ``point_from_proportion`` raises. So
+# a call whose numbers carry frames, or one made while a replay writes several,
+# is asked once per frame -- with that frame's numbers and that frame's pose,
+# the way a Manim script asks -- and the answers come back with the frame axis
+# leading: a point as ``(frames, 1, 3)``, a number as ``(frames, 1, 1)``, and
+# coordinates as one ``(frames, 1, 1)`` per coordinate, so that
+# ``x, y = axes.p2c(point)`` still unpacks.
+_POINT_QUERIES = frozenset(
+    {
+        "c2p",
+        "coords_to_point",
+        "n2p",
+        "number_to_point",
+        "i2gp",
+        "input_to_graph_point",
+        "pr2pt",
+        "polar_to_point",
+        "point_from_proportion",
+        "get_midpoint",
+        "get_start",
+        "get_end",
+        "get_vector",
+        "get_unit_vector",
+    }
+)
+_NUMBER_QUERIES = frozenset(
+    {
+        "p2n",
+        "point_to_number",
+        "proportion_from_point",
+        "slope_of_tangent",
+        "angle_of_tangent",
+        "get_angle",
+        "get_slope",
+        "get_length",
+    }
+)
+_COORDINATE_QUERIES = frozenset(
+    {"p2c", "point_to_coords", "pt2pr", "point_to_polar", "input_to_graph_coords"}
+)
+_QUERIES_ASKED_PER_FRAME = _POINT_QUERIES | _NUMBER_QUERIES | _COORDINATE_QUERIES
+
+
+def _has_frame_axis(value) -> bool:
+    return isinstance(value, torch.Tensor) and value.dim() >= 3
+
+
+def _at_frame(value, index: int):
+    """``value`` as Manim takes it for one frame: a float, a point, or as is."""
+    if not _has_frame_axis(value):
+        return to_manim(value)
+    row = value[index if len(value) > 1 else 0]
+    return row.item() if row.numel() == 1 else _tensor_to_manim(row)
+
+
 def _wrapper_type_for(source) -> type[ManimCompatMob]:
     for cls in type(source).__mro__:
         wrapper = _MANIM_WRAPPER_REGISTRY.get(cls.__name__)
@@ -648,6 +816,63 @@ class ManimCompatMob(ManimMob):
         _preserve_algan_state_unchanged_by_manim(self, before, target)
         return self.become(target, detach_history=False)
 
+    def _ask_each_frame(self, name, args, kwargs):
+        """Ask the backing Mobject a geometry query once per frame.
+
+        See ``_QUERIES_ASKED_PER_FRAME``. ``NotImplemented`` when the call has
+        no frames to answer for, or an answer is not made of numbers.
+        """
+        manager = self.scene.timeline_manager
+        frames = manager.replay_frames()
+        values = (*args, *kwargs.values())
+        counts = {len(value) for value in values if _has_frame_axis(value)}
+        if not frames and not counts:
+            return NotImplemented
+        count = len(frames) if frames else max(counts)
+        if counts - {1, count}:
+            return NotImplemented
+        # Synchronizing a labelled Axes takes longer than the query itself, and
+        # most Mobs a query is asked of hold still for the whole batch.
+        moving = bool(frames) and not all(
+            bool((rows == rows[:1]).all())
+            for rows in (part.location for part in self.get_descendants())
+        )
+        raw, answers = [], []
+        for index in range(count):
+            focus = (
+                manager.replaying_one_frame(frames[index])
+                if frames
+                else contextlib.nullcontext()
+            )
+            with focus:
+                if index == 0 or moving:
+                    self._sync_manim_from_algan()
+                answer = getattr(self.manim_mobject, name)(
+                    *(_at_frame(value, index) for value in args),
+                    **{key: _at_frame(value, index) for key, value in kwargs.items()},
+                )
+            try:
+                answers.append(np.asarray(answer, dtype=float))
+            except (TypeError, ValueError):
+                return NotImplemented
+            raw.append(answer)
+        if not frames and count == 1:
+            # Authoring, with one frame's numbers: Manim's own answer.
+            return self._convert_delegated_result(raw[0])
+        answers = torch.from_numpy(np.stack(answers)).to(torch.get_default_dtype())
+        if name in _COORDINATE_QUERIES:
+            return answers.reshape(count, -1).T.reshape(-1, count, 1, 1)
+        return answers.reshape(count, 1, -1)
+
+    def _translate_now(self, displacement):
+        """Translate this Mob and its descendants by Algan's own arithmetic.
+
+        Used while a render replays an updater, where ``displacement`` can hold
+        one row per frame of the batch. The backing Mobject catches up lazily,
+        as it does after a native rotation.
+        """
+        return self.set_location(self.location + displacement)
+
     # These names also exist on Algan's Mob.  Override them so compatibility
     # objects retain Manim's keyword arguments and backing geometry.  Where the
     # two libraries disagree about what an argument *means*, Algan's meaning
@@ -660,6 +885,12 @@ class ManimCompatMob(ManimMob):
         aligned_edge=_manim.ORIGIN,
         coor_mask=np.array([1, 1, 1]),
     ):
+        if self.scene.timeline_manager.is_replaying():
+            # Inside an updater: see _ANSWERED_FROM_ROWS_DURING_REPLAY.
+            offset = _point_of(point_or_mobject, aligned_edge) - _critical_point(
+                self, aligned_edge
+            )
+            return self._translate_now(offset * cast_to_tensor(coor_mask))
         before, source = self._prepare_manim_edit()
         source.move_to(
             to_manim(point_or_mobject),
@@ -717,6 +948,8 @@ class ManimCompatMob(ManimMob):
             and not kwargs
             and len(self.manim_mobject.points)
             and self.manim_mobject.submobjects
+            # An updater's displacement can hold one row per frame of a batch.
+            and not self.scene.timeline_manager.is_replaying()
         ):
             # Point-bearing composites (notably Arrow's shaft and tip) are
             # re-anchored by the Manim conversion. Keep that arithmetic at
@@ -905,6 +1138,15 @@ class ManimCompatMob(ManimMob):
 
         @wraps(attribute)
         def delegated(*args, **kwargs):
+            answer = _ANSWERED_FROM_ROWS_DURING_REPLAY.get(name)
+            if answer is not None and self.scene.timeline_manager.is_replaying():
+                result = answer(self, *args, **kwargs)
+                if result is not NotImplemented:
+                    return result
+            if name in _QUERIES_ASKED_PER_FRAME:
+                result = self._ask_each_frame(name, args, kwargs)
+                if result is not NotImplemented:
+                    return result
             # A delegated method can be saved and called later.  Parent edits may
             # happen between attribute lookup and invocation, so synchronize and
             # re-bind the Manim method at call time rather than relying on the

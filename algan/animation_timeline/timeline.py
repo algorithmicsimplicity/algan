@@ -3994,6 +3994,39 @@ class AnimationTimeline:
         """
         return self._replay_depth > 0
 
+    def replay_frames(self) -> list[int]:
+        """The frames the replay is writing at the moment, as batch indices.
+
+        Inside an updater these are the frames of the batch it was called for,
+        in order. Empty when nothing is being replayed.
+        """
+        times = self._materialization_times
+        timeline = next(iter(self.attr_to_timeline.values()), None)
+        if self._replay_depth == 0 or times is None or timeline is None:
+            return []
+        selector = timeline.active_time_inds
+        if isinstance(selector, slice):
+            return list(range(*selector.indices(len(times))))
+        return [int(index) for index in selector.reshape(-1).tolist()]
+
+    @contextlib.contextmanager
+    def replaying_one_frame(self, frame: int):
+        """Narrow every attribute's reads and writes to one frame of the replay.
+
+        For work that can only be done for one pose at a time, such as asking
+        the Manim object behind a compatibility Mob where a coordinate lands.
+        ``frame`` is one of :meth:`replay_frames`.
+        """
+        timelines = list(self.attr_to_timeline.values())
+        selectors = [timeline.active_time_inds for timeline in timelines]
+        for timeline in timelines:
+            timeline.set_active_time_inds(slice(frame, frame + 1))
+        try:
+            yield
+        finally:
+            for timeline, selector in zip(timelines, selectors):
+                timeline.set_active_time_inds(selector)
+
     def note_replay_born_mob(self, mob_id):
         """Mark ``mob_id`` as a Mob that a replayed updater has just built."""
         if self._replay_depth > 0:
