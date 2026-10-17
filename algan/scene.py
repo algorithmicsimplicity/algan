@@ -383,7 +383,7 @@ class Scene(RenderLoopMixin):
                 f"{next(iter(kwargs))!r}. wait() takes one argument, the "
                 f"number of seconds to wait."
             )
-        _reject_invalid_runtime("time", time)
+        time = _reject_invalid_runtime("time", time)
         self.animation_manager.wait(time)
         return self
 

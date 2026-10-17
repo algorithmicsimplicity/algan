@@ -2412,6 +2412,45 @@ def test_nonfinite_wait_does_not_change_authoring_cursor(value):
     assert (context.current_time, context.end_time) == before
 
 
+@pytest.mark.parametrize(
+    "seconds",
+    [torch.tensor(2.0), torch.tensor([2.0]), np.float32(2.0)],
+    ids=["0-d tensor", "1-element tensor", "numpy float32"],
+)
+def test_a_time_computed_from_tensors_is_taken_as_seconds(seconds):
+    """A time computed from Mob positions is a tensor until ``.item()``.
+
+    It passed every check and reached the timeline's float64 buffers as it was,
+    so the first render failed several calls down: ``Index put requires the
+    source and destination dtypes match`` (or ``can't assign a numpy.float32 to
+    a torch.DoubleTensor``), from a runtime, a wait, a lag ratio or a context's
+    ``current_time`` alike.
+    """
+    scene = algan.Scene(SMOKE_TEST)
+    square = Square().spawn()
+    with Seq(runtime=seconds):
+        square.move(algan.RIGHT)
+    scene.wait(seconds)
+    with Lag(ratio=seconds / 4):
+        square.move(algan.UP)
+        square.move(algan.UP)
+    with Seq() as context:
+        context.current_time = context.current_time + seconds
+        square.move(algan.LEFT)
+        context.current_time = context.end_time
+
+    scene.timeline_manager.set_state_to_times(torch.tensor([3.0, 9.0]))
+    scene.timeline_manager.clear_buffers()
+    assert context.current_time == pytest.approx(9.5)
+
+
+@pytest.mark.parametrize("field", ["current_time", "end_time"])
+def test_a_context_cursor_has_to_be_a_finite_time(field):
+    """``context.current_time = float("nan")`` was taken, and broke the clock."""
+    with Seq() as context, pytest.raises(AlganConfigurationError, match=field):
+        setattr(context, field, float("nan"))
+
+
 @pytest.mark.fast
 @pytest.mark.parametrize("magnitude", [3, 3e-20, 3e20])
 def test_line_layout_uses_direction_not_vector_magnitude(magnitude):
