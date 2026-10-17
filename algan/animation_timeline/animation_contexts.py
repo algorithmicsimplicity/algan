@@ -1284,7 +1284,8 @@ class Audio(AnimationContext):
     The context's runtime is taken from the audio, so whatever you animate inside
     is stretched or squeezed to finish with the sound. That inversion is the point:
     you describe what should happen while a clip plays, rather than timing the clip
-    against the animation.
+    against the animation. A block that animates nothing holds still for the
+    sound, so the next block starts when it ends.
 
     Parameters
     ----------
@@ -1331,6 +1332,18 @@ class Audio(AnimationContext):
             self._audio_effect = AudioEffect(self.audio_clip, self.get_current_time())
             self.animation_manager.scene.add_effect(self._audio_effect)
         return context
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # A block that animates nothing takes no time, so its sound played over
+        # whatever came next -- the next line of narration included. Hold still
+        # instead; the block's runtime stretches the hold to the clip's length.
+        if (
+            exc_type is None
+            and self._audio_effect is not None
+            and self.timespan.original_end <= self.timespan.original_start
+        ):
+            self.wait(1)
+        return super().__exit__(exc_type, exc_val, exc_tb)
 
 
 class Speech(Audio):
