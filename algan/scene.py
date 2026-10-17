@@ -1666,7 +1666,15 @@ class Scene(RenderLoopMixin):
 
         destination = _resolve_output_destination(file_path, ".png")
         _check_container_is_supported(destination, still=True)
-        if at is None or not hasattr(at, "__len__"):
+        if isinstance(at, (str, bytes)):
+            # A string has a length, so it was walked character by character:
+            # "12" wrote stills at 1 and 2 seconds.
+            raise AlganConfigurationError(
+                f"at takes a time in seconds, or a sequence of them; got the "
+                f"string {at!r}."
+            )
+        # A 0-d tensor or array is one time, though it has a __len__ to ask.
+        if at is None or not hasattr(at, "__len__") or getattr(at, "ndim", 1) == 0:
             targets = [(destination, at)]
             returns_list = False
         else:
