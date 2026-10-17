@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import inspect
 import math
-import os
 import sys
 from collections.abc import Callable, Sequence
 from functools import wraps
@@ -678,15 +677,9 @@ class Scene(RenderLoopMixin):
             return self
         env = source
         byte_ranged = False
-        if isinstance(env, (str, os.PathLike)):
+        if isinstance(env, str):
             import numpy as np
             from PIL import Image, UnidentifiedImageError
-
-            from algan.utils.file_utils import resolve_asset_path
-
-            # Found beside the script as well as in the working directory, as
-            # an image or a background is.
-            env = resolve_asset_path(env)
 
             # ``convert("RGB")`` reproduces what the previous cv2 read gave
             # this code: three 8-bit channels in RGB order, alpha dropped and
