@@ -31,6 +31,7 @@ from queue import Empty, Full, Queue
 from types import SimpleNamespace
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
@@ -3948,6 +3949,35 @@ class RenderLoopMixin:
                     # or failed one has not seen all the frames it was for.
                     if completed and rounding_job is not None:
                         rounding_job.report()
+
+    def _background_fitted_to_frame(self, background):
+        """``background`` at the size a render of this Scene reads it.
+
+        An image background, ``[1, height, width, channels]`` with its rows
+        bottom-up, is resampled to the super-sampled frame of the current
+        settings; anything else -- a color, a callable -- is resolution-free
+        and comes back as given.
+
+        Here rather than on the Scene because :meth:`_get_frames_impl` calls it
+        on every render, and a Scene need not have run ``__init__`` -- or be a
+        Scene at all -- to be rendered from: the preflight tests render a stub
+        built from this mixin alone.
+        """
+        if not torch.is_tensor(background) or background.dim() != 4:
+            return background
+        a = max(1, int(self.video_settings.supersampling))
+        size = [int(n) * a for n in self.frame_size]
+        if list(background.shape[1:3]) == size:
+            return background
+        # interpolate wants [1, channels, height, width]. (``transpose(0, -1)``
+        # here swapped the image's rows and columns instead, rendering it
+        # transposed.) Resampled top-down, in the file's own row order, and
+        # flipped back: the filter is symmetric but its rounding is not quite,
+        # and this way a frame of the size the image used to be baked at gets
+        # the bytes it always did.
+        image = background.flip(1).permute(0, 3, 1, 2)
+        image = F.interpolate(image, size, mode="bilinear", antialias=True)
+        return image.permute(0, 2, 3, 1).flip(1)
 
     def _get_frames_impl(
         self,

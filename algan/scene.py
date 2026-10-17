@@ -37,8 +37,6 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import torch.nn.functional as F
-
 from algan.animation_timeline.animation_contexts import (
     AnimationManager,
     Seq,
@@ -1262,10 +1260,11 @@ class Scene(RenderLoopMixin):
         :class:`~pathlib.Path`, which can only have been meant as a file.)
 
         The image keeps its own resolution: a render fits it to the frame it
-        makes (:meth:`_background_fitted_to_frame`), since a one-off preset,
-        the viewer or a camera view's capture can each render at a size other
-        than this Scene's settings. Baked to the frame here, it failed every
-        such render with "background resolution does not match render output".
+        makes (``RenderLoopMixin._background_fitted_to_frame``), since a
+        one-off preset, the viewer or a camera view's capture can each render
+        at a size other than this Scene's settings. Baked to the frame here, it
+        failed every such render with "background resolution does not match
+        render output".
         """
         resolved = resolve_asset_path(path)
         if not Path(resolved).exists():
@@ -1284,30 +1283,6 @@ class Scene(RenderLoopMixin):
         # rows have to be stored bottom-up too -- as the procedural background
         # path already produces them.
         return get_image(resolved).flip(0).unsqueeze(0)
-
-    def _background_fitted_to_frame(self, background):
-        """``background`` at the size a render of this Scene reads it.
-
-        An image background, ``[1, height, width, channels]`` with its rows
-        bottom-up, is resampled to the super-sampled frame of the current
-        settings; anything else -- a color, a callable -- is resolution-free
-        and comes back as given.
-        """
-        if not torch.is_tensor(background) or background.dim() != 4:
-            return background
-        a = max(1, int(self.video_settings.supersampling))
-        size = [int(n) * a for n in self.frame_size]
-        if list(background.shape[1:3]) == size:
-            return background
-        # interpolate wants [1, channels, height, width]. (``transpose(0, -1)``
-        # here swapped the image's rows and columns instead, rendering it
-        # transposed.) Resampled top-down, in the file's own row order, and
-        # flipped back: the filter is symmetric but its rounding is not quite,
-        # and this way a frame of the size the image used to be baked at gets
-        # the bytes it always did.
-        image = background.flip(1).permute(0, 3, 1, 2)
-        image = F.interpolate(image, size, mode="bilinear", antialias=True)
-        return image.permute(0, 2, 3, 1).flip(1)
 
     @active_scene_method
     def set_video_settings(self, video_settings, _explicit: bool = True):
