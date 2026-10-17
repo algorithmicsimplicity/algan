@@ -222,7 +222,7 @@ class Scene(RenderLoopMixin):
     def __init__(
         self,
         video_settings: VideoSettings | None = None,
-        background: Color | str | torch.Tensor | Callable | None = None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None = None,
         memory=None,
         scene_initializer=None,
         *,
@@ -1229,40 +1229,61 @@ class Scene(RenderLoopMixin):
             self.scene_initializer(self)
         return self
 
-    def _background_image_frame(self, path, not_a_color):
+    def _background_image_frame(self, path, not_a_color=None):
         """Load ``path`` as a full-frame background image.
 
         Reached when a background string did not parse as a color, so a
         missing file has to say that the string was neither -- otherwise the
-        two mistakes are indistinguishable.
+        two mistakes are indistinguishable. (``not_a_color`` is None for a
+        :class:`~pathlib.Path`, which can only have been meant as a file.)
+
+        The image keeps its own resolution: a render fits it to the frame it
+        makes (:meth:`_background_fitted_to_frame`), since a one-off preset,
+        the viewer or a camera view's capture can each render at a size other
+        than this Scene's settings. Baked to the frame here, it failed every
+        such render with "background resolution does not match render output".
         """
-        if not Path(path).exists():
+        resolved = resolve_asset_path(path)
+        if not Path(resolved).exists():
+            if not_a_color is None:
+                raise AlganConfigurationError(
+                    f"background image {os.fspath(path)!r} does not exist."
+                )
             raise AlganConfigurationError(
                 f"background {path!r} is neither a color Algan "
                 f"recognises nor the path of an image file that exists. Pass a "
                 f"Color such as BLUE, a hex string ('#101820'), or the path of "
                 f"an image to use as the background."
             ) from not_a_color
-        a = self.video_settings.supersampling
-        # get_image returns [height, width, channels]; interpolate wants
-        # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
-        # the image's rows and columns instead, rendering it transposed.)
-        image = get_image(path).permute(2, 0, 1).unsqueeze(0)
-        image = (
-            F.interpolate(
-                image,
-                [_ * a for _ in tuple(self.frame_size)],
-                mode="bilinear",
-                antialias="bilinear",
-            )
-            .squeeze(0)
-            .permute(1, 2, 0)
-        )
         # Frame buffers are bottom-up (post_process_frames flips them on the
         # way out, matching the tracer's py = height-1-row), so the background
         # rows have to be stored bottom-up too -- as the procedural background
         # path already produces them.
-        return image.flip(0).unsqueeze(0)
+        return get_image(resolved).flip(0).unsqueeze(0)
+
+    def _background_fitted_to_frame(self, background):
+        """``background`` at the size a render of this Scene reads it.
+
+        An image background, ``[1, height, width, channels]`` with its rows
+        bottom-up, is resampled to the super-sampled frame of the current
+        settings; anything else -- a color, a callable -- is resolution-free
+        and comes back as given.
+        """
+        if not torch.is_tensor(background) or background.dim() != 4:
+            return background
+        a = max(1, int(self.video_settings.supersampling))
+        size = [int(n) * a for n in self.frame_size]
+        if list(background.shape[1:3]) == size:
+            return background
+        # interpolate wants [1, channels, height, width]. (``transpose(0, -1)``
+        # here swapped the image's rows and columns instead, rendering it
+        # transposed.) Resampled top-down, in the file's own row order, and
+        # flipped back: the filter is symmetric but its rounding is not quite,
+        # and this way a frame of the size the image used to be baked at gets
+        # the bytes it always did.
+        image = background.flip(1).permute(0, 3, 1, 2)
+        image = F.interpolate(image, size, mode="bilinear", antialias=True)
+        return image.permute(0, 2, 3, 1).flip(1)
 
     @active_scene_method
     def set_video_settings(self, video_settings, _explicit: bool = True):
@@ -1525,7 +1546,7 @@ class Scene(RenderLoopMixin):
         at: float | Sequence[float] | None = None,
         *,
         overwrite: bool = True,
-        background: Color | str | torch.Tensor | Callable | None = None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None = None,
         post_processes=None,
         passes: str | Sequence[str] | None = None,
     ) -> RenderResult | list[RenderResult]:
@@ -1786,7 +1807,7 @@ class Scene(RenderLoopMixin):
     @active_scene_method
     def set_background(
         self,
-        background: Color | str | torch.Tensor | Callable | None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None,
         overwrite: bool = True,
     ) -> Scene:
         """Set what the Scene is drawn against.
@@ -1800,9 +1821,16 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         background
-            A color, a path to an image (scaled to the frame), or a procedural
-            callable ``(x, y, time) -> color``. A color with alpha below 1 makes the
-            output transparent. ``None`` leaves the background unchanged.
+            A color, a path to an image, or a procedural callable
+            ``(x, y, time) -> color``. A color with alpha below 1 makes the output
+            transparent. ``None`` leaves the background unchanged.
+
+            The path is a ``str`` or a :class:`~pathlib.Path`; a relative one is
+            looked for in the working directory and then beside the running script.
+            The image is scaled to fill the frame of each render, whatever its
+            resolution: the Scene's own, a preset passed to
+            :meth:`~.Scene.save_video` or :meth:`~.Scene.save_frame`, or the
+            viewer's.
 
             The callable is evaluated on the **render device** and receives
             broadcastable grids, not scalars: ``x`` is ``[1, width, 1]`` and ``y``
@@ -1844,7 +1872,12 @@ class Scene(RenderLoopMixin):
         """
         if (background is None) or (self.background_is_set and not overwrite):
             return self
-        if isinstance(background, str):
+        if isinstance(background, os.PathLike):
+            # Only a str was read as a file: a Path was stored as the
+            # background itself and failed the render with "'PosixPath'
+            # object is not subscriptable".
+            background = self._background_image_frame(background)
+        elif isinstance(background, str):
             # A string is a color first and an image path second. Read as a
             # path unconditionally, ``set_background("blue")`` answered
             # ``No such file or directory: 'blue'`` -- blaming the filesystem
@@ -1891,7 +1924,7 @@ class Scene(RenderLoopMixin):
         *,
         overwrite: bool = True,
         reset: bool = False,
-        background: Color | str | torch.Tensor | Callable | None = None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None = None,
         animate_fade_out: bool | None = None,
         post_processes=None,
         codec: str | None = None,

@@ -3981,6 +3981,13 @@ class RenderLoopMixin:
         self.original_background_frame = self.background_frame
         if background is not None:
             self.background_frame = background
+        # An image background is kept at its own resolution and fitted to this
+        # render's frame here, once; get_frames puts the Scene's back after.
+        fitted = self._background_fitted_to_frame(self.background_frame)
+        if fitted is not self.background_frame:
+            self.background_frame = fitted
+            if background is not None:
+                background = fitted
 
         transparent_background = self.background_is_transparent()
         if self.premultiplied_over and transparent_background:
