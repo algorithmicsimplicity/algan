@@ -42,6 +42,7 @@ from algan import (
     RED,
     RIGHT,
     SMOKE_TEST,
+    TEAL_A,
     WHITE,
     Off,
     Scene,
@@ -357,6 +358,26 @@ def test_cosine_color_defaults_are_its_documented_ones():
         ("frequency", 4.0),
         ("phase", 0.0),
     ]
+
+
+def test_a_palette_colour_sets_a_stage_colour_to_its_rgb():
+    """``rim_color`` is width 3, and a five-channel palette colour assigned to
+    it gives its RGB and leaves its glow and opacity behind, as the shaders
+    tutorial says.
+    """
+    SceneManager.reset()
+    try:
+        with Scene():
+            ball = Sphere(radius=1.0, add_to_scene=False)
+            ball.set_fragment_shader([standard_shader, fresnel_rim])
+            ball.rim_color = TEAL_A
+            assert ball.rim_color.shape[-1] == 3
+            torch.testing.assert_close(
+                ball.rim_color.reshape(3),
+                TEAL_A[..., :3].as_subclass(torch.Tensor),
+            )
+    finally:
+        SceneManager.reset()
 
 
 # ---------------------------------------------------------------------------

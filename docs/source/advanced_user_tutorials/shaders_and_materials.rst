@@ -418,9 +418,9 @@ Stage            What it adds
     Scene.save_video()
 
 Stage parameters are plain numbers and tuples of the width the stage declares --
-``rim_color`` is a width-3 RGB triple. Assigning a five-channel Algan color
-constant such as ``TEAL_A`` to it raises; use ``TEAL_A[..., :3]`` if you want to
-derive one from the palette.
+``rim_color`` is a width-3 RGB triple. A five-channel Algan color constant such
+as ``TEAL_A`` can be assigned to it too: the parameter takes the color's RGB and
+leaves its glow and opacity behind.
 
 A rim light is an authoring control rather than a BSDF term, which is why it
 lives here and not on
