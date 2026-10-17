@@ -83,6 +83,8 @@ def _algan_bezier_to_manim(mob: BezierCircuitCubic):
         start = mob.get_start().detach().reshape(-1, 3)[0].cpu().numpy()
         end = mob.get_end().detach().reshape(-1, 3)[0].cpu().numpy()
         result = _manim.Line(start, end)
+        # The ends alone would draw an arc (``path_arc``) as its chord.
+        result.set_points(points)
     else:
         result = _manim.VMobject()
         result.set_points(points)
