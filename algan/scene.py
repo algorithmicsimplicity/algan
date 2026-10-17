@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import os
 import sys
 from collections.abc import Callable, Sequence
 from functools import wraps
@@ -64,7 +65,7 @@ from algan.settings import SETTINGS
 from algan.settings.video_settings import VideoSettings
 from algan.sound.audio_effect import AudioManager
 from algan.taichi_compat import is_compiler_func
-from algan.utils.file_utils import get_image
+from algan.utils.file_utils import get_image, resolve_asset_path
 
 logger = get_logger()
 
@@ -286,6 +287,7 @@ class Scene(RenderLoopMixin):
         self.animation_off = False
         self.context_max_time = 0
         self.environment_map = None
+        self.environment_map_is_srgb = False
         self.environment_intensity = 1.0
         self.environment_ambient = True
         self.priority = 0
@@ -634,15 +636,19 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         source
-            Path to an image file, or an image tensor of shape
-            ``[height, width, >=3]``. ``None`` removes the current map.
+            Path to an image file, as a ``str`` or :class:`~pathlib.Path`, or an
+            image tensor of shape ``[height, width, >=3]``. ``None`` removes the
+            current map. A relative path is looked for in the working directory
+            and then beside the running script, as every asset path is.
 
             Byte-ranged sources -- an image file, or an integer-dtype tensor --
-            are divided by 255. A **float tensor is taken as authored**, so
-            values above 1 are kept: that is what makes a light source in the
-            map brighter than white, which is the whole point of an HDR
-            environment. Author in whatever units you like and use ``intensity``
-            to set the overall level.
+            hold sRGB-encoded color, like every other authored color: they are
+            divided by 255 and decoded to linear light when rendered, so the
+            backdrop shows the image's own bytes. A **float tensor is taken as
+            authored** radiance and is not decoded, so values above 1 are kept:
+            that is what makes a light source in the map brighter than white,
+            which is the whole point of an HDR environment. Author in whatever
+            units you like and use ``intensity`` to set the overall level.
         intensity
             Brightness multiplier for the map's contribution. Defaults to ``1.0``.
         ambient
@@ -663,10 +669,11 @@ class Scene(RenderLoopMixin):
         """
         if source is None:
             self.environment_map = None
+            self.environment_map_is_srgb = False
             return self
         env = source
         byte_ranged = False
-        if isinstance(env, str):
+        if isinstance(env, (str, os.PathLike)):
             import numpy as np
             from PIL import Image, UnidentifiedImageError
 
@@ -675,7 +682,7 @@ class Scene(RenderLoopMixin):
             # a greyscale source replicated across the channels. The array is
             # copied because PIL's buffer is read-only.
             try:
-                with Image.open(env) as image:
+                with Image.open(resolve_asset_path(env)) as image:
                     img = np.array(image.convert("RGB"), copy=True)
             except (OSError, UnidentifiedImageError) as exc:
                 raise FileNotFoundError(
@@ -699,6 +706,11 @@ class Scene(RenderLoopMixin):
         if byte_ranged:
             env = env / 255.0
         self.environment_map = env[..., :3].contiguous()
+        # Bytes are sRGB-encoded, like every other authored color, and are
+        # decoded at the render boundary (``tracer._environment_radiance``)
+        # rather than here, so the working space in force at render time
+        # decides, as it does for a Mob's colors.
+        self.environment_map_is_srgb = byte_ranged
         self.environment_intensity = float(intensity)
         self.environment_ambient = bool(ambient)
         return self
@@ -1185,6 +1197,7 @@ class Scene(RenderLoopMixin):
             fill_value=1e12,
         )
         self.environment_map = None
+        self.environment_map_is_srgb = False
         self.environment_intensity = 1.0
         self.environment_ambient = True
         self.animation_off = False

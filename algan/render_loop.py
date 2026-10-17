@@ -1080,14 +1080,17 @@ class RenderLoopMixin:
             frame_signature=bool(getattr(self, "_frame_local_batches", False))
             and not (render_state or {}).get("lone_still", False),
         )
-        env_map = getattr(self, "environment_map", None)
+        from algan.rendering.raytracing.tracer import (
+            _append_env_texture,
+            _environment_radiance,
+        )
+
+        env_map = _environment_radiance(self)
         first._rt_env_meta = None
         if env_map is not None:
             # Environment resampling/packing is source-device scene prep too;
             # cache it so arena preflight and the subsequent upload see the
             # same widened texture storage without doing the work twice.
-            from algan.rendering.raytracing.tracer import _append_env_texture
-
             merged_host = dict(merged_host)
             texture_device = merged_host["textures"].device
             merged_host["textures"], env_meta = _append_env_texture(
