@@ -713,35 +713,55 @@ class Scene(RenderLoopMixin):
         self.environment_ambient = bool(ambient)
         return self
 
-    def length_to_pixels(self, length: float) -> float:
+    @active_scene_method
+    def length_to_pixels(self, length: float, at: torch.Tensor = ORIGIN) -> float:
         """Convert a world-space length to a length in rendered pixels.
+
+        Measured on the plane facing the camera through ``at``. Under a
+        perspective camera a length further away covers fewer pixels, so the
+        answer holds at that depth; the default camera sees 8 world units of
+        height at the origin, as Manim's frame does.
 
         Parameters
         ----------
         length
             Length in world units.
+        at
+            Point whose depth sets the scale, shape ``(3,)``. Defaults to
+            ``ORIGIN``.
 
         Returns
         -------
         float
             The equivalent number of pixels at the Scene's current resolution.
         """
-        return length * 0.5 * self.num_pixels_screen_height
+        return length * self.num_pixels_screen_height / self._visible_height_at(at)
 
-    def pixels_to_length(self, length: float) -> float:
+    def _visible_height_at(self, at):
+        """World height the camera sees on the plane through ``at``."""
+        return float(self.camera.visible_size_at(at).reshape(-1)[1])
+
+    @active_scene_method
+    def pixels_to_length(self, length: float, at: torch.Tensor = ORIGIN) -> float:
         """Convert a length in rendered pixels to a world-space length.
+
+        The inverse of :meth:`~.Scene.length_to_pixels`, measured on the same
+        plane.
 
         Parameters
         ----------
         length
             Length in pixels.
+        at
+            Point whose depth sets the scale, shape ``(3,)``. Defaults to
+            ``ORIGIN``.
 
         Returns
         -------
         float
             The equivalent length in world units at the Scene's current resolution.
         """
-        return length / (0.5 * self.num_pixels_screen_height)
+        return length * self._visible_height_at(at) / self.num_pixels_screen_height
 
     def _set_current_time(self, t: float):
         """Internal: move the authoring cursor to an absolute time.
@@ -810,6 +830,7 @@ class Scene(RenderLoopMixin):
         self.current_time = self.max_time
         return self
 
+    @active_scene_method
     def add_actor(self, actor):
         """Register a Mob with this Scene so it takes part in rendering.
 
@@ -835,6 +856,7 @@ class Scene(RenderLoopMixin):
             self.actors.append(actor)
         return self
 
+    @active_scene_method
     def add_effect(self, effect):
         """Register an audio effect with this Scene.
 
@@ -863,6 +885,7 @@ class Scene(RenderLoopMixin):
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
         return
 
+    @active_scene_method
     def despawn_mobs(
         self,
         retain_history: bool = False,
@@ -1170,6 +1193,7 @@ class Scene(RenderLoopMixin):
             destination, _scene_cues(self, options), subtitle_format, overwrite
         )
 
+    @active_scene_method
     def reset(self, rebuild_timeline: bool = True):
         """Empty the Scene completely and start over.
 
@@ -1401,6 +1425,7 @@ class Scene(RenderLoopMixin):
         self.premultiplied_over = enabled
         return self
 
+    @active_scene_method
     def background_is_transparent(self) -> bool:
         """Whether the Scene's background has any transparency.
 
