@@ -380,6 +380,26 @@ def _scale_factor_to_manim(scale_factor):
     return scale_factor
 
 
+def _scaled_natively_during_replay(scale):
+    """Route a compatibility Mob's ``scale`` to Algan's own while replaying.
+
+    A render re-runs a recorded step over a batch of frames at once, so a
+    factor computed there holds one value per frame (Indicate's pulse), and
+    Manim's ``scale`` takes a single number. Algan's own scale takes the batch,
+    and the backing Mobject catches up lazily, as it does after a native
+    rotation. A call with Manim's keywords (``about_point``, ``about_edge``)
+    still goes to Manim.
+    """
+
+    @wraps(scale)
+    def wrapper(self, scale_factor, **kwargs):
+        if not kwargs and self.scene.timeline_manager.is_replaying():
+            return Mob.scale(self, scale_factor)
+        return scale(self, scale_factor, **kwargs)
+
+    return wrapper
+
+
 def _wrapper_type_for(source) -> type[ManimCompatMob]:
     for cls in type(source).__mro__:
         wrapper = _MANIM_WRAPPER_REGISTRY.get(cls.__name__)
@@ -679,6 +699,7 @@ class ManimCompatMob(ManimMob):
             return self.set_location(target, recursive=recursive, **kwargs)
         return self._move_along_arc(target, arc_angle, recursive=recursive, **kwargs)
 
+    @_scaled_natively_during_replay
     def scale(self, scale_factor, **kwargs):
         before, source = self._prepare_manim_edit()
         source.scale(

@@ -27,6 +27,8 @@ from algan import (
     Group,
     Indicate,
     Line,
+    MathTex,
+    NumberPlane,
     Off,
     Scene,
     Seq,
@@ -324,6 +326,30 @@ def test_indicate_scales_a_composite_around_its_anchor(scene):
     assert right[1] - left[1] == pytest.approx(
         1.5 * float(right[0] - left[0]), abs=1e-4
     )
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda: MathTex("x^2"), lambda: NumberPlane(x_range=[-2, 2], y_range=[-1, 1])],
+    ids=["MathTex", "NumberPlane"],
+)
+def test_indicate_pulses_a_manim_backed_mob(scene, make):
+    """Manim's ``scale`` takes one number; a render replays the pulse per frame.
+
+    Four frames at once, as a render batch replays them: with three, the
+    factor would have read as a per-axis stretch instead of failing.
+    """
+    with Off():
+        mob = make().spawn()
+    start = _elapsed(scene)
+    Indicate(mob, scale_factor=1.5, runtime=1.0)
+    end = _elapsed(scene)
+
+    times = [start, start + 0.25, start + 0.5, end]
+    scene.timeline_manager.set_state_to_times(torch.tensor(times))
+    size = mob.basis.abs().amax(dim=(-2, -1))
+    assert float(size[2]) == pytest.approx(1.5 * float(size[0]), rel=1e-3)
+    assert float(size[3]) == pytest.approx(float(size[0]), rel=1e-4)
 
 
 def _alpha(mob):
