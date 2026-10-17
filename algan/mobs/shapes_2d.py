@@ -780,7 +780,9 @@ class Polygon(BezierCircuitCubic):
     Parameters
     ----------
     vertex_locations : torch.Tensor[N, 3]
-        3-D coordinates for each of the N vertex points.
+        3-D coordinates for each of the N vertex points: the points themselves
+        (``Polygon(LEFT, RIGHT, UP)``), one list of them, or one ``[N, 3]``
+        tensor.
     *args, **kwargs
         Passed to :class:`~.BezierCircuitCubic`
 
@@ -790,13 +792,17 @@ class Polygon(BezierCircuitCubic):
         kwargs = _translate_vector_style_kwargs(
             kwargs, default_color=RED, shape=type(self)
         )
-        if not vertex_locations:
+        if not vertex_locations or (
+            len(vertex_locations) == 1
+            and isinstance(vertex_locations[0], (list, tuple))
+            and not vertex_locations[0]
+        ):
             # ``torch.stack([])`` below would answer "stack expects a
             # non-empty TensorList", which says nothing about polygons.
             raise AlganConfigurationError(
                 f"{type(self).__name__} needs its vertices: pass them as "
-                f"points ({type(self).__name__}(LEFT, RIGHT, UP)) or as one "
-                f"[N, 3] tensor."
+                f"points ({type(self).__name__}(LEFT, RIGHT, UP)), as a list "
+                f"of points or as one [N, 3] tensor."
             )
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])
