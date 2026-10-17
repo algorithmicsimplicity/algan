@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 
-from algan import RED, Circle, Group, Line, Polygon, Square
+from algan import RED, BezierCircuitCubic, Circle, Group, Line, Polygon, Square
 from algan.errors import AlganConfigurationError
 from algan.scene_manager import SceneManager
 
@@ -217,3 +217,20 @@ def test_a_2_d_point_in_a_shape_is_refused_by_name(build, name):
     """
     with pytest.raises(AlganConfigurationError, match=rf"^{name} must be a 3-D"):
         build()
+
+
+@pytest.mark.parametrize("count", [0, 3, 5, 15])
+def test_a_circuit_refuses_points_that_are_not_whole_segments(count):
+    """REGRESSION. A circuit built from a count of control points that is not
+    a multiple of four built without complaint, and the first render failed
+    with "shape '[1, 1, 4, 3]' is invalid for input of size 15"; none at all
+    failed with "zero-size array to reduction operation minimum".
+    """
+    points = Square(add_to_scene=False).control_points.location.reshape(-1, 3)
+    with pytest.raises(AlganConfigurationError, match=r"groups of four.*got"):
+        BezierCircuitCubic(points[:count])
+
+
+def test_a_circuit_refuses_2_d_control_points():
+    with pytest.raises(AlganConfigurationError, match=r"3-D points.*of size 2"):
+        BezierCircuitCubic(torch.zeros(4, 2))

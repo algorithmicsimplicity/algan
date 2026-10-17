@@ -933,6 +933,18 @@ class BezierCircuitCubic(Mob):
         # of points fail with AttributeError instead.
         control_points = cast_to_tensor(control_points)
         control_points = control_points.reshape(-1, control_points.shape[-1])
+        if (
+            control_points.shape[-1] != 3
+            or not control_points.shape[0]
+            or control_points.shape[0] % 4
+        ):
+            # Otherwise the circuit builds, and the first render fails reshaping
+            # the points into segments ("shape '[1, 1, 4, 3]' is invalid").
+            raise AlganConfigurationError(
+                f"{type(self).__name__} needs its control points as 3-D points "
+                f"in groups of four, P0, P1, P2, P3 per cubic segment; got "
+                f"{control_points.shape[0]} of size {control_points.shape[-1]}"
+            )
 
         # A circuit's ``location`` is DERIVED below, from the control points --
         # it is the centroid of the region they enclose, not a free parameter --
