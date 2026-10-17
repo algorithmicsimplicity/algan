@@ -44,6 +44,7 @@ from algan.mobs.group import Group
 from algan.mobs.surfaces.surface import Surface
 from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.api_renames import _reject_renamed_keywords
+from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
@@ -209,7 +210,7 @@ _SOLID_KEYWORD_RENAMES: dict[str, str] = {
 def _surface_resolution_kwargs(resolution, kwargs):
     """Translate Manim's surface resolution/style names to Algan's Surface."""
     if resolution is not None:
-        if isinstance(resolution, int):
+        if integer_or_none(resolution) is not None:
             u_res = v_res = resolution
         else:
             u_res, v_res = resolution
@@ -898,7 +899,7 @@ class Cylinder(Surface):
         # means what it means to a Cone. Read unswapped, an Arrow3D -- which
         # hands its shaft and its tip one pair -- flattened whichever part got
         # the smaller count round its axis.
-        if resolution is not None and not isinstance(resolution, int):
+        if resolution is not None and integer_or_none(resolution) is None:
             along, around = resolution
             resolution = (around, along)
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
@@ -1211,7 +1212,9 @@ class Arrow3D(Mob):
         shaft_end = end - direction * tip_length
         super().__init__(*args, location=(start + end) * 0.5, color=color, **kwargs)
         surface_resolution = (
-            (resolution, resolution) if isinstance(resolution, int) else resolution
+            (resolution, resolution)
+            if integer_or_none(resolution) is not None
+            else resolution
         )
         self.tail = Cylinder(
             scene=self.scene,
@@ -1372,7 +1375,7 @@ class Dot3D(Sphere):
         if color is not None:
             kwargs["color"] = color
         if resolution is not None:
-            if isinstance(resolution, int):
+            if integer_or_none(resolution) is not None:
                 resolution = (resolution, resolution)
             kwargs.setdefault("grid_width", int(resolution[0]))
             kwargs.setdefault("grid_height", int(resolution[1]))
@@ -1432,7 +1435,7 @@ class Line3D(Cylinder):
 
         if color is not None:
             kwargs["color"] = color
-        if isinstance(resolution, int):
+        if integer_or_none(resolution) is not None:
             kwargs.setdefault("grid_width", max(4, int(resolution)))
             kwargs.setdefault("grid_height", 2)
         else:

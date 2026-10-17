@@ -148,11 +148,24 @@ def _penumbra_frames(turn):
 
 
 def test_a_penumbra_holds_still_under_a_sub_pixel_camera_turn():
-    """Keyed on the point's bits this changed penumbra pixels by up to 28 levels."""
+    """Keyed on the point's bits this changed 63-72 pixels by up to 28 levels.
+
+    The cell key cannot hold every pixel still: a sample point lying within
+    the turn's displacement of a cell boundary crosses it and re-rolls, and
+    its pixel changes by as much as the bits key changed it. Which points lie
+    there depends on the hit points' last bits, so on the camera angle and the
+    device's float rounding, which is why this counts the pixels that change
+    rather than bounding the largest change. Measured on the CPU from 42
+    starting angles up to 2.3 degrees past the test's: 0-3 pixels changed by
+    more than 2 levels (the largest by 15); with the cell forced to 0, the
+    bits key, 63-72 did. The Mac's MPS render changed a pixel by 10 at the
+    test's own angle, which the old bound of 2 failed.
+    """
     frames = _penumbra_frames(0.002)
     # The shadow is soft and dithered: many levels between the floor's umbra
     # (about 77) and its lit side (about 197), not two.
     floor = frames[0].mean(-1)
     levels = torch.unique(floor[(floor > 90) & (floor < 185)].round())
     assert levels.numel() > 20, levels
-    assert float((frames[1] - frames[0]).abs().max()) <= 2
+    changed = (frames[1] - frames[0]).abs().amax(-1) > 2
+    assert int(changed.sum()) <= 8, changed.nonzero().tolist()

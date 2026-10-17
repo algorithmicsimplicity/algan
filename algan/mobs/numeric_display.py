@@ -19,7 +19,10 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from algan.animatable_base.animatable import animated_function
+from algan.animatable_base.animatable import (
+    _reports_refused_keywords,
+    animated_function,
+)
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     NoExtra,
@@ -28,12 +31,15 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     active_scene_for_new_mob,
 )
+from algan.errors import UnsupportedFeatureError
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
 from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.mobs.group import Group
 from algan.mobs.text import Tex
+from algan.utils.mob_utils import batch_mobs
 from algan.utils.tensor_utils import cast_to_tensor, reject_non_finite
 
 
@@ -76,6 +82,25 @@ def _show_glyphs(circuit, shown, alphas):
             part.set_animated_attribute("color", colors, recursive=False)
     finally:
         scene._writing_component_alpha = previous
+
+
+def _drawn_members(circuit):
+    """Which members of a packed glyph circuit :func:`_show_glyphs` draws.
+
+    One flag per member: whether the alpha of its fill or stroke color is
+    above zero anywhere in its block of texels.
+    """
+    drawn = None
+    for part in (circuit.grid, circuit.border_grid):
+        alpha = part.get_animated_attribute("color")[..., -1]
+        alpha = alpha.reshape(-1, alpha.shape[-1]).amax(0) > 0
+        sizes = part.parent_batch_sizes
+        if sizes is not None and int(sizes.sum()) == alpha.shape[-1]:
+            alpha = torch.stack(
+                [block.any() for block in torch.split(alpha, sizes.tolist())]
+            )
+        drawn = alpha if drawn is None else drawn | alpha
+    return drawn
 
 
 def _keep_glyph_selection(mobs):
@@ -138,7 +163,9 @@ class DecimalNumber(Mob):
     integer_places
         Minimum digits before the decimal point. Defaults to ``None``, meaning
         take it from ``value`` (at least 1). More are allocated automatically
-        when the value grows past the reserved width. Ignored when
+        when the value grows past the reserved width -- except by an updater,
+        which cannot add digits while the video renders: give a number an
+        updater sets room for the largest value it will show. Ignored when
         ``significant_figures`` is supplied.
     significant_figures
         Positive integer count of significant digits. Defaults to ``None``,
@@ -170,7 +197,7 @@ class DecimalNumber(Mob):
     ValueError
         If ``significant_figures`` is less than one.
     :class:`~algan.errors.AlganConfigurationError`
-        If a value is not finite in significant-figures mode.
+        If a value is not finite: no glyph shows NaN or infinity.
 
     Examples
     --------
@@ -199,6 +226,7 @@ class DecimalNumber(Mob):
         Scene.save_video()
     """
 
+    @_reports_refused_keywords
     def __init__(
         self,
         value: float | torch.Tensor,
@@ -224,7 +252,10 @@ class DecimalNumber(Mob):
         self.decimal_places = decimal_places
         if significant_figures is not None:
             value = value.to(dtype=torch.get_default_dtype())
-            reject_non_finite("value", value)
+        # Neither mode has a glyph for NaN or infinity, and decimal places
+        # showed them as 0.00 and as the largest number its slots hold.
+        reject_non_finite("value", value)
+        if significant_figures is not None:
             self._init_significant_display(value, kwargs)
             return
         required_integer_places = self._required_integer_places(value)
@@ -317,13 +348,62 @@ class DecimalNumber(Mob):
         _keep_glyph_selection(self.get_descendants())
         # self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
+    def __deepcopy__(self, memo):
+        # The placeholder lays the number out at construction, and its pack
+        # then draws the sign and point, which are views of it. A copy would
+        # be a second sign and point, drawn where this number was cloned and
+        # never updated; a clone's sign and point are copies of their own.
+        placeholder = getattr(self, "placeholder", None)
+        if placeholder is not None:
+            memo.setdefault(id(placeholder), placeholder)
+        return super().__deepcopy__(memo)
+
+    def _morphs_through_stand_in(self):
+        return True
+
+    def _morph_stand_in(self):
+        """The glyphs this number draws, packed as a Tex packs its own, for
+        ``become`` to morph.
+
+        Each digit slot holds every glyph it can show and draws one of them
+        (:func:`_show_glyphs`), so a morph of the slots themselves pairs the
+        target with glyphs that are never drawn and ends invisible.
+        """
+        glyphs = []
+        for circuit in self.get_descendants():
+            if not isinstance(circuit, BezierCircuitCubic):
+                continue
+            drawn = _drawn_members(circuit)
+            if circuit.data_sub_inds is not None:
+                # The sign or the point: a glyph of the placeholder.
+                members = [circuit] if bool(drawn.any()) else []
+            else:
+                members = [circuit[int(k)] for k in torch.nonzero(drawn).flatten()]
+            glyphs.extend(
+                member.clone(add_to_scene=False, spawn=False) for member in members
+            )
+        if not glyphs:
+            # Nothing drawn (a fully transparent color): the target grows
+            # from nothing, as from an empty Group.
+            return Group(scene=self.scene)
+        # Left to right, as the glyphs of the text the number reads as.
+        glyphs.sort(key=lambda glyph: float(glyph.get_center().reshape(-1)[0]))
+        return batch_mobs(glyphs)
+
     @property
     def value(self):
         return self.get_animated_attribute("value")
 
     @value.setter
     def value(self, value):
-        return self.set_value(value)
+        timeline = self.scene.timeline_manager.attr_to_timeline.get("value")
+        if timeline is None or self.id not in timeline.mob_id_to_inds:
+            # A clone is filled from its source by assignment before it owns a
+            # value of its own (Animatable.__deepcopy__), and there is nothing
+            # to count from yet. Its glyphs are copies already showing it.
+            self._setattr_without_record("value", cast_to_tensor(value))
+            return
+        self.set_value(value)
 
     def on_create(self):
         with Sync(animation_manager=self.animation_manager):
@@ -398,7 +478,10 @@ class DecimalNumber(Mob):
         Raises
         ------
         :class:`~algan.errors.AlganConfigurationError`
-            If ``value`` is not finite in significant-figures mode.
+            If ``value`` is not finite.
+        :class:`~algan.errors.UnsupportedFeatureError`
+            If an updater sets a value with more digits before the decimal
+            point than the number has room for; see ``integer_places``.
 
         Examples
         --------
@@ -414,11 +497,11 @@ class DecimalNumber(Mob):
             Scene.save_video()
         """
         value = cast_to_tensor(value)
+        if self.significant_figures is not None:
+            value = value.to(dtype=self.value.dtype)
+        reject_non_finite("value", value)
         if self.significant_figures is None:
             self._ensure_integer_places(value)
-        else:
-            value = value.to(dtype=self.value.dtype)
-            reject_non_finite("value", value)
         return self._set_value(value, interpolation=interpolation)
 
     @animated_function(animated_args={"interpolation": 0})
@@ -525,6 +608,23 @@ class DecimalNumber(Mob):
         required = self._required_integer_places(value)
         if required <= self.integer_places:
             return
+        if self.scene.timeline_manager.is_replaying():
+            # An updater, run for a batch of frames. A slot built now is never
+            # drawn -- the batch's Mobs were gathered before the updater ran --
+            # and is discarded with the batch while this number still holds it.
+            largest = max(
+                abs(float(item))
+                for item in cast_to_tensor(value).reshape(-1)
+                if math.isfinite(float(item))
+            )
+            raise UnsupportedFeatureError(
+                f"An updater set this DecimalNumber to {largest:.{self.decimal_places}f}, "
+                f"which needs {required} digits before the decimal point, and it "
+                f"was built with {self.integer_places}. An updater cannot add "
+                "digits while the video renders: build the number with room for "
+                "the largest value it will show, e.g. "
+                f"DecimalNumber(0, integer_places={required})."
+            )
 
         old_integer_places = self.integer_places
         source_digit = self.digit_mobs[0]

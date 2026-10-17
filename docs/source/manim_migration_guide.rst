@@ -327,8 +327,9 @@ Text, TeX, and imported Manim mobjects
 Algan provides native :class:`~algan.mobs.text.Text` and
 :class:`~algan.mobs.text.Tex` mobs. ``MathTex`` and ``Title`` are *not* native:
 they are compatibility wrappers around Manim's classes, so they take Manim's
-arguments (``tex_to_color_map``, ``include_underline``) but are single Mobs with
-no per-glyph views -- ``formula[0]`` raises, and ``write()`` and ``get_segment()``
+arguments (``tex_to_color_map``, ``include_underline``) and index the way Manim's
+do: ``formula[0]`` is the first substring, and it is the part on screen, so
+coloring or moving it changes the formula. ``write()`` and ``get_segment()``
 live on :class:`~algan.mobs.text.Tex`. Where a script does not need Manim's own
 arguments, ``Tex`` is the better landing place, and it produces the same
 outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.

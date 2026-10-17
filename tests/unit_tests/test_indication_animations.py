@@ -27,6 +27,8 @@ from algan import (
     Group,
     Indicate,
     Line,
+    MathTex,
+    NumberPlane,
     Off,
     Scene,
     Seq,
@@ -204,6 +206,65 @@ def test_show_passing_flash_uses_stroke_clones_and_restores_source(scene):
     )
 
 
+def _new_circuits(scene, before):
+    from algan.mobs.bezier_circuit import BezierCircuitCubic
+
+    return [
+        actor
+        for actor in scene.actors
+        if actor not in before and isinstance(actor, BezierCircuitCubic)
+    ]
+
+
+def test_show_passing_flash_lights_up_text_that_has_no_stroke(scene):
+    """REGRESSION. The flash is a stroke-only clone, and a Text is drawn by its
+    fill alone with a stroke width of 0, so flashing one showed nothing at all
+    while the Text itself was hidden: it simply vanished for the runtime.
+    """
+    from algan import Text
+
+    with Off():
+        text = Text("Hi", color=BLUE).spawn()
+    before = set(scene.actors)
+    ShowPassingFlash(text, runtime=0.5)
+
+    (flash,) = _new_circuits(scene, before)
+    assert bool((flash.stroke_width > 0).all())
+    assert torch.allclose(flash.stroke_color, text._character_batch.color)
+    # The Text keeps the stroke it had.
+    assert bool((text._character_batch.stroke_width == 0).all())
+
+
+def test_thinning_flash_tapers_every_curve_of_a_composite(scene):
+    """REGRESSION. Unlike ShowPassingFlash it took only a single curve, so a
+    Text, or any Group, raised ``AttributeError: ... no attribute 'filled'``.
+    """
+    from algan import Text
+
+    with Off():
+        text = Text("Hi").spawn()
+        square = Square(stroke_width=4).spawn()
+    before = set(scene.actors)
+    ShowPassingFlashWithThinningStrokeWidth(
+        Group([text, square]), n_segments=3, runtime=0.5
+    )
+
+    layers = _new_circuits(scene, before)
+    widths = sorted(
+        (type(layer).__name__, float(layer.stroke_width.reshape(-1)[0]))
+        for layer in layers
+    )
+    # Each curve tapers from its own width; the Text from 1, having none.
+    assert widths == [
+        ("BezierCircuitCubic", 0.0),
+        ("BezierCircuitCubic", 0.5),
+        ("BezierCircuitCubic", 1.0),
+        ("Square", 0.0),
+        ("Square", 2.0),
+        ("Square", 4.0),
+    ]
+
+
 # --------------------------------------------------------------------------
 # The Mob is left as it was found
 # --------------------------------------------------------------------------
@@ -265,6 +326,30 @@ def test_indicate_scales_a_composite_around_its_anchor(scene):
     assert right[1] - left[1] == pytest.approx(
         1.5 * float(right[0] - left[0]), abs=1e-4
     )
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda: MathTex("x^2"), lambda: NumberPlane(x_range=[-2, 2], y_range=[-1, 1])],
+    ids=["MathTex", "NumberPlane"],
+)
+def test_indicate_pulses_a_manim_backed_mob(scene, make):
+    """Manim's ``scale`` takes one number; a render replays the pulse per frame.
+
+    Four frames at once, as a render batch replays them: with three, the
+    factor would have read as a per-axis stretch instead of failing.
+    """
+    with Off():
+        mob = make().spawn()
+    start = _elapsed(scene)
+    Indicate(mob, scale_factor=1.5, runtime=1.0)
+    end = _elapsed(scene)
+
+    times = [start, start + 0.25, start + 0.5, end]
+    scene.timeline_manager.set_state_to_times(torch.tensor(times))
+    size = mob.basis.abs().amax(dim=(-2, -1))
+    assert float(size[2]) == pytest.approx(1.5 * float(size[0]), rel=1e-3)
+    assert float(size[3]) == pytest.approx(float(size[0]), rel=1e-4)
 
 
 def _alpha(mob):

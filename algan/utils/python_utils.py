@@ -13,6 +13,7 @@ wraps.
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Iterable
 from math import isqrt
 
@@ -21,6 +22,19 @@ import torch
 #: Scalar leaves. Strings and bytes stay whole: recursively flattening a
 #: one-character string would recurse forever instead of reaching a leaf.
 _ATOMIC_TYPES = frozenset({float, int, bool, type(None), str, bytes})
+
+
+def integer_or_none(value) -> int | None:
+    """``value`` as a Python int when it is a single integer of any kind.
+
+    A NumPy integer and a one-element integer tensor count, as they do for a
+    list index -- ``np.random.permutation`` and ``torch.randperm`` hand out
+    nothing else. None for anything else, a float included.
+    """
+    try:
+        return operator.index(value)
+    except TypeError:
+        return None
 
 
 def traverse(nested_iterable):

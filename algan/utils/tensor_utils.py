@@ -71,8 +71,13 @@ def packed_reorder(x, counts, ids):
 def _cast_to_tensor_recursive(x):
     if isinstance(x, (list, tuple)):
         return torch.stack([_cast_to_tensor_recursive(_) for _ in x], 0)
-    else:
-        return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    if isinstance(x, torch.Tensor):
+        # A vector inside a list -- [ORIGIN, RIGHT, UP] -- stands where a list
+        # of its numbers would, each of which is cast to shape [1].
+        return x.to(dtype=torch.get_default_dtype()).unsqueeze(-1)
+    return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
 
 
 def cast_to_tensor(x):

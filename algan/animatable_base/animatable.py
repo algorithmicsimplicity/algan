@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import re
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -376,20 +377,59 @@ def _unexpected_keywords_message(owner, unexpected) -> str:
     """Word the error for constructor keywords no Algan class takes.
 
     ``_MANIM_CONSTRUCTOR_HINTS`` lives in ``mob.py``, which imports this
-    module, so it is read on demand rather than at import.
+    module, so it is read on demand rather than at import. A class whose
+    constructor speaks another API names its own table as
+    ``_constructor_keyword_hints``.
     """
     from algan.animatable_base.mob import _MANIM_CONSTRUCTOR_HINTS
 
+    table = getattr(owner, "_constructor_keyword_hints", _MANIM_CONSTRUCTOR_HINTS)
     names = sorted(unexpected)
     listed = ", ".join(f"`{name}`" for name in names)
     plural = "s" if len(names) > 1 else ""
-    hints = [
-        f"`{name}`: {_MANIM_CONSTRUCTOR_HINTS[name]}"
-        for name in names
-        if name in _MANIM_CONSTRUCTOR_HINTS
-    ]
+    hints = [f"`{name}`: {table[name]}" for name in names if name in table]
     tail = (" -- " + "; ".join(hints) + ".") if hints else "."
     return f"{owner.__name__}() got unexpected keyword argument{plural}: {listed}{tail}"
+
+
+def _unexpected_keywords_error(owner, unexpected) -> TypeError:
+    """The TypeError for ``unexpected`` keywords, marked with who refused them."""
+    error = TypeError(_unexpected_keywords_message(owner, unexpected))
+    error._algan_refused = (owner, frozenset(unexpected))
+    return error
+
+
+#: How Python words a keyword a plain function refuses -- what a Manim
+#: constructor raises, with its own base class's name on it.
+_PYTHON_REFUSED_KEYWORD = re.compile(r"got an unexpected keyword argument '(\w+)'")
+
+
+def _reports_refused_keywords(init):
+    """Name the class being built when a part it builds refuses its keyword.
+
+    A composite hands its keywords on before its own ``Animatable.__init__``
+    runs -- Tex to its packed glyph circuit, a Manim-backed Mob to a Manim
+    constructor -- so a misspelled one was refused down there, by a class the
+    user never wrote: ``Text("x", bogus=1)`` blamed ``BezierCircuitCubic()``
+    and ``Axes(bogus=1)`` blamed ``Mobject.__init__()``. Only a keyword the
+    caller passed is claimed; any other TypeError is the part's own and
+    propagates as it was.
+    """
+
+    @wraps(init)
+    def __init__(self, *args, **kwargs):
+        try:
+            init(self, *args, **kwargs)
+        except TypeError as error:
+            owner, names = getattr(error, "_algan_refused", (None, None))
+            if names is None:
+                match = _PYTHON_REFUSED_KEYWORD.search(str(error))
+                names = frozenset(match.groups()) if match else frozenset()
+            if owner is type(self) or not names or not names.issubset(kwargs):
+                raise
+            raise _unexpected_keywords_error(type(self), names) from None
+
+    return __init__
 
 
 class Animatable:
@@ -481,7 +521,7 @@ class Animatable:
         # rather than left to Python so the message can name the class the user
         # typed -- not this base -- and, for a Manim spelling, the Algan one.
         if unexpected:
-            raise TypeError(_unexpected_keywords_message(type(self), unexpected))
+            raise _unexpected_keywords_error(type(self), unexpected)
         if not hasattr(self, "animatable_attrs"):
             self.animatable_attrs = []
 
@@ -778,7 +818,8 @@ class Animatable:
         update_function
             Callable taking ``(mob, time_elapsed, *args, **kwargs)``, where
             ``time_elapsed`` is in seconds. It must be vectorized over the Mob's
-            batch.
+            batch. One that builds a Mob, or reads an
+            ``algan.manim.ValueTracker``, is run once per frame instead.
         *args, **kwargs
             Passed to ``update_function`` after the elapsed time.
 
@@ -1009,15 +1050,16 @@ class Animatable:
             self.animation_manager.context.record_funcs and self.is_spawned_in_subtree()
         )
 
-    def _generate_animatable_attr_set_get_methods(self):
+    def _generate_animatable_attr_set_get_methods(self, attrs=None):
         """Internal: install ``set_<attr>`` / ``get_<attr>`` helpers on this object.
 
         Gives every animatable attribute a matching pair of accessors, so a
         registered ``roughness`` attribute also answers to ``mob.set_roughness(...)``
         and ``mob.get_roughness()``. Called during construction; you do not call
-        this yourself.
+        this yourself. ``attrs`` limits it to those attributes; ``None``, the
+        default, means all of them.
         """
-        for attr in self.animatable_attrs:
+        for attr in self.animatable_attrs if attrs is None else attrs:
 
             def setattr_general(value, attr=attr, self=self, recursive=True, **kwargs):
                 if kwargs:
@@ -1160,11 +1202,24 @@ class Animatable:
         Returns
         -------
         bool
-            Whether the Mob has a recorded despawn time. A Mob that was never
-            spawned reports False here as well as from
-            :meth:`~.Animatable.is_spawned`.
+            Whether the Mob has a recorded despawn time, or, for a packed
+            selection such as ``text[0]``, whether despawns have removed every
+            member it selects. A Mob that was never spawned reports False here
+            as well as from :meth:`~.Animatable.is_spawned`.
         """
-        return self.lifespan.end() >= 0
+        if self.lifespan.end() >= 0:
+            return True
+        return self.data_sub_inds is not None and self._packed_rows_despawned()
+
+    def _packed_rows_despawned(self):
+        timeline = self.scene.timeline_manager
+        gone = timeline._despawned_packed_rows.get(self.id)
+        if gone is None:
+            return False
+        opacity = timeline.attr_to_timeline["opacity"]
+        rows = opacity.mob_id_to_inds[self.id]
+        selected = torch.isin(rows, attr_ranges_for_mob(opacity, self).tensor())
+        return bool(selected.any()) and bool(gone[selected].all())
 
     def _has_pending_spawn_rows(self):
         timeline = self.scene.timeline_manager
@@ -1581,8 +1636,16 @@ class Animatable:
             clone.id = self.id
         # The attribute copy below would otherwise hand the clone the source's
         # registration flag, and a clone is registered by this policy, not by
-        # whatever the source was built with.
-        object.__setattr__(clone, "_added_to_scene", bool(add_to_scene))
+        # whatever the source was built with. A view is the exception: it is
+        # never registered itself, because its source's rows already draw, but
+        # it speaks for that source -- so a copy of ``text[0]`` with its own
+        # data registers the glyph's parts as the text's did, instead of
+        # reading the view's unregistered parts as reference geometry and
+        # drawing nothing.
+        registered = (
+            add_to_scene if clone_data else getattr(self, "_added_to_scene", True)
+        )
+        object.__setattr__(clone, "_added_to_scene", bool(registered))
         if add_to_scene:
             self.scene.add_actor(clone)
             self.animation_manager.context.add_mob(clone)
@@ -1657,7 +1720,13 @@ class Animatable:
                 v = None
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
-        clone._generate_animatable_attr_set_get_methods()
+        # Exactly the accessors the source holds. An attribute registered after
+        # construction has none, so its class's own ``set_<attr>`` stays visible
+        # -- DecimalNumber's ``value`` setter calls ``set_value``, and a
+        # generated one shadowing it recursed until the stack ran out.
+        clone._generate_animatable_attr_set_get_methods(
+            [attr for attr in self.animatable_attrs if f"set_{attr}" in self.__dict__]
+        )
         if clone_data:
             for attr in self.animatable_attrs:
                 setattr(clone, attr, getattr(self, attr, None))
@@ -1893,7 +1962,9 @@ class Animatable:
         with Sync(animation_manager=self.animation_manager):
             for mob_id, nodes in by_id.items():
                 node = nodes[0]
-                if node.is_despawned():
+                # The shared lifespan, not this node's members: another node of
+                # the same pack may still have rows to reveal.
+                if node.lifespan.end() >= 0:
                     continue
                 pending = timeline._pending_packed_spawns.get(mob_id)
                 if pending is None and (
@@ -2029,7 +2100,9 @@ class Animatable:
         it again later.
 
         Despawning is recursive: children despawn with their parent. Despawning a Mob
-        that is already despawned does nothing.
+        that is already despawned does nothing. Despawning a packed selection, such
+        as ``text[0]`` or ``tex.get_segment(1)``, removes only those members; the
+        rest of the pack stays on screen until it is despawned too.
 
         Animation
         ---------
@@ -2155,12 +2228,136 @@ class Animatable:
             outermost.add_exit_callback(check)
 
     def _destroy_recursive(self, animate=True):
+        hidden = self._packed_selections_to_hide()
+        if hidden:
+            # One Sync, so the hidden members fade alongside the rest of the
+            # exit rather than after it.
+            with Sync(animation_manager=self.animation_manager):
+                self._hide_packed_rows(hidden, animate)
+                kept = {id(node) for nodes, _ in hidden.values() for node in nodes}
+                return self._destroy_recursive_except(animate, kept)
+        return self._destroy_recursive_except(animate, frozenset())
+
+    def _packed_selections_to_hide(self):
+        """The members of packs this despawn hides without ending a lifespan.
+
+        Members of a pack share one lifespan, so ending it for a selection --
+        ``text[1]``, ``tex.get_segment(2)`` -- took every other member of the
+        pack off screen too. A selection whose pack keeps members on screen
+        outside it is hidden instead, by an opacity edit on its own rows: the
+        mirror of :meth:`_spawn_packed_rows`. The selection that takes the
+        last members on screen ends the lifespan as a whole despawn does.
+
+        The topmost selection decides for everything under it, because a
+        glyph's texture grids and control points are packs of their own that
+        must leave with it, whatever their own rows say.
+
+        Returns
+        -------
+        dict
+            ``{mob_id: (nodes, rows)}``: every node of this subtree whose
+            lifespan stays open, by id, and the opacity rows of that id to
+            hide. Empty when the despawn ends every lifespan it reaches.
+        """
+        timeline = self.scene.timeline_manager
+        opacity = timeline.attr_to_timeline.get("opacity")
+        if opacity is None or not hasattr(self, "_apply_change"):
+            return {}
+        by_id, tops, seen = defaultdict(list), [], set()
+        stack = [(self, None)]
+        while stack:
+            node, top = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if top is None and getattr(node, "data_sub_inds", None) is not None:
+                top = node
+                tops.append(node)
+            if node.id in opacity.mob_id_to_inds:
+                by_id[node.id].append((node, top))
+            stack.extend((child, top) for child in node.children)
+        if not tops:
+            return {}
+
+        def rows_of(mob_id):
+            rows = opacity.mob_id_to_inds[mob_id]
+            selected = torch.isin(
+                rows,
+                torch.cat(
+                    [attr_ranges_for_mob(opacity, n).tensor() for n, _ in by_id[mob_id]]
+                ),
+            )
+            live = torch.ones_like(selected)
+            pending = timeline._pending_packed_spawns.get(mob_id)
+            if pending is not None:
+                live &= ~pending[1]
+            gone = timeline._despawned_packed_rows.get(mob_id)
+            if gone is not None:
+                live &= ~gone
+            return rows, selected, live
+
+        partial = set()
+        for top in tops:
+            if top.id in partial or not top._lifespan_is_open():
+                continue
+            _, selected, live = rows_of(top.id)
+            if bool((live & ~selected).any()):
+                partial.add(top.id)
+        hidden = {}
+        for mob_id, entries in by_id.items():
+            nodes = [n for n, top in entries if top is not None and top.id in partial]
+            if not nodes:
+                continue
+            rows, selected, live = rows_of(mob_id)
+            if bool(selected.all()):
+                # Rows every member shares (a control-point batch's single
+                # color row, say) are not this selection's to hide.
+                hidden[mob_id] = (nodes, rows[:0])
+            else:
+                hidden[mob_id] = (nodes, rows[selected & live])
+        return hidden
+
+    def _hide_packed_rows(self, hidden, animate):
+        """Hide the rows :meth:`_packed_selections_to_hide` chose, faded over
+        the current context's runtime or instantly, and remember them so a
+        later despawn knows which members are still on screen.
+        """
+        timeline = self.scene.timeline_manager
+        opacity = timeline.attr_to_timeline["opacity"]
+        for mob_id, (nodes, rows) in hidden.items():
+            if rows.numel() == 0:
+                continue
+            all_rows = opacity.mob_id_to_inds[mob_id]
+            gone = timeline._despawned_packed_rows.get(mob_id)
+            if gone is None:
+                gone = torch.zeros_like(all_rows, dtype=torch.bool)
+            timeline._despawned_packed_rows[mob_id] = gone | torch.isin(all_rows, rows)
+            scope = RowRanges.from_contiguous_blocks([rows])
+            if scope is None:
+                scope = RowRanges(None, tensor=rows)
+            node = nodes[0]
+            current = node.get_animated_attribute("opacity", _scope=scope)
+            if animate:
+                node._apply_change("opacity", -current, recursive=False, scope=scope)
+            else:
+                with Off(animation_manager=self.animation_manager):
+                    node._setattr_and_record_modification(
+                        "opacity", torch.zeros_like(current), _scope=scope
+                    )
+
+    def _lifespan_is_open(self):
+        lifespan = self.lifespan
+        return lifespan.start() >= 0 and lifespan.end() < 0
+
+    def _destroy_recursive_except(self, animate, kept):
+        """Despawn this subtree, leaving the lifespans of ``kept`` nodes open."""
+
+        def is_live(node):
+            return node._lifespan_is_open() and id(node) not in kept
+
         if animate and not _opt_disabled("collate") and hasattr(self, "_apply_change"):
             with Sync(animation_manager=self.animation_manager):
-                live = self._collatable_members(
-                    "on_destroy",
-                    lambda n: n.lifespan.start() >= 0 and n.lifespan.end() < 0,
-                )
+                live = self._collatable_members("on_destroy", is_live)
                 if len(live) > 1:
                     # Write, *then* stamp the despawn times, in that order:
                     # ``get_end_time()`` reads a timespan the exit animation
@@ -2178,11 +2375,11 @@ class Animatable:
                         node.scene.timeline_manager.register_despawn(
                             node, node.lifespan
                         )
-                self._destroy_recursive_per_mob(animate)
+                self._destroy_recursive_per_mob(animate, kept)
             return self
-        return self._destroy_recursive_per_mob(animate)
+        return self._destroy_recursive_per_mob(animate, kept)
 
-    def _destroy_recursive_per_mob(self, animate=True):
+    def _destroy_recursive_per_mob(self, animate=True, kept=frozenset()):
         """One recorded exit per Mob: the pre-collation path, kept for a single
         Mob, an unanimated despawn, and ``ALGAN_OPT_DISABLE=collate``.
         """
@@ -2191,13 +2388,13 @@ class Animatable:
             # An unspawned container may still own independently spawned
             # children. Do not let its direct opacity write erase their
             # recorded pre-despawn state; recurse and destroy those children.
-            if lifespan.start() >= 0 and lifespan.end() < 0:
+            if lifespan.start() >= 0 and lifespan.end() < 0 and id(self) not in kept:
                 if animate:
                     self.on_destroy()
                 lifespan.end = self.animation_manager.context.get_end_time()
                 self.scene.timeline_manager.register_despawn(self, lifespan)
             for c in self.children:
-                c._destroy_recursive_per_mob(animate)
+                c._destroy_recursive_per_mob(animate, kept)
         return self
 
     def _collated_fade_out(self, nodes):

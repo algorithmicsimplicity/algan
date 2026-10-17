@@ -357,19 +357,27 @@ def test_a_trigger_verb_is_sent_with_the_token(home, capsys, verb):
     assert "4242" in capsys.readouterr().out
 
 
-def test_a_trigger_says_so_when_nothing_is_running(home, capsys):
-    assert cli.main(["daemon", "ping"]) == 0
+@pytest.mark.parametrize(
+    ("verb", "status"),
+    # ``ping`` asks whether a daemon is alive and ``render`` asks it to work,
+    # so with none running they fail, for the script or editor key that sent
+    # them; there is nothing to cancel or stop, so those succeed.
+    [("ping", 1), ("render", 1), ("cancel", 0), ("quit", 0)],
+)
+def test_a_trigger_says_so_when_nothing_is_running(home, capsys, verb, status):
+    assert cli.main(["daemon", verb]) == status
     assert "No Algan daemon is running." in capsys.readouterr().out
 
 
-def test_a_trigger_clears_a_dead_registration(home, capsys):
+@pytest.mark.parametrize(("verb", "status"), [("ping", 1), ("render", 1), ("quit", 0)])
+def test_a_trigger_clears_a_dead_registration(home, capsys, verb, status):
     free = socket.socket()
     free.bind(("127.0.0.1", 0))
     port = free.getsockname()[1]
     free.close()
     _register(home, port)
 
-    assert cli.main(["daemon", "render"]) == 0
+    assert cli.main(["daemon", verb]) == status
     assert not (home / "daemon.json").exists()
 
 
@@ -416,6 +424,12 @@ def test_new_scaffolds_a_runnable_script(tmp_path, capsys):
     target = tmp_path / "my_scene.py"
     assert cli.main(["new", str(target)]) == 0
     compile(target.read_text(encoding="utf-8"), str(target), "exec")
+
+
+def test_new_creates_the_folders_it_names(tmp_path, capsys):
+    target = tmp_path / "scenes" / "chapter_1" / "intro.py"
+    assert cli.main(["new", str(target)]) == 0
+    assert target.is_file()
 
 
 def test_check_reports_the_environment(capsys):

@@ -190,6 +190,13 @@ class _StillBatch:
             )
             if self.background_override is not None:
                 scene.set_background(self.background_override)
+            if scene.background_is_transparent():
+                from algan.utils.algan_utils import (
+                    _check_transparent_still_is_supported,
+                )
+
+                for target in self.targets:
+                    _check_transparent_still_is_supported(target.path)
             with scene.timeline_manager.preserving_authoring_state(
                 preserve_replay_resolution=scene.animation_manager.context.prev_context
                 is not None

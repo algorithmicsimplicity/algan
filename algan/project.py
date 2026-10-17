@@ -1665,7 +1665,8 @@ class Project:
                         # Apply the same authored finalization as a video export,
                         # without rendering or mutating any caller-owned Scene.
                         fps = effective_settings.frames_per_second
-                        if active_scene._recorded_end_time_for_render() == 0 and any(
+                        recorded = active_scene._recorded_end_time_for_render()
+                        if round(recorded * fps) < 1 and any(
                             actor.is_spawned() for actor in active_scene.actors
                         ):
                             active_scene.wait(1 / fps)

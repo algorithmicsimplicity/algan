@@ -129,6 +129,37 @@ Stroke width is doubled for every adapter unconditionally rather than per class,
 Manim class accepts `stroke_width` whether or not its signature names it (`Star` and
 `DashedLine` take it through `**kwargs` to `VMobject`).
 
+## A compatibility Mob's parts are the Mobs on screen
+
+`ManimMob` mirrors its Manim graph part for part (`_drawn_parts()` pairs with
+`node.submobjects`; `_sync_manim_node_from_algan` and `_parts_by_node` both walk that
+pairing). A compatibility Mob builds its parts through `_part_factory=_compat_part`, so each
+part is itself a `ManimCompatMob` of its node's wrapper type: it is drawn *and* answers
+Manim's methods. `__getitem__`/`__iter__`/`__len__`, attribute reads and delegated results
+all go through `_live_view`, which maps a node of the graph to the part drawing it, and a new
+Manim group of such nodes to a non-owning `Group` view. Only geometry Manim built fresh is
+converted (and registered, for a method result). Never hand back a converted copy of a node
+the Mob already draws: an edit of the copy reaches nothing.
+
+Part identity is what a script holds, so two rules keep it:
+
+- `sync_from_manim` grafts a fresh conversion only when an edit changed the shape of the
+  parts — a node added or removed, a class, point count, fill or translucency changed
+  (`_conversion_signature`, checked by `_parts_mirror`). Otherwise the morph alone brings the
+  parts to their new state in place, and `x = formula[0]` stays on screen.
+- A compatibility edit swaps in an edited *copy* of the graph; `_rebind_parts` moves the
+  parts' `manim_mobject` onto the copy's nodes, so a part handed back to Manim is one Manim
+  recognizes (`index_of_part`). A part `become` replaced holds a node of its own:
+  `_sync_manim_node_from_algan` splices its conversion into the graph, so the next Manim
+  edit of the whole does not bring back the part it replaced.
+
+A packed conversion (`batch=True`) keeps plain parts: they are scaffolding the one batched Mob
+draws in place of, and indexing it raises. The scaffolding keeps the pose it was converted in,
+so never sync Manim from it: `_sync_packed_parts_to_manim` reads each node's rows back out of
+the pack, level by level, taking only row counts and fill flags from the scaffolding. Every
+edit converts its target packed the same way (`batch=packed`), so the rows line up and a Manim
+edit never unpacks the Mob.
+
 ## Known upstream quirk
 
 Vendored Manim's `Arrow` is not reproducible: two `manim.Arrow` instances built with identical

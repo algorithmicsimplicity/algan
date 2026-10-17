@@ -40,7 +40,10 @@ class _TypstSelection:
         # Preserve the packing layout when a compatibility transform (scale,
         # move_to, ...) converts its target; otherwise old selections point at
         # rows belonging to a different grouping of the glyphs.
-        from algan.mobs.manim_compat import _preserve_algan_state_unchanged_by_manim
+        from algan.mobs.manim_compat import (
+            _preserve_algan_state_unchanged_by_manim,
+            _rebind_parts,
+        )
 
         if before_source is None:
             before_source = self._sync_manim_from_algan().copy()
@@ -50,7 +53,8 @@ class _TypstSelection:
             before_source, batch=batch, scene=self.scene, add_to_scene=False
         )
         _preserve_algan_state_unchanged_by_manim(self, before, target)
-        self.manim_mobject = source
+        previous, self.manim_mobject = self.manim_mobject, source
+        _rebind_parts(self, previous, source)
         return self.become(target, detach_history=False)
 
     def _setup_typst_parts(self, source, *, batch, parts=None):

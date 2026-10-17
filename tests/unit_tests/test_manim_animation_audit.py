@@ -429,6 +429,50 @@ def test_animated_boundary_tracks_source_and_can_stop():
     assert updater.time.end_event is not None
 
 
+@pytest.mark.parametrize(
+    "animation", ["draw", "show_passing_flash", "animated_boundary"]
+)
+def test_curve_reveals_run_along_a_texts_glyphs(animation):
+    """REGRESSION. A Text packs its glyphs into one circuit, each member as
+    long as its outline, and partial curves assumed equal-length members, so
+    all three of these raised on any real text -- ``AnimatedBoundary`` before
+    it got that far, writing back the per-glyph colors it had just read.
+    """
+    text = algan.Text("Hello", add_to_scene=False).spawn(False)
+    batch = text._character_batch
+    assert len(set(batch.control_points.parent_batch_sizes.tolist())) > 1
+    outline = batch.control_points.location.clone()
+    scene = SceneManager.instance().current_scene
+    actors_before = set(scene.actors)
+
+    if animation == "draw":
+        batch.draw()
+        revealed = batch
+    elif animation == "show_passing_flash":
+        algan.ShowPassingFlash(text, time_width=0.3)
+        (revealed,) = [
+            actor
+            for actor in scene.actors
+            if actor not in actors_before
+            and isinstance(actor, algan.BezierCircuitCubic)
+        ]
+    else:
+        boundary = algan.AnimatedBoundary(text, add_to_scene=False).spawn(False)
+        revealed = boundary._growing_paths[0]
+
+    materialize(0.25, 0.5, 0.75)
+    points = revealed.control_points.location
+    assert points.shape == (3, *outline.shape[1:])
+    sizes = batch.control_points.parent_batch_sizes.tolist()
+    for shown, whole in zip(points[1].split(sizes), outline[0].split(sizes)):
+        # Part of every glyph is showing, and not yet all of any.
+        assert (shown - shown[0]).abs().max() > 1e-3
+        assert not torch.allclose(shown, whole)
+    if animation == "draw":
+        materialize(1.0)
+        assert torch.allclose(batch.control_points.location, outline)
+
+
 def test_invalid_geometry_and_parameters_fail_early():
     empty = algan.Mob(add_to_scene=False)
     with pytest.raises(TypeError, match="deformable"):

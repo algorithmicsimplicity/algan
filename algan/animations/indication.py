@@ -452,8 +452,26 @@ def undraw_step(mob, t, full_control_points):
     mob._set_control_points_to_partial(full_control_points, 0.0, 1.0 - t)
 
 
+# The width a fill-only curve -- every Text -- is flashed at. It has no outline
+# of its own to light up, and DrawBorderThenFill traces one at this width.
+_FILL_ONLY_FLASH_STROKE_WIDTH = 1.0
+
+
+def _visible_stroke_width(mob):
+    """``mob``'s stroke widths, with every zero raised to one that shows."""
+    width = cast_to_tensor(mob.stroke_width)
+    return torch.where(
+        width > 0, width, torch.full_like(width, _FILL_ONLY_FLASH_STROKE_WIDTH)
+    )
+
+
 def _show_passing_flash_on_bezier(
-    mob, time_width: float, runtime: float, *, clone_source: bool
+    mob,
+    time_width: float,
+    runtime: float,
+    *,
+    clone_source: bool,
+    stroke_width=None,
 ):
     animation_manager = animation_manager_for(mob)
     with Seq(animation_manager=animation_manager):
@@ -464,6 +482,8 @@ def _show_passing_flash_on_bezier(
             flash.filled = False
             if source_uses_fill and torch.any(source_color[..., -1] > 0):
                 flash.stroke_color = source_color
+            if stroke_width is not None:
+                flash.stroke_width = stroke_width
 
             full_pts = flash.control_points.location.clone()
             flash._set_control_points_to_partial(full_pts, 0.0, 0.0)
@@ -506,7 +526,9 @@ def ShowPassingFlash(mob, time_width: float = 0.1, runtime: float = 1.0):
     Parameters
     ----------
     mob
-        The curve, or a Mob containing curves, to flash along.
+        The curve, or a Mob containing curves, to flash along. A filled curve
+        flashes in its fill color, and one with no stroke of its own -- any
+        :class:`~algan.mobs.text.Text` -- with a stroke width of ``1``.
     time_width
         Length of the travelling segment as a fraction of the curve. Defaults to
         ``0.1``; smaller values look like a sharper spark.
@@ -521,11 +543,15 @@ def ShowPassingFlash(mob, time_width: float = 0.1, runtime: float = 1.0):
     from algan.mobs.bezier_circuit import BezierCircuitCubic
 
     if isinstance(mob, BezierCircuitCubic):
+        # A curve drawn by its fill alone has nothing to flash; the stroke-only
+        # flash of a Text was invisible while the Text itself was hidden.
+        stroked = bool((cast_to_tensor(mob.stroke_width) > 0).all())
         _show_passing_flash_on_bezier(
             mob,
             time_width=time_width,
             runtime=runtime,
             clone_source=True,
+            stroke_width=None if stroked else _visible_stroke_width(mob),
         )
     else:
         beziers = [
@@ -554,7 +580,10 @@ def ShowPassingFlashWithThinningStrokeWidth(
     Parameters
     ----------
     vmobject
-        The curve to flash along. Its ``stroke_width`` sets the thickest layer.
+        The curve, or a Mob containing curves, to flash along; every curve of a
+        composite tapers at once. A curve's ``stroke_width`` sets its thickest
+        layer, which is ``1`` for one with no stroke of its own, such as a
+        :class:`~algan.mobs.text.Text`.
     n_segments
         How many layers to draw. Defaults to ``10``; more is smoother and slower.
     time_width
@@ -568,8 +597,26 @@ def ShowPassingFlashWithThinningStrokeWidth(
     :class:`~.Mob`
         The Mob that was passed in.
     """
-    widest = getattr(vmobject, "stroke_width", 5.0)
-    if isinstance(widest, torch.Tensor):
+    from algan.mobs.bezier_circuit import BezierCircuitCubic
+
+    if not isinstance(vmobject, BezierCircuitCubic):
+        # Every curve of a composite tapers at once, as ShowPassingFlash does.
+        beziers = [
+            d for d in vmobject.get_descendants() if isinstance(d, BezierCircuitCubic)
+        ]
+        with Sync(runtime=runtime, animation_manager=animation_manager_for(vmobject)):
+            for bezier in beziers:
+                ShowPassingFlashWithThinningStrokeWidth(
+                    bezier,
+                    n_segments=n_segments,
+                    time_width=time_width,
+                    runtime=runtime,
+                )
+        return vmobject
+
+    # One width per member of a packed circuit, such as a Text's glyph batch.
+    widest = _visible_stroke_width(vmobject)
+    if widest.numel() == 1:
         widest = widest.item()
     clones = []
     with Off(animation_manager=animation_manager_for(vmobject)):

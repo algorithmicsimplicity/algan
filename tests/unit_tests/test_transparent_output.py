@@ -20,6 +20,7 @@ from algan.rendering.raytracing.scene_builder import _prefill_background
 from algan.utils.algan_utils import (
     _TRANSPARENT_CODECS,
     _check_transparent_container_is_supported,
+    _check_transparent_still_is_supported,
 )
 
 
@@ -163,3 +164,33 @@ def test_containers_that_cannot_hold_alpha_are_refused_by_name(suffix):
     """Refused up front, and naming the format: the alternative is a hang."""
     with pytest.raises(AlganConfigurationError, match=suffix.lstrip(".").upper()):
         _check_transparent_container_is_supported(f"scene{suffix}")
+
+
+@pytest.mark.parametrize("suffix", [".png", ".webp", ".tif", ".tiff"])
+def test_still_formats_that_can_hold_alpha_are_accepted(suffix):
+    _check_transparent_still_is_supported(f"still{suffix}")
+
+
+@pytest.mark.parametrize("suffix", [".jpg", ".jpeg", ".bmp"])
+def test_a_transparent_still_without_alpha_is_refused_before_it_renders(
+    suffix, tmp_path, monkeypatch
+):
+    """The still counterpart of the video check, and for the same reason.
+
+    A JPEG was refused only after its frame had rendered, by Pillow, as
+    ``OSError: cannot write mode RGBA as JPEG``; a BMP was written and read
+    back opaque. The Scene's own background must survive the refusal.
+    """
+    import algan
+
+    def must_not_render(*_args, **_kwargs):
+        raise AssertionError("the frame was rendered before the format was checked")
+
+    destination = tmp_path / f"still{suffix}"
+    with algan.Scene() as scene:
+        algan.Square().spawn()
+        monkeypatch.setattr(scene, "get_frames", must_not_render)
+        with pytest.raises(AlganConfigurationError, match=suffix.lstrip(".").upper()):
+            scene.save_frame(destination, background=algan.TRANSPARENT)
+        assert not scene.background_is_transparent()
+    assert not destination.exists()

@@ -54,7 +54,7 @@ Keeping the timeline untouched takes more than not recording anything: rendering
 
 Three pieces of finalization are therefore conditional:
 
-- the zero-duration guard (one frame of `wait` for an all-`Off()` scene) always runs, because it decides how many frames are rendered;
+- the zero-duration guard (one frame of `wait` for a scene shorter than half a frame, such as an all-`Off()` one) always runs, because it decides how many frames are rendered;
 - the end-of-scene despawn of every actor runs when a fade-out was requested (it is part of the requested output) or when `reset=True`;
 - `_render_to_video` closes the camera and light lifespans only when the Scene is being finalized, via `despawn_camera_and_lights`.
 

@@ -217,7 +217,7 @@ def test_auto_owners_name_the_object_not_its_internals():
         vgroup_parts = [
             d
             for d in vgroup.get_descendants()
-            if d is not vgroup and type(d) is ManimMob
+            if d is not vgroup and isinstance(d, ManimMob)
         ]
         assert len(vgroup_parts) == 2
         assert all(owner(p) is p for p in vgroup_parts), "a VGroup only groups"

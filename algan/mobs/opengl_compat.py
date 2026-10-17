@@ -19,14 +19,16 @@ from algan.constants.color import GREY, WHITE
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Line
 from algan.mobs.surfaces.surface import Surface
+from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import unsquish
 
 
 def _resolution_pair(resolution, default=(101, 101)):
     if resolution is None:
         return default
-    if isinstance(resolution, int):
-        return (resolution, resolution)
+    count = integer_or_none(resolution)
+    if count is not None:
+        return (count, count)
     return tuple(int(value) for value in resolution)
 
 

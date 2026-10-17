@@ -228,12 +228,12 @@ isolate terms with double braces, such as ``Tex(r"{{x}} + {{y}}")``. An ungroupe
 
     equation = Tex("x", "+", "y", "=", "z", font_size=64).spawn()
     equation.get_segment(0).color = YELLOW
-    target = Tex("z", "-", "y", "=", "x", font_size=64)
+    target = Tex("z", "-", "y", "=", "x", font_size=64, add_to_scene=False)
     target.get_segment(4).color = YELLOW
     equation = TransformMatchingTex(equation, target, runtime=2)
     equation = TransformMatchingTex(
         equation,
-        Tex("z", "-", "y", "=", "a", font_size=64),
+        Tex("z", "-", "y", "=", "a", font_size=64, add_to_scene=False),
         key_map={"x": "a"},
     )
     Scene.save_video()
@@ -344,7 +344,8 @@ changing notation.
 
 ``significant_figures`` must be a positive integer or ``None``. Zero and negative
 precision raise ``ValueError``; booleans, floats (including ``3.0``), and other
-non-integers raise ``TypeError``. Significant-figures mode requires finite values.
+non-integers raise ``TypeError``. In either mode the value must be finite: there
+is no glyph to show NaN or infinity.
 
 Assigning ``value`` before spawning prepares the number without showing it or
 adding animation time. Updates driven by another animation or updater also

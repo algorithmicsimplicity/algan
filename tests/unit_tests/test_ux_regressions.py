@@ -6,6 +6,7 @@ import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -931,6 +932,34 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
     assert result.status == "rendered"
 
 
+def test_a_scene_shorter_than_half_a_frame_still_renders_one(monkeypatch, tmp_path):
+    """Frames are the duration rounded to whole frames: 0.05 s at 4 fps is none."""
+    scene = SceneManager.instance().current_scene
+    Square(add_to_scene=True).spawn(animate=False)
+    scene.wait(0.05)
+
+    observed = {}
+
+    class Writer:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
+    monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
+
+    def fake_render_to_video(*_args, **_kwargs):
+        observed["end"] = scene.animation_manager.context.timespan.original_end
+
+    monkeypatch.setattr(scene, "_render_to_video", fake_render_to_video)
+    algan.Scene.save_video(
+        tmp_path / "short.mp4",
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
+        animate_fade_out=False,
+    )
+
+    assert round(observed["end"] * 4) >= 1
+
+
 @pytest.mark.fast
 def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     """Border-textured Mobs still animate when supplied through any iterable."""
@@ -1023,6 +1052,39 @@ def test_draw_border_then_fill_tolerates_an_empty_iterable():
     assert DrawBorderThenFill([]) == []
 
 
+def test_draw_border_then_fill_traces_whatever_holds_the_curves():
+    """REGRESSION. Its documented "glyphs of a Text" raised -- iterating a Text
+    gives a Group per glyph, and a Group has no stroke to draw -- as did a
+    single shape (Manim's own signature: "Mob object is not iterable"), a list
+    holding a Text or a Group, and a ``MathTex``, which as an item of a list
+    drew no outline at all: it is an empty curve that holds its glyphs.
+    """
+    from algan.animations.manim_animations import DrawBorderThenFill
+    from algan.mobs.bezier_circuit import BezierCircuitCubic
+
+    text = algan.Text("Hi", add_to_scene=True).spawn(False)
+    glyphs = list(text.character_mobs)
+    assert DrawBorderThenFill(text) == glyphs
+    assert DrawBorderThenFill([text]) == glyphs
+
+    square = Square(add_to_scene=True).spawn(False)
+    assert DrawBorderThenFill(square) == [square]
+
+    circle = algan.Circle(add_to_scene=True)
+    nested = algan.Group([algan.Group([square, circle]), text]).spawn(False)
+    assert DrawBorderThenFill([nested]) == [square, circle, *glyphs]
+
+    math = algan.MathTex("x^2", add_to_scene=True).spawn(False)
+    traced = DrawBorderThenFill(math)
+    assert len(traced) == 2
+    assert all(
+        isinstance(curve, BezierCircuitCubic) and not curve.empty for curve in traced
+    )
+
+    with pytest.raises(TypeError, match="no curves to trace"):
+        DrawBorderThenFill([algan.Sphere(add_to_scene=True).spawn(False)])
+
+
 def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
     import algan.animations.manim_animations as manim_animations
 
@@ -1081,6 +1143,54 @@ def test_a_genuine_keyword_typo_still_raises():
     square = Square().spawn()
     with pytest.raises(TypeError, match="path_arc"):
         square.move(algan.RIGHT, path_arc=90)
+
+
+@pytest.mark.parametrize(
+    ("build", "name"),
+    [
+        (lambda: algan.Text("x", bogus=1), "Text"),
+        (lambda: algan.MathTex("x", bogus=1), "MathTex"),
+        (lambda: algan.DecimalNumber(1.0, bogus=1), "DecimalNumber"),
+        (lambda: algan.Paragraph("a", bogus=1), "Paragraph"),
+        (lambda: algan.Axes(bogus=1), "Axes"),
+        (lambda: algan.Arc(bogus=1), "Arc"),
+        (lambda: __import__("algan.manim").manim.Circle(bogus=1), "Circle"),
+    ],
+    ids=["Text", "MathTex", "DecimalNumber", "Paragraph", "Axes", "Arc", "mn.Circle"],
+)
+def test_a_misspelled_constructor_keyword_names_the_class_it_went_to(build, name):
+    """Not whichever part the class handed its keywords to.
+
+    A composite passes its keywords on before its own constructor checks them
+    -- Text to its packed glyph circuit, a Manim-backed class to the Manim
+    constructor -- so a typo was refused down there, and the error blamed
+    ``BezierCircuitCubic()`` or ``Mobject.__init__()``: 72 public classes named
+    a class the user never wrote.
+    """
+    expected = rf"^{name}\(\) got unexpected keyword argument: `bogus`\.$"
+    with algan.Scene(), pytest.raises(TypeError, match=expected):
+        build()
+
+
+def test_manims_decimal_places_keyword_points_at_algans():
+    """``DecimalNumber(x, num_decimal_places=2)`` is the line a Manim script has."""
+    with algan.Scene(), pytest.raises(TypeError, match="spells it `decimal_places`"):
+        algan.DecimalNumber(3.14, num_decimal_places=2)
+
+
+def test_a_manim_backed_class_keeps_only_the_hints_that_hold_for_it():
+    """Manim's spellings are this class's spellings, so only timing is hinted.
+
+    The table behind the hints maps Manim spellings to Algan's for Algan's own
+    classes: ``buff`` is ``buffer`` on them, but ``Axes`` takes Manim's
+    keywords, and pointing it at ``buffer=`` would send the user from one
+    refusal to the next. Timing is a context in either case.
+    """
+    with algan.Scene():
+        with pytest.raises(TypeError, match=r"with Seq\(runtime=2\)"):
+            algan.Axes(run_time=2)
+        with pytest.raises(TypeError, match=r"`buff`\.$"):
+            algan.Axes(buff=1)
 
 
 def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
@@ -1255,6 +1365,38 @@ def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
             tmp_path / "become_unflagged.mp4",
             video_settings=VideoSettings((8, 8), 4, supersampling=1),
         )
+
+
+def test_views_of_reference_text_are_not_reported_as_never_spawned(
+    monkeypatch, tmp_path, recwarn
+):
+    """Indexing a text built with ``add_to_scene=False`` registers nothing.
+
+    ``tex[i]`` and ``get_segment`` hand back a Group of views into the text's
+    glyph batch, and that Group used to join the Scene whatever the text had
+    done. So coloring a segment of a morph target was reported as a Group the
+    user had built and never spawned -- and so was a correctly spawned
+    ``DecimalNumber``, which measures its digit spacing on a reference
+    ``Tex("00")`` whenever it has fewer than two integer or decimal places.
+    """
+    from algan.errors import NeverSpawnedMobWarning
+    from algan.mobs.numeric_display import DecimalNumber
+    from algan.mobs.text import Tex
+
+    scene = SceneManager.instance().current_scene
+    target = Tex("a", "b", add_to_scene=False)
+    target.get_segment(1).color = algan.YELLOW
+    DecimalNumber(0, decimal_places=1).spawn()
+    _stub_render(monkeypatch, scene)
+    algan.Scene.save_video(
+        tmp_path / "views.mp4",
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
+    )
+    assert not [w for w in recwarn if issubclass(w.category, NeverSpawnedMobWarning)]
+    # Unregistered, the view still writes through to the text it came from.
+    yellow = algan.YELLOW[:3].to(torch.get_default_dtype())
+    glyph_color = target.character_mobs[1].color.reshape(-1)[:3]
+    assert torch.allclose(glyph_color.cpu(), yellow.cpu(), atol=1e-6)
 
 
 def test_angle_unit_constants_are_exported_with_algan_convention():
@@ -1634,8 +1776,26 @@ def test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing(
 @pytest.mark.fast
 @pytest.mark.parametrize(
     "spelling",
-    ["#FF0000", "red", 0xFF0000, (1.0, 0.0, 0.0), [1.0, 0.0, 0.0]],
-    ids=["hex-string", "css-name", "hex-int", "rgb-tuple", "rgb-list"],
+    [
+        "#FF0000",
+        "red",
+        0xFF0000,
+        (1.0, 0.0, 0.0),
+        [1.0, 0.0, 0.0],
+        torch.tensor([1.0, 0.0, 0.0]),
+        np.array([1.0, 0.0, 0.0]),
+        (np.float32(1.0), np.float32(0.0), np.float32(0.0)),
+    ],
+    ids=[
+        "hex-string",
+        "css-name",
+        "hex-int",
+        "rgb-tuple",
+        "rgb-list",
+        "tensor",
+        "numpy-array",
+        "numpy-scalars",
+    ],
 )
 @pytest.mark.parametrize(
     "build",
@@ -1657,6 +1817,12 @@ def test_every_colour_spelling_reaches_every_mob(build, spelling):
     start -- the shipped presets are written ``MeshStandardMaterial(color=
     0x8B5A2B)`` -- so the same literal was a colour in one place and an
     AttributeError in the other.
+
+    NumPy's spellings were the same story later: a ``float32`` channel is not a
+    Python ``float`` and an array is not a tensor, so both reached the timeline
+    three wide and failed there against its five-channel layout. A tensor was
+    padded to five channels but stayed a plain tensor, which the Manim layer
+    behind ``Arc`` passed on as an array ManimColor refuses at that width.
     """
     with algan.Scene():
         mob = build(spelling)
@@ -1676,6 +1842,15 @@ def test_an_unparseable_colour_says_so():
             algan.Square(color="octarine")
         with pytest.raises(InvalidColorError, match="Invalid color value"):
             algan.Square(color=True)
+        # Numbers, but not three to five of them: built, written or passed to
+        # Color, these failed in the timeline as a tensor shape mismatch, and
+        # Color((1, 2)) was quietly yellow.
+        with pytest.raises(InvalidColorError, match="this has 2"):
+            algan.Square(color=(1.0, 0.0))
+        with pytest.raises(InvalidColorError, match="this has 6"):
+            algan.Square().color = (1.0, 0.0, 0.0, 0.0, 1.0, 1.0)
+        with pytest.raises(InvalidColorError, match="this has 2"):
+            algan.Color((1.0, 0.0))
 
 
 @pytest.mark.fast
@@ -2263,6 +2438,45 @@ def test_nonfinite_wait_does_not_change_authoring_cursor(value):
     with pytest.raises(AlganConfigurationError, match="time"):
         scene.wait(value)
     assert (context.current_time, context.end_time) == before
+
+
+@pytest.mark.parametrize(
+    "seconds",
+    [torch.tensor(2.0), torch.tensor([2.0]), np.float32(2.0)],
+    ids=["0-d tensor", "1-element tensor", "numpy float32"],
+)
+def test_a_time_computed_from_tensors_is_taken_as_seconds(seconds):
+    """A time computed from Mob positions is a tensor until ``.item()``.
+
+    It passed every check and reached the timeline's float64 buffers as it was,
+    so the first render failed several calls down: ``Index put requires the
+    source and destination dtypes match`` (or ``can't assign a numpy.float32 to
+    a torch.DoubleTensor``), from a runtime, a wait, a lag ratio or a context's
+    ``current_time`` alike.
+    """
+    scene = algan.Scene(SMOKE_TEST)
+    square = Square().spawn()
+    with Seq(runtime=seconds):
+        square.move(algan.RIGHT)
+    scene.wait(seconds)
+    with Lag(ratio=seconds / 4):
+        square.move(algan.UP)
+        square.move(algan.UP)
+    with Seq() as context:
+        context.current_time = context.current_time + seconds
+        square.move(algan.LEFT)
+        context.current_time = context.end_time
+
+    scene.timeline_manager.set_state_to_times(torch.tensor([3.0, 9.0]))
+    scene.timeline_manager.clear_buffers()
+    assert context.current_time == pytest.approx(9.5)
+
+
+@pytest.mark.parametrize("field", ["current_time", "end_time"])
+def test_a_context_cursor_has_to_be_a_finite_time(field):
+    """``context.current_time = float("nan")`` was taken, and broke the clock."""
+    with Seq() as context, pytest.raises(AlganConfigurationError, match=field):
+        setattr(context, field, float("nan"))
 
 
 @pytest.mark.fast
