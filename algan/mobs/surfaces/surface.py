@@ -1921,7 +1921,9 @@ class Surface(Mob):
         if colorscale is None:
             return self
 
-        values = self.grid.location.reshape(-1, 3)[..., axis]
+        # One coordinate of each vertex is a strided view; searchsorted warns
+        # about every non-contiguous query, so hand it a packed copy.
+        values = self.grid.location.reshape(-1, 3)[..., axis].contiguous()
         entries = list(colorscale)
         if not entries:
             return self
