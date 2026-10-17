@@ -30,7 +30,7 @@ from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUTWARD
 from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
 from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.mobs.group import Group
+from algan.mobs.group import Group as _AlganGroup
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
 from algan.mobs.stroke_style import _stroke_style
@@ -318,7 +318,10 @@ def _algan_mob_to_manim(mob: Mob):
         return source
     if isinstance(mob, BezierCircuitCubic):
         return _algan_bezier_to_manim(mob)
-    if isinstance(mob, Group):
+    # Algan's Group, imported under an alias: ``Group`` in this module is the
+    # wrapper of Manim's, and testing for that one sent every native Group
+    # down to the bounding-box fallback below, drawn as a rectangle.
+    if isinstance(mob, _AlganGroup):
         converted = [_algan_mob_to_manim(child) for child in mob]
         if all(isinstance(child, _manim.VMobject) for child in converted):
             return _manim.VGroup(*converted)

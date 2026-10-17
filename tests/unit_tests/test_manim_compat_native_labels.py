@@ -4,14 +4,28 @@ Manim draws a label as it is handed one: ``Axes.get_axis_labels``,
 ``get_graph_label`` and ``LabeledDot`` place the Mobject they are given and
 draw it. A native :class:`~algan.mobs.text.Tex` or
 :class:`~algan.mobs.text.Text` used to reach Manim as its bounding box, so the
-label drew as a rectangle where the text should have been.
+label drew as a rectangle where the text should have been. So did a native
+:class:`~algan.mobs.group.Group`, whatever it held.
 """
 
 import manim as mn
 import numpy as np
 import pytest
 
-from algan import RED, Axes, LabeledDot, Scene, Tex, Text, UnsupportedFeatureWarning
+import algan.manim as amn
+from algan import (
+    RED,
+    RIGHT,
+    Axes,
+    Circle,
+    Group,
+    LabeledDot,
+    Scene,
+    Square,
+    Tex,
+    Text,
+    UnsupportedFeatureWarning,
+)
 from algan.mobs.manim_compat import to_manim
 
 
@@ -73,3 +87,24 @@ def test_text_image_characters_are_left_out_with_a_warning():
             converted = to_manim(text)
 
         assert len(converted) == len(text.character_mobs)
+
+
+def test_a_group_reaches_manim_as_its_members():
+    """``Group`` in the compatibility module names the wrapper of Manim's Group.
+
+    The conversion tested against that name, so a native Group fell through to
+    the bounding-box stand-in: ``algan.manim.VGroup(Group(square, circle))``
+    drew one rectangle around where the two shapes should have been.
+    """
+    with Scene():
+        square = Square(add_to_scene=False)
+        circle = Circle(add_to_scene=False).move(RIGHT * 3)
+        pair = Group(square, circle, add_to_scene=False)
+
+        converted = to_manim(pair)
+        assert isinstance(converted, mn.VGroup)
+        assert len(converted) == 2
+        np.testing.assert_allclose(converted[1].get_center(), [3, 0, 0], atol=1e-5)
+
+        wrapped = amn.VGroup(pair)
+        assert len(wrapped.manim_mobject.get_family()) > 2
