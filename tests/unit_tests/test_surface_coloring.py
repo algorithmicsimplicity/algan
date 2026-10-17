@@ -137,6 +137,10 @@ def test_a_checkerboard_without_colors_leaves_the_surface_alone(scene):
 
 
 def test_a_checkerboard_rejects_a_name_that_is_no_color(scene):
+    """REGRESSION. With every spelling but a five-channel ``Color`` rejected, a
+    misspelt name failed inside torch (``new(): invalid data type 'str'``)
+    rather than with an error naming it.
+    """
     sphere = Sphere(grid_width=4, grid_height=4)
     with pytest.raises(InvalidColorError, match="not-a-color"):
         sphere.set_checkerboard_colors(BLUE, "not-a-color")

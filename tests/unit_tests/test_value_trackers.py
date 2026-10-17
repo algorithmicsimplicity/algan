@@ -100,6 +100,9 @@ def test_a_complex_tracker_reads_back_and_increments(scene):
 
 
 def test_an_updater_reads_a_complex_tracker_on_every_frame(scene):
+    """REGRESSION. As for ``ValueTracker``: ``get_value`` returned the batch's
+    first frame, so the dot sat at that one value for the whole batch.
+    """
     tracker = _spawned(ComplexValueTracker(0))
     dot = _spawned(Dot3D(radius=0.1))
 

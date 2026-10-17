@@ -46,6 +46,9 @@ def _cloud(points, **kwargs):
 
 
 def test_points_report_where_a_transform_moved_the_cloud(scene):
+    """REGRESSION. ``get_points()`` reported the points the cloud was built
+    with, wherever it had since been moved.
+    """
     cloud = _cloud([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], color=RED)
     with Off():
         cloud.spawn()
@@ -73,6 +76,9 @@ def test_an_edit_after_a_move_starts_from_the_moved_points(scene):
 
 
 def test_a_color_animated_onto_the_cloud_survives_the_next_edit(scene):
+    """REGRESSION. The rebuild after ``add_points`` took the colors the cloud
+    was built with, so the color animated onto it was undone.
+    """
     cloud = _cloud([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], color=RED)
     with Off():
         cloud.spawn()
@@ -112,6 +118,9 @@ def test_an_edit_after_spawning_keeps_the_entrance(scene):
 
 
 def test_an_edit_after_despawning_keeps_the_cloud_before_it(scene):
+    """REGRESSION. As after spawning: the rebuild took the despawned spheres out
+    of the hierarchy, so the frames before the despawn lost the cloud.
+    """
     cloud = _cloud([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], color=RED)
     with Off():
         cloud.spawn()

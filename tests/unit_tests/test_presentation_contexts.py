@@ -89,10 +89,13 @@ def test_slideshow_clears_everything_it_spawned_together(scene):
 
 
 def test_slideshow_pauses_after_clearing_the_slide(scene):
+    """REGRESSION. The pause ran after the SlideShow's context had closed, so
+    it recorded nothing, and whatever came next started the instant the slide
+    was gone.
+    """
     with SlideShow():
         Square().spawn()
-    # Fade in, hold, fade out -- and then the documented pause, so whatever
-    # comes next does not start the instant the slide is gone.
+    # Fade in, hold, fade out, and then the documented pause.
     assert _cursor(scene) == pytest.approx(4.0)
     following = Circle().spawn()
     assert _opacities(scene, [following], [3.5, 4.5]) == [[0.0], [0.5]]
@@ -131,6 +134,10 @@ def test_a_mob_built_in_a_slideshow_can_still_be_shown_after_it(scene):
 
 
 def test_a_slideshow_that_raises_records_no_clear_up(scene):
+    """REGRESSION. The clear-up also ran on the way out of a block that raised,
+    so a failed slide still recorded a second of fade-out the script never
+    reached.
+    """
     with Off():
         Square().spawn()
     end_before = scene.animation_manager.context.timespan.original_end
@@ -290,6 +297,9 @@ def test_composing_the_identity_changes_nothing(scene):
 
 
 def test_nested_composed_easings_compose_rather_than_replace(scene):
+    """REGRESSION. The inner ``ComposedEasing`` replaced the outer one, so two
+    nested ``ease_in_quad`` gave ``t**2`` rather than ``t**4``.
+    """
     with Off():
         square = Square().spawn()
     start = _cursor(scene)
@@ -300,8 +310,7 @@ def test_nested_composed_easings_compose_rather_than_replace(scene):
     ):
         square.move(RIGHT)
 
-    # Squaring progress twice is the fourth power. Replacing the outer
-    # function with the inner one, as nesting used to, gives t**2 again.
+    # Squaring progress twice is the fourth power.
     actual = _x_positions(scene, square, [start + t for t in PROGRESS])
     assert actual == pytest.approx([t**4 for t in PROGRESS], abs=1e-4)
 
@@ -326,6 +335,10 @@ def test_each_animation_is_eased_on_its_own_by_default(scene):
 
 
 def test_combine_easing_eases_a_sequence_as_one_motion(scene):
+    """REGRESSION. ``combine_easing=True`` raised ``AttributeError: 'function'
+    object has no attribute 'set_full_time'`` for every plain easing,
+    ``smooth`` included.
+    """
     square, start = _two_moves(scene, combine_easing=True)
 
     # Two one-unit moves read as a single smooth two-unit move over both
@@ -337,6 +350,7 @@ def test_combine_easing_eases_a_sequence_as_one_motion(scene):
 
 
 def test_combine_easing_follows_the_block_through_its_rescaling(scene):
+    """REGRESSION. Raised the same ``AttributeError``."""
     square, start = _two_moves(scene, runtime=4, combine_easing=True)
 
     times = [1.0, 2.0, 3.0, 4.0]
@@ -346,6 +360,7 @@ def test_combine_easing_follows_the_block_through_its_rescaling(scene):
 
 
 def test_combine_easing_gives_each_animation_its_slice_of_the_curve(scene):
+    """REGRESSION. Raised the same ``AttributeError``."""
     square, start = _two_moves(scene, easing=easings.ease_in_quad, combine_easing=True)
 
     # The second move spans the second half of the block, so it takes the
