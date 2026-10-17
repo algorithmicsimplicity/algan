@@ -34,17 +34,25 @@ def _call_uv_function(function, u, v):
     """Call either a torch-vectorized or ordinary scalar Manim UV function."""
     if function is None:
         return torch.stack((u, v, torch.zeros_like(u)), dim=-1)
+    # Called on one column of samples, ``(N, 1)``, whose components-first and
+    # components-last results -- ``(3, N, 1)`` and ``(N, 1, 3)`` -- never share
+    # a shape, as ``(3, W, H)`` and ``(W, H, 3)`` do on a 3 x 3 grid. A column
+    # is still a grid to a function that broadcasts against one (a Cylinder's
+    # basis rows).
+    column = (u.numel(), 1)
     try:
-        result = function(u, v)
+        result = function(u.reshape(column), v.reshape(column))
         if isinstance(result, torch.Tensor):
             result = result.to(device=u.device, dtype=u.dtype)
-            if result.shape[-1] == 3:
-                return result
-            if result.shape[0] == 3 and result.shape[1:] == u.shape:
-                return result.movedim(0, -1)
+            if result.shape == (*column, 3):
+                return result.reshape(*u.shape, 3)
+            if result.shape == (3, *column):
+                return result.movedim(0, -1).reshape(*u.shape, 3)
         array = np.asarray(result)
-        if array.shape[-1:] == (3,) and array.shape[:-1] == tuple(u.shape):
-            return torch.as_tensor(array, device=u.device, dtype=u.dtype)
+        if array.shape == (*column, 3):
+            return torch.as_tensor(array, device=u.device, dtype=u.dtype).reshape(
+                *u.shape, 3
+            )
     except (TypeError, ValueError, RuntimeError):
         pass
 
@@ -109,6 +117,13 @@ class OpenGLSurface(Surface):
             v_range=self.v_range,
             **kwargs,
         )
+        # Surface.__init__ stores its own ``resolution`` argument -- in
+        # patches, and not passed above -- over Manim's sample counts, which
+        # get_triangle_indices and OpenGLTexturedSurface read.
+        self.resolution = (self.grid_width, self.grid_height)
+        # The frame the samples were built in; see
+        # get_surface_points_and_nudged_points.
+        self._built_basis = self.basis.reshape(3, 3).clone()
 
     def uv_func(self, u, v):
         if self.passed_uv_func is None:
@@ -135,8 +150,13 @@ class OpenGLSurface(Surface):
         dv_uv = unit_uv.clone()
         du_uv[..., 0] += self.epsilon / max(self.u_range[1] - self.u_range[0], 1e-12)
         dv_uv[..., 1] += self.epsilon / max(self.v_range[1] - self.v_range[0], 1e-12)
-        du = self._coord_from_unit_uv(du_uv).reshape(-1, 3)
-        dv = self._coord_from_unit_uv(dv_uv).reshape(-1, 3)
+        # The grid is where the surface is now, but uv_func is where it was
+        # built: carry each nudge through every transform made since, as
+        # Manim's nudged points travel with its points.
+        unit = self._coord_from_unit_uv(unit_uv).reshape(-1, 3)
+        frame = torch.linalg.solve(self._built_basis, self.basis.reshape(3, 3))
+        du = base + (self._coord_from_unit_uv(du_uv).reshape(-1, 3) - unit) @ frame
+        dv = base + (self._coord_from_unit_uv(dv_uv).reshape(-1, 3) - unit) @ frame
         return base, du, dv
 
     def get_unit_normals(self):
@@ -199,9 +219,11 @@ class OpenGLTexturedSurface(OpenGLSurface):
             v_range = uv_surface.v_range
             resolution = uv_surface.resolution
         else:
-            # Native surfaces are already sampled in unit UV coordinates.
+            # Native surfaces are already sampled in unit UV coordinates. The
+            # active function, not the ``coord_function`` method: a Surface
+            # built from a function keeps the base class's flat plane there.
             def uv_func(u, v):
-                return uv_surface.coord_function(torch.stack((u, v), dim=-1))
+                return uv_surface.coord_function_active(torch.stack((u, v), dim=-1))
 
             u_range = (0, 1)
             v_range = (0, 1)
@@ -255,7 +277,8 @@ class OpenGLSurfaceMesh(Group):
         if isinstance(self.uv_surface, OpenGLSurface):
             point = self.uv_surface._coord_from_unit_uv(uv)
         else:
-            point = self.uv_surface.coord_function(uv)
+            # As in OpenGLTexturedSurface: the function it was built from.
+            point = self.uv_surface.coord_function_active(uv)
         return point.reshape(3)
 
     def _build_lines(self, stroke_width, color, scene):
