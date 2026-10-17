@@ -469,12 +469,18 @@ def _render_scene_to_file(
             animate_fade_out = SETTINGS.style.fade_out_on_scene_end
         render_started = True
         # A scene authored entirely inside Off() otherwise has zero runtime,
-        # which produces an empty video. Keep one frame alive. This is needed
-        # in every mode, because it decides how many frames get rendered.
+        # which produces an empty video, and so does one shorter than half a
+        # frame: the frame count is the duration rounded to whole frames. Keep
+        # one frame alive. This is needed in every mode, because it decides
+        # how many frames get rendered.
         timeline_context = scene.animation_manager.context
         if (
             timeline_context is not None
-            and timeline_context.timespan.original_end <= 0
+            and round(
+                timeline_context.timespan.original_end
+                * video_settings.frames_per_second
+            )
+            < 1
             and any(actor.is_spawned() for actor in scene.actors)
         ):
             timeline_context.wait(1.0 / video_settings.frames_per_second)

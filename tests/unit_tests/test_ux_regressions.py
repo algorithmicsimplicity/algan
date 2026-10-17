@@ -932,6 +932,34 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
     assert result.status == "rendered"
 
 
+def test_a_scene_shorter_than_half_a_frame_still_renders_one(monkeypatch, tmp_path):
+    """Frames are the duration rounded to whole frames: 0.05 s at 4 fps is none."""
+    scene = SceneManager.instance().current_scene
+    Square(add_to_scene=True).spawn(animate=False)
+    scene.wait(0.05)
+
+    observed = {}
+
+    class Writer:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
+    monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
+
+    def fake_render_to_video(*_args, **_kwargs):
+        observed["end"] = scene.animation_manager.context.timespan.original_end
+
+    monkeypatch.setattr(scene, "_render_to_video", fake_render_to_video)
+    algan.Scene.save_video(
+        tmp_path / "short.mp4",
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
+        animate_fade_out=False,
+    )
+
+    assert round(observed["end"] * 4) >= 1
+
+
 @pytest.mark.fast
 def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     """Border-textured Mobs still animate when supplied through any iterable."""
