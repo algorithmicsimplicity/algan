@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 
-from algan import RED, Circle, Group, Square
+from algan import RED, Circle, Group, Line, Polygon, Square
 from algan.errors import AlganConfigurationError
 from algan.scene_manager import SceneManager
 
@@ -187,3 +187,33 @@ def test_a_point_that_is_not_3_d_is_refused_by_name(call):
     mob = _shape()
     with pytest.raises(AlganConfigurationError, match=r"must be a 3-D vector"):
         call(mob)
+
+
+def test_a_polygon_takes_one_list_that_mixes_tensors_and_tuples():
+    """REGRESSION. ``Polygon([ORIGIN, (1, 0, 0), UP])`` failed with "only one
+    element tensors can be converted to Python scalars": the list was cast as
+    one nested sequence of numbers.
+    """
+    corners = [_tensor((0.0, 0.0, 0.0)), (2.0, 0.0, 0.0), np.array([0.0, 1.0, 0.0])]
+    reference = Polygon(*[_tensor(tuple(map(float, c))) for c in corners])
+    torch.testing.assert_close(
+        Polygon(corners).control_points.location,
+        reference.control_points.location,
+    )
+
+
+@pytest.mark.parametrize(
+    ("build", "name"),
+    [
+        (lambda: Line((0.0, 0.0), (1.0, 0.0, 0.0)), "start"),
+        (lambda: Line((0.0, 0.0, 0.0), (1.0, 0.0)), "end"),
+        (lambda: Polygon((0.0, 0.0, 0.0), (1.0, 0.0), (0.0, 1.0, 0.0)), "vertex 1"),
+    ],
+    ids=["line start", "line end", "polygon vertex"],
+)
+def test_a_2_d_point_in_a_shape_is_refused_by_name(build, name):
+    """REGRESSION. ``Line((0, 0), (1, 0))`` failed with "shape '[-1, 3]' is
+    invalid for input of size 8", and a 2-D polygon vertex likewise.
+    """
+    with pytest.raises(AlganConfigurationError, match=rf"^{name} must be a 3-D"):
+        build()

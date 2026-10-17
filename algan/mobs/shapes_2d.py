@@ -23,6 +23,7 @@ See :doc:`/galleries/mob_gallery`.
 from __future__ import annotations
 
 import math
+import numbers
 
 import torch.nn.functional as F
 
@@ -239,9 +240,13 @@ class Line(BezierCircuitCubic):
     def __init__(self, start=LEFT, end=RIGHT, buff=0, path_arc=0, *args, **kwargs):
         _warn_if_angle_looks_like_radians("path_arc", path_arc)
         start_center = (
-            start.get_center() if isinstance(start, Mob) else cast_to_tensor(start)
+            start.get_center()
+            if isinstance(start, Mob)
+            else cast_to_direction("start", start)
         )
-        end_center = end.get_center() if isinstance(end, Mob) else cast_to_tensor(end)
+        end_center = (
+            end.get_center() if isinstance(end, Mob) else cast_to_direction("end", end)
+        )
         direction = end_center - start_center
         if isinstance(start, Mob):
             start_center = start.get_boundary_point(direction)
@@ -669,6 +674,13 @@ class QuadTriangulated(Mob):
         self.add_children(triangles)
 
 
+def _is_point_sequence(value):
+    """Whether ``value`` is a list or tuple of points rather than one point."""
+    return isinstance(value, (list, tuple)) and not any(
+        isinstance(item, numbers.Number) for item in value
+    )
+
+
 class Polygon(BezierCircuitCubic):
     """A 2-D planar polygon with N vertices.
 
@@ -693,6 +705,10 @@ class Polygon(BezierCircuitCubic):
                 f"points ({type(self).__name__}(LEFT, RIGHT, UP)) or as one "
                 f"[N, 3] tensor."
             )
+        if len(vertex_locations) == 1 and _is_point_sequence(vertex_locations[0]):
+            # One list of points, which may mix tensors and tuples; a bare cast
+            # of the list takes a tensor in it for a number.
+            vertex_locations = tuple(vertex_locations[0])
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])
             while corner_locations.dim() > 2 and corner_locations.shape[0] == 1:
@@ -700,8 +716,8 @@ class Polygon(BezierCircuitCubic):
         else:
             corner_locations = torch.stack(
                 [
-                    cast_to_tensor(vertex).reshape(-1, 3)[0]
-                    for vertex in vertex_locations
+                    cast_to_direction(f"vertex {index}", vertex).reshape(-1, 3)[0]
+                    for index, vertex in enumerate(vertex_locations)
                 ],
                 dim=0,
             )
