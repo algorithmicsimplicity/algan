@@ -411,8 +411,12 @@ def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
     unsq = unsquish(syn_bas, -1, 3)
     up_row = unsq[..., 1, :]
     scale = unsq.norm(p=2, dim=-1, keepdim=False)
-    off_a = up_row * 0.5
-    off_b = (F.normalize(up_row, p=2, dim=-1) * scale[..., 1].unsqueeze(-1)) * 0.5
+    # Cylinder's own expressions, built height included: the side spans
+    # ``height`` times the up row.
+    off_a = up_row * (plan.height * 0.5)
+    off_b = (F.normalize(up_row, p=2, dim=-1) * scale[..., 1].unsqueeze(-1)) * (
+        plan.height * 0.5
+    )
     variant = plan.variant.view(1, n_syn, 1).to(off_a.device)
     offset = torch.where(variant, off_b, off_a)
     current_end = syn_loc + offset
@@ -439,7 +443,7 @@ def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
     d_mid = mid - syn_loc
     new_syn_loc = syn_loc + d_mid
     new_basis = torch.cat(
-        (right_b * scale[..., :1], sep, forward_b * scale[..., 2:]), -1
+        (right_b * scale[..., :1], sep / plan.height, forward_b * scale[..., 2:]), -1
     )
 
     d_mid_g = d_mid.unsqueeze(2)  # [B, S, 1, 3]
@@ -624,7 +628,7 @@ class Neuron(Mob):
 #        self.add_children(self.neurons)
 
 
-# The V2/V3 fill light comes from envMapIntensity (ambient = albedo * 0.1 * env)
+# The V2/V3 fill light comes from env_map_intensity (ambient = albedo * 0.1 * env)
 # rather than emissive, so it tracks the albedo during wave_color pulses instead
 # of tinting them with the resting color. Metalness stays 0 (dielectric): the
 # glossy look comes from low roughness, and -- in V3 -- clearcoat and sheen.
@@ -653,7 +657,7 @@ class SynapseV2(Cylinder):
                 color=c.set_glow(0.04),
                 roughness=0.3,
                 metalness=0.0,
-                envMapIntensity=4.5,
+                env_map_intensity=4.5,
             )
         )
         self.scale(0.02)
@@ -672,7 +676,7 @@ class NeuronV2(Neuron):
             color=neuron_color.set_glow(0.08),
             roughness=0.2,
             metalness=0.0,
-            envMapIntensity=4.0,
+            env_map_intensity=4.0,
         )
         return (
             Sphere(
@@ -690,7 +694,7 @@ class NeuronV2(Neuron):
             color=neuron_color.set_opacity(0.3),
             roughness=0.4,
             metalness=0.0,
-            envMapIntensity=2.5,
+            env_map_intensity=2.5,
         )
         return (
             Sphere(
@@ -710,8 +714,8 @@ k = 1
 
 def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
     with Off(animation_manager=mob1.animation_manager):
-        p1 = mob1.sample_points_in_direction(direction)
-        p2 = mob2.sample_points_in_direction(direction)
+        p1 = mob1.sample_points_in_direction(direction, num_points)
+        p2 = mob2.sample_points_in_direction(direction, num_points)
         syns = [
             Synapse(scene=mob1.scene).move_between_points(p1[i], p2[i])
             for i in range(num_points)
@@ -890,7 +894,9 @@ class NeuralNetMLP(Mob):
             with Sync(animation_manager=self.animation_manager):
                 if reset:
                     self.reset_input_synapses()
-                out.move(self.get_forward_direction() * 0.25)
+                # activate() returns None when there is no output_generator.
+                if out is not None:
+                    out.move(self.get_forward_direction() * 0.25)
             return out
 
     def reset_input_synapses(self):
@@ -919,7 +925,7 @@ class NeuralNetMLP(Mob):
         #    self.reset_input_synapses()
         # return self
         # with Seq(runtime=runtime, animation_manager=self.animation_manager):
-        with Lag(0.9, runtime=runtime):
+        with Lag(0.9, runtime=runtime, animation_manager=self.animation_manager):
             if label is not None:
                 with Lag(0.65, runtime=1, animation_manager=self.animation_manager):
                     zap(label, output, color=color)

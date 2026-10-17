@@ -152,6 +152,17 @@ The automatic choice only applies when you have not passed an explicit
     # Keep encoding on the CPU even when an NVENC encoder is available.
     ALGAN_VIDEO_ENCODER=software python my_scene.py
 
+``.webm`` and ``.gif`` cannot hold H.264, so they choose their own codec: a
+``.webm`` is encoded with VP9 and its soundtrack with Opus, for the web, and a
+``.gif`` is drawn with a palette of its own for every frame, which keeps flat
+colors flat. A GIF has no audio track, so a Scene's audio is left out of it with
+a warning; :meth:`~algan.scene.Scene.save_audio` writes the audio on its own.
+
+.. code-block:: python
+
+    Scene.save_video("loop.gif")   # GIF, no audio
+    Scene.save_video("clip.webm")  # VP9 video, Opus audio
+
 Exporting additive glow and coverage together
 ==============================================
 

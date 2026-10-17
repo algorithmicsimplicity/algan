@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
+import inspect
 import math
 import os
 import warnings
@@ -58,6 +60,60 @@ _NUMPY_DTYPES = {
 #: Name of the special kwarg that animated functions receive the per-frame
 #: elapsed time through (see :meth:`AnimationTimeline.set_state_to_times`).
 TIME_PARAMETER_NAME = "time_elapsed"
+
+
+@functools.lru_cache(maxsize=1024)
+def _positional_parameters(function):
+    """Name ``function``'s positional parameters after its first, and its
+    ``*args`` parameter (``None`` when it has none).
+    """
+    params = list(inspect.signature(function).parameters.values())[1:]
+    named = tuple(
+        param.name
+        for param in params
+        if param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD)
+    )
+    var_positional = next(
+        (param.name for param in params if param.kind is param.VAR_POSITIONAL),
+        None,
+    )
+    return named, var_positional
+
+
+def _arguments_by_name(function, args):
+    """Key a recorded call's positional ``args`` by the parameters they fill.
+
+    A recorded call is kept as keyword arguments, so replay can swap in each
+    frame's value by name. Arguments past the named parameters belong to the
+    ``*args`` parameter, which cannot be passed by keyword: they are kept as a
+    tuple under ``"*"`` and its name, which no keyword argument can collide
+    with, and :func:`_call_recorded` passes them back by position.
+    """
+    named, var_positional = _positional_parameters(function)
+    by_name = dict(zip(named, args))
+    if len(args) > len(named):
+        if var_positional is None:
+            # Python's own message, counting the Mob as a direct call does.
+            takes = len(named) + 1
+            raise TypeError(
+                f"{function.__qualname__}() takes {takes} positional "
+                f"argument{'' if takes == 1 else 's'} but {len(args) + 1} were given"
+            )
+        by_name["*" + var_positional] = tuple(args[len(named) :])
+    return by_name
+
+
+def _call_recorded(function, caller, kwargs):
+    """Call ``function`` on ``caller`` with arguments recorded by name."""
+    named, var_positional = _positional_parameters(function)
+    extra = None if var_positional is None else "*" + var_positional
+    if extra not in kwargs:
+        return function(caller, **kwargs)
+    # Passing *args by position means passing every parameter before it so.
+    kwargs = dict(kwargs)
+    extra_args = kwargs.pop(extra)
+    leading = [kwargs.pop(name) for name in named]
+    return function(caller, *leading, *extra_args, **kwargs)
 
 
 #: Sentinel timestamp for "not yet spawned/despawned".
@@ -2120,6 +2176,49 @@ class TimelineSpan:
             bump_timing_version()
 
 
+def _outermost_combining_context(context):
+    """The outermost context enclosing ``context`` that sets ``combine_easing``.
+
+    ``None`` when no enclosing context does. The outermost wins because its
+    rate function is the one meant to span everything inside it.
+    """
+    found = None
+    while context is not None:
+        if getattr(context, "combine_easing", False):
+            found = context
+        context = context.prev_context
+    return found
+
+
+def _eased_over_block(rate_function, own_span, block_span):
+    """Evaluate ``rate_function`` across a whole block, not one animation.
+
+    The returned function takes the animation's own progress in ``[0, 1]`` and
+    reads ``rate_function`` over the block's span instead, renormalized so the
+    animation still starts at its start state and ends at its target. Spans are
+    read when the function is evaluated, so the block's retroactive rescaling
+    (``runtime=`` on exit) is already applied by then.
+    """
+
+    def eased(progress):
+        progress = torch.as_tensor(progress)
+        block_start, block_end = block_span.start, block_span.end
+        length = block_end - block_start
+        if not length > 0:
+            return rate_function(progress)
+        at_start = (own_span.start - block_start) / length
+        at_end = (own_span.end - block_start) / length
+        first = rate_function(torch.full_like(progress, at_start))
+        last = rate_function(torch.full_like(progress, at_end))
+        current = rate_function(at_start + (at_end - at_start) * progress)
+        change = last - first
+        moves = change.abs() > 1e-12
+        safe_change = torch.where(moves, change, torch.ones_like(change))
+        return torch.where(moves, (current - first) / safe_change, progress)
+
+    return eased
+
+
 class FunctionApplicationEvent:
     def __init__(
         self,
@@ -2583,6 +2682,9 @@ class AnimationTimeline:
         # materialization; off, replay is batched over the window as always.
         self.replay_frame_by_frame = False
         self._active_updater_trace = None
+        # Frames the replaying updater computes at once; see
+        # frames_in_running_updater.
+        self._running_updater_frames = 1
         self._active_updater_write_capture = None
         # (id(updater event), parent mob id) pairs already warned about, so a
         # loop that re-parents the same Mob every iteration says it once.
@@ -2636,6 +2738,18 @@ class AnimationTimeline:
 
     def end_updater_dependency_trace(self, previous):
         self._active_updater_trace = previous
+
+    def frames_in_running_updater(self):
+        """How many frames the updater running now computes at once.
+
+        Zero when no updater is running, and one while authoring, where
+        ``add_updater`` applies it once. During a render it is the number of
+        frames the updater is called for, which every value it reads carries
+        along its leading axis.
+        """
+        if self._active_updater_trace is None:
+            return 0
+        return self._running_updater_frames
 
     def begin_updater_write_capture(self, event):
         """Capture attribute writes made by one updater during replay."""
@@ -2847,6 +2961,10 @@ class AnimationTimeline:
 
             def rf(x, rf=easing, rfc=composed_easing):
                 return rf(rfc(x))
+
+        block = _outermost_combining_context(c)
+        if block is not None:
+            rf = _eased_over_block(rf, c.timespan, block.timespan)
 
         event = FunctionApplicationEvent(
             function, caller, animated_args, kwargs, rf, c.timespan
@@ -4120,7 +4238,7 @@ class AnimationTimeline:
                 self._active_replay_event = f
                 self._active_replay_edit_index = 0
                 try:
-                    f.function(f.caller, **kwargs)
+                    _call_recorded(f.function, f.caller, kwargs)
                 finally:
                     self._active_replay_event = previous_event
                     self._active_replay_edit_index = previous_edit_index
@@ -4169,6 +4287,8 @@ class AnimationTimeline:
                 elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
                 caller, args, kwargs = f.invocation_for_signature(signature)
                 previous_trace = self.begin_updater_dependency_trace(f)
+                previous_frames = self._running_updater_frames
+                self._running_updater_frames = elapsed.numel()
                 try:
                     f.function(
                         caller,
@@ -4177,6 +4297,7 @@ class AnimationTimeline:
                         **kwargs,
                     )
                 finally:
+                    self._running_updater_frames = previous_frames
                     self.end_updater_dependency_trace(previous_trace)
 
         for timeline in self.attr_to_timeline.values():

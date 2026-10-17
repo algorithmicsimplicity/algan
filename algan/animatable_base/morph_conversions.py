@@ -279,6 +279,51 @@ def _circuit_batches(circuit):
     return batches, locations, bases
 
 
+def _painted_fill_texels(circuit, index, count):
+    """Member ``index``'s fill texel colours, or None when its fill is flat.
+
+    A circuit painted per texel (``set_color_by_function``, ``wave_color``)
+    draws its fill from ``grid``, one colour per texel, and its own ``color``
+    is then only the colour it was built with. A circuit with one texel is one
+    flat colour, its own ``color``, and keeps the conversion it always had.
+    """
+    texel_count = getattr(circuit, "num_texture_points", 0)
+    if texel_count < 2 or not getattr(circuit, "filled", True):
+        return None
+    texels = circuit.grid.color
+    if texels.shape[-2] != count * texel_count:
+        return None
+    return texels[..., index * texel_count : (index + 1) * texel_count, :]
+
+
+def _sample_fill_texels(texels, width, height, corners, location, basis):
+    """The fill colour a circuit draws at each of ``corners``.
+
+    ``corners`` is ``[1, R, 3]`` and the result ``[1, R, C]``: every channel
+    of ``texels``, once per corner. It is the renderer's texel lookup
+    (``_circuit_texture_color`` in ``raytrace_kernels_taichi``): the offset
+    from the circuit's centre, in units of each basis row, places the point
+    on the texel grid, and the four texels round it are blended bilinearly.
+    """
+    first = basis[0] / basis[0].square().sum().clamp_min(1e-12)
+    second = basis[1] / basis[1].square().sum().clamp_min(1e-12)
+    offset = corners - location
+    along_width = (0.5 * (offset * first).sum(-1) + 0.5) * width
+    along_height = (0.5 * (offset * second).sum(-1) + 0.5) * height
+    y = along_width.clamp(0, max(width - 1, 0))
+    x = along_height.clamp(0, max(height - 1, 0))
+    x0, y0 = x.floor(), y.floor()
+    xr, yr = (x - x0).unsqueeze(-1), (y - y0).unsqueeze(-1)
+    flat = texels.reshape(-1, texels.shape[-1])
+    sampled = 0
+    for dx in (0, 1):
+        for dy in (0, 1):
+            weight = (xr if dx else 1 - xr) * (yr if dy else 1 - yr)
+            texel = ((x0 + dx) + (y0 + dy) * height).long().clamp(0, len(flat) - 1)
+            sampled = sampled + weight * flat[texel]
+    return sampled
+
+
 def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
     from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
 
@@ -370,6 +415,15 @@ def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
         glow = _expand_rows(circuit.glow, len(batches))[:, index : index + 1]
         if not getattr(circuit, "filled", True) or getattr(circuit, "empty", False):
             opacity = torch.zeros_like(opacity)
+        # A fill painted per texel is converted as painted. Taking the
+        # circuit's own ``color`` for it turned a red-to-green gradient into
+        # one flat colour on the frame the soup took over, and a solid becoming
+        # a painted shape ran flat until the painted shape replaced it.
+        texels = _painted_fill_texels(circuit, index, len(batches))
+        if texels is not None:
+            color = _sample_fill_texels(
+                texels, circuit.grid_width, circuit.grid_height, world, location, basis
+            )
         all_colors.append(color.expand(-1, rows, -1))
         all_opacities.append(opacity.expand(-1, rows, -1))
         all_glows.append(glow.expand(-1, rows, -1))

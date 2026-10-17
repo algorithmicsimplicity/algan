@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -213,6 +214,20 @@ def _reject_invalid_runtime(name, value):
             f"itself rather than its runtime."
         )
     return value
+
+
+def _compose_easings(outer, inner):
+    """``outer(inner(t))``: ``inner`` bends the progress first, then ``outer``.
+
+    Nested :class:`ComposedEasing` blocks build their rate function this way,
+    so the innermost block's function is applied first and every enclosing one
+    still applies on top, before the base easing.
+    """
+
+    def composed(t):
+        return outer(inner(t))
+
+    return composed
 
 
 def _guard_context_init(cls):
@@ -436,8 +451,12 @@ class AnimationContext:
         Easing function to compose *with* the parent's rather than replace it. Defaults
         to ``None``. See :class:`~.ComposedEasing`.
     combine_easing
-        Whether component rate functions are combined into the context's own.
-        Defaults to False.
+        Whether the rate function spans the whole block rather than each animation
+        in it. With True, every animation inside takes its own slice of the curve
+        across this context's runtime, rescaled so it still ends on its target:
+        with the default easing, a :class:`~.Seq` of moves reads as one motion
+        that eases in at the start of the block and out at its end, instead of
+        stopping between moves. Defaults to False.
     record_funcs
         Whether animated functions inside are recorded on the Scene timeline.
         Defaults to ``None``, meaning inherit (True at the top level;
@@ -555,6 +574,11 @@ class AnimationContext:
             if self.__getattribute__(attr) is None:
                 self.__setattr__(attr, self.prev_context.__getattribute__(attr))
 
+        # A composed easing layers on top of the one already in effect, and
+        # that includes one an enclosing context composed: inheriting only
+        # when unset made an inner ComposedEasing silently replace an outer.
+        own_composed_easing = self.composed_easing
+        enclosing_composed_easing = self.prev_context.composed_easing
         for attr in [
             "runtime_per_part",
             "lag_ratio",
@@ -566,6 +590,10 @@ class AnimationContext:
             "spawn_at_end",
         ]:
             inherit_missing_value(attr)
+        if own_composed_easing is not None and enclosing_composed_easing is not None:
+            self.composed_easing = _compose_easings(
+                enclosing_composed_easing, own_composed_easing
+            )
 
         self.easing = copy.deepcopy(self.easing)
         self.composed_easing = copy.deepcopy(self.composed_easing)
@@ -808,22 +836,6 @@ class AnimationContext:
             else:
                 self.timespan.start = self.timespan.original_start
                 self.timespan.end = self.timespan.original_end
-
-            if self.combine_easing:
-
-                def wrap(easing):
-                    if easing is None:
-                        return easing
-                    easing.set_full_time(
-                        lambda context=self: context.timespan.start,
-                        lambda context=self: context.timespan.end,
-                    )
-                    easing.time_set = True
-                    return easing
-
-                for child in self.get_descendants(include_self=False):
-                    wrap(child.easing)
-                    wrap(child.composed_easing)
 
             self.finished = True
             # Subsequent parent updates and spawn-at-end work must execute in
@@ -1270,7 +1282,10 @@ class Audio(AnimationContext):
     Parameters
     ----------
     source
-        Path to an audio file, or an already-loaded moviepy audio clip.
+        Path to an audio file, or an already-loaded moviepy audio clip. The
+        path is a ``str`` or a :class:`~pathlib.Path`; a relative one is looked
+        for in the working directory and then beside the running script, as an
+        image's is.
     wait_at_end
         Extra seconds to hold after the audio finishes, before the block ends.
         Defaults to ``0``.
@@ -1290,12 +1305,19 @@ class Audio(AnimationContext):
     :class:`~.Speech` : The same, driven by a line of narration transcript.
     """
 
-    def __init__(self, source: str, *, wait_at_end: float = 0.0, **kwargs):
+    def __init__(
+        self, source: str | os.PathLike, *, wait_at_end: float = 0.0, **kwargs
+    ):
         audio_clip = source
-        if isinstance(source, str):
+        if isinstance(source, (str, os.PathLike)):
             from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
 
-            audio_clip = AudioFileClip(source)
+            from algan.utils.file_utils import resolve_asset_path
+
+            # A Path went to ``.duration`` below as the clip itself, and a
+            # file beside the script was only found from the script's own
+            # directory, unlike every image, model and environment map.
+            audio_clip = AudioFileClip(resolve_asset_path(source))
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
         kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
@@ -1365,8 +1387,8 @@ class SlideShow(Seq):
 
     A :class:`~.Seq` with presentation manners: every Mob spawned inside gets a
     one-second pause after it appears, so the viewer has time to read it, and when
-    the block ends everything spawned inside is despawned together. Good for
-    stepping through a list of points.
+    the block ends everything spawned inside is despawned together, followed by one
+    more pause on the cleared slide. Good for stepping through a list of points.
 
     Examples
     --------
@@ -1402,13 +1424,19 @@ class SlideShow(Seq):
         """Despawn everything spawned inside the block, then pause.
 
         The despawns run together inside a :class:`~.Sync`, so the slide clears in one
-        beat rather than item by item.
+        beat rather than item by item. A block that raised records no clear-up: the
+        error propagates as it was raised.
         """
         super().__exit__(exc_type, exc_val, exc_tb)
+        if exc_type is not None or self.ignored:
+            return False
         with Sync(animation_manager=self.animation_manager):
             for mob in self.new_mobs:
                 mob.despawn()
-        self.wait()
+        # This block has exited, so the pause belongs to the enclosing context:
+        # ``self.wait()`` here only moved this block's own, already-read cursor.
+        self.animation_manager.wait(self.runtime_per_part)
+        return False
 
 
 class OnInit(AnimationContext):
@@ -1454,13 +1482,17 @@ class ComposedEasing(AnimationContext):
     The given function is composed with whatever rate function is already in effect,
     rather than replacing it, so an enclosing ease is kept and this one layers on
     top. Use it to make a run of animations rush, dawdle or bounce without
-    restating the base easing.
+    restating the base easing. Nested ``ComposedEasing`` blocks compose too: the
+    innermost function bends the progress first, then each enclosing one, then the
+    base easing.
 
     Parameters
     ----------
     rfunc
         Rate function mapping progress in ``[0, 1]`` to adjusted progress. Composed
-        with the enclosing context's rate function.
+        with the enclosing context's rate function. It should map ``1`` to ``1``:
+        when an animation ends its Mob holds the animation's target, so a function
+        that finishes elsewhere jumps there on the last frame.
     **kwargs
         Passed to :class:`~.AnimationContext`.
 
@@ -1468,8 +1500,8 @@ class ComposedEasing(AnimationContext):
     --------
     .. code-block:: python
 
-        with ComposedEasing(easings.there_and_back):
-            square.move(RIGHT)  # goes out and comes back
+        with ComposedEasing(easings.ease_out_bounce):
+            square.move(RIGHT)  # arrives with a bounce
     """
 
     def __init__(self, rfunc, **kwargs):

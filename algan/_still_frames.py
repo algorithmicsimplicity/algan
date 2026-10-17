@@ -137,6 +137,7 @@ class _StillBatch:
                 scene.environment_intensity,
                 scene.environment_ambient,
                 scene.premultiplied_over,
+                scene.environment_map_is_srgb,
             ),
             passes,
         )
@@ -175,6 +176,7 @@ class _StillBatch:
             scene.environment_intensity,
             scene.environment_ambient,
             scene.premultiplied_over,
+            scene.environment_map_is_srgb,
         )
         try:
             scene.set_video_settings(self.video_settings)
@@ -184,6 +186,7 @@ class _StillBatch:
                 scene.environment_intensity,
                 scene.environment_ambient,
                 scene.premultiplied_over,
+                scene.environment_map_is_srgb,
             ) = self.environment
             (scene.background_frame, scene.background, scene.background_is_set) = (
                 self.background_state
@@ -203,6 +206,7 @@ class _StillBatch:
                 scene.environment_intensity,
                 scene.environment_ambient,
                 scene.premultiplied_over,
+                scene.environment_map_is_srgb,
             ) = previous_environment
             (scene.background_frame, scene.background, scene.background_is_set) = (
                 previous_background

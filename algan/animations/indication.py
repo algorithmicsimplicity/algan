@@ -29,7 +29,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animations.movement import Homotopy
 from algan.constants import easings
-from algan.constants.color import GRAY, YELLOW
+from algan.constants.color import GRAY, YELLOW, to_color
 from algan.constants.spatial import OUTWARD, UP
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import get_rotation_around_axis
@@ -130,7 +130,7 @@ def Indicate(mob, scale_factor: float = 1.2, color=YELLOW, runtime: float = 1.0)
     :class:`~.Mob`
         The Mob that was passed in.
     """
-    color = cast_to_tensor(color)
+    color = to_color(color)
     scale_factor = cast_to_tensor(scale_factor)
     with Sync(runtime=runtime, animation_manager=animation_manager_for(mob)):
         mob.pulse_color(color)

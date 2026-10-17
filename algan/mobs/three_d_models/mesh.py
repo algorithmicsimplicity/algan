@@ -466,11 +466,12 @@ class TriangleMesh(Mob):
                 op = self.opacity.reshape(-1, 1, 1, 1)
                 texture_map = tmap.as_subclass(Color).mult_opacity(op)
 
+        # The glow is already in ``colors``; a ``glow`` argument would add it a
+        # second time (see ``Surface.get_render_primitives``).
         primitive = effective_triangle_primitive()(
             corners=corners,
             colors=colors,
             normals=normals,
-            glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             uvs=self.corner_uvs,
             texture_map=texture_map,

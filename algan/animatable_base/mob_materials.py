@@ -140,7 +140,8 @@ class MobMaterialsMixin:
         The stages' parameters become animatable attributes (duplicate names
         across stages are suffixed). Setting a fragment shader forces the
         deterministic renderer's per-fragment path on for any scene the mob
-        appears in; it is ignored by the Monte Carlo / physical path tracer.
+        appears in; the path tracer (``samples_per_pixel`` above 1) runs the
+        pipeline too.
 
         Animation
         ---------

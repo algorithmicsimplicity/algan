@@ -467,7 +467,9 @@ class Project:
     @staticmethod
     def _resolve_directory(directory) -> Path:
         raw_path = os.fspath(directory)
-        requested = Path(raw_path)
+        # Expanded here, as ``_resolve_output_destination`` expands a scene's
+        # own path: an unexpanded ``~`` is a relative directory named ``~``.
+        requested = Path(raw_path).expanduser()
         if not requested.is_absolute() and os.path.dirname(raw_path) == "":
             requested = (
                 Path(SETTINGS.paths.output_root)

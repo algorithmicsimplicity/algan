@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 from PIL import Image
@@ -122,6 +123,40 @@ def test_invalid_timestamps_fail_before_any_output(monkeypatch, tmp_path, at):
     with (
         Scene(video_settings=STILLS) as scene,
         pytest.raises(AlganConfigurationError, match="finite and non-negative"),
+    ):
+        scene.save_frame(tmp_path / "bad", at=at)
+    assert not calls
+    assert not list(tmp_path.glob("*.png"))
+
+
+@pytest.mark.parametrize(
+    "at",
+    [torch.tensor(9.0), np.array(9.0), np.float32(9.0)],
+    ids=["0-d tensor", "0-d array", "numpy scalar"],
+)
+def test_a_scalar_tensor_or_array_is_one_timestamp(monkeypatch, tmp_path, at):
+    """REGRESSION. Anything with a ``__len__`` was walked as a sequence of
+    timestamps, and a 0-d tensor or array has one that raises: "iteration over
+    a 0-d tensor".
+    """
+    calls, _ = _frame_spy(monkeypatch)
+    with Scene(video_settings=STILLS) as scene:
+        result = scene.save_frame(tmp_path / "shot", at=at)
+    assert [call[0] for call in calls] == [(90,)]
+    assert result.output_path.name == "shot.png"
+    assert _pixel(result) == 90
+
+
+@pytest.mark.parametrize("at", ["12", "0.5"])
+def test_a_string_is_not_a_sequence_of_timestamps(monkeypatch, tmp_path, at):
+    """REGRESSION. A string has a ``__len__`` too, so it was walked character
+    by character: ``at="12"`` wrote stills at 1 and 2 seconds, and ``"0.5"``
+    failed with "could not convert string to float: '.'".
+    """
+    calls, _ = _frame_spy(monkeypatch)
+    with (
+        Scene(video_settings=STILLS) as scene,
+        pytest.raises(AlganConfigurationError, match="time in seconds"),
     ):
         scene.save_frame(tmp_path / "bad", at=at)
     assert not calls

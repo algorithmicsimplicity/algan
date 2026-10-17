@@ -85,6 +85,48 @@ def test_per_member_colors_match_object_batch():
         _assert_packs_match(actual, expected)
 
 
+def _hex(color):
+    """The palette constants are defined from hex strings, so this round-trips."""
+    return "#" + "".join(f"{round(float(x) * 255):02X}" for x in color[:3])
+
+
+@pytest.mark.parametrize(
+    "spell",
+    [lambda c: c, lambda c: tuple(float(x) for x in c[:3]), _hex],
+    ids=["Color", "rgb tuple", "hex string"],
+)
+def test_a_list_of_colors_matches_object_batch(spell):
+    """REGRESSION. ``colors`` was cast to a tensor whole, so the list of
+    named colors its docstring promised failed with "only one element tensors
+    can be converted to Python scalars", and a list of hex strings with "too
+    many dimensions 'str'". Only a ready-stacked tensor worked.
+    """
+    SceneManager.reset()
+    colors = [RED, GREEN, BLUE, YELLOW]
+    with Scene() as scene, Off(record_funcs=False, record_attr_modifications=False):
+        expected = batch_mobs(_members(scene, colors), add_to_scene=True).spawn()
+        actual = Sphere.from_batches(
+            CENTERS,
+            colors=[spell(c) for c in colors],
+            add_to_scene=True,
+            scene=scene,
+            **KWARGS,
+        ).spawn()
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0]))
+        _assert_packs_match(actual, expected)
+
+
+def test_one_color_spelling_paints_every_member():
+    SceneManager.reset()
+    with Scene() as scene, Off(record_funcs=False, record_attr_modifications=False):
+        expected = batch_mobs(_members(scene, [RED] * 4), add_to_scene=True).spawn()
+        actual = Sphere.from_batches(
+            CENTERS, colors=_hex(RED), add_to_scene=True, scene=scene, **KWARGS
+        ).spawn()
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0]))
+        _assert_packs_match(actual, expected)
+
+
 def test_rgba_colors_match_a_dot3d_batch():
     """Dot3D repositions itself with ``move_to`` after construction, so the pack
     has to survive a constructor that writes its own location -- and a point

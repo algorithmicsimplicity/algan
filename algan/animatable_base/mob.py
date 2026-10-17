@@ -298,7 +298,7 @@ _MANIM_CONSTRUCTOR_HINTS = {
     "arc_center": "pass `location=`",
     "center": "pass `location=`",
     "point": "pass `location=`",
-    "about_point": "`about=` on the transform methods (rotate, scale, ...)",
+    "about_point": "`about=` on rotate and orbit; scale resizes about the center",
     "buff": "Algan spells the spacing `buffer=`",
     "mobject": "Algan spells it `mob=`",
     "mobjects": "Algan spells it `mobs=`, or pass them positionally",
@@ -307,6 +307,12 @@ _MANIM_CONSTRUCTOR_HINTS = {
     "rate_func": "easing is a context in Algan: `with Seq(easing=...): ...`",
     "lag_ratio": "staggering is a context in Algan: `with Lag(ratio=0.5): ...`",
     "scale_factor": "build it, then call `.scale(2)`",
+    # Manim's Text names its span maps by abbreviation; Algan's spells them out.
+    "t2c": "Text spells it `color_map=`",
+    "t2f": "Text spells it `font_map=`",
+    "t2g": "Text spells it `gradient_map=`",
+    "t2s": "Text spells it `slant_map=`",
+    "t2w": "Text spells it `weight_map=`",
 }
 
 
@@ -1188,6 +1194,11 @@ class Mob(
         --------
         :meth:`~.Mob.wave_color` : Run the same pulse across the Mob as a travelling wave.
         """
+        # Parsed as an assigned color is, and before anything is recorded: the
+        # pulse writes these straight into the color rows, so only a 5-channel
+        # Color used to survive -- a hex int was taken for every channel.
+        color = to_color(color)
+        new_color = to_color(new_color)
         with Sync(animation_manager=self.animation_manager):
             if color is not None:
                 # new_color=None restores each part to its own current color
@@ -1304,8 +1315,11 @@ class Mob(
         :class:`~.Mob`
             This Mob, so calls can be chained.
         """
-        if direction is None:
-            direction = self.get_up_direction()
+        direction = (
+            self.get_up_direction()
+            if direction is None
+            else cast_to_direction("direction", direction)
+        )
         direction = direction * (-1 if reverse else 1)
         # What each part's pulse actually writes, which decides whether a finer
         # sampling can show the wave at all (see pulse_color).

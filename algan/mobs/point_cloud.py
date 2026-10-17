@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
-from algan.constants.color import BLACK, WHITE, YELLOW, Color
+from algan.constants.color import BLACK, WHITE, YELLOW, Color, to_color
 from algan.constants.spatial import ORIGIN
 from algan.errors import AlganConfigurationError
 from algan.mobs.group import Group
@@ -43,6 +43,9 @@ def _as_points(points) -> torch.Tensor:
 def _as_rgba(color, alpha=1.0) -> torch.Tensor:
     if color is None:
         color = YELLOW
+    # Every spelling a Mob's color takes -- a CSS name, a hex string or int, an
+    # (r, g, b) sequence -- arrives below as a Color or a 5-wide tensor.
+    color = to_color(color)
     if isinstance(color, Color):
         rgb = color.rgb.detach().to(dtype=torch.get_default_dtype())
         opacity = color.opacity.detach().reshape(-1)[0] * alpha
@@ -107,6 +110,10 @@ class PMobject(Group):
         self.point_radius = float(
             stroke_width * 0.01 if point_radius is None else point_radius
         )
+        # Spheres an edit replaced after they had been on screen. They stay
+        # children, so the frames before the edit still draw them, but they no
+        # longer stand for the cloud (see _rebuild_geometry).
+        self._retired_point_geometry = []
         self.points = _as_points(points)
         if rgbas is None:
             rgba = _as_rgba(color)
@@ -123,11 +130,81 @@ class PMobject(Group):
         geometry = self._build_geometry(scene=kwargs["scene"])
         super().__init__(*([] if geometry is None else [geometry]), **kwargs)
         self._point_geometry = geometry
+        self._arrays_match_geometry()
         # Animatable installs instance-level generic color accessors while
         # registering Mob attributes. Point clouds need color accessors that
         # update their per-point RGBA array and rebuilt geometry.
         self.set_color = PMobject.set_color.__get__(self, type(self))
         self.get_color = PMobject.get_color.__get__(self, type(self))
+
+    @property
+    def points(self) -> torch.Tensor:
+        """The cloud's points, shape ``(N, 3)`` in world units.
+
+        Transforms such as ``move``, ``rotate`` and ``scale`` act on the
+        rendered spheres, so the points are read back from them: they report
+        where the cloud is now, and the next edit, which rebuilds the spheres
+        from these arrays, starts from there rather than undoing the transform.
+        """
+        self._read_back_arrays()
+        return self._points
+
+    @points.setter
+    def points(self, value):
+        self._points = value
+        self._arrays_pending = True
+
+    @property
+    def rgbas(self) -> torch.Tensor:
+        """The per-point colors as RGBA, shape ``(N, 4)``.
+
+        Read back from the rendered spheres like :attr:`points`, so a color
+        animated onto the cloud (``cloud.color = BLUE``) survives the next edit.
+        """
+        self._read_back_arrays()
+        return self._rgbas
+
+    @rgbas.setter
+    def rgbas(self, value):
+        self._rgbas = value
+        self._arrays_pending = True
+
+    def _arrays_match_geometry(self):
+        """Record that the spheres were just built from the current arrays."""
+        self._arrays_pending = False
+        self._array_versions = (self._points._version, self._rgbas._version)
+
+    def _read_back_arrays(self):
+        """Refresh ``points`` and ``rgbas`` from the spheres they built.
+
+        Arrays changed since the spheres were built -- reassigned, or edited in
+        place, which bumps a tensor's version counter -- hold state the spheres
+        do not show yet, and are left alone until the rebuild that applies it.
+        """
+        if self.__dict__.get("_arrays_pending", True):
+            return
+        points, rgbas = self._points, self._rgbas
+        if (points._version, rgbas._version) != self._array_versions:
+            self._arrays_pending = True
+            return
+        geometry = self.__dict__.get("_point_geometry")
+        if geometry is None:
+            return
+        count = len(points)
+        location = geometry.get_animated_attribute("location", copy=False)
+        color = geometry.get_animated_attribute("color", copy=False)
+        # A render materializes a leading time axis; with several frames there
+        # is no single current state to read back.
+        if tuple(location.shape) != (1, count, 3) or color.shape[:2] not in (
+            (1, count),
+            (1, 1),
+        ):
+            return
+        color = color[0].expand(count, -1)
+        self._points = location[0].to(points).clone()
+        # Algan's colors are RGB, glow, then the alpha channel.
+        self._rgbas = torch.cat((color[:, :3], color[:, -1:]), -1).to(rgbas).clone()
+        self._array_versions = (self._points._version, self._rgbas._version)
 
     def _build_geometry(self, scene=None):
         if scene is None and hasattr(self, "scene"):
@@ -157,42 +234,80 @@ class PMobject(Group):
     def _rebuild_geometry(self):
         geometry = self._build_geometry()
         previous = self._point_geometry
+        self._point_geometry = geometry
+        self._arrays_match_geometry()
         if previous is None and geometry is None:
             return self
+        own = [previous, *self._retired_point_geometry]
+        if previous is not None and previous.is_spawned():
+            # The timeline only appends, so frames already recorded keep the
+            # old spheres: end their lifespan here rather than dropping them,
+            # which would erase the cloud from every frame before this edit.
+            if not previous.is_despawned():
+                previous._destroy_recursive(animate=False)
+            # Spheres spawned and replaced at the same instant were never on
+            # screen, and are simply dropped.
+            if previous.lifespan.end() > previous.lifespan.start():
+                # Out of every layout query: the cloud is where its live
+                # spheres are. Each query consults the flag at its own level
+                # of the hierarchy, so the sphere grids need it too.
+                for mob in previous.get_descendants():
+                    mob.exclude_from_boundary = True
+                self._retired_point_geometry.append(previous)
         # Generated spheres and user-supplied members share the hierarchy, but
         # rebuilding this cloud must only replace its own generated geometry.
-        members = [child for child in self.children if child is not previous]
-        self.replace_children(members if geometry is None else [geometry, *members])
-        self._point_geometry = geometry
+        members = [child for child in self.children if not any(child is g for g in own)]
+        self.replace_children(
+            [
+                *([] if geometry is None else [geometry]),
+                *members,
+                *self._retired_point_geometry,
+            ]
+        )
         if geometry is not None and self.is_spawned() and not self.is_despawned():
             geometry._create_recursive(animate=False)
         return self
 
     def _primitive_children(self):
-        """Return hidden geometry not already rendered as its own Scene actor."""
+        """Return hidden geometry not already rendered as its own Scene actor.
+
+        Spheres an edit retired are left out: they draw only the frames before
+        that edit, which :meth:`get_render_primitives` adds back.
+        """
         registered = {id(actor) for actor in self.scene.actors}
+        retired = {id(mob) for mob in self._retired_point_geometry}
         return [
             child
             for child in self.children
-            if id(child) not in registered and hasattr(child, "get_render_primitives")
+            if id(child) not in registered
+            and id(child) not in retired
+            and hasattr(child, "get_render_primitives")
         ]
 
     def _get_memory_used_per_timestep(self):
         return sum(
             child._get_memory_used_per_timestep()
-            for child in self._primitive_children()
+            for child in [*self._primitive_children(), *self._retired_point_geometry]
         )
 
     def _get_render_device_memory_used_per_timestep(self):
         return sum(
             child._get_render_device_memory_used_per_timestep()
-            for child in self._primitive_children()
+            for child in [*self._primitive_children(), *self._retired_point_geometry]
         )
 
     def get_render_primitives(self):
         """Build the native sphere primitives representing this point cloud."""
         primitives = []
-        for child in self._primitive_children():
+        # Retired spheres are invisible outside their lifespan, which is all of
+        # a window after the edit that retired them; building them there would
+        # only add transparent triangles to every later frame.
+        retired = [
+            mob
+            for mob in self._retired_point_geometry
+            if bool((mob.get_animated_attribute("opacity", copy=False) > 0).any())
+        ]
+        for child in [*self._primitive_children(), *retired]:
             primitive = child.get_render_primitives()
             if primitive is None:
                 continue
@@ -245,7 +360,8 @@ class PMobject(Group):
     def set_color(self, color=YELLOW, family=True):
         self.point_color = color
         if len(self.rgbas):
-            self.rgbas[:] = _as_rgba(color).to(self.rgbas.device)
+            rgbas = self.rgbas
+            self.rgbas = _as_rgba(color).to(rgbas).expand(len(rgbas), -1).clone()
         if family:
             for mob in self.children:
                 if isinstance(mob, PMobject):
@@ -332,12 +448,11 @@ class PMobject(Group):
         return self._rebuild_geometry()
 
     def sort_points(self, function=lambda point: point[0]):
-        order = sorted(
-            range(len(self.points)),
-            key=lambda i: function(self.points[i].detach().cpu().numpy()),
-        )
-        order = torch.as_tensor(order, dtype=torch.long, device=self.points.device)
-        self.points = self.points[order]
+        points = self.points
+        values = points.detach().cpu().numpy()
+        order = sorted(range(len(points)), key=lambda i: function(values[i]))
+        order = torch.as_tensor(order, dtype=torch.long, device=points.device)
+        self.points = points[order]
         self.rgbas = self.rgbas[order]
         return self._rebuild_geometry()
 
@@ -355,8 +470,12 @@ class PMobject(Group):
                 rgba_arrays.append(mob.rgbas)
         self.points = torch.cat(point_arrays, 0)
         self.rgbas = torch.cat(rgba_arrays, 0)
-        # Ingestion deliberately replaces the members with their merged points.
-        self.replace_children([])
+        # Ingestion deliberately replaces the members with their merged points;
+        # this cloud's own spheres are left for the rebuild to replace.
+        own = [self._point_geometry, *self._retired_point_geometry]
+        self.replace_children(
+            [child for child in self.children if any(child is g for g in own)]
+        )
         return self._rebuild_geometry()
 
     def point_from_proportion(self, alpha):

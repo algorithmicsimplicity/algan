@@ -26,6 +26,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUTWARD
+from algan.errors import UnsupportedFeatureError
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
@@ -182,6 +183,24 @@ def _preserve_algan_state_unchanged_by_manim(
         _preserve_algan_state_unchanged_by_manim(
             current_child, before_child, after_child
         )
+
+
+def _as_manim_color_arg(value):
+    """A color keyword as one :class:`Color`, which ``to_manim`` converts.
+
+    ``to_color`` widens a bare RGB tensor to five channels without making it a
+    ``Color``, and ``to_manim`` recognizes only the subclass: the five numbers
+    reached Manim as they were, which ``ManimColor`` refuses ("only accepts
+    lists/tuples/arrays of length 3 or 4, not 5").
+    """
+    value = to_color(value)
+    if (
+        torch.is_tensor(value)
+        and not isinstance(value, Color)
+        and value.shape[-1:] == (5,)
+    ):
+        value = value.as_subclass(Color)
+    return value
 
 
 def _uniform_color_and_opacity(color, opacity):
@@ -505,7 +524,7 @@ class ManimCompatMob(ManimMob):
         # -- a Color, a hex string, a hex int, an RGB sequence -- becomes one
         # Color here, and to_manim renders that as a value Manim does take.
         kwargs = {
-            key: (to_color(value) if "color" in key else value)
+            key: (_as_manim_color_arg(value) if "color" in key else value)
             for key, value in kwargs.items()
         }
         manim_kwargs = {key: to_manim(value) for key, value in kwargs.items()}
@@ -837,10 +856,18 @@ class ManimCompatMob(ManimMob):
                 for mob in self.manim_mobject.get_family()
             )
             current_attribute = getattr(self.manim_mobject, name)
-            result = current_attribute(
-                *(to_manim(arg) for arg in args),
-                **{key: to_manim(value) for key, value in kwargs.items()},
-            )
+            try:
+                result = current_attribute(
+                    *(to_manim(arg) for arg in args),
+                    **{key: to_manim(value) for key, value in kwargs.items()},
+                )
+            except (TypeError, ValueError) as error:
+                explained = self._per_frame_argument_error(
+                    name, (*args, *kwargs.values())
+                )
+                if explained is not None:
+                    raise explained from error
+                raise
             if result is self.manim_mobject:
                 self.sync_from_manim(before_source=before_source)
                 return self
@@ -859,6 +886,35 @@ class ManimCompatMob(ManimMob):
 
     def __dir__(self):
         return sorted(set(super().__dir__()) | set(dir(self.manim_mobject)))
+
+    def _per_frame_argument_error(self, name, arguments):
+        """The error to raise when a per-frame value broke a Manim method.
+
+        A render runs an updater once over a whole batch of frames, so what it
+        reads -- ``tracker.get_value()``, a Mob's location -- holds every frame
+        at once. Manim's methods take one value, and fail somewhere inside
+        Manim when handed many.
+        """
+        frames = self.scene.timeline_manager.frames_in_running_updater()
+        if frames < 2 or not any(
+            isinstance(value, (torch.Tensor, np.ndarray))
+            and value.ndim >= 1
+            and value.shape[0] == frames
+            for value in arguments
+        ):
+            return None
+        return UnsupportedFeatureError(
+            f"{type(self).__name__}.{name}() was called from inside an updater "
+            f"with one value per frame. A render runs an updater once over "
+            f"{frames} frames at a time, so the values it reads hold every frame "
+            f"at once, and this Manim method takes a single value.\n\n"
+            f"Algan's own Mobs take per-frame values. For a value that counts "
+            f"up, use Algan's DecimalNumber (the one `from algan import *` "
+            f"gives), whose digits animate without rebuilding geometry:\n\n"
+            f"    tracker = mn.ValueTracker(0).spawn()\n"
+            f"    display = DecimalNumber(0.0).spawn()\n"
+            f"    display.add_updater(lambda m, t: m.set_value(tracker.get_value()))\n"
+        )
 
 
 # Generated wrappers inherit their backing class's docstring, which is the right
@@ -1362,7 +1418,25 @@ class ValueTracker(Mob):
         self._init_default_attr("value", tensor)
 
     def get_value(self):
-        return float(self.value.reshape(-1)[0])
+        """Return the tracked number.
+
+        A render runs an updater once over a whole batch of frames, so inside
+        an updater the tracker holds one number per frame. There the value
+        comes back as a tensor of shape ``(frames, 1, 1)``, which arithmetic
+        such as ``RIGHT * tracker.get_value()`` and
+        ``display.set_value(tracker.get_value())`` broadcast over; a single
+        number would show the batch's first frame on all of them. Everywhere
+        else it is a plain float.
+
+        Returns
+        -------
+        float | torch.Tensor
+            The number, or one number per frame being computed.
+        """
+        value = self.value
+        if value.numel() == 1:
+            return float(value.reshape(-1)[0])
+        return value.reshape(-1, 1, 1)
 
     def set_value(self, value):
         self.value = torch.as_tensor(value, dtype=torch.get_default_dtype()).reshape(
@@ -1397,8 +1471,22 @@ class ComplexValueTracker(Mob):
         self._init_default_attr("complex_value", tensor)
 
     def get_value(self):
-        value = self.complex_value.reshape(-1)
-        return complex(float(value[0]), float(value[1]))
+        """Return the tracked complex number.
+
+        Like :meth:`ValueTracker.get_value`: a plain ``complex`` while
+        authoring, and inside an updater a complex tensor of shape
+        ``(frames, 1, 1)`` holding each frame's value, so ``value.real`` and
+        ``value.imag`` follow the tracker frame by frame.
+
+        Returns
+        -------
+        complex | torch.Tensor
+            The number, or one number per frame being computed.
+        """
+        value = self.complex_value.reshape(-1, 2)
+        if len(value) == 1:
+            return complex(float(value[0, 0]), float(value[0, 1]))
+        return torch.complex(value[:, 0], value[:, 1]).reshape(-1, 1, 1)
 
     def set_value(self, value):
         value = complex(value)

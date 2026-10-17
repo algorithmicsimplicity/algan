@@ -705,8 +705,6 @@ class Cone(Surface):
         self.base_circle.closed_shell = self.closed_shell
         if closed:
             self.add_children(self.base_circle)
-        self.start_point = -direction_t * height * 0.5
-        self.end_point = direction_t * height * 0.5
 
     def _cap_ring_offsets(self, azimuth):
         """The base ring, as offsets from its centre, for the base disc.
@@ -776,14 +774,42 @@ class Cone(Surface):
             (radial - closest_radial).square() + (axial - closest_axial).square()
         )
 
-    def get_start(self):
-        return self.start_point
+    # The ends are read off the cone's frame as it is now -- the axis is the
+    # basis's up row, scale included, and the side spans half the height
+    # either way of the location -- so they follow every move, turn and scale.
+    # They used to be stored when the cone was built, and a moved cone (an
+    # Arrow3D's tip among them) still reported where it had started.
+    def get_start(self) -> torch.Tensor:
+        """Get the centre of the cone's base, in world units.
 
-    def get_end(self):
-        return self.end_point
+        Returns
+        -------
+        torch.Tensor
+            The point, shape ``(*, 3)``, wherever the cone has since been
+            moved, turned or scaled to.
+        """
+        return self.location - self.get_up_basis() * (self.height * 0.5)
 
-    def get_direction(self):
-        return self.direction
+    def get_end(self) -> torch.Tensor:
+        """Get the cone's tip, in world units.
+
+        Returns
+        -------
+        torch.Tensor
+            The point, shape ``(*, 3)``, wherever the cone has since been
+            moved, turned or scaled to.
+        """
+        return self.location + self.get_up_basis() * (self.height * 0.5)
+
+    def get_direction(self) -> torch.Tensor:
+        """Get the direction the cone's tip points, from its base.
+
+        Returns
+        -------
+        torch.Tensor
+            The unit direction, shape ``(*, 3)``, as the cone is now turned.
+        """
+        return self.get_up_direction()
 
 
 class Cylinder(Surface):
@@ -911,14 +937,23 @@ class Cylinder(Surface):
             self.add_bases(direction_t)
 
     def add_bases(self, direction=None):
+        # On the tube as it is now: either side of its location, along its
+        # axis, and as long as it now is. Built about the origin from the
+        # constructor's direction and height, a tube moved, turned or scaled
+        # before it was capped had its caps left floating where it was built.
+        up = self.get_up_basis()
         if direction is None:
-            direction = F.normalize(cast_to_tensor(self.direction), p=2, dim=-1)
-        offset = direction * self.height * 0.5
+            direction = F.normalize(up, p=2, dim=-1)
+        else:
+            direction = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
+        offset = direction * (up.norm(p=2, dim=-1, keepdim=True) * self.height * 0.5)
+        location = self.location
+        start, end = location - offset, location + offset
         if getattr(self, "bottom_cap", None) is not None:
             # Idempotent, like ``add_children``: a second call re-aims the caps
             # this cylinder already has rather than building a second pair that
             # would stay attached and registered behind the first.
-            return self._place_bases(direction, -offset, offset)
+            return self._place_bases(direction, start, end)
         # Scene actors, not merely children: the render loop collects
         # primitives from ``Scene.actors`` and never walks the hierarchy, so a
         # cap that is only ``add_children``-ed is never drawn and the cylinder
@@ -955,7 +990,7 @@ class Cylinder(Surface):
         self.base_bottom = self.bottom_cap
         self.base_top = self.top_cap
         self.add_children(self.bottom_cap, self.top_cap)
-        self._place_bases(direction, -offset, offset)
+        self._place_bases(direction, start, end)
         if self.is_spawned():
             # Called after the tube was spawned, which the class docstring
             # invites. Spawn is recursive from the parent, so a cap attached
@@ -1049,8 +1084,14 @@ class Cylinder(Surface):
 
     def set_direction(self, direction):
         direction = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
-        start = self.get_center() - direction * self.height * 0.5
-        end = self.get_center() + direction * self.height * 0.5
+        # About the tube's own centre, and half its length as it is now, scale
+        # included, so turning it neither moves nor resizes it. The centre of
+        # its bounding box is not quite that -- the vertices round a ring sit
+        # unevenly either side of the axis -- so the tube used to creep sideways.
+        centre = self.location
+        half = self.get_up_basis().norm(p=2, dim=-1, keepdim=True) * (self.height * 0.5)
+        start = centre - direction * half
+        end = centre + direction * half
         self.direction = direction
         return self.move_between_points(start, end)
 
@@ -1062,7 +1103,9 @@ class Cylinder(Surface):
         # the per-synapse stretch path updaters hammer.
         basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
         location = self.get_animated_attribute("location", copy=False)
-        offset = basis_rows[..., 1, :] * 0.5
+        # The side spans ``height`` times the up row, centred on the location
+        # (see coord_function); _move_between_points keeps it that way.
+        offset = basis_rows[..., 1, :] * (self.height * 0.5)
         current_end = location + offset
         current_start = location - offset
         point = current_start * (1 - interpolation) + interpolation * cast_to_tensor(
@@ -1075,7 +1118,7 @@ class Cylinder(Surface):
     def set_end_point(self, point, interpolation=1):
         basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
         location = self.get_animated_attribute("location", copy=False)
-        offset = basis_rows[..., 1, :] * 0.5
+        offset = basis_rows[..., 1, :] * (self.height * 0.5)
         current_end = location + offset
         current_start = location - offset
         point = current_end * (1 - interpolation) + interpolation * cast_to_tensor(
@@ -1093,7 +1136,7 @@ class Cylinder(Surface):
         offset = (
             F.normalize(basis_rows[..., 1, :], p=2, dim=-1)
             * basis_rows.norm(p=2, dim=-1)[..., 1].unsqueeze(-1)
-            * 0.5
+            * (self.height * 0.5)
         )
         current_end = location + offset
         current_start = location - offset
@@ -1120,12 +1163,16 @@ class Cylinder(Surface):
             # Line3D showed it plainly.
             forward_b = torch.cross(right_b, up_b, dim=-1)
             self.move_to((start + end) * 0.5)
+            # The up row over the built height: coord_function multiplies it
+            # back, so the side spans ``start`` to ``end`` whatever ``height``
+            # is. Unscaled, a cylinder not one unit long came out ``height``
+            # times too long.
             self._setattr_and_record_modification(
                 "basis",
                 torch.cat(
                     (
                         right_b * self.scale_coefficient[..., :1],
-                        end - start,
+                        (end - start) / self.height,
                         forward_b * self.scale_coefficient[..., 2:],
                     ),
                     -1,
@@ -1444,11 +1491,30 @@ class Line3D(Cylinder):
         super().__init__(radius=radius, height=1, closed=True, **kwargs)
         self.move_between_points(self.start, self.end)
 
-    def get_start(self):
-        return self.start.clone()
+    # Read off the tube as it is now, as Arrow3D's and the 2-D Line's ends are,
+    # rather than the points it was last stretched between: a moved, turned or
+    # scaled line used to report where it had been.
+    def get_start(self) -> torch.Tensor:
+        """Get the centre of the line's start, in world units.
 
-    def get_end(self):
-        return self.end.clone()
+        Returns
+        -------
+        torch.Tensor
+            The point, shape ``(*, 3)``, wherever the line has since been
+            moved, turned or scaled to.
+        """
+        return self.location - self.get_up_basis() * (self.height * 0.5)
+
+    def get_end(self) -> torch.Tensor:
+        """Get the centre of the line's end, in world units.
+
+        Returns
+        -------
+        torch.Tensor
+            The point, shape ``(*, 3)``, wherever the line has since been
+            moved, turned or scaled to.
+        """
+        return self.location + self.get_up_basis() * (self.height * 0.5)
 
     def set_start_and_end_attrs(self, start, end, **kwargs):
         from algan.utils.tensor_utils import cast_to_tensor
@@ -1482,9 +1548,25 @@ class Line3D(Cylinder):
 
     @classmethod
     def perpendicular_to(cls, line, point, length=1, **kwargs):
-        direction = line.get_end() - line.get_start()
-        perpendicular = get_orthonormal_vector(F.normalize(direction, p=2, dim=-1))
-        point = point.get_center() if hasattr(point, "get_center") else point
+        start = line.get_start()
+        direction = F.normalize(line.get_end() - start, p=2, dim=-1)
+        point = cast_to_tensor(
+            point.get_center() if hasattr(point, "get_center") else point
+        )
+        # Square to the line, in the plane through it and the point: the line
+        # through ``point`` that meets ``line`` at a right angle, as Manim's
+        # does. Any perpendicular would do for a point on the line itself.
+        # This used to be any perpendicular whatever the point, so the result
+        # generally passed the line by without meeting it.
+        offset = point - start
+        across = offset - (offset * direction).sum(-1, keepdim=True) * direction
+        distance = across.norm(p=2, dim=-1, keepdim=True)
+        on_line = distance <= 1e-6 * (1 + offset.norm(p=2, dim=-1, keepdim=True))
+        perpendicular = torch.where(
+            on_line,
+            get_orthonormal_vector(direction),
+            across / distance.clamp_min(1e-12),
+        )
         return cls(
             point - perpendicular * length / 2,
             point + perpendicular * length / 2,

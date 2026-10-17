@@ -15,7 +15,7 @@ Depth
 =====
 
 The third axis is ``OUT`` (towards the viewer) and ``IN`` (away from it). The
-default camera sits at ``OUT * 7`` looking at the ``ORIGIN``, so moving something
+default camera sits at ``OUT * 20`` looking at the ``ORIGIN``, so moving something
 ``IN`` pushes it away and makes it look smaller:
 
 .. algan:: ThreeDDepth

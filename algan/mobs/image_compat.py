@@ -24,6 +24,12 @@ def _load_rgba5(filename_or_array) -> torch.Tensor:
         else filename_or_array
     )
     if isinstance(value, np.ndarray):
+        # Manim's change_to_rgba_array reads a 2-D or one-channel array as
+        # grey. Unexpanded, its columns were taken for color channels.
+        if value.ndim == 2:
+            value = value[..., np.newaxis]
+        if value.ndim == 3 and value.shape[-1] == 1:
+            value = np.repeat(value, 3, axis=-1)
         value = torch.from_numpy(value)
         if value.dtype == torch.uint8:
             value = value.float() / 255
@@ -203,7 +209,7 @@ class ImageMobject(AbstractImageMobject):
             + mobject2.pixel_array.astype(np.float32) * alpha
         )
         self.pixel_array = values.round().astype(np.uint8)
-        self._sync_texture()
+        return self._sync_texture()
 
     def get_style(self):
         alpha = float(self.pixel_array[..., 3].mean() / 255)

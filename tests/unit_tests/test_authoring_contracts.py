@@ -21,9 +21,10 @@ from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
 from algan.constants.color import BLUE
 from algan.errors import AlganConfigurationError, HierarchyError
 from algan.mobs.group import Group
+from algan.mobs.numeric_display import DecimalNumber
 from algan.mobs.shapes_2d import Square
 from algan.mobs.surfaces.surface import Surface
-from algan.mobs.text import Text
+from algan.mobs.text import MarkupText, Paragraph, Text, TextTriangulated
 from algan.scene import Scene
 from algan.scene_manager import SceneManager
 from algan.settings import SETTINGS
@@ -315,6 +316,64 @@ def test_a_legacy_name_on_scene_wait_names_the_replacement(name):
 def test_an_unknown_keyword_on_scene_wait_is_still_a_plain_type_error():
     with pytest.raises(TypeError, match=r"unexpected keyword argument 'seconds'"):
         Scene.wait(seconds=1)
+
+
+def test_a_manim_keyword_on_a_constructor_names_the_algan_spelling():
+    with pytest.raises(
+        TypeError,
+        match=r"^Square\(\) got unexpected keyword argument: `side_length` -- "
+        r"`side_length`: Square takes `size`",
+    ):
+        Square(side_length=2)
+
+
+def _typst(*args, **kwargs):
+    pytest.importorskip("typst")
+    from algan.mobs.typst import Typst
+
+    return Typst(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("name", "build"),
+    [
+        pytest.param(name, build, id=name)
+        for name, build in [
+            ("Text", lambda: Text("a", bogus=1)),
+            ("MarkupText", lambda: MarkupText("a", bogus=1)),
+            ("TextTriangulated", lambda: TextTriangulated("a", bogus=1)),
+            ("Paragraph", lambda: Paragraph("a", "b", bogus=1)),
+            ("DecimalNumber", lambda: DecimalNumber(1.5, bogus=1)),
+            ("Typst", lambda: _typst("a", bogus=1)),
+        ]
+    ],
+)
+def test_a_composite_names_itself_for_a_keyword_it_does_not_take(name, build):
+    """REGRESSION. A composite hands its keywords to the parts it builds, and
+    the error named whichever part saw one first: ``Text("a", bogus=1)``
+    reported ``BezierCircuitCubic()``, and a ``Typst`` reported ``ManimMob()``.
+    """
+    with pytest.raises(
+        TypeError, match=rf"^{name}\(\) got unexpected keyword argument: `bogus`\.$"
+    ):
+        build()
+
+
+@pytest.mark.parametrize(
+    ("manim", "algan"),
+    [
+        ("t2c", "color_map"),
+        ("t2f", "font_map"),
+        ("t2g", "gradient_map"),
+        ("t2s", "slant_map"),
+        ("t2w", "weight_map"),
+    ],
+)
+def test_manim_text_span_keywords_name_the_algan_spelling(manim, algan):
+    with pytest.raises(
+        TypeError, match=rf"^Text\(\) .* `{manim}`: Text spells it `{algan}=`"
+    ):
+        Text("abc", **{manim: {"b": "#FF0000"}})
 
 
 # --------------------------------------------------------------------------

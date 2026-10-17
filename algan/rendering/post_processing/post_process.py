@@ -124,7 +124,9 @@ def _agx_curve(src, dst, x2, x4, scratch):
     dst.add_(scratch).sub_(0.00232)
 
 
-def _agx_tonemap(rgb, exposure, memory):
+def _agx_tonemap(rgb, exposure, memory, *, linearize=False):
+    # ``linearize`` is three.js's "Linearize" step; see ``agx_tonemap`` in
+    # raytrace_kernels_taichi, the twin this is kept in step with.
     shape = rgb.shape
     a = memory.clone(rgb.reshape(-1, 3))
     a.mul_(exposure)
@@ -171,6 +173,8 @@ def _agx_tonemap(rgb, exposure, memory):
         ),
         scratch,
     )
+    if linearize:
+        a.clamp_(min=0.0).pow_(2.2)
     # Linear Rec.2020 -> linear Rec.709. Both spaces share the D65 white point,
     # so this must map white to white and every row must therefore sum to 1.
     # It was written transposed until 2026-08-22, giving row sums of
@@ -303,9 +307,10 @@ def _finalize_on_device(
             if rgb_source.dtype == torch.uint8:
                 rgb = memory.cast(rgb_source, torch.float32)
                 rgb.div_(255.0)
-            elif premultiplied_over:
-                # Match the kernel's f32 exposure/OETF even when the optional
-                # HDR render buffer is f16. Half arithmetic can move a byte.
+            elif premultiplied_over or rgb_source.dtype != torch.float32:
+                # Match the kernel's f32 exposure/curve/OETF even when the
+                # optional HDR render buffer is f16. Half arithmetic can move a
+                # byte -- up to four under AgX.
                 rgb = memory.cast(rgb_source, torch.float32)
             else:
                 rgb = rgb_source
@@ -314,7 +319,9 @@ def _finalize_on_device(
                 if tonemap_method == "neutral":
                     rgb_tonemapped = _neutral_tonemap(rgb, exposure, memory)
                 elif tonemap_method == "agx":
-                    rgb_tonemapped = _agx_tonemap(rgb, exposure, memory)
+                    rgb_tonemapped = _agx_tonemap(
+                        rgb, exposure, memory, linearize=bool(_rt.linear_color_space)
+                    )
                 else:
                     raise ValueError(f"Unknown tonemapping method: {tonemap_method}")
             else:

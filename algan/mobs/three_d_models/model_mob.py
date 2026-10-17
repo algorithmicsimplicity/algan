@@ -248,6 +248,44 @@ class Model3D(Mob):
         if fit_to_size is not None:
             self._normalize(fit_to_size)
 
+        # The geometry is in the model's own coordinates, whose origin is this
+        # Mob's ``location``: put it there, as any Mob built at a location is.
+        location, basis = self._current_frame()
+        if bool(location.any()):
+            with Off(animation_manager=self.animation_manager):
+                for mob in self.mesh_mobs:
+                    mob.location = mob.location + location
+        # Turning or scaling the model carries its geometry through its basis
+        # from this one on; _placement carries a baked pose the same way.
+        self._built_basis = basis.clone()
+
+    def _current_frame(self):
+        """This Mob's ``location`` ``[3]`` and ``basis`` ``[3, 3]`` as authored
+        so far.
+        """
+        return (
+            self.location.reshape(-1, 3)[0],
+            self.basis.reshape(-1, 9)[0].reshape(3, 3),
+        )
+
+    def _placement(self):
+        """A function taking ``[N, 3]`` points in the model's own coordinates
+        to where they are now: through every turn or scale applied to the
+        model since it was built, then to its location.
+        """
+        location, basis = self._current_frame()
+        linear = None
+        if not torch.equal(basis, self._built_basis):
+            linear = torch.linalg.solve(self._built_basis, basis)
+        moved = bool(location.any())
+
+        def place(points):
+            if linear is not None:
+                points = points @ linear
+            return points + location if moved else points
+
+        return place
+
     def _build_mesh_mob(
         self, scene_data, mesh, matrix, device, load_textures, smooth_normals
     ):
@@ -482,8 +520,10 @@ class Model3D(Mob):
         Evaluates every node's animated local transform at each sample time,
         composes them down the hierarchy and transforms each mesh instance's
         local vertices, yielding the exact geometry the ray tracer renders per
-        frame. Pure computation (no scene mutation), so it is unit-testable and
-        also drives :meth:`play_animation`.
+        frame -- placed where the model stands now, so a model moved, turned or
+        scaled since it was loaded poses in place. Pure computation (no scene
+        mutation), so it is unit-testable and also drives
+        :meth:`play_animation`.
 
         Parameters
         ----------
@@ -516,6 +556,7 @@ class Model3D(Mob):
 
         center = self._norm_center.to(device)
         scale = self._norm_scale
+        place = self._placement()
         corners = {}
         for mob in self.mesh_mobs:
             local_corners = mob._local_vertices[mob.corner_index]  # [3F, 3] local
@@ -525,8 +566,9 @@ class Model3D(Mob):
                     w[mob._node_idx] if 0 <= mob._node_idx < len(w) else _eye4(device)
                 )
                 world_corners = _transform_points(local_corners, matrix)
-                # Fold in the same recenter/scale normalize() applied.
-                frames.append((world_corners - center) * scale)
+                # Fold in the same recenter/scale normalize() applied, then
+                # follow the model to wherever it has been placed since.
+                frames.append(place((world_corners - center) * scale))
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
@@ -551,7 +593,9 @@ class Model3D(Mob):
         ---------
         Spawn the model first. Playback records the mesh geometry over
         ``runtime`` seconds per loop, preserving the spacing between baked
-        samples. Each loop starts at the clip's first pose. Compose playback
+        samples. Each loop starts at the clip's first pose. The poses are
+        placed wherever the model stands when this is called, so a model
+        moved, turned or scaled beforehand plays in place. Compose playback
         with other recorded motion using ``Sync()`` or ``Seq()``.
 
         Parameters
