@@ -1621,8 +1621,16 @@ class Animatable:
             clone.id = self.id
         # The attribute copy below would otherwise hand the clone the source's
         # registration flag, and a clone is registered by this policy, not by
-        # whatever the source was built with.
-        object.__setattr__(clone, "_added_to_scene", bool(add_to_scene))
+        # whatever the source was built with. A view is the exception: it is
+        # never registered itself, because its source's rows already draw, but
+        # it speaks for that source -- so a copy of ``text[0]`` with its own
+        # data registers the glyph's parts as the text's did, instead of
+        # reading the view's unregistered parts as reference geometry and
+        # drawing nothing.
+        registered = (
+            add_to_scene if clone_data else getattr(self, "_added_to_scene", True)
+        )
+        object.__setattr__(clone, "_added_to_scene", bool(registered))
         if add_to_scene:
             self.scene.add_actor(clone)
             self.animation_manager.context.add_mob(clone)
