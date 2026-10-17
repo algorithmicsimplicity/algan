@@ -673,10 +673,10 @@ class Tex(Mob):
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
-            The morphed Mob. With the default ``detach_history=True`` this can be a
-            **different object** from the one you called the method on, so use the
-            return value afterwards. Character views are rebuilt when the result is
-            still text.
+            The morphed Mob. With ``detach_history=True``, the default outside an
+            updater, this can be a **different object** from the one you called the
+            method on, so use the return value afterwards. Character views are
+            rebuilt when the result is still text.
         """
         result = super().become(other_mob, *args, **kwargs)
         # ``detach_history`` returns a clone, and cubic morphing may expand the

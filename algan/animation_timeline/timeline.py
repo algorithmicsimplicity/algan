@@ -914,6 +914,15 @@ def _initial_buffer_rows(channels, requested):
     return max(2, min(int(requested), _INITIAL_RESERVATION_BYTES // row_bytes))
 
 
+class _ReplayUpdaterOneFrameAtATime(BaseException):
+    """Abandons a batched updater call that began building a Mob.
+
+    Raised by :meth:`AnimationTimeline.add_mob_attr` and caught by the replay
+    loop, which then runs the updater once per frame. A ``BaseException`` so an
+    ``except Exception`` in the updater cannot swallow it.
+    """
+
+
 class AttributeTimeline:
     """
     A Scene-owned timeline recording every Mob row for one attribute.
@@ -1268,7 +1277,12 @@ class AttributeTimeline:
             out[:, born_rows] = self._current_state_rows(key[born_rows], n_times)
         return out
 
+    #: Writes made through :meth:`modify`, by any timeline: whether a replayed
+    #: updater has written anything yet (see AnimationTimeline.add_mob_attr).
+    write_count = 0
+
     def modify(self, key, value):
+        AttributeTimeline.write_count += 1
         # Replaying an animation modifies the temporary materialized buffer,
         # not the recorded edit log/current state.  Invalidating the prepared
         # CSR query data here made every frame batch rebuild and re-sort the
@@ -2596,6 +2610,8 @@ class AnimationTimeline:
         # materialization; off, replay is batched over the window as always.
         self.replay_frame_by_frame = False
         self._active_updater_trace = None
+        # AttributeTimeline.write_count when the replayed updater call began.
+        self._updater_call_write_count = 0
         self._active_updater_write_capture = None
         # (id(updater event), parent mob id) pairs already warned about, so a
         # loop that re-parents the same Mob every iteration says it once.
@@ -2839,11 +2855,34 @@ class AnimationTimeline:
             return
         timeline = self.attr_to_timeline[attr]
         if self._replay_depth > 0 and mob.id not in timeline.mob_id_to_inds:
+            self._replay_updater_building_mobs_one_frame_at_a_time()
             # Built by an updater re-executed to materialize frames; rolled
             # back when the replay ends.
             self.note_replay_born_mob(mob.id)
         timeline.add(mob, value)
         return
+
+    def _replay_updater_building_mobs_one_frame_at_a_time(self):
+        """Have the updater running now replayed once per frame: it builds Mobs.
+
+        A Mob built while frames are replayed holds one pose -- its rows lie
+        outside the batch's window and have no frame axis -- so an updater that
+        builds one from per-frame values, as ``Line(a.get_center(),
+        b.get_center())``, gave it the batch's last frame on every frame, and
+        morphing into it failed outright. One frame at a time, each frame's
+        Mob is that frame's. A batched call that has written nothing yet is
+        abandoned here and replayed per frame at once; one that has would apply
+        those writes twice, so its next batch is the first replayed per frame.
+        """
+        event = self._active_updater_trace
+        if event is None or event.one_frame_at_a_time:
+            return
+        event.one_frame_at_a_time = True
+        if (
+            AttributeTimeline.write_count == self._updater_call_write_count
+            and len(self.replay_frames()) > 1
+        ):
+            raise _ReplayUpdaterOneFrameAtATime
 
     def get_inds(self, attr, mob, value=None):
         if attr not in self.attr_to_timeline:
@@ -4026,6 +4065,10 @@ class AnimationTimeline:
             for chunk in times[first:last].split(batch_size):
                 yield chunk, replacements
 
+    def is_running_updater(self) -> bool:
+        """Whether an updater is running now: applied as it is added, or replayed."""
+        return self._active_updater_trace is not None
+
     def is_replaying(self) -> bool:
         """Whether frames are currently being materialized from the timeline.
 
@@ -4239,31 +4282,37 @@ class AnimationTimeline:
                     time_inds, f.one_frame_at_a_time
                 )
             ):
-                group_selector = (
-                    group_time_inds
-                    if _opt_disabled("timeslice")
-                    else _contiguous_time_selector(group_time_inds)
-                )
-                for timeline in self.attr_to_timeline.values():
-                    timeline.set_active_time_inds(group_selector)
-                elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
-                caller, args, kwargs = f.invocation_for_signature(signature)
-                previous_trace = self.begin_updater_dependency_trace(f)
                 try:
-                    f.function(
-                        caller,
-                        elapsed.view(-1, 1, 1),
-                        *args,
-                        **kwargs,
-                    )
-                finally:
-                    self.end_updater_dependency_trace(previous_trace)
+                    self._replay_updater(f, signature, group_time_inds, times)
+                except _ReplayUpdaterOneFrameAtATime:
+                    # It began building a Mob; see
+                    # _replay_updater_building_mobs_one_frame_at_a_time.
+                    for frame in group_time_inds.split(1):
+                        self._replay_updater(f, signature, frame, times)
 
         for timeline in self.attr_to_timeline.values():
             timeline.set_active_time_inds(slice(None, None, None))
         self._materialization_times = None
         self._materialized_mob_ids = None
         return self
+
+    def _replay_updater(self, f, signature, group_time_inds, times):
+        """Run updater ``f`` over one ``[k, 1]`` group of the batch's frames."""
+        group_selector = (
+            group_time_inds
+            if _opt_disabled("timeslice")
+            else _contiguous_time_selector(group_time_inds)
+        )
+        for timeline in self.attr_to_timeline.values():
+            timeline.set_active_time_inds(group_selector)
+        elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
+        caller, args, kwargs = f.invocation_for_signature(signature)
+        previous_trace = self.begin_updater_dependency_trace(f)
+        self._updater_call_write_count = AttributeTimeline.write_count
+        try:
+            f.function(caller, elapsed.view(-1, 1, 1), *args, **kwargs)
+        finally:
+            self.end_updater_dependency_trace(previous_trace)
 
     @staticmethod
     def _in_execution_order(functions, plain_writes):

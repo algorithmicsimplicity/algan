@@ -13,6 +13,10 @@ while the updater runs, and their rows are released when the replay ends, so a
 render leaves the Scene exactly as the script wrote it. What an updater still
 cannot do is reshape a Mob that existed before the render -- the batch's window
 was materialized against the rows it had -- and that now says so.
+
+Such a Mob holds one pose, so an updater that builds one is replayed one frame
+at a time; replayed over a batch, a Mob built from per-frame values held the
+batch's last frame on every frame, and ``become`` into it failed.
 """
 
 from __future__ import annotations
@@ -22,8 +26,10 @@ import torch
 
 import algan
 import algan.manim as mn
-from algan.errors import UnsupportedFeatureError
+from algan.errors import AlganConfigurationError, UnsupportedFeatureError
 from algan.settings.video_settings import SMOKE_TEST
+
+FRAMES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0])
 
 
 def _row_counts(scene):
@@ -223,3 +229,82 @@ def test_a_number_outgrowing_its_digits_in_an_updater_is_explained(tmp_path):
         result = algan.Scene.save_video(str(tmp_path / "roomy.mp4"), SMOKE_TEST)
 
     assert result.status == "rendered"
+
+
+def _dots_moving_apart(scene):
+    a, b = algan.Dot(algan.LEFT * 2), algan.Dot(algan.RIGHT * 2)
+    algan.Group(a, b).spawn(animate=False)
+    return a, b
+
+
+def test_a_mob_an_updater_builds_holds_each_frames_values():
+    with algan.Scene() as scene:
+        a, b = _dots_moving_apart(scene)
+        middle = algan.Dot().spawn(animate=False)
+        middle.add_updater(
+            lambda m, t: m.move_to(
+                algan.Line(a.get_center(), b.get_center()).get_center()
+            )
+        )
+        with algan.Seq(runtime=2):
+            a.move(algan.UP * 2)
+
+        scene.timeline_manager.set_state_to_times(FRAMES)
+        expected = (a.get_center() + b.get_center()) / 2
+        assert len(set(expected[..., 1].reshape(-1).tolist())) == len(FRAMES)
+        torch.testing.assert_close(middle.get_center(), expected)
+
+
+def test_become_inside_an_updater_morphs_the_mob_in_place(tmp_path):
+    """The Manim habit of redrawing a Mob every frame."""
+    with algan.Scene() as scene:
+        a, b = _dots_moving_apart(scene)
+        line = algan.Line(algan.LEFT, algan.RIGHT).spawn(animate=False)
+        line.add_updater(
+            lambda m, t: m.become(algan.Line(a.get_center(), b.get_center()))
+        )
+        with algan.Seq(runtime=2):
+            a.move(algan.UP * 2)
+
+        scene.timeline_manager.set_state_to_times(FRAMES)
+        corners = line.get_bounding_box()
+        ends = torch.cat([a.get_center(), b.get_center()], -2)
+        torch.testing.assert_close(corners.amin(-2), ends.amin(-2))
+        torch.testing.assert_close(corners.amax(-2), ends.amax(-2))
+        scene.timeline_manager.clear_buffers()
+
+        result = scene.save_video(tmp_path / "redrawn.mp4", SMOKE_TEST)
+
+    assert result.status == "rendered"
+
+
+def test_become_cannot_hand_the_mob_away_inside_an_updater():
+    """The replacement would take the screen; the updater would stay behind."""
+    with algan.Scene():
+        line = algan.Line(algan.LEFT, algan.RIGHT).spawn(animate=False)
+        with pytest.raises(AlganConfigurationError, match="inside an updater"):
+            line.add_updater(
+                lambda m, t: m.become(
+                    algan.Line(algan.UP, algan.DOWN), detach_history=True
+                )
+            )
+
+
+def test_an_updater_that_writes_before_building_a_mob_writes_once():
+    """Switching it to one frame at a time mid-call would redo the write."""
+    with algan.Scene() as scene:
+        dot = algan.Dot().spawn(animate=False)
+
+        def drift(mob, t):
+            mob.move(algan.RIGHT * t)
+            algan.Dot()
+
+        dot.add_updater(drift)
+        algan.Scene.wait(2)
+
+        # The first batch replays it over every frame, the next one at a time.
+        for _ in range(2):
+            scene.timeline_manager.set_state_to_times(FRAMES)
+            torch.testing.assert_close(
+                dot.location[..., 0].reshape(-1), FRAMES, atol=1e-5, rtol=0
+            )

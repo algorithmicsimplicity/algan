@@ -818,7 +818,8 @@ class Animatable:
         update_function
             Callable taking ``(mob, time_elapsed, *args, **kwargs)``, where
             ``time_elapsed`` is in seconds. It must be vectorized over the Mob's
-            batch.
+            batch. One that builds a Mob, or reads an
+            ``algan.manim.ValueTracker``, is run once per frame instead.
         *args, **kwargs
             Passed to ``update_function`` after the elapsed time.
 

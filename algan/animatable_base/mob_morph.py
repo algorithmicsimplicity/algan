@@ -2087,7 +2087,7 @@ class MobMorphMixin:
         self,
         other_mob: Mob,
         *,
-        detach_history: bool = True,
+        detach_history: bool | None = None,
         minimize_movement: bool = False,
         strategy: str = "auto",
     ) -> Mob:
@@ -2115,7 +2115,10 @@ class MobMorphMixin:
         ``detach_history=False`` keeps identity for compatibility and therefore
         uses a dissolve where a target-class replacement would be required.
         Updaters remain attached to replaced sources rather than being migrated
-        to replacements.
+        to replacements -- which is why, inside an updater, ``detach_history``
+        defaults to False and cannot be True: the Mob morphs in place, as
+        Manim's ``become`` does, rather than handing the screen to a
+        replacement the updater does not drive.
 
         Notes
         -----
@@ -2144,6 +2147,16 @@ class MobMorphMixin:
         if other_mob.scene is not self.scene:
             raise AlganConfigurationError(
                 "become requires source and target Mobs in the same Scene"
+            )
+        in_updater = self.scene.timeline_manager.is_running_updater()
+        if detach_history is None:
+            detach_history = not in_updater
+        elif detach_history and in_updater:
+            raise AlganConfigurationError(
+                "become(..., detach_history=True) cannot run inside an updater: "
+                "it hands the screen to a new Mob, while the updater stays on "
+                "this one and runs again every frame. Leave detach_history out, "
+                "or pass False, to morph this Mob in place."
             )
         if (
             strategy == "morph"

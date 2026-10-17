@@ -136,6 +136,19 @@ frame; only an updater that first reads a tracker during a render is batched
 (and handed a per-frame tensor) for that one batch. Other updaters and the
 recorded functions stay batched. `test_manim_compat_updaters.py` guards it.
 
+An updater that builds a Mob while a batch is replayed is switched too
+(`add_mob_attr` -> `_replay_updater_building_mobs_one_frame_at_a_time`): a
+replay-born Mob has no frame axis, so built from per-frame values it held the
+batch's last frame everywhere, and `become` into it failed. The flag is not set
+at authoring, where compat edits and `put_start_and_end_on` build temporaries
+their replay paths do not. If the batched call has written nothing yet
+(`AttributeTimeline.write_count` unchanged since `_replay_updater` began it),
+`_ReplayUpdaterOneFrameAtATime` abandons it and the loop reruns that group per
+frame; after a write it finishes batched, since rerunning would apply a
+relative write (`move`, `rotate`) twice. `test_updater_mob_creation.py` guards
+both, and `become` defaults to `detach_history=False` inside an updater
+(`is_running_updater()`), where a spliced-in replacement would be undriven.
+
 ### Why `reset=False` is safe
 
 Render-state preservation and `timeline_manager.clear_buffers()` restore authored
