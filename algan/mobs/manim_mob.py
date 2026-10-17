@@ -23,6 +23,7 @@ See :doc:`/advanced_user_tutorials/importing_from_manim`.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 from algan.animatable_base.animatable import _reports_refused_keywords
@@ -72,6 +73,21 @@ def _conversion_signature(manim_mob):
         _translucent(fill_opacity),
         _translucent(getattr(manim_mob, "stroke_opacity", None)),
     )
+
+
+def _finite_curves(points):
+    """Manim's points without the cubic curves that hold a NaN or infinity.
+
+    A function Manim samples where it is undefined -- ``ax.plot(np.sqrt)`` over
+    the negative half of an axis, or ``np.log`` at zero -- leaves non-finite
+    points in the path, which Manim's renderer simply does not draw and which
+    crashed the conversion. Dropping each curve that holds one leaves a gap
+    where the function is undefined, as between two of Manim's subpaths.
+    """
+    if len(points) % 4 or np.isfinite(points).all():
+        return points
+    curves = points.reshape(-1, 4, points.shape[-1])
+    return curves[np.isfinite(curves).all(axis=(1, 2))].reshape(-1, points.shape[-1])
 
 
 class ManimMob(BezierCircuitCubic):
@@ -168,18 +184,20 @@ class ManimMob(BezierCircuitCubic):
         # No coordinate conversion: Manim's OUT and Algan's OUTWARD are both
         # +z, so imported points keep the numbers they were built with.
         empty = False
-        if len(manim_mob.points) == 0:
+        points = _finite_curves(manim_mob.points)
+        if len(points) == 0:
+            center = manim_mob.get_center() if len(manim_mob.points) == 0 else None
+            if center is None or not np.isfinite(center).all():
+                center = np.zeros(3)
             control_points = (
-                torch.from_numpy(manim_mob.get_center())
+                torch.from_numpy(np.asarray(center))
                 .float()
                 .to(torch.get_default_device())
             )
             control_points = torch.stack([control_points for _ in range(4)], -2)
             empty = True
         else:
-            control_points = torch.from_numpy(manim_mob.points).to(
-                torch.get_default_device()
-            )
+            control_points = torch.from_numpy(points).to(torch.get_default_device())
             if len(control_points) == 1:
                 control_points = control_points.expand(
                     *([-1] * (control_points.dim() - 2)), 4, -1
