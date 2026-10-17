@@ -136,6 +136,30 @@ def _keep_pass_parents(root, parents):
         root._pass_parents = tuple(parents)
 
 
+def _sample_grid_bilinearly(samples, uv):
+    """Bilinearly read ``samples`` (``[W, H, C]``) at ``uv`` (``[..., 2]``).
+
+    The samples are taken on a surface's uniform ``(u, v)`` lattice over
+    ``[0, 1]``, so ``(u, v)`` sits ``u * (W - 1)``, ``v * (H - 1)`` grid steps
+    from the first one, and every lattice point reads back its own sample.
+    """
+    width, height = samples.shape[0], samples.shape[1]
+    fu = uv[..., 0].clamp(0, 1) * (width - 1)
+    fv = uv[..., 1].clamp(0, 1) * (height - 1)
+    i0 = fu.floor().clamp(max=max(width - 2, 0)).long()
+    j0 = fv.floor().clamp(max=max(height - 2, 0)).long()
+    i1 = (i0 + 1).clamp(max=width - 1)
+    j1 = (j0 + 1).clamp(max=height - 1)
+    s = (fu - i0).unsqueeze(-1).to(samples)
+    t = (fv - j0).unsqueeze(-1).to(samples)
+    return (
+        samples[i0, j0] * (1 - s) * (1 - t)
+        + samples[i1, j0] * s * (1 - t)
+        + samples[i0, j1] * (1 - s) * t
+        + samples[i1, j1] * s * t
+    )
+
+
 class MobMorphMixin:
     """``become`` plus the structural helpers used to align arbitrary Mobs."""
 
@@ -670,11 +694,18 @@ class MobMorphMixin:
             aligned.append(segment)
         return torch.stack(aligned, dim=-3)
 
-    def _expand_n_batch(self, n: int) -> Mob:
-        """Grow an object batch by ``n``, re-batching all structural state."""
+    def _expand_n_batch(self, n: int, *, points_per_object=None) -> Mob:
+        """Grow an object batch by ``n``, re-batching all structural state.
+
+        ``points_per_object`` overrides ``num_points_per_object`` for a Mob
+        whose objects are blocks of rows it does not describe itself -- a
+        surface grid, whose object is a whole ``grid_width * grid_height``
+        grid (see ``_reconcile_grid_members``).
+        """
         if n <= 0:
             return self
-        points_per_object = self.num_points_per_object
+        if points_per_object is None:
+            points_per_object = self.num_points_per_object
         current_batch_size = self.location.shape[-2] // points_per_object
         if current_batch_size <= 0:
             raise RuntimeError(
@@ -776,6 +807,24 @@ class MobMorphMixin:
         )
         permutation = permutation.to(my_points.device)
 
+        self._permute_object_batch(permutation, points_per_object)
+        if self._morph_family == "grid":
+            # A packed surface's members are its grids as much as its rows:
+            # re-pairing only the rows (the anchors, the per-member colour and
+            # opacity) left every sphere of a ``from_batches`` pack travelling
+            # to its old counterpart anyway, and ending with its anchor -- the
+            # point it turns and scales about -- on another member's sphere.
+            self.grid._permute_object_batch(
+                permutation, self.grid_width * self.grid_height
+            )
+        self._reorder_structural_attrs(permutation)
+        for parent in list(self.parents):
+            parent._reorder_structural_attrs(permutation, child=self)
+        return self
+
+    def _permute_object_batch(self, permutation, points_per_object):
+        """Reorder this Mob's per-object rows, ``points_per_object`` rows each."""
+        num_objects = len(permutation)
         for attr in self.animatable_attrs:
             if not hasattr(self, attr):
                 continue
@@ -789,10 +838,34 @@ class MobMorphMixin:
                 attr,
                 squish(per_object.index_select(-3, permutation), -3, -2).unsqueeze(0),
             )
-        self._reorder_structural_attrs(permutation)
-        for parent in list(self.parents):
-            parent._reorder_structural_attrs(permutation, child=self)
         return self
+
+    #: How far a surface's grid may sit from its own parametric function, as a
+    #: fraction of the grid's diagonal, and still be resampled through that
+    #: function. Rounding leaves an untouched grid about 1e-6 of it away; a
+    #: grid reshaped point by point is off by a visible fraction of its size.
+    _SURFACE_FUNCTION_TOLERANCE = 1e-3
+
+    @staticmethod
+    def _sampled_surface_function(surface):
+        """``None`` while ``surface``'s own function still describes its grid.
+
+        Otherwise an evaluator that reads the grid's current samples
+        bilinearly over the ``(u, v)`` lattice they were taken on, for
+        ``Surface._change_resolution`` to resample from in place of the
+        function. ``None`` keeps ``_change_resolution`` on its own path, so a
+        surface nothing has reshaped is resampled exactly as it always was.
+        """
+        width, height = surface.grid_width, surface.grid_height
+        current = surface.grid.location.reshape(-1, width * height, 3)[0]
+        function = surface._current_surface_function()
+        evaluated = function(surface.get_base_grid()).reshape(-1, 3)
+        error = float((evaluated - current).norm(dim=-1).amax())
+        extent = float((current.amax(0) - current.amin(0)).norm())
+        if error <= MobMorphMixin._SURFACE_FUNCTION_TOLERANCE * extent:
+            return None
+        samples = current.reshape(width, height, 3).detach().clone()
+        return lambda uv: _sample_grid_bilinearly(samples, uv)
 
     def get_non_component_children(self) -> list[Mob]:
         """Return direct user children, excluding a Mob's structural components."""
@@ -820,8 +893,21 @@ class MobMorphMixin:
         # which is the honest thing to do with colors). Packed surfaces keep
         # the interpolating path: `_change_resolution` describes one grid, not a
         # block of them.
+        #
+        # The function only says what the surface is while the grid is still
+        # that function under the Mob's transform. A grid reshaped point by
+        # point (ApplyPointwiseFunction, Homotopy) no longer is, and the
+        # transform `_current_surface_function` fits cannot hold the change: a
+        # plane bumped 0.4 high snapped back to a plane on the first frame of
+        # its morph into a finer surface, and a bumped target coarser than the
+        # source was never reached at all. Such a grid is resampled from its
+        # own samples instead (`_sampled_surface_function`).
         if surface.grid.parent_batch_sizes is None:
-            surface._change_resolution(int(width), int(height))
+            surface._change_resolution(
+                int(width),
+                int(height),
+                MobMorphMixin._sampled_surface_function(surface),
+            )
             return surface
 
         old_count = old_width * old_height
@@ -862,6 +948,51 @@ class MobMorphMixin:
         height = max(mine.grid_height, theirs.grid_height)
         self._resample_surface_to(mine, width, height)
         self._resample_surface_to(theirs, width, height)
+        self._reconcile_grid_members(mine, theirs)
+
+    @staticmethod
+    def _reconcile_grid_members(mine, theirs):
+        """Pad whichever surface holds fewer grids with whole grids.
+
+        A surface's grid component holds one ``grid_width * grid_height``
+        block per member -- several for a ``from_batches`` pack or a point
+        cloud's dots, one for a lone surface. Left to the generic padding, the
+        component was padded ONE ROW at a time, which spreads the new rows
+        through every member's grid: a pack of 3 spheres becoming 5 had grid
+        blocks of 294, 293 and 293 rows where a sphere has 176, so the morph
+        drew scrambled grids and rendering it raised, and a lone sphere
+        becoming a pack ended as one surface stitched across all of them.
+
+        The added grids collapse onto the last point of the grid they repeat,
+        as every other padded object does (``_expand_n_batch``), and the short
+        side is described as a pack from here on so that what ends the morph
+        indexes like its target. The pack root's own rows, one per member, are
+        padded by the caller.
+        """
+        per_grid = mine.grid_width * mine.grid_height
+        counts = [side.grid.location.shape[-2] // per_grid for side in (mine, theirs)]
+        if counts[0] == counts[1] or 0 in counts:
+            return
+        short, count, target_count = (
+            (mine, counts[0], counts[1])
+            if counts[0] < counts[1]
+            else (theirs, counts[1], counts[0])
+        )
+        grid = short.grid
+        device = grid.location.device
+        if grid.parent_batch_sizes is None:
+            grid.parent_batch_sizes = torch.full(
+                (count,), per_grid, dtype=torch.long, device=device
+            )
+        if short.parent_batch_sizes is None:
+            # The compressed encoding ``pack_animatable_rows`` gives a pack's
+            # root: one entry holding the member count.
+            short.parent_batch_sizes = torch.tensor(
+                (count,), dtype=torch.long, device=device
+            )
+            short.singleton_batch_indexing = True
+        grid._expand_n_batch(target_count - count, points_per_object=per_grid)
+        short._memory_per_timestep_cache = None
 
     def _align_cubic_geometry(self, mine, theirs):
         def get_sub_circuits(value):
