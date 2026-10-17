@@ -10,6 +10,7 @@ script was shown once.
 
 import linecache
 import math
+import os
 import shutil
 
 import pytest
@@ -30,6 +31,7 @@ from algan import (
     Sphere,
     Square,
     Wiggle,
+    errors,
 )
 from algan.errors import (
     ApproximationWarning,
@@ -150,3 +152,23 @@ def test_text_typeset_through_latex_without_pango(fresh_scene, monkeypatch):
     assert _line_warned(caught, "through LaTeX") == (
         'Paragraph("one", "two", add_to_scene=False)'
     )
+
+
+def test_a_script_named_like_the_package_beside_it_is_the_users():
+    """``algan_scenes/`` beside an editable checkout's ``algan/`` shares its
+    name as a prefix, and its frames were skipped as Algan's own, so a warning
+    pointed past the script's line.
+    """
+    beside = errors._PACKAGE_DIR + "_scenes" + os.sep + "scene.py"
+    script = {}
+    exec(
+        compile("def line(): return locate(), level()\n", beside, "exec"),
+        {"locate": errors._user_location, "level": errors._user_stacklevel},
+        script,
+    )
+    location, level = script["line"]()
+    assert location[:2] == (beside, 1)
+    assert level == 1
+    inside = os.path.join(errors._PACKAGE_DIR, "scene.py")
+    assert errors._in_algan(inside)
+    assert not errors._in_algan(beside)
