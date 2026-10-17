@@ -402,6 +402,12 @@ if __name__ == "__main__":
 #: subcommands rather than the raw socket one-liner they replace.
 DAEMON_TRIGGERS = ("render", "ping", "cancel", "quit")
 
+#: The verbs a missing daemon satisfies: with no daemon there is nothing to
+#: cancel and nothing to stop. ``ping`` and ``render`` fail instead, so a script
+#: or editor key that asks whether the daemon is alive, or for a re-render, is
+#: told it did not happen.
+_MET_WITHOUT_A_DAEMON = ("cancel", "quit")
+
 
 def _cmd_daemon(args: argparse.Namespace) -> int:
     """Manage or run the Algan warm render daemon."""
@@ -438,7 +444,7 @@ def _trigger_daemon(verb: str) -> int:
     state = daemon_client.read_state()
     if state is None:
         print("No Algan daemon is running.")
-        return 0
+        return 0 if verb in _MET_WITHOUT_A_DAEMON else 1
     port = int(state["port"])
     try:
         with socket.create_connection(("127.0.0.1", port), 5) as sock:
@@ -450,7 +456,7 @@ def _trigger_daemon(verb: str) -> int:
         # whichever verb was asked for, nothing is answering.
         daemon_client._clear_stale_state(state)
         print(f"No daemon answered on port {port} ({exc}); cleared its registration.")
-        return 0
+        return 0 if verb in _MET_WITHOUT_A_DAEMON else 1
     pid = state.get("pid", "?")
     if reply.startswith("err:"):
         print(f"Daemon (pid {pid}) refused `{verb}`: {reply[4:].strip()}")
