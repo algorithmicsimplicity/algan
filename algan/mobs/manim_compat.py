@@ -813,13 +813,9 @@ class ManimCompatMob(ManimMob):
         if before_source is not None:
             before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
             _preserve_algan_state_unchanged_by_manim(self, before, target)
-        if self.is_spawned() and not replaying:
-            # Spawning stamps a lifespan and re-lays the endpoint map, which
-            # during a render would rewrite the very bounds the batch in flight
-            # materialized from. The morph below is all this frame needs: the
-            # target only has to supply geometry, and an unspawned Mob is a
-            # perfectly good source for that.
-            target = target.spawn(animate=False)
+        # The target only has to supply geometry, and an unspawned Mob is a
+        # perfectly good source for that. Only the part grafted in below is
+        # spawned: the target's own root would draw a second copy of this Mob.
         with Off(animation_manager=self.animation_manager):
             self.become(target, detach_history=False)
 
@@ -840,10 +836,25 @@ class ManimCompatMob(ManimMob):
         # render components keep their timeline identity while the composite
         # structure exactly follows the backing Manim object.
         target_non_components = target.get_non_component_children()
+        grafted = {id(child) for child in target_non_components}
+        retired = [
+            child
+            for child in self.get_non_component_children()
+            if id(child) not in grafted
+        ]
         self.children[:] = list(self.components) + target_non_components
         self.submobjects = target.submobjects
         self._exposed_manim_baseline = None
         self._note_hierarchy_change()
+        if self.is_spawned():
+            # The grafted children take over from the ones they replace at
+            # this moment. A replaced child left spawned stays on screen,
+            # frozen where the edit put it, under the Mob that moves on.
+            with Off(animation_manager=self.animation_manager):
+                for child in target_non_components:
+                    child.spawn(animate=False)
+                for child in retired:
+                    child.despawn(animate=False)
         if isinstance(self, _TypstSelection):
             # Delegated edits graft a freshly converted hierarchy. Selections
             # must follow those live paths rather than the retired source rows.
