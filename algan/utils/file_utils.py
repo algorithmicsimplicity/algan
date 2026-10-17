@@ -75,4 +75,8 @@ def get_image(file_path):
             file_path = file_path.float() / 255
         else:
             file_path = file_path.float()
+    elif file_path.dtype == torch.uint8:
+        # Bytes in a tensor are the same pixels as bytes in an array. Kept as
+        # 0-255, a grey of 128 rendered white.
+        file_path = file_path.float() / 255
     return Color.add_defaults(file_path)
