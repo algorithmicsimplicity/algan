@@ -13,6 +13,7 @@ use). Layers checked:
    parse + build assertions; skipped if the asset is absent.
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -187,6 +188,64 @@ def test_assimp_loader_missing_file():
 
     with pytest.raises(FileNotFoundError):
         load_scene("does_not_exist.fbx")
+
+
+@pytest.fixture
+def stand_in_pyassimp(tmp_path, monkeypatch):
+    """The directory of an importable stand-in ``pyassimp`` package.
+
+    Its ``AssimpError`` derives from ``BaseException``, as pyassimp's does; each
+    test writes the package's ``__init__`` to fail the way it needs.
+    """
+
+    def pyassimp_modules():
+        return [m for m in sys.modules if m == "pyassimp" or m.startswith("pyassimp.")]
+
+    for name in pyassimp_modules():
+        monkeypatch.delitem(sys.modules, name)
+    package = tmp_path / "pyassimp"
+    package.mkdir()
+    (package / "errors.py").write_text("class AssimpError(BaseException):\n    pass\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield package
+    for name in pyassimp_modules():
+        del sys.modules[name]
+
+
+def test_assimp_loader_without_the_native_library_says_how_to_install_it(
+    stand_in_pyassimp, tmp_path
+):
+    from algan.mobs.three_d_models.assimp_loader import load_scene
+
+    # pyassimp's import raises this when it finds no native library.
+    (stand_in_pyassimp / "__init__.py").write_text(
+        "from .errors import AssimpError\n"
+        "raise AssimpError('assimp library not found')\n"
+    )
+    model = tmp_path / "model.fbx"
+    model.write_bytes(b"")
+    with pytest.raises(ImportError, match="then install the native library"):
+        load_scene(str(model))
+
+
+def test_assimp_loader_names_a_file_assimp_cannot_import(stand_in_pyassimp, tmp_path):
+    from algan.mobs.three_d_models.assimp_loader import load_scene
+
+    (stand_in_pyassimp / "postprocess.py").write_text(
+        "def __getattr__(name):\n    return 0\n"
+    )
+    (stand_in_pyassimp / "__init__.py").write_text(
+        "from contextlib import contextmanager\n"
+        "from .errors import AssimpError\n"
+        "@contextmanager\n"
+        "def load(filename, file_type=None, processing=0):\n"
+        "    raise AssimpError('Could not import file!')\n"
+        "    yield\n"
+    )
+    model = tmp_path / "model.fbx"
+    model.write_bytes(b"not a model")
+    with pytest.raises(OSError, match="model.fbx"):
+        load_scene(str(model))
 
 
 # --- Phase 2: PBR materials + normal maps + node access ---------------------
