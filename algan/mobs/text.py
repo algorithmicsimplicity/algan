@@ -1313,7 +1313,7 @@ def _warn_latex_text_fallback():
     _LATEX_TEXT_FALLBACK_WARNED = True
     import warnings
 
-    from algan.errors import UnsupportedFeatureWarning
+    from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
 
     warnings.warn(
         "Text is typesetting through LaTeX's text mode, because the optional "
@@ -1327,7 +1327,7 @@ def _warn_latex_text_fallback():
         "LaTeX's text fonts lack (most non-Latin scripts, emoji) cannot be "
         "typeset.",
         UnsupportedFeatureWarning,
-        stacklevel=3,
+        stacklevel=_user_stacklevel(),
     )
 
 

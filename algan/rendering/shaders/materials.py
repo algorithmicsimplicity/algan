@@ -71,7 +71,7 @@ import math
 import warnings
 
 from algan.constants.color import BLACK, WHITE, Color
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, _user_stacklevel
 from algan.rendering.shaders import material_shaders as ms
 from algan.utils.tensor_utils import cast_to_tensor
 
@@ -628,7 +628,7 @@ class Material:
                 "through Mob.two_sided"
             )
         for m in msgs:
-            warnings.warn(f"{type(self).__name__}: {m}", stacklevel=2)
+            warnings.warn(f"{type(self).__name__}: {m}", stacklevel=_user_stacklevel())
 
     def __repr__(self):
         return f"{type(self).__name__}()"

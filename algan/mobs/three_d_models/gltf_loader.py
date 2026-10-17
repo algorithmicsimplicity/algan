@@ -408,7 +408,7 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         warnings.warn(
             f"Could not load glTF animation ({exc}); loading the model as static.",
             UnsupportedFeatureWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
         return static_nodes, []
 

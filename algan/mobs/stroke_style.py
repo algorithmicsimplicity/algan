@@ -5,7 +5,11 @@ from __future__ import annotations
 import math
 import warnings
 
-from algan.errors import AlganConfigurationError, UnsupportedFeatureWarning
+from algan.errors import (
+    AlganConfigurationError,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 
 
 def _style_name(value, choices, name):
@@ -37,5 +41,5 @@ def _warn_background_stroke(width, opacity=1):
             "Background strokes are not rendered. Use a separate wider path behind "
             "the foreground path for a background stroke.",
             UnsupportedFeatureWarning,
-            stacklevel=3,
+            stacklevel=_user_stacklevel(),
         )

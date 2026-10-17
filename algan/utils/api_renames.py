@@ -22,7 +22,11 @@ import functools
 import math
 import warnings
 
-from algan.errors import AlganConfigurationError, ApproximationWarning
+from algan.errors import (
+    AlganConfigurationError,
+    ApproximationWarning,
+    _user_stacklevel,
+)
 
 #: Manim's spelling -> Algan's, for arguments that reach the root namespace.
 #: Both are Mobject-valued: ``mobject`` on the animations and the Mob-taking
@@ -118,5 +122,5 @@ def _warn_if_angle_looks_like_radians(parameter: str, value) -> None:
         f"degrees (did you mean "
         f"`{parameter}={_format_number(float(value) * _RADIANS_TO_DEGREES)}`?)",
         ApproximationWarning,
-        stacklevel=3,
+        stacklevel=_user_stacklevel(),
     )

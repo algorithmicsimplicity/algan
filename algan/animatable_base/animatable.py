@@ -61,6 +61,7 @@ from algan.errors import (
     HierarchyError,
     NeverVisibleMobWarning,
     _user_location,
+    _user_stacklevel,
     _warn_at,
 )
 from algan.scene import Scene
@@ -1822,7 +1823,7 @@ class Animatable:
                     f"    ...\n"
                     f"    spare.spawn()\n",
                     DespawnedMobWarning,
-                    stacklevel=2,
+                    stacklevel=_user_stacklevel(),
                 )
             elif not self.animation_manager.context.spawn_at_end:
                 self._spawn_packed_rows(animate)

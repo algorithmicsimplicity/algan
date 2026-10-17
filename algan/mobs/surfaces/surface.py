@@ -43,7 +43,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animation_timeline.timeline import EditRecord, _opt_disabled
 from algan.constants.color import *
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, _user_stacklevel
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -2545,7 +2545,7 @@ class Surface(Mob):
                 "Logical PN construction reached max_grid_resolution before "
                 "meeting geometry_tolerance.",
                 RuntimeWarning,
-                stacklevel=3,
+                stacklevel=_user_stacklevel(),
             )
         return result
 
@@ -2635,7 +2635,7 @@ class Surface(Mob):
                         "Logical PN construction reached max_grid_resolution before "
                         "meeting geometry_tolerance.",
                         RuntimeWarning,
-                        stacklevel=3,
+                        stacklevel=_user_stacklevel(),
                     )
                 return cached
 
