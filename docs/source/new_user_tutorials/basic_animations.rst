@@ -89,6 +89,13 @@ into the color you assign:
 Algan ships the full Manim color palette: ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
 on, plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
 
+A Mob's colors can also be given as a hex code (``"#FC6255"`` or ``0xFC6255``), an RGB
+tuple of values from 0 to 1, or a CSS color name. A name means the CSS color, not the
+palette constant: ``"red"`` is pure red, ``#FF0000``, where ``RED`` is Manim's softer
+``#FC6255``. The span colors of :class:`~algan.mobs.text.Text` (``color_map``,
+``gradient_map`` and ``gradient``) are the exception: they read a name as Manim does, from
+the palette.
+
 .. note::
 
     **The two spellings compose, but they do not read each other back.** A glow

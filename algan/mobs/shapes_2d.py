@@ -55,14 +55,13 @@ from algan.utils.tensor_utils import (
 
 def _coerce_algan_color(value, opacity=None):
     """Return an Algan :class:`Color` from a Manim-style color value."""
-    if isinstance(value, str):
-        named = globals().get(value.upper())
-        value = named if isinstance(named, Color) else Color(value)
-    else:
-        # A hex int or an RGB sequence, which a bare cast took for a tensor of
-        # channels -- 0xFF0000 for every one of them.
-        value = to_color(value)
-    value = cast_to_tensor(value)
+    # Parsed as ``mob.color = ...`` parses it. A name used to be looked up among
+    # the palette constants first, so "red" was Manim's #FC6255 here and CSS red
+    # everywhere else: ``Square(color="red")`` changed hue when given a
+    # ``fill_opacity``, and ``Line(color="red")`` was not the red of a Square.
+    # A hex int or an RGB sequence, which a bare cast took for a tensor of
+    # channels -- 0xFF0000 for every one of them -- goes the same way.
+    value = cast_to_tensor(to_color(value))
     value = Color.add_defaults(value).as_subclass(Color)
     if opacity is not None:
         value = value.set_opacity(opacity)

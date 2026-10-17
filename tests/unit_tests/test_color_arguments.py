@@ -21,6 +21,7 @@ import algan
 import algan.manim as mn
 from algan import BLUE, GREEN, Color, DrawBorderThenFill, Indicate, Square, Sync
 from algan.constants import easings
+from algan.constants.color import to_color
 from algan.mobs.shapes_2d import TriangleVertices
 from algan.scene_manager import SceneManager
 
@@ -134,6 +135,28 @@ def test_a_shape_takes_a_hex_int_stroke_color(shape, red):
     """
     mob = shape(stroke_color=red, add_to_scene=False)
     torch.testing.assert_close(_first_row(mob.stroke_color), RED_ROW)
+
+
+@pytest.mark.parametrize("name", ["red", "teal", "RED"])
+@pytest.mark.parametrize(
+    ("build", "read"),
+    [
+        (lambda name: Square(color=name), lambda mob: mob.color),
+        (lambda name: Square(color=name, fill_opacity=0.5), lambda mob: mob.color),
+        (lambda name: Square(stroke_color=name), lambda mob: mob.stroke_color),
+        (lambda name: algan.Line(color=name), lambda mob: mob.stroke_color),
+        (lambda name: algan.Circle(stroke_color=name), lambda mob: mob.stroke_color),
+    ],
+    ids=["fill", "faded fill", "stroke", "line", "circle stroke"],
+)
+def test_a_color_name_means_one_color_in_every_shape_keyword(build, read, name):
+    """REGRESSION. A shape's style keywords looked a name up among the palette
+    constants before parsing it, so "red" was Manim's #FC6255 there and CSS red
+    everywhere else: ``Square(color="red")`` changed hue when given a
+    ``fill_opacity``, and ``Line(color="red")`` was not a red Square's red.
+    """
+    color = _first_row(read(build(name)))
+    torch.testing.assert_close(color[:3], to_color(name).reshape(5)[:3])
 
 
 def test_an_empty_circuit_takes_a_string_stroke_color():
