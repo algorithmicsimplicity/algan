@@ -49,7 +49,6 @@ from algan.utils.tensor_utils import (
     cast_to_direction,
     cast_to_tensor,
     mean,
-    unsquish,
 )
 
 
@@ -281,36 +280,32 @@ class Line(BezierCircuitCubic):
         """Get the point the line starts at, where it is now.
 
         Follows the line when it is moved, rotated or scaled, and reflects
-        animations recorded so far. Meant for a straight line: on an arc built
-        with ``path_arc`` it currently returns the first point of every bezier
-        segment of the arc, one row each, so the arc's own start is row ``0``.
+        animations recorded so far. On an arc built with ``path_arc`` it is
+        where the arc starts.
 
         Returns
         -------
         torch.Tensor
             The start, in world units, shape ``(*, 3)``.
         """
-        return unsquish(self.control_points.location, -2, 4)[..., 0, :]
+        return self.control_points.location[..., :1, :]
 
     def get_end(self):
         """Get the point the line ends at, where it is now.
 
-        As :meth:`get_start`, for the other end. On an arc it currently returns
-        the last point of every bezier segment, so the arc's own end is the
-        last row.
+        As :meth:`get_start`, for the other end.
 
         Returns
         -------
         torch.Tensor
             The end, in world units, shape ``(*, 3)``.
         """
-        return unsquish(self.control_points.location, -2, 4)[..., -1, :]
+        return self.control_points.location[..., -1:, :]
 
     def get_vector(self):
         """Get the vector from the line's start to its end.
 
-        Meant for a straight line: on an arc it currently returns each bezier
-        segment's chord, as :meth:`get_start` explains.
+        On an arc, the chord from where it starts to where it ends.
 
         Returns
         -------
@@ -332,8 +327,8 @@ class Line(BezierCircuitCubic):
     def get_length(self):
         """Get the distance from the line's start to its end.
 
-        Meant for a straight line: on an arc it currently returns each bezier
-        segment's chord length, not the length along the arc.
+        On an arc, the length of the chord between its ends, not the length
+        along the arc.
 
         Returns
         -------
@@ -1145,13 +1140,32 @@ class Circle(BezierCircuitCubic):
         self.scale(radius)
         self.move_to(mob_location)
 
+    #: How far the unit circle's furthest control point lies from its centre.
+    #: A circuit's ``scale_coefficient`` is that distance (the bezier handles
+    #: sit outside the curve), not the radius the curve is drawn at.
+    _EXTENT_PER_RADIUS = float(
+        torch.tensor([[1.00005519, 0.0], [0.55342686, 0.99873585]]).norm(dim=-1).max()
+    )
+
     @property
     def radius(self):
-        return self.scale_coefficient[..., 0]
+        """The radius the circle is drawn at, in world units, shape ``(*)``.
+
+        Animation
+        ---------
+        Assignment resizes the circle about its centre, recorded as an
+        animation over the current context's runtime (1 second by default);
+        wrap it in ``Off()`` to apply it instantly. Reading is not animated.
+        """
+        return self.scale_coefficient[..., 0] / self._EXTENT_PER_RADIUS
 
     @radius.setter
     def radius(self, radius):
-        self.scale_coefficient = radius
+        radius = cast_to_tensor(radius)
+        if radius.ndim > 0 and radius.shape[-1] == 1:
+            radius = radius[..., 0]
+        factor = radius / self.radius.clamp_min(1e-12)
+        self.scale_coefficient = self.scale_coefficient * factor.unsqueeze(-1)
 
     def get_default_color(self):
         """Get the color this Mob uses when none was given.
