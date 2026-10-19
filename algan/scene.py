@@ -196,7 +196,10 @@ class Scene(RenderLoopMixin):
     ----------
     video_settings
         Resolution / fps / quality settings (see
-        :mod:`algan.settings.video_settings`).
+        :mod:`algan.settings.video_settings`). Defaults to ``None``, meaning
+        ``SETTINGS.video`` as it is when each render starts, so a later
+        ``SETTINGS.video.set(...)`` still applies; settings given here are kept
+        instead.
     background
         What the Scene is drawn on: a color, an image tensor, or a procedural
         callable. A Taichi ``@ti.func`` uses the scalar ``(x, y, time) ->
@@ -208,10 +211,15 @@ class Scene(RenderLoopMixin):
         :meth:`~.Scene.set_background` sets and ``save_video(background=...)``
         overrides for one render.
     memory
-        Optional :class:`~algan.utils.memory_utils.ManualMemory` render arena.
+        A :class:`~algan.utils.memory_utils.ManualMemory` to keep as
+        ``scene.memory`` between renders. Each render currently builds its own
+        arena, sized by ``SETTINGS.computing.rendering_memory_fraction``, and
+        puts this one back when it finishes, so passing one does not change how
+        a render allocates. Defaults to ``None``.
     scene_initializer
-        Callable run on (re)creation; the default spawns the camera and a
-        point light.
+        Callable run with the Scene on (re)creation. Defaults to ``None``,
+        meaning the one :meth:`~algan.scene_manager.SceneManager.set_scene_class`
+        set: by default, spawning the camera and a point light.
     premultiplied_over
         Export transparent frames for linear-light over compositing, keeping
         glow additive. Defaults to False. See :meth:`~.Scene.set_premultiplied_over`

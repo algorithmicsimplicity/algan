@@ -52,7 +52,7 @@ class ImageMob(Surface):
     textured
         If True, shade the four-vertex surface by sampling the image as a texture.
         If False, create one mesh vertex per image pixel and assign the pixel
-        values directly as vertex colors.
+        values directly as vertex colors. Defaults to True.
     **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
 

@@ -494,19 +494,29 @@ class Model3D(Mob):
 
         Parameters
         ----------
-        name : str, optional
-            Clip name; defaults to the first clip.
-        times : sequence of float, optional
-            Explicit sample times (seconds). Defaults to an ``fps`` grid over
-            the clip runtime unioned with the authored keyframe times.
-        fps : int
-            Sampling rate used when ``times`` is not given.
+        name
+            The clip to bake, by name. Defaults to ``None``, meaning the first
+            clip.
+        times
+            Sample times in seconds. Defaults to ``None``, meaning ``fps``
+            samples per second from ``0`` to the clip's runtime, together with
+            the clip's own keyframe times.
+        fps
+            Samples per second for the default grid; ignored when ``times`` is
+            given. Defaults to ``30``.
 
         Returns
         -------
-        (times, corners) : (list[float], dict[TriangleMesh, torch.Tensor])
-            The sample times and, per mesh mob, a ``[T, 3F, 3]`` stack of
+        tuple[list[float], dict[TriangleMesh, torch.Tensor]]
+            The sample times and, per mesh Mob, a ``[T, 3F, 3]`` stack of
             world-space corner positions (one slice per sample time).
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If the model carries no animation clips.
+        KeyError
+            If no clip is called ``name``.
         """
         clip = self._resolve_clip(name)
         device = self.location.device

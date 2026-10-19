@@ -1168,7 +1168,10 @@ class Lag(AnimationContext):
         in which case it introduces a pause (wait) after each animation finishes.
         Defaults to ``0.5``.
     runtime
-        Passed to :class:`~.AnimationContext` .
+        Duration of the whole block in seconds; the animations inside are
+        rescaled to fit, keeping their relative timing. Must be finite and
+        non-negative. Defaults to ``None``, meaning the runtime follows from the
+        animations themselves.
     **kwargs
         Passed to :class:`~.AnimationContext` .
 
@@ -1257,7 +1260,9 @@ class Seq(Lag):
     Parameters
     ----------
     runtime
-        Passed to :class:`~.AnimationContext` .
+        Duration of the whole block in seconds; the animations inside are
+        rescaled to fit, keeping their relative durations. Must be finite and
+        non-negative. Defaults to ``None``, meaning the sum of their durations.
     **kwargs
         Passed to :class:`~.Lag` with ``lag_ratio=1``.
 

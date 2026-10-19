@@ -433,13 +433,15 @@ class Animatable:
         object. Defaults to ``None``, meaning the Scene's own.
     data_sub_inds
         Internal: which rows of the shared attribute buffers this object reads
-        and writes, for sub-mobs that share one parent's tensors.
+        and writes, for sub-mobs that share one parent's tensors. Leave it
+        unset. Defaults to ``None``, meaning no sub-selection.
     parent_batch_sizes
         Internal: how a batched parent's attribute modifications are expanded
-        over this object's rows.
+        over this object's rows. Leave it unset. Defaults to ``None``, meaning
+        no expansion.
     is_primitive
         Internal: whether this object carries geometry the renderer must keep
-        at render time.
+        at render time. Leave it unset. Defaults to False.
     **unexpected
         Never valid. Every Mob constructor forwards the keywords it does not
         take down to here, so a keyword no Algan class accepts raises a

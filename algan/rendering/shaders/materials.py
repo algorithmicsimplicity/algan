@@ -577,8 +577,8 @@ class Material:
             ``{slot_name: is_animatable}`` (the union over the Mobs it was
             applied to). A slot that reached a geometry is sampled, so it is
             reported as *static* rather than ignored -- or not reported at all
-            when the geometry it landed on made it animatable. ``None`` means
-            nothing was forwarded, which is what a bare
+            when the geometry it landed on made it animatable. Defaults to
+            ``None``, meaning nothing was forwarded, which is what a bare
             ``Material(...).emit_warnings()`` describes.
         """
         forwarded = {} if forwarded is None else forwarded
