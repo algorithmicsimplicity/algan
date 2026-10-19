@@ -273,7 +273,7 @@ class Color(torch.Tensor):
 
     @opacity.setter
     def opacity(self, value):
-        self.data[..., -1:] = value
+        self.data[..., -1:] = self._channel_value(value)
 
     @property
     def glow(self):
@@ -293,7 +293,7 @@ class Color(torch.Tensor):
 
     @glow.setter
     def glow(self, value):
-        self.data[..., -2:-1] = value
+        self.data[..., -2:-1] = self._channel_value(value)
 
     @property
     def rgb(self):
@@ -301,7 +301,15 @@ class Color(torch.Tensor):
 
     @rgb.setter
     def rgb(self, value):
-        self.data[..., :3] = value
+        self.data[..., :3] = self._channel_value(value)
+
+    def _channel_value(self, value):
+        """Internal: ``value`` as a tensor matching this color's dtype and device.
+
+        Lets the channel setters take plain Python tuples and lists, which a
+        tensor slice assignment refuses.
+        """
+        return torch.as_tensor(value, dtype=self.dtype, device=self.device)
 
     def set_rgb(self, rgb):
         """Return a copy of this color with its red, green and blue replaced.
@@ -311,9 +319,9 @@ class Color(torch.Tensor):
         Parameters
         ----------
         rgb
-            The new red, green and blue, each in ``[0, 1]``, as a tensor of
-            shape ``(3,)``, or ``(*, 3)`` for one per row -- per vertex or per
-            texel.
+            The new red, green and blue, each in ``[0, 1]``: a tuple, list or
+            tensor of shape ``(3,)``, or ``(*, 3)`` for one per row -- per
+            vertex or per texel.
 
         Returns
         -------
