@@ -640,6 +640,13 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     one starts an ffmpeg process and waits for its first buffer, which is most
     of what the mix itself costs).
 
+    One difference: moviepy samples every member on the output grid, which
+    for a file decoded at another rate (moviepy decodes at 44.1 kHz) is
+    unfiltered nearest-neighbour resampling -- a 6 kHz tone written at 48 kHz
+    came out at 12 dB SNR. When the members' decoders share a rate, the mix
+    runs at that rate instead and the writer's FFmpeg resamples it to ``fps``.
+    At ``fps`` equal to that rate (the default 44.1 kHz) nothing changes.
+
     Returns False without writing anything when the composite holds a member
     this cannot vouch for (one that overrides ``is_playing``), or a chunk grid
     moviepy itself would reject; the caller then writes it the moviepy way.
@@ -653,6 +660,12 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     clips = list(composite.clips)
     if any(type(clip).is_playing is not Clip.is_playing for clip in clips):
         return False
+    # File-backed members (those with a ``buffersize``) read samples exactly
+    # only on their decoder's grid. Mix there; FFmpeg resamples properly.
+    output_fps = fps
+    decoder_rates = {clip.fps for clip in clips if hasattr(clip, "buffersize")}
+    if len(decoder_rates) == 1:
+        fps = decoder_rates.pop()
     total_size = int(fps * composite.duration)
     nchunks = total_size // buffersize + 1
     positions = np.linspace(0, total_size, nchunks + 1, endpoint=True, dtype=int)
@@ -697,7 +710,15 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     nchannels = composite.nchannels
     logger.debug("Mixing %d audio clips into %s", len(clips), filename)
     pool = ThreadPoolExecutor(max_workers=prefetch, thread_name_prefix="algan-audio")
-    writer = FFMPEG_AudioWriter(filename, fps, nbytes, nchannels, codec=codec)
+    writer = FFMPEG_AudioWriter(
+        filename,
+        fps,
+        nbytes,
+        nchannels,
+        codec=codec,
+        # Overrides the writer's output ``-ar``, which follows its input's.
+        ffmpeg_params=None if fps == output_fps else ["-ar", str(int(output_fps))],
+    )
     try:
 
         def top_up():

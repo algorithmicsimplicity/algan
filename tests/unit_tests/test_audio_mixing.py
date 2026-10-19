@@ -139,3 +139,34 @@ def test_probed_reader_matches_the_probing_constructor(tones):
             assert np.array_equal(probing.get_frame(chunk), probed.get_frame(chunk))
         probing.close()
         probed.close()
+
+
+def _tone_snr(samples, rate, frequency):
+    t = np.arange(len(samples)) / rate
+    basis = np.stack(
+        [np.sin(2 * np.pi * frequency * t), np.cos(2 * np.pi * frequency * t)], 1
+    )
+    fit = basis @ np.linalg.lstsq(basis, samples, rcond=None)[0]
+    return 10 * np.log10(fit.var() / (samples - fit).var())
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_another_output_rate_is_resampled_not_sampled_nearest(tmp_path, lazy):
+    # Files decode at 44.1 kHz. Sampled on a 48 kHz grid by np.round, a 6 kHz
+    # tone came out at 12 dB SNR; resampled by FFmpeg it stays clean.
+    source = str(tmp_path / "tone.wav")
+    wave = 0.3 * np.sin(2 * np.pi * 6000 * np.arange(88200) / 44100)
+    moviepy.AudioArrayClip(wave[:, None].repeat(2, 1), fps=44100).write_audiofile(
+        source, fps=44100, logger=None
+    )
+    out = tmp_path / "out.wav"
+    composite = _composite([source], [0.0], 2.0, lazy=lazy)
+    assert audio_utils.write_composite_audio(
+        composite, str(out), fps=48000, nbytes=4, codec="pcm_s32le"
+    )
+    composite.close()
+    written = moviepy.AudioFileClip(str(out), fps=48000)
+    assert written.reader.infos["audio_fps"] == 48000
+    samples = written.get_frame(np.arange(24000, 72000) / 48000)[:, 0]
+    written.close()
+    assert _tone_snr(samples, 48000, 6000.0) > 50

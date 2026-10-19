@@ -77,21 +77,31 @@ class SceneAudio:
                 "Viewer audio needs a positive sample rate and finite duration"
             )
         channels = max(int(clip.nchannels) for clip, _, _ in self._clips)
-        count = math.ceil(self.duration * self.sample_rate)
+        # A file-backed clip (one with a ``buffersize``) reads exactly only on
+        # its decoder's grid; sampling it at another rate is unfiltered
+        # nearest-neighbour resampling. When the decoders share a rate, the
+        # WAV is written at it and the browser resamples it properly.
+        rate = self.sample_rate
+        decoder_rates = {
+            clip.fps for clip, _, _ in self._clips if hasattr(clip, "buffersize")
+        }
+        if len(decoder_rates) == 1:
+            rate = int(decoder_rates.pop())
+        count = math.ceil(self.duration * rate)
         if count * channels * 2 > 0xFFFFFFFF - 36:
             raise ValueError("The scene audio is too long for an in-memory WAV")
         output = io.BytesIO()
         with wave.open(output, "wb") as wav:
             wav.setnchannels(channels)
             wav.setsampwidth(2)
-            wav.setframerate(self.sample_rate)
+            wav.setframerate(rate)
             # Bound the working arrays even for a long scene. In particular,
             # normalise mono to (samples, 1) before broadcasting it to stereo;
             # multiplying a 1-D clip by a column mask creates a quadratic array.
             for first in range(0, count, 16384):
                 if self._closed.is_set():
                     raise RuntimeError("The viewer audio is closed")
-                times = np.arange(first, min(first + 16384, count)) / self.sample_rate
+                times = np.arange(first, min(first + 16384, count)) / rate
                 mixed = np.zeros((len(times), channels), dtype=np.float64)
                 for clip, start, end in self._clips:
                     active = (times >= start) & (times < end)
