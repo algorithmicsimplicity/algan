@@ -241,12 +241,13 @@ function buildMaterial(m) {
     mat.specular.copy(col(p.specular));
     mat.shininess = p.shininess;
   }
-  if (p.type === 'toon' && m && m.bands !== undefined) {
+  if (p.type === 'toon') {
     // SPEC.md: the documented three.js way to get N toon bands is a
     // gradientMap -- a DataTexture of N texels ramping 0..1 with NearestFilter
     // on both min and mag, so the ramp quantises into N steps. Algan instead
-    // quantises dotNL directly (its 'bands' argument); without 'bands' three
-    // keeps its own default toon (a 2-step smoothstep at 0.7).
+    // quantises dotNL directly (its 'bands' argument). normalizeSpec always
+    // supplies 'bands' (default 3), so three's own default toon (a 2-step
+    // smoothstep at 0.7) is never what a spec gets.
     const n = Math.max(1, Math.round(p.bands));
     const data = new Uint8Array(n);
     for (let i = 0; i < n; i++) data[i] = Math.round((i / Math.max(n - 1, 1)) * 255);
@@ -317,22 +318,24 @@ function buildScene(spec) {
       dl.shadow.camera.updateProjectionMatrix();
       scene.add(dl); scene.add(dl.target);
     } else if (l.type === 'point') {
-      const pl = new THREE.PointLight(col(l.color), l.intensity, l.distance ?? 0, l.decay ?? 2);
+      // decay and distance come from the shared defaults (0: no falloff, no
+      // cutoff), not three's own constructor default decay of 2.
+      const pl = new THREE.PointLight(col(l.color), l.intensity, l.distance, l.decay);
       pl.position.set(l.position[0], l.position[1], l.position[2]);
       pl.castShadow = true;
       pl.shadow.mapSize.set(1024, 1024);
       pl.shadow.camera.near = 0.5; pl.shadow.camera.far = 200;
       scene.add(pl);
     } else if (l.type === 'spot') {
-      // Spec 'angle' is a half-angle in DEGREES (three wants radians); spec
-      // decay/distance default to 0 -- passed explicitly because three's own
-      // constructor defaults are angle pi/3 and decay 2.
+      // Spec 'angle' is a required half-angle in DEGREES (three wants radians);
+      // spec decay/distance default to 0 -- passed explicitly because three's
+      // own constructor defaults are angle pi/3 and decay 2.
       const sl = new THREE.SpotLight(
         col(l.color), l.intensity,
-        l.distance ?? 0,
-        THREE.MathUtils.degToRad(l.angle ?? 30),
-        l.penumbra ?? 0,
-        l.decay ?? 0,
+        l.distance,
+        THREE.MathUtils.degToRad(l.angle),
+        l.penumbra,
+        l.decay,
       );
       sl.position.set(l.position[0], l.position[1], l.position[2]);
       sl.target.position.set(l.target[0], l.target[1], l.target[2]);
@@ -360,7 +363,7 @@ function buildScene(spec) {
   for (const o of spec.objects || []) {
     let geo;
     if (o.geometry.type === 'sphere') {
-      const seg = o.geometry.segments ?? 64;
+      const seg = o.geometry.segments;
       geo = new THREE.SphereGeometry(o.geometry.radius, seg, Math.floor(seg / 2));
     } else if (o.geometry.type === 'box') {
       geo = new THREE.BoxGeometry(o.geometry.size[0], o.geometry.size[1], o.geometry.size[2]);

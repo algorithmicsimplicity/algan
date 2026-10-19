@@ -36,18 +36,92 @@ sys.path.insert(0, str(_ROOT))
 
 _SCENE_DEFAULTS = json.loads((_HERE / "scene_defaults.json").read_text())
 
+# The Python half of the scene contract; ``normalizeSpec`` in scene_contract.mjs
+# is the JavaScript half, and the two must agree field for field, error message
+# included (tests/unit_tests/test_renderer_audit_contract.py). A key starting
+# with "_" is an annotation (JSON has no comments) and passes through anywhere;
+# any other key a section does not define is rejected, so a typo cannot
+# silently fall back to a default in one engine.
+
+
+def _check_fields(where, given, allowed, required=()):
+    unknown = sorted(k for k in given if k not in allowed and not k.startswith("_"))
+    if unknown:
+        raise ValueError(f"Unsupported {where} fields: {', '.join(unknown)}")
+    missing = [k for k in required if k not in given]
+    if missing:
+        raise ValueError(f"Missing {where} fields: {', '.join(missing)}")
+
+
+def _type_name(kind):
+    return json.dumps(kind, ensure_ascii=False)
+
+
+def _normalize_light(light, index):
+    where = f"lights[{index}]"
+    kind = light.get("type")
+    if not isinstance(kind, str) or kind not in _SCENE_DEFAULTS["light"]:
+        raise ValueError(f"Unsupported {where} type: {_type_name(kind)}")
+    defaults = _SCENE_DEFAULTS["light"][kind]
+    required = _SCENE_DEFAULTS["light_required"].get(kind, [])
+    optional = _SCENE_DEFAULTS["light_optional"].get(kind, [])
+    _check_fields(where, light, ["type", *defaults, *required, *optional], required)
+    if kind == "directional" and ("direction" in light) == ("position" in light):
+        raise ValueError(
+            f"{where}: a directional light takes exactly one form: 'direction', "
+            "or 'position' + 'target'"
+        )
+    return {**defaults, **light}
+
+
+def _normalize_object(obj, index):
+    where = f"objects[{index}]"
+    _check_fields(
+        where, obj, ["geometry", "material", *_SCENE_DEFAULTS["object"]], ["geometry"]
+    )
+    geometry = obj["geometry"]
+    kind = geometry.get("type")
+    if not isinstance(kind, str) or kind not in _SCENE_DEFAULTS["geometry"]:
+        raise ValueError(f"Unsupported {where}.geometry type: {_type_name(kind)}")
+    geometry_defaults = _SCENE_DEFAULTS["geometry"][kind]
+    geometry_required = _SCENE_DEFAULTS["geometry_required"].get(kind, [])
+    _check_fields(
+        f"{where}.geometry",
+        geometry,
+        ["type", *geometry_defaults, *geometry_required],
+        geometry_required,
+    )
+    _check_fields(
+        f"{where}.material", obj.get("material") or {}, _SCENE_DEFAULTS["material"]
+    )
+    material = {**_SCENE_DEFAULTS["material"], **(obj.get("material") or {})}
+    if material["type"] not in _SCENE_DEFAULTS["material_types"]:
+        raise ValueError(
+            f"Unsupported {where}.material type: {_type_name(material['type'])}"
+        )
+    return {
+        **_SCENE_DEFAULTS["object"],
+        **obj,
+        "geometry": {**geometry_defaults, **geometry},
+        "material": material,
+    }
+
 
 def _normalize_spec(spec):
-    unknown = set(spec.get("camera", {})) - _SCENE_DEFAULTS["camera"].keys()
-    if unknown:
-        raise ValueError(f"Unsupported camera fields: {', '.join(sorted(unknown))}")
+    """Check a scene spec against the shared contract and fill in its defaults."""
+    _check_fields("scene", spec, ["name", "render", "camera", "lights", "objects"])
+    _check_fields("render", spec.get("render") or {}, _SCENE_DEFAULTS["render"])
+    _check_fields("camera", spec.get("camera") or {}, _SCENE_DEFAULTS["camera"])
     return {
         **spec,
-        "render": {**_SCENE_DEFAULTS["render"], **spec.get("render", {})},
-        "camera": {**_SCENE_DEFAULTS["camera"], **spec.get("camera", {})},
+        "render": {**_SCENE_DEFAULTS["render"], **(spec.get("render") or {})},
+        "camera": {**_SCENE_DEFAULTS["camera"], **(spec.get("camera") or {})},
+        "lights": [
+            _normalize_light(light, i)
+            for i, light in enumerate(spec.get("lights") or [])
+        ],
         "objects": [
-            {**obj, "material": {**_SCENE_DEFAULTS["material"], **(obj.get("material") or {})}}
-            for obj in spec.get("objects", [])
+            _normalize_object(obj, i) for i, obj in enumerate(spec.get("objects") or [])
         ],
     }
 
