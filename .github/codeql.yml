@@ -32,7 +32,7 @@ query-filters:
         id: py/method-first-arg-is-not-self
 
 # Scan Algan's own source and nothing else. `algan/external_libraries` is
-# vendored third-party code (manim, ground, sect) that CLAUDE.md treats as
+# vendored third-party code (manim, ground, sect) that AGENTS.md treats as
 # read-only -- alerts there are not actionable, and they would swamp the ones
 # that are. The previous version of this file said `paths: - manim`, a
 # directory this repository does not have, which was left over from Manim.

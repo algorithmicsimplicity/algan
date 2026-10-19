@@ -16,8 +16,6 @@ from __future__ import annotations
 import builtins
 import shutil
 import warnings
-from contextlib import contextmanager
-from pathlib import Path
 
 import pytest
 import torch
@@ -26,6 +24,7 @@ from algan.constants.color import GREY, WHITE, Color
 from algan.constants.spatial import RIGHT, UP
 from algan.errors import UnsupportedFeatureWarning
 from algan.mobs import text as text_module
+from algan.settings import SETTINGS
 
 needs_latex = pytest.mark.skipif(
     shutil.which("latex") is None or shutil.which("dvisvgm") is None,
@@ -197,38 +196,27 @@ def test_text_triangulated_takes_multiple_lines():
 _DEJAVU = ("DejaVu Sans", "DejaVu Sans Mono")
 
 
-@contextmanager
-def _dejavu_for_pango():
-    """Make Pango set DejaVu, the family the fallback is calibrated to.
+def _require_dejavu():
+    """Skip unless Pango can set DejaVu, the family the fallback is calibrated to.
 
     The fallback stands in for Pango as Linux sets it, where fontconfig falls
     back to DejaVu. Elsewhere Pango substitutes some other font for these
     names -- macOS has no DejaVu at all, and its default family is not DejaVu
     either -- and the comparison measured that substitute instead.
-    matplotlib, a development dependency, ships the DejaVu faces as files.
+    ``tests/conftest.py`` registers the DejaVu faces matplotlib ships where
+    they are missing. It does so at import because a face registered after the
+    process's first Pango layout is never set, though ``list_fonts`` lists it.
     """
     import manimpango
 
     missing = [name for name in _DEJAVU if name not in manimpango.list_fonts()]
-    registered = []
     if missing:
-        matplotlib = pytest.importorskip("matplotlib")
-        faces = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
-        for name in missing:
-            face = faces / f"{name.replace(' ', '')}.ttf"
-            assert manimpango.register_font(str(face)), face
-            registered.append(face)
-        assert all(name in manimpango.list_fonts() for name in _DEJAVU)
-    try:
-        yield
-    finally:
-        for face in registered:
-            manimpango.unregister_font(str(face))
+        pytest.skip(f"Pango has no {missing} and matplotlib is not installed")
 
 
 @needs_latex
 @pytest.mark.parametrize("font", ["", "DejaVu Sans", "DejaVu Sans Mono"])
-def test_fallback_is_the_size_pango_text_is(monkeypatch, font):
+def test_fallback_is_the_size_pango_text_is(monkeypatch, tmp_path, font):
     pytest.importorskip("manimpango")
     if not text_module._pango_available():
         pytest.skip("manimpango is installed but did not import")
@@ -244,9 +232,14 @@ def test_fallback_is_the_size_pango_text_is(monkeypatch, font):
         )
 
     # The default font's reference is Linux's default, DejaVu Sans, rather
-    # than whatever this host's Pango picks for "".
-    with _dejavu_for_pango():
-        pango = measure(font or "DejaVu Sans")
+    # than whatever this host's Pango picks for "". A fresh cache, because the
+    # SVG cache is keyed on the font's name: one typeset while DejaVu was not
+    # set would answer for it.
+    _require_dejavu()
+    cache = SETTINGS.paths.cache_directory
+    SETTINGS.paths.set(cache_directory=str(tmp_path))
+    pango = measure(font or "DejaVu Sans")
+    SETTINGS.paths.set(cache_directory=cache)
     monkeypatch.setattr(text_module, "_pango_available", lambda: False)
     monkeypatch.setattr(text_module, "_LATEX_TEXT_FALLBACK_WARNED", True)
     latex = measure(font)

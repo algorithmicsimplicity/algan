@@ -71,7 +71,7 @@ _DAEMON_ADOPTED_STARTUP_VARIABLES = ("ALGAN_RENDER_DEVICE",)
 
 #: Variables read by the test and benchmark harnesses rather than by the
 #: package. Declared so that a contributor who exports one -- as
-#: ``CLAUDE.md``, ``tests/README.md`` and the contributing docs tell them to
+#: ``AGENTS.md``, ``tests/README.md`` and the contributing docs tell them to
 #: -- does not get told it is unknown on every import.
 _HARNESS_VARIABLES = (
     "ALGAN_BASELINE_DIR",
@@ -101,6 +101,7 @@ _IMPORT_TIME_VARIABLES = (
     "ALGAN_AMBIENT_STRENGTH_LINEAR",
     "ALGAN_ANALYTIC_AA",
     "ALGAN_ANALYTIC_AA_BEZ",
+    "ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC",
     "ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH",
     "ALGAN_ANALYTIC_AA_BEZ_WEDGE",
     "ALGAN_ANALYTIC_AA_CHORD_TOLERANCE",

@@ -208,7 +208,7 @@ compiled by the chosen backend -- so the daemon refuses a client whose value dif
 - `SETTINGS` sections rather than the old defaults globals;
 - Scene-owned managers rather than singleton managers;
 - `DrawBorderThenFill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand;
-- `import algan.manim as mn` for the compatibility layer — it is not star-imported, and `mn.X` is under Manim's conventions where root `X` is under Algan's (see `CLAUDE.md`, "The `algan.manim` boundary");
+- `import algan.manim as mn` for the compatibility layer — it is not star-imported, and `mn.X` is under Manim's conventions where root `X` is under Algan's (see `AGENTS.md`, "The `algan.manim` boundary");
 - `runtime` rather than `duration` / `run_time`, and `easing` / `easings` rather than `rate_func` / `rate_funcs`;
 - `mob` rather than `mobject`, and `element_to_mob` rather than `element_to_mobject`, on every root callable that takes one; `SVGMob`, `MobMatrix`, `MobTable`, `DashedMob` and `CurvesAsChildren` rather than Manim's `Mobject`-spelled class names. Passing an old spelling at the root raises `AlganConfigurationError` naming the new one — the mechanism is `algan/utils/api_renames.py`, applied by the adapters' generated `__init__` and by the `@_renamed_keywords` decorator on the animations. All of it still works under `algan.manim`, which is Manim's conventions by design;
 - one vocabulary across the revolved solids: `radius`, `u_range` / `v_range`, `closed`, and `direction=UP` on both `Cone` and `Cylinder`. Manim's `base_radius`, `show_base`, `show_ends`, `u_min` and `checkerboard_colors` raise — a checkerboard is a `color_texture` here (`get_checkerboard(...)`, in `algan/mobs/surfaces/procedural_textures.py`), so the pattern's detail comes from the map rather than from the tessellation; `resolution` is the one Manim name kept, because it means something Algan has no other word for (patches, where `grid_width`/`grid_height` count vertices);
@@ -303,7 +303,10 @@ Only a script that can render is handed off at all: `daemon_client.script_may_re
 
 `ImageMob`, `set_texture` and `background` all route through `file_utils.get_image` → `resolve_asset_path`, which
 tries the working directory and then the main script's directory, so an image beside your script loads regardless of
-where you launch Python.
+where you launch Python. `set_environment_map` resolves its path the same way. Every loader that reads an image file
+(those, plus model textures and embedded glTF images) decodes it with `file_utils._decode_pil_image`, so palette,
+greyscale, CMYK and 16-bit greyscale files mean the same thing everywhere; give a new loader that helper rather than
+`np.array(pil_image)`.
 
 
 ### Batched screenshots

@@ -45,6 +45,49 @@ def resolve_asset_path(file_path):
     return path
 
 
+# Pillow's unsigned 16-bit single-channel modes: what a 16-bit greyscale PNG or
+# TIFF opens as.
+_SIXTEEN_BIT_GREYSCALE_MODES = frozenset({"I;16", "I;16L", "I;16B", "I;16N"})
+
+
+def _decode_pil_image(pil_image) -> np.ndarray:
+    """Decode a Pillow image to float32 ``[H, W, 3]`` RGB or ``[H, W, 4]`` RGBA.
+
+    Every loader that reads an image file goes through here, so a file's mode
+    cannot change how its pixels are interpreted. 8-bit modes are scaled from
+    0-255 to ``[0, 1]``: greyscale is replicated across the color channels, a
+    palette is looked up, CMYK is converted, and an alpha band or a
+    ``transparency`` entry (the ``tRNS`` of a palette, greyscale or RGB PNG)
+    becomes the fourth channel.
+
+    Unsigned 16-bit greyscale keeps its precision, scaled from 0-65535.
+    Converting it through Pillow's 8-bit modes would clip every sample above
+    255 to white. Pillow before 10.3 opened a 16-bit greyscale PNG as ``"I"``
+    rather than ``"I;16"``; a PNG cannot hold any other 32-bit integer image, so
+    that mode is read the same way when it came from a PNG. A 32-bit float image
+    is taken as already normalized, as a float tensor is.
+    """
+    mode = pil_image.mode
+    transparency = pil_image.info.get("transparency")
+    if mode in _SIXTEEN_BIT_GREYSCALE_MODES or (
+        mode == "I" and pil_image.format == "PNG"
+    ):
+        samples = np.asarray(pil_image)
+        channels = [samples.astype(np.float32) / 65535] * 3
+        if transparency is not None:
+            # A greyscale tRNS names the one sample value that is transparent.
+            channels.append((samples != transparency).astype(np.float32))
+        return np.stack(channels, -1)
+    if mode == "F":
+        return np.repeat(np.asarray(pil_image, dtype=np.float32)[..., None], 3, -1)
+    bands = pil_image.getbands()
+    has_alpha = "A" in bands or "a" in bands or transparency is not None
+    rgb_or_rgba = pil_image.convert("RGBA" if has_alpha else "RGB")
+    array = np.asarray(rgb_or_rgba, dtype=np.float32)
+    array /= 255
+    return array
+
+
 def get_image(file_path):
     if isinstance(file_path, (str, os.PathLike)):
         # Imported here, not at module scope, to keep PIL off algan's import-time
@@ -52,14 +95,8 @@ def get_image(file_path):
         from PIL import Image
 
         with Image.open(resolve_asset_path(file_path)) as pil_image:
-            mode = (
-                "RGBA"
-                if "A" in pil_image.getbands() or "transparency" in pil_image.info
-                else "RGB"
-            )
-            array = np.array(pil_image.convert(mode))
+            array = _decode_pil_image(pil_image)
         file_path = torch.from_numpy(array).to(_ANIMATION_DEVICE)
-        file_path = file_path.float() / 255
     elif not torch.is_tensor(file_path):
         # A numpy array is the natural way to hand over pixels -- it is what
         # every imaging library returns and what Manim's ImageMobject takes --

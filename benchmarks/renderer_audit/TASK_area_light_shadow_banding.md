@@ -125,7 +125,7 @@ this one light:
 ### 3.1 Environment
 
 Algan renders need the project venv (the only place the path is written down is
-`CLAUDE.md`):
+`AGENTS.md`):
 
 | Platform | `<venv-python>` |
 | --- | --- |
@@ -284,7 +284,7 @@ half-corrected. Read §6.7 before choosing.
 
 ## 7. Hazards specific to this codebase
 
-Read `CLAUDE.md` before changing kernel code. The ones that bite here:
+Read `AGENTS.md` before changing kernel code. The ones that bite here:
 
 * **`SOFT_SHADOW_SAMPLES` is baked into the shade kernel at compile time** and
   is initialization-only: set `ALGAN_SOFT_SHADOW_SAMPLES` **before**

@@ -35,73 +35,15 @@ from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.settings import SETTINGS
 from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import (
-    broadcast_gather,
     dot_product,
     packed_reorder,
     squish,
     unpack_tensor,
-    unsqueeze_left,
-    unsquish,
 )
 
 
 def get_corners(g, i, j):
     return torch.stack([g[i, j], g[i, j + 1], g[i + 1, j + 1], g[i + 1, j]], -2)
-
-
-def get_points_per_tile(grid, perimeter_points, max_pp=500):
-    grid = torch.stack(
-        [
-            grid[..., :-1, :-1, :],
-            grid[..., :-1, 1:, :],
-            grid[..., 1:, 1:, :],
-            grid[..., 1:, :-1, :],
-        ],
-        -2,
-    )
-    perimeter_points = perimeter_points.squeeze(-2).squeeze(-2)
-    mask_ignore = (perimeter_points.amin(-1) > -1e12).float()
-    m = get_2d_polygon_mask(grid, perimeter_points)
-    m = 1 - m
-    m = unsquish(
-        F.conv1d(squish(m).unsqueeze(1), torch.ones((1, 1, 3)), padding=1)
-        .clamp(max=1)
-        .squeeze(1),
-        0,
-        m.shape[1],
-    )
-    perimeter_points = (
-        perimeter_points.unsqueeze(0)
-        .unsqueeze(0)
-        .expand(m.shape[0], m.shape[1], -1, -1)
-    )
-    m = m * mask_ignore + (1 - mask_ignore)
-
-    def mask_to_inds(x):
-        i = x.nonzero().squeeze(-1)
-        if len(i) == 0:
-            return torch.zeros((max_pp,), dtype=torch.long)
-        i = i[:max_pp]
-        i = torch.cat(
-            (i, torch.full_like(i[-1:].expand(max_pp - i.shape[0]), m.shape[-1]))
-        )
-        return i
-
-    inds = torch.stack(
-        [
-            torch.stack([mask_to_inds(m[i, j]) for i in range(m.shape[0])])
-            for j in range(m.shape[1])
-        ],
-        1,
-    )
-    return broadcast_gather(
-        torch.cat(
-            (perimeter_points, torch.full_like(perimeter_points[..., :1, :], -1e12)), -2
-        ),
-        -2,
-        inds.unsqueeze(-1),
-        keepdim=True,
-    )
 
 
 from algan.external_libraries.ground.base import get_context
@@ -178,8 +120,6 @@ def tile_region(
     tile_size: size of each tile.
     random_perturbation: strength of random perturbation applied to tile corners.
     """
-    # perimeter_points = torch.cat((perimeter_points, perimeter_points[:1]))
-
     m = (perimeter_points > -1e11).float()
     mn_corner, mx_corner = (
         (perimeter_points * m + (1 - m) * 1e12).amin(0) - 1e-5,
@@ -566,117 +506,6 @@ def tile_region(
     return out
 
 
-def tile_region2(
-    perimeter_points,
-    perimeter_normals=None,
-    tile_size=20,
-    random_perturbation=0,
-    color=WHITE,
-    **kwargs,
-):
-    """
-    perimeter_points: Tensor[num_points, 2]: collection of points outlining the perimeter of the region to be tiled.
-    perimeter_normals: Tensor[num_points, 2]: unit vectors pointing in direction from perimeter_point out of the region.
-    tile_size: size of each tile.
-    random_perturbation: strength of random perturbation applied to tile corners.
-    """
-    m = (perimeter_points > -1e11).float()
-    mn_corner, mx_corner = (
-        (perimeter_points * m + (1 - m) * 1e12).amin(0),
-        perimeter_points.amax(0),
-    )
-    bounding_width, bounding_height = mx_corner - mn_corner
-    grid_x = torch.linspace(
-        mn_corner[0], mx_corner[0], steps=int(bounding_width // tile_size) + 2
-    )
-    grid_y = torch.linspace(
-        mn_corner[1], mx_corner[1], steps=int(bounding_height // tile_size) + 2
-    )
-    grid = torch.stack(
-        (
-            grid_x.view(1, -1).expand(len(grid_y), -1),
-            grid_y.view(-1, 1).expand(-1, len(grid_x)),
-        ),
-        -1,
-    )
-    te = tile_size * 0.5 - 1e-5
-    grid = grid + (torch.randn_like(grid) * random_perturbation).clamp_(min=-te, max=te)
-
-    prev_loc = torch.tensor((-1e12, -1e12))
-    kept_inds = []
-    for i in range(len(perimeter_points)):
-        d = (perimeter_points[i] - prev_loc).norm(p=2, dim=-1)
-        if d > 1e-3:
-            kept_inds.append(i)
-            prev_loc = perimeter_points[i]
-
-    perimeter_points = perimeter_points[kept_inds]
-    perimeter_normals = perimeter_normals[kept_inds]
-
-    perimeter_points = perimeter_points.unsqueeze(-2).unsqueeze(-2)
-
-    edge_polygons = get_points_per_tile(grid, perimeter_points)
-
-    perimeter_normals = perimeter_normals.unsqueeze(-2).unsqueeze(-2)
-    dists = (perimeter_points - grid).norm(p=2, dim=-1, keepdim=True)
-    closest_perimeter_ind = dists.argmin(0, keepdim=True)
-    closest_normal = broadcast_gather(
-        perimeter_normals, 0, closest_perimeter_ind, keepdim=False
-    )
-    closest_point = broadcast_gather(
-        perimeter_points, 0, closest_perimeter_ind, keepdim=False
-    )
-    mask = (dot_product(grid - closest_point, closest_normal, -1) <= 1e-6).float()
-    color = color.unsqueeze(0).unsqueeze(0).expand(grid.shape[0], grid.shape[1], -1)
-
-    grid = torch.cat((torch.zeros_like(grid[..., :1]), grid.flip(-1)), -1)
-
-    inds = torch.arange((grid.shape[0] - 1) * (grid.shape[1] - 1))
-    n = grid.shape[1] - 1
-    x = inds % n
-    y = inds // n
-    n += 1
-    inds = (
-        torch.stack(
-            [
-                x + y * n,
-                x + 1 + y * n,
-                x + 1 + (y + 1) * n,
-                x + 1 + (y + 1) * n,
-                x + (y + 1) * n,
-                x + y * n,
-            ],
-            -1,
-        )
-        .unsqueeze(-1)
-        .unsqueeze(1)
-    )
-
-    def get_inds(g):
-        return squish(
-            unsquish(
-                broadcast_gather(
-                    squish(g).unsqueeze(-2).unsqueeze(0), 1, inds, keepdim=False
-                ),
-                -2,
-                3,
-            )
-        )
-
-    corners, colors, transparencies = [get_inds(_) for _ in [grid, color, mask]]
-    pp = squish(edge_polygons.unsqueeze(2).expand(-1, -1, 2, -1, -1), 0, 2)
-    pp = torch.cat((torch.zeros_like(pp[..., :1]), pp.flip(-1)), -1)
-    # Same rule as TriangulatedBezierCircuit: a triangulated circuit fill is
-    # unlit. (This helper currently has no callers; kept consistent so a
-    # revival cannot reintroduce lit circuit fills.)
-    return TriangleTriangulated(
-        corners,
-        color=colors,
-        transparency=torch.zeros_like(1 - transparencies),
-        perimeter_poins=pp,
-    ).set_shader(null_shader)
-
-
 def cubic_bezier_eval(p, t):
     return (
         ((1 - t) ** 3) * p[:, 0]
@@ -686,32 +515,8 @@ def cubic_bezier_eval(p, t):
     )
 
 
-def cubic_bezier_derivative_eval(p, t):
-    p0 = p[:, 0]
-    p1 = p[:, 1]
-    p2 = p[:, 2]
-    p3 = p[:, 3]
-    return (
-        3 * ((1 - t) ** 2) * (p1 - p0)
-        + 6 * (1 - t) * t * (p2 - p1)
-        + 3 * (t * t) * (p3 - p2)
-    )
-
-
 def point_to_tensor2(point):
     return torch.tensor((point.x, point.y))
-
-
-def point_to_tensor(point):
-    return torch.tensor((2, point.y, point.x))
-
-
-eps = 1e-12
-
-
-def params_to_tensor(params):
-    p = [point_to_tensor2(_) for _ in params]
-    return torch.stack(p, 0).unsqueeze(-2).unsqueeze(-2).unsqueeze(-2)
 
 
 num_points_per_curve = 20
@@ -723,92 +528,8 @@ def get_points_along_cubic_bezier(params, invert=False):
     roots = torch.linspace(0, 1, num_points_per_curve + 1)
     if invert:
         roots = roots.flip(-1)
-    # roots = roots[:num_points_per_curve]
     critical_points = cubic_bezier_eval(p.unsqueeze(-1), roots)
     return critical_points.squeeze(0).transpose(-2, -1), None
-    parallel_vec = cubic_bezier_derivative_eval(p.unsqueeze(-1), roots)
-    parallel_vec = F.normalize(parallel_vec, p=2, dim=-1, eps=eps)
-    perp_vec = torch.stack([-parallel_vec[..., 1, :], parallel_vec[..., 0, :]], -2)
-    if invert:
-        perp_vec *= -1
-    return critical_points.squeeze(0).squeeze(0).squeeze(0).squeeze(
-        0
-    ).t(), perp_vec.squeeze(0).squeeze(0).squeeze(0).squeeze(0).t()
-
-
-def get_points_along_line(params, invert=False):
-    p = params.unsqueeze(0)
-    b = p[:, -1]
-    a = p[:, 0]
-    v = b - a
-    parallel_vec = v
-    perp_vec = torch.stack([-parallel_vec[..., 1], parallel_vec[..., 0]], -1)
-    if invert:
-        perp_vec *= -1
-
-    t = torch.linspace(0, 1, num_points_per_curve + 1)
-    if invert:
-        t = t.flip(-1)
-    t = t[:num_points_per_curve].unsqueeze(-1)
-    points = a + v * t
-    return points.squeeze(0).squeeze(0).squeeze(0), perp_vec.squeeze(0).squeeze(
-        0
-    ).squeeze(0).expand(points.shape[-2], -1)
-
-
-def project_onto_cubic_bezier(params, point, invert=False):
-    p = params
-
-    roots = torch.linspace(0, 1, 20)
-    critical_points = cubic_bezier_eval(p.unsqueeze(-1), roots)
-
-    dists = critical_points - point.unsqueeze(-1)
-    dists = dists.square_().sum(-2, keepdim=True)
-    closest_dist, closest_ind = dists.min(-1, keepdim=True)
-    closest_point = broadcast_gather(critical_points, -1, closest_ind, keepdim=False)
-    closest_root = broadcast_gather(
-        unsqueeze_left(roots, closest_ind), -1, closest_ind, keepdim=False
-    )
-
-    t = closest_ind.squeeze(-1) / (roots.shape[0] - 1)
-
-    parallel_vec = cubic_bezier_derivative_eval(p, closest_root)
-    parallel_vec = F.normalize(parallel_vec, p=2, dim=-1, eps=eps)
-    perp_vec = torch.stack([-parallel_vec[..., 1], parallel_vec[..., 0]], -1)
-    if invert:
-        perp_vec *= -1
-    return (
-        dot_product(
-            F.normalize(point - closest_point, p=2, dim=-1), perp_vec, -1, keepdim=True
-        ),
-        closest_dist.squeeze(-1).sqrt_(),
-        t,
-    )
-
-
-def project_onto_line(params, point, invert=False):
-    p = params
-    b = p[:, -1]
-    a = p[:, 0]
-    v = b - a
-    v_len = v.norm(p=2, dim=-1, keepdim=True)
-    v = F.normalize(v, p=2, dim=-1, eps=eps)
-    t = dot_product(v, point - a, -1, keepdim=True).clamp_(
-        min=torch.tensor((0,)), max=v_len
-    )
-    closest_point = v * t + a
-    closest_dist = (point - closest_point).norm(p=2, dim=-1)
-    parallel_vec = v
-    perp_vec = torch.stack([-parallel_vec[..., 1], parallel_vec[..., 0]], -1)
-    if invert:
-        perp_vec *= -1
-    return (
-        dot_product(
-            F.normalize(point - closest_point, p=2, dim=-1), perp_vec, -1, keepdim=True
-        ),
-        closest_dist.unsqueeze(-1),
-        t / v_len,
-    )
 
 
 #: Bumped whenever a change makes stored tessellations disagree with what a
@@ -878,7 +599,6 @@ class TriangulatedBezierCircuit(Mob):
             found_hash = False
             if hash_key is not None:
                 n = 12
-                # hash_key = torch.from_numpy(hash_key).to(DEFAULT_DEVICE)
                 hash_key = squish(hash_key, 0, 1)
                 offset = hash_key.amin(0)
                 hash_key = hash_key - offset
@@ -930,7 +650,6 @@ class TriangulatedBezierCircuit(Mob):
                 self.num_curves = len(points)
 
                 points = squish(points, 0, 1)
-                # points, normals = [torch.cat(_) for _ in zip(*points)]
                 tiles, tile_counts = tile_region(
                     points.flip(0).float(),
                     tile_size=tile_size,
@@ -976,14 +695,7 @@ class TriangulatedBezierCircuit(Mob):
             if len(all_triangles) > 0
             else torch.tensor((0, 0, 0)).view(1, 1, 3).expand(-1, 3, -1)
         )
-        # create = True
-        # if 'create' in kwargs:
-        #    create = kwargs['create']
-        #    del kwargs['create']
-
-        if "animate_creation" in kwargs:
-            kwargs["animate_creation"]
-            del kwargs["animate_creation"]
+        kwargs.pop("animate_creation", None)
         super().__init__(*args, **kwargs)
         kwargs["scene"] = self.scene
         self.stroke_width = 0.1
@@ -1035,8 +747,6 @@ class TriangulatedBezierCircuit(Mob):
         # descendant walk reaches the triangle mob that actually renders, and
         # before spawn, as set_shader requires.
         self.set_shader(null_shader)
-        # if create and not self.animation_manager.context.delay_creation:
-        #    self.spawn(animate_creation)
         self.parents.clear()
 
     def get_local_coord_bounding_box(self):

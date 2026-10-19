@@ -83,7 +83,7 @@ import numpy as np
 # not be: a kernel's parameter annotations are evaluated at *runtime*, so the
 # future import turns `qd.types.ndarray()` into the string "qd.types.ndarray()"
 # and decoration dies with "Invalid type annotation ... name 'qd' is not
-# defined". This is the same hazard `CLAUDE.md` records for `*_taichi.py` files,
+# defined". This is the same hazard `AGENTS.md` records for `*_taichi.py` files,
 # where ruff's I002 is switched off for exactly this reason.
 #
 # And `qd` is bound here rather than inside `measure()` because annotations

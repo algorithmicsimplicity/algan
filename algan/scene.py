@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import os
 import sys
 from collections.abc import Callable, Sequence
 from functools import wraps
@@ -64,7 +65,7 @@ from algan.settings import SETTINGS
 from algan.settings.video_settings import VideoSettings
 from algan.sound.audio_effect import AudioManager
 from algan.taichi_compat import is_compiler_func
-from algan.utils.file_utils import get_image
+from algan.utils.file_utils import _decode_pil_image, get_image, resolve_asset_path
 
 logger = get_logger()
 
@@ -643,10 +644,13 @@ class Scene(RenderLoopMixin):
         ----------
         source
             Path to an image file, or an image tensor of shape
-            ``[height, width, >=3]``. ``None`` removes the current map.
+            ``[height, width, >=3]``. ``None`` removes the current map. A
+            relative path that is not found from the working directory is
+            looked up beside the running script.
 
-            Byte-ranged sources -- an image file, or an integer-dtype tensor --
-            are divided by 255. A **float tensor is taken as authored**, so
+            An image file is scaled to ``[0, 1]`` from its bit depth (0-255, or
+            0-65535 for 16-bit greyscale), and an integer-dtype tensor is
+            divided by 255. A **float tensor is taken as authored**, so
             values above 1 are kept: that is what makes a light source in the
             map brighter than white, which is the whole point of an HDR
             environment. Author in whatever units you like and use ``intensity``
@@ -673,31 +677,28 @@ class Scene(RenderLoopMixin):
             self.environment_map = None
             return self
         env = source
-        byte_ranged = False
-        if isinstance(env, str):
+        if isinstance(env, (str, os.PathLike)):
             import numpy as np
             from PIL import Image, UnidentifiedImageError
 
-            # ``convert("RGB")`` reproduces what the previous cv2 read gave
-            # this code: three 8-bit channels in RGB order, alpha dropped and
-            # a greyscale source replicated across the channels. The array is
-            # copied because PIL's buffer is read-only.
+            # Decoded to [0, 1] the way every other image file is: RGB order,
+            # alpha dropped, a greyscale source replicated across the channels,
+            # and a 16-bit one kept at full precision instead of clipped.
             try:
-                with Image.open(env) as image:
-                    img = np.array(image.convert("RGB"), copy=True)
+                with Image.open(resolve_asset_path(env)) as image:
+                    img = np.ascontiguousarray(_decode_pil_image(image)[..., :3])
             except (OSError, UnidentifiedImageError) as exc:
                 raise FileNotFoundError(
-                    f"Could not read environment map image: {env}"
+                    f"Could not read environment map image: {os.fspath(env)}"
                 ) from exc
             env = torch.from_numpy(img)
-            byte_ranged = True
         if not torch.is_tensor(env):
             env = torch.tensor(env)
         # Only an integer-dtype source is 0-255. A float tensor is an authored
         # map and is kept as-is: the previous "max > 1.5 means bytes" heuristic
         # silently divided every HDR environment by 255, turning the map (and
         # therefore the whole backdrop) black with no warning.
-        byte_ranged = byte_ranged or not torch.is_floating_point(env)
+        byte_ranged = not torch.is_floating_point(env)
         env = env.float()
         if env.dim() != 3 or env.shape[-1] < 3:
             raise AlganConfigurationError(
@@ -1224,9 +1225,10 @@ class Scene(RenderLoopMixin):
 
         Reached when a background string did not parse as a color, so a
         missing file has to say that the string was neither -- otherwise the
-        two mistakes are indistinguishable.
+        two mistakes are indistinguishable. The check resolves the path the
+        way ``get_image`` will, so an image beside the running script counts.
         """
-        if not Path(path).exists():
+        if not Path(resolve_asset_path(path)).exists():
             raise AlganConfigurationError(
                 f"background {path!r} is neither a color Algan "
                 f"recognises nor the path of an image file that exists. Pass a "
@@ -1947,7 +1949,12 @@ class Scene(RenderLoopMixin):
             lossless ``png`` for ``.mov`` (also ``.mkv``, ``.avi``), and
             ``libvpx-vp9`` for ``.webm``, whose alpha rides in a 4:2:0 chroma
             plane and so is lossy at object edges. ``.mp4`` cannot carry alpha
-            at all and is refused before the render.
+            at all and is refused before the render. Two containers cannot
+            hold H.264 either way: ``.webm`` is encoded with ``libvpx-vp9``
+            and ``.gif`` with ``gif``, one palette per frame. Audio is ``mp3``,
+            except ``libopus`` in ``.webm``; a ``.gif`` has no audio track, so
+            a Scene's sound is left out of it with an
+            :class:`~algan.errors.UnsupportedFeatureWarning`.
         passes
             Auxiliary render passes to write beside the video for compositing
             in an editor: any of ``"depth"``, ``"normal"`` and
@@ -1976,6 +1983,10 @@ class Scene(RenderLoopMixin):
             If the output container, codec or settings are invalid, a render
             pass name is unknown, or FFmpeg cannot encode the requested passes.
             All are checked before rendering starts.
+        RuntimeError
+            If FFmpeg fails while writing the video, for example on an
+            explicit ``codec`` the container cannot hold. Nothing is written
+            to ``file_path`` then.
 
         Examples
         --------

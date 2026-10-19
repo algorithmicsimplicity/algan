@@ -64,15 +64,19 @@ efficiency gap, not an opacity one.
 **Completed in the October bug-audit fixes.** The comparison bridges in
 [`algan_render.py`](benchmarks/renderer_audit/algan_render.py) and
 [`three_render.mjs`](benchmarks/renderer_audit/three_render.mjs) now share render,
-camera and material defaults. Both apply camera `up`, `near` and `far`, and reject
-unknown camera keys. Python/JavaScript normalization and camera construction have
-regression coverage. [`SPEC.md`](benchmarks/renderer_audit/SPEC.md) records the
-remaining differences in tessellation, far clipping and material semantics.
+camera, object, geometry, material and light defaults. Both apply camera `up`,
+`near` and `far`, and reject unknown keys and missing required fields in every
+section with identical messages. Python/JavaScript normalization of every scene
+in `scenes/`, the malformed-scene errors and camera construction have regression
+coverage in `tests/unit_tests/test_renderer_audit_contract.py`.
+[`SPEC.md`](benchmarks/renderer_audit/SPEC.md) records the remaining differences in
+tessellation, far clipping and material semantics.
+`_prespawn_invisibility_check.py` runs against the current API again.
 
-**Remaining work.** Broaden schema validation for geometry and material fields.
-Repair or retire `_prespawn_invisibility_check.py`, which imports the removed
-`memory_utils.empty_cache` name; do not treat old probe commands as acceptance
-coverage merely because their files still exist.
+**Remaining work.** Do not treat old probe commands as acceptance coverage merely
+because their files still exist: many unreferenced `benchmarks/_*.py` A/B scripts
+still import removed names (`render_to_file`, `RenderSettings`,
+`set_reflectivity`, `enable_ray_tracing`, `algan.settings.defaults`).
 
 **Done when.** Schema/default tests and camera-construction checks agree across
 the bridges, deliberately non-equivalent panels are labeled, and referenced
@@ -132,19 +136,15 @@ the full one finds no tensor storage on any of them.
 are bounded, cyclic garbage is still reclaimed, and low-memory/retry tests pass.
 Do not treat the older profiling percentages as the current bottleneck ranking.
 
-## 6. Remove confirmed legacy render experiments in a separate code change
+## 6. Remove confirmed legacy render experiments in a separate code change — landed
 
-**Current gap.** [`bloom.py`](algan/rendering/post_processing/bloom.py) still contains
-unused `bloom_filter_old`/`bloom_filter_conv` experiments and a compatibility probe
-for a removed glow helper. An SMAA module also exists without a normal
-post-processing route. Their presence is not evidence of supported public features.
-
-**Work.** Audit callers and imports, remove unused implementations and stale guards,
-or deliberately integrate and test an alternative that is still wanted. Keep
-this behavior-affecting cleanup separate from documentation-only changes.
-
-**Done when.** No public export, import or supported post-processing configuration
-depends on the removed code, and bloom/alpha/export regression tests remain green.
+**Landed on 2026-10-16.** [`bloom.py`](algan/rendering/post_processing/bloom.py)
+lost the unused `bloom_filter_old`/`bloom_filter_conv` experiments, their
+`fft_conv2d`/`gaussian_kernel_2d` helpers, and `_should_bypass_bloom`, whose
+import of the removed glow helper always failed, so it never bypassed anything.
+The unwired SMAA module and its two lookup textures were deleted. Kept, marked,
+so the item numbers that [RENDERER_WORK_QUEUE.md](RENDERER_WORK_QUEUE.md) cites
+stay valid.
 
 ## Later design work, not missing implementations
 

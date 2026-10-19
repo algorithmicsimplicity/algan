@@ -15,7 +15,7 @@ Four things are pinned here:
   the dtypes against the mode;
 * the narrowed **kernel variants** against the wide ones, which is what says
   the ``ti.template()`` dtype arguments really specialise rather than one arm
-  silently reusing the other's compiled code (``CLAUDE.md``'s ``ti.static``
+  silently reusing the other's compiled code (``AGENTS.md``'s ``ti.static``
   hazard, which is why these are template arguments);
 * an end-to-end render in the mode, compared against the same scene rendered
   out of it. That render is what would have caught the aliasing this mode

@@ -1017,7 +1017,6 @@ class BezierCircuitCubic(Mob):
             )
             self.num_texture_points = texture_triangle_vertices.shape[-2]
 
-            # control_points = torch.cat((control_points, texture_triangle_vertices), -2)
         self.stroke_width = cast_to_tensor(stroke_width)
         stroke_color = cast_to_tensor(stroke_color)
         if self.empty:
@@ -1832,7 +1831,6 @@ class BezierCircuitCubic(Mob):
         transmission,
         num_segments_per_circuit=None,
     ):
-        # x = unsquish(x, -2, num_control_points)
         # assert x.shape == [*, N, num_control_points, 3], where N is number of bezier segments.
         start_points = x[..., :1, :]
         end_points = x[..., -1:, :]
@@ -1906,7 +1904,6 @@ class BezierCircuitCubic(Mob):
                         )
                         - starting_inds[i]
                     )
-            # num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
             num_segments_per_circuit = torch.tensor(
                 [x.shape[-3]], device=x.device, dtype=torch.long
             )

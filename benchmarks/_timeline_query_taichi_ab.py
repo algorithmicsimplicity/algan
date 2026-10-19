@@ -35,7 +35,7 @@ covered with genuinely received inputs:
   it did not fire rather than manufacturing a synthetic call.
 
 No ``cap_process_memory``: every tensor here comes from a real scene rather
-than from parameters (see CLAUDE.md's memory rules; do not cap a real render).
+than from parameters (see AGENTS.md's memory rules; do not cap a real render).
 
     ALGAN_USE_DAEMON=0 uv run python benchmarks/_timeline_query_taichi_ab.py
 """

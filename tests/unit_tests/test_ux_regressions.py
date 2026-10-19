@@ -1859,6 +1859,32 @@ def test_an_unusable_codec_is_named(tmp_path):
             )
 
 
+@pytest.mark.parametrize("option", ["animate_fade_out", "reset"])
+def test_an_unusable_codec_leaves_the_scene_as_authored(tmp_path, option):
+    """The codec was checked after the fade-out had been recorded and, with
+    ``reset=True``, after the Scene was committed to its reset: a misspelt
+    codec baked a fade-out into the timeline, or emptied the Scene, without a
+    frame rendered.
+    """
+    from algan.utils.video_encoding import _listed_encoders
+
+    if _listed_encoders("ffmpeg") is None:
+        pytest.skip("this FFmpeg cannot be asked for its encoder list")
+
+    with algan.Scene(video_settings=SMOKE_TEST) as scene:
+        square = Square(color=algan.BLUE).spawn(animate=False)
+        with algan.Seq(runtime=0.5):
+            square.move(algan.RIGHT)
+        end = scene.animation_manager.context.end_time
+        with pytest.raises(AlganConfigurationError, match="cannot encode with codec"):
+            scene.save_video(
+                str(tmp_path / "clip.mp4"), codec="notacodec", **{option: True}
+            )
+        assert scene.animation_manager.context.end_time == end
+        assert square in scene.actors
+        assert square.is_spawned()
+
+
 @pytest.mark.fast
 def test_image_pixels_may_arrive_as_a_numpy_array():
     """It is what every imaging library returns and what Manim's ImageMobject

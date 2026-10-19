@@ -77,6 +77,9 @@ KERNEL_COMPILED_IN_FIELDS = (
     # raytrace_kernels_taichi.watertight_tri: which triangle test _tri_hit
     # compiles.
     "watertight_tri",
+    # raster_taichi._bez_anisotropic: whether _bez_pixel_hit measures circuit
+    # coverage through the plane's projection or in camera-facing pixels.
+    "analytic_aa_bez_anisotropic",
 )
 
 
@@ -2595,6 +2598,36 @@ analytic_aa_exact = env_flag("ALGAN_ANALYTIC_AA_EXACT", True)
 # (text -6.8% vs the box filter) is gone.
 analytic_aa_bez_wedge = env_flag("ALGAN_ANALYTIC_AA_BEZ_WEDGE", True)
 
+# Measure a circuit's coverage ON SCREEN (DESIGN_analytic_aa.md ss22). The box
+# filter is a pixel on screen, but a circuit's signed distance is taken in its
+# own plane; off, it is converted with the camera-facing pixel size, which is
+# exact only where the plane faces the camera. Tilted away, the plane is
+# squeezed along its foreshortened direction and the filter came out narrower
+# than a pixel there, so a thin stroke on it beaded as it crossed pixel rows (a
+# floor grid seen from 42 degrees up: a line's brightness varied by 7.7 % along
+# its length at 1080p, against 1.2 % supersampled).
+# On, ``_bez_pixel_hit`` makes its nearest-edge query on screen, through the
+# plane's own projection at the pixel, and carries the plane's widths across.
+# Byte-identical off, and for a circuit facing an unrotated camera. Behind
+# ``ti.static`` (``raster_taichi._bez_anisotropic``), hence one of
+# KERNEL_COMPILED_IN_FIELDS. DEFAULT ON.
+analytic_aa_bez_anisotropic = env_flag("ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC", True)
+
+
+def set_analytic_aa_bez_anisotropic(enabled):
+    """Toggle screen-space circuit coverage (see ``analytic_aa_bez_anisotropic``).
+
+    The gate compiles into the circuit raster kernels, so a variant that
+    already exists bakes the previous value; ``KERNEL_COMPILED_IN_FIELDS``
+    makes the next render job rebuild the Taichi program instead, so both arms
+    are right in one process at the cost of a kernel-preparation pass. Set
+    ``ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC`` before importing algan to choose an
+    arm without paying for the switch.
+    """
+    global analytic_aa_bez_anisotropic
+    analytic_aa_bez_anisotropic = bool(enabled)
+
+
 # The ss21.3/21.8/21.9 exact-triangle formulations (single exact area vs the
 # mask, packed cells, scalar surface accounting) are DELETED, not parked:
 # DESIGN_analytic_aa_v2.md's run-corrected representation (analytic_aa_run)
@@ -2861,7 +2894,7 @@ direct_specular_lobe = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 # Gate: a ``ti.template()`` argument of ``wavefront_shade`` (the kernel is at
 # Taichi's runtime-argument ceiling; see the packed-ndarray comments there),
 # read live per batch at the call sites -- so flipping it mid-process
-# compiles the other variant rather than baking (CLAUDE.md's ti.static
+# compiles the other variant rather than baking (AGENTS.md's ti.static
 # hazard). OFF compiles today's kernel body exactly.
 weight_floor_exit = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
 
@@ -2873,7 +2906,7 @@ weight_floor_exit = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
 # block's ``no_shadow_receive`` slot is left at its 0.0 default. Both kernel
 # tests then read a bit that is never set and a slot that is always zero, which
 # is bit-for-bit what they did before the flags existed -- so no kernel variant
-# changes and there is no ti.static gate to go stale mid-process (CLAUDE.md's
+# changes and there is no ti.static gate to go stale mid-process (AGENTS.md's
 # hazard). The flags stay settable on a Mob with this off; they just do nothing,
 # which is the same thing ``SETTINGS.raytracing.shadows = False`` does to them.
 per_mob_shadow_flags = env_flag("ALGAN_PER_MOB_SHADOW_FLAGS", True)

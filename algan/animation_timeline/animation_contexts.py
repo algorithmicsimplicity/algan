@@ -903,7 +903,6 @@ class AnimationContext:
         :class:`~.Seq` (1) moves it past the whole animation. Called by the
         ``animated_function`` machinery; you do not call it yourself.
         """
-        # self.end_time = max(self.end_time, self.current_time + self.runtime_per_part)
         self.timespan.original_end = max(
             self.timespan.original_end,
             self.timespan.current_time + self.runtime_per_part,

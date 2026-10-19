@@ -149,7 +149,7 @@ FRAME_EXIT = b"X"  # payload is a 4-byte big-endian signed exit code
 #: device or against the wrong cache -- except for
 #: :data:`STARTUP_ENV_ADOPTED`. Declared in :mod:`algan.environment` alongside
 #: every other variable Algan honors; see also the "Initialization-only
-#: settings" section of ``CLAUDE.md``.
+#: settings" section of ``AGENTS.md``.
 STARTUP_ENV = startup_environment_variables()
 
 #: The startup variables a difference in is *not* refused. Their import-time

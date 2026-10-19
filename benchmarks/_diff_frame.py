@@ -2,7 +2,7 @@
 
 ``_video_diff.py`` says how far output moved; this says *what* moved, which is the
 question a re-baseline actually turns on ("look at the result before committing"
--- CLAUDE.md, and every re-baseline note in DESIGN_mesh_identity.md).
+-- AGENTS.md, and every re-baseline note in DESIGN_mesh_identity.md).
 
 Writes one PNG: baseline | actual | amplified difference, stacked left to right
 with the difference scaled so a 5-value change is visible rather than black. The

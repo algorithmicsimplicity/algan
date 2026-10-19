@@ -23,7 +23,7 @@ exploits. It is the automation of the reproduction written out in
 **The arms are separate processes on purpose.** ``ALGAN_AREA_LIGHT_SOFT_SHADOWS``
 is read into a module global at import, so flipping it inside one process would
 leave the first arm's value in place and report its numbers as the second
-arm's -- the same trap ``CLAUDE.md`` records for ``ti.static`` gates.
+arm's -- the same trap ``AGENTS.md`` records for ``ti.static`` gates.
 
 Four things are checked, and the last three are the ones a "fix" that merely
 blurs the staircase would fail:

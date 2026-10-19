@@ -10,22 +10,6 @@ def _where(condition, a, b, out):
     return torch.where(condition, a, b, out=out)
 
 
-def rgb_to_luma(image, memory, out=None):
-    """Convert RGB to luma without allocating outside ``memory``."""
-    if out is None:
-        out = memory.get_tensor(
-            (image.shape[0], 1, image.shape[2], image.shape[3]), image.dtype
-        )
-    product = memory.get_tensor(image[:, :3].shape, image.dtype)
-    weights = memory.get_tensor((1, 3, 1, 1), image.dtype)
-    weights[0, 0, 0, 0] = 0.299
-    weights[0, 1, 0, 0] = 0.587
-    weights[0, 2, 0, 0] = 0.114
-    torch.mul(image[:, :3], weights, out=product)
-    torch.sum(product, dim=1, keepdim=True, out=out)
-    return out
-
-
 def fxaa(
     images,
     edge_threshold=0.125,

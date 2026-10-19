@@ -11,7 +11,7 @@ in subprocesses:
 
 and asserts all three videos decode to identical pixels. All arms use the
 same squeezed budget so their batch windows -- and therefore the CPU
-rate-function rounding (see CLAUDE.md) -- are identical, making byte-exact
+rate-function rounding (see AGENTS.md) -- are identical, making byte-exact
 comparison valid. Also asserts the auto arm actually logged the mid-render
 switch, so the parity covers a batch boundary where the kernel set changes.
 

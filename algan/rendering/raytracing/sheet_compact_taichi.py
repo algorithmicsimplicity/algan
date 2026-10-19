@@ -892,15 +892,22 @@ def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
     """How far from its projected outline, in screen pixels, a pixel centre
     can still be accepted.
 
-    ``_bez_pixel_hit`` accepts a centre whose plane point is within
-    ``R * pixel_size`` of the outline, ``R`` being its query radius in pixels
-    (the stroke's reach, the hairline dilation and the coverage filter's).
-    ``pixel_size`` is world-per-pixel at the point's perpendicular depth, and
-    a pinhole camera magnifies a world displacement there by at most
-    ``1 / (pixel_size * cos(theta))`` pixels, ``theta`` the ray's angle off
-    the optical axis -- whatever the plane's tilt. So ``R / cos(theta)`` over
-    the frame's widest ray bounds it, with slack for the depth change across
-    the reach itself (a fraction of a percent: the reach is a few pixels).
+    ``_bez_pixel_hit`` accepts a centre within its coverage filter's reach of
+    the drawn region, and the drawn region reaches ``R_d * pixel_size`` past
+    the outline in the plane, ``R_d`` being the stroke's reach and the hairline
+    dilation in pixels. ``pixel_size`` is world-per-pixel at the point's
+    perpendicular depth, and a pinhole camera magnifies a world displacement
+    there by at most ``1 / (pixel_size * cos(theta))`` pixels, ``theta`` the
+    ray's angle off the optical axis -- whatever the plane's tilt. The filter's
+    reach is ``_AA_FILTER_RADIUS`` pixels measured on screen (or ``pixel_size``
+    multiples of it in the plane, where coverage is measured isotropically,
+    which the same magnification bounds). So with ``R = R_d +
+    _AA_FILTER_RADIUS``, ``R / cos(theta)`` over the frame's widest ray bounds
+    it, with slack for the depth change across the reach itself (a fraction of
+    a percent: the reach is a few pixels). The plane-space query
+    ``_bez_pixel_hit`` makes is wider than ``R * pixel_size`` on a tilted plane
+    -- the filter's screen reach spans more of the plane there -- but where on
+    screen a centre can be accepted is what bounds the candidates.
     """
     border_w = ti.abs(circuit_meta[tm, c, _M_BORDER_W])
     outline_w = ti.max(aa_min_half_width, 0.6)

@@ -34,7 +34,7 @@ reports mode 1 on both sides proved nothing.
 
 One process per arm: two of these four are ``ti.static`` gates or template
 arguments read when the kernel compiles, and a second arm in the same process
-would silently reuse the first arm's code (CLAUDE.md, the ti.static hazard).
+would silently reuse the first arm's code (AGENTS.md, the ti.static hazard).
 
 Usage::
 

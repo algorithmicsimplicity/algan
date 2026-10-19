@@ -350,6 +350,32 @@ def _opt_disabled_render_loop(name):
     return _opt_disabled(name)
 
 
+def _close_video_file_writer(file_writer):
+    """Close moviepy's writer, and raise if FFmpeg did not finish the file.
+
+    moviepy's ``close`` waits for FFmpeg without asking how it exited, and a
+    refusal that comes when FFmpeg writes the header -- a codec the container
+    cannot hold -- breaks no frame write when the whole video fits in the
+    pipe: the temporary file was then published as rendered, 262 bytes of
+    WebM or an empty GIF. The pass encoders check the same way.
+    """
+    proc = getattr(file_writer, "proc", None)
+    message = b""
+    if proc is not None:
+        with contextlib.suppress(OSError):
+            proc.stdin.close()
+        if proc.stderr is not None:
+            # Read before moviepy's ``close`` closes it unread.
+            message = proc.stderr.read()
+    file_writer.close()
+    if proc is not None and proc.returncode:
+        raise RuntimeError(
+            f"FFmpeg failed writing {getattr(file_writer, 'filename', 'the video')} "
+            f"(exit code {proc.returncode}): "
+            f"{message.decode(errors='replace').strip() or 'no message'}"
+        )
+
+
 class _VideoWriter:
     """A bounded encoder queue whose failures reach its sole producer."""
 
@@ -1304,9 +1330,12 @@ class RenderLoopMixin:
         if upper <= 1:
             raise OutOfRenderMemory(_one_frame_does_not_fit_message())
 
+        # Search downward from the projection bound and take the first runtime
+        # that fits. Probing a larger prefix after a fit would mean releasing
+        # this prepared candidate and preparing another, which costs more than
+        # the frames it could add.
         low = 1
         high = upper - 1
-        best = 0
         while low <= high:
             duration = self._next_probe_duration(low, high)
             result = probe(duration)
@@ -1314,40 +1343,15 @@ class RenderLoopMixin:
                 high = duration - 1
                 continue
 
-            best = duration
-            if True:  # runtime == high:
-                logger.debug(
-                    "Arena planner selected %s/%s fetched frames without "
-                    "rematerializing the batch.",
-                    duration,
-                    total_frames,
-                )
-                return result[0], duration, result[1]
-
-            # A larger prefix may fit.  Release this prepared candidate while
-            # retaining only its runtime; keeping two merged scenes resident
-            # would invalidate the next headroom measurement.
-            self._release_preflight_candidate(result[0])
-            low = duration + 1
-
-        if best <= 0:
-            raise OutOfRenderMemory(_one_frame_does_not_fit_message())
-
-        # The final binary-search step can be a failure immediately above the
-        # best fitting runtime, so recreate that winning prefix once.
-        result = probe(best)
-        if result is None:
-            result = probe(best)
-            raise OutOfRenderMemory(
-                "Render-arena fit was not monotone while selecting a batch."
+            logger.debug(
+                "Arena planner selected %s/%s fetched frames without "
+                "rematerializing the batch.",
+                duration,
+                total_frames,
             )
-        logger.debug(
-            "Arena planner selected %s/%s fetched frames without "
-            "rematerializing the batch.",
-            best,
-            total_frames,
-        )
-        return result[0], best, result[1]
+            return result[0], duration, result[1]
+
+        raise OutOfRenderMemory(_one_frame_does_not_fit_message())
 
     def _begin_batch_cost_measurement(self):
         """Start a fresh cost fit for a newly fetched batch.
@@ -4547,22 +4551,6 @@ class RenderLoopMixin:
 
                     if retry_upper_duration is not None:
                         retry_lower_duration = max(retry_lower_duration, duration)
-                        if False:  # retry_upper_duration - retry_lower_duration > 1:
-                            # This candidate fits, but a failed upper bound
-                            # leaves room to probe a larger prepared batch
-                            # without emitting speculative frames.
-                            if primitives:
-                                primitives[0]._rt_device_scene = None
-                                primitives[0]._rt_prepared_host_scene = None
-                                primitives[0]._rt_merged_scene = None
-                            del primitives
-                            self.memory.reset()
-                            release_torch_memory(force_gc=False)
-                            target_duration = (
-                                retry_lower_duration + retry_upper_duration
-                            ) // 2
-                            retry_end_ind = current_time_ind + target_duration
-                            continue
 
                     # Carry the arena's verdict on this batch into the next
                     # fetch. Materializing a batch costs seconds, and without
@@ -4818,7 +4806,7 @@ class RenderLoopMixin:
         own stage instead of leaving it in the profile's unaccounted bucket.
         """
         writer.finish()
-        writer.file_writer.close()
+        _close_video_file_writer(writer.file_writer)
 
     def _recorded_end_time_for_render(self):
         """End of everything recorded so far, in seconds.

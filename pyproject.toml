@@ -88,10 +88,9 @@ dependencies = [
     "scipy>=1.8.0",
     "svgelements>=1.0.0",
     "torch>=2.0.0",
-    # Imported at module scope by algan.rendering.post_processing.anti_aliasing.smaa
-    # and algan.mobs.image_compat, used for all image decoding in
-    # algan.utils.file_utils / algan.mobs.three_d_models.model_mob, and by the
-    # vendored Manim subset's ImageMobject.
+    # Imported at module scope by algan.mobs.image_compat, used for all image
+    # decoding in algan.utils.file_utils / algan.mobs.three_d_models.model_mob,
+    # and by the vendored Manim subset's ImageMobject.
     "pillow>=9.0",
     # Render progress bar (algan.render_loop). Also arrives transitively via
     # moviepy's proglog; named here because Algan imports it directly. 4.51 is
@@ -352,8 +351,6 @@ ignore = [
   "UP038",
   # (sub)module shadows standard library module
   "A005",
-  # mutable argument defaults (too many changes)
-  "B006",
   # No function calls in defaults
   # ignored because np.array() and straight_path()
   "B008",

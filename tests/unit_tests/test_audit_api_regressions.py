@@ -1,5 +1,6 @@
 """Public API regressions from the October 2026 bug audit."""
 
+import os
 import shutil
 import subprocess
 
@@ -11,6 +12,7 @@ from PIL import Image
 
 from algan import (
     OUT,
+    SETTINGS,
     WHITE,
     Camera,
     Color,
@@ -24,6 +26,7 @@ from algan import (
 from algan.mobs import text as text_module
 from algan.utils.algan_utils import concatenate_videos
 from algan.utils.file_utils import get_image
+from algan.utils.video_encoding import _software_ffmpeg_binary
 
 
 @pytest.mark.parametrize("mode", ["L", "LA", "P", "CMYK", "RGB", "RGBA"])
@@ -117,9 +120,11 @@ def test_plain_text_wrappers_compile_literal_tex_characters(
 
 
 def _clip(path, color):
+    # The binary save_video encodes with: imageio-ffmpeg's bundled build where
+    # no FFmpeg is on the PATH, as on the macOS CI arms.
     subprocess.run(
         [
-            "ffmpeg",
+            _software_ffmpeg_binary(),
             "-v",
             "error",
             "-f",
@@ -146,23 +151,14 @@ def test_concat_rejects_missing_manifest_before_overwriting_output(tmp_path):
     assert existing.read_bytes() == b"previous complete output"
 
 
-def test_concat_real_ffmpeg_handles_quotes_and_preserves_explicit_order(tmp_path):
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        pytest.skip("FFmpeg integration requires ffmpeg and ffprobe")
-    folder = tmp_path / "O'Brien space é"
-    folder.mkdir()
-    first, second = folder / "2_red's clip.mp4", folder / "1_blue's clip.mp4"
-    _clip(first, "red")
-    _clip(second, "blue")
-    output = concatenate_videos(folder, input_files=[first, second])
-    assert output is not None
+def _frames(path):
     frames = subprocess.run(
         [
-            "ffmpeg",
+            _software_ffmpeg_binary(),
             "-v",
             "error",
             "-i",
-            str(output),
+            str(path),
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -172,7 +168,56 @@ def test_concat_real_ffmpeg_handles_quotes_and_preserves_explicit_order(tmp_path
         check=True,
         capture_output=True,
     ).stdout
-    frames = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 16, 16, 3)
+    return np.frombuffer(frames, dtype=np.uint8).reshape(-1, 16, 16, 3)
+
+
+def test_concat_real_ffmpeg_handles_quotes_and_preserves_explicit_order(tmp_path):
+    folder = tmp_path / "O'Brien space é"
+    folder.mkdir()
+    first, second = folder / "2_red's clip.mp4", folder / "1_blue's clip.mp4"
+    _clip(first, "red")
+    _clip(second, "blue")
+    output = concatenate_videos(folder, input_files=[first, second])
+    assert output is not None
+    frames = _frames(output)
     assert len(frames) == 4
     assert frames[0, :, :, 0].mean() > 240
     assert frames[-1, :, :, 2].mean() > 240
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash separates paths on Windows")
+def test_concat_keeps_backslashes_that_are_part_of_a_posix_name(tmp_path):
+    folder = tmp_path / "back\\slash"
+    folder.mkdir()
+    first, second = folder / "red\\clip.mp4", folder / "blue\\clip.mp4"
+    _clip(first, "red")
+    _clip(second, "blue")
+    output = concatenate_videos(folder, input_files=[first, second])
+    assert output is not None
+    frames = _frames(output)
+    assert len(frames) == 4
+    assert frames[0, :, :, 0].mean() > 240
+    assert frames[-1, :, :, 2].mean() > 240
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a shell script stands in for FFmpeg")
+def test_concat_runs_the_ffmpeg_save_video_encodes_with(monkeypatch, tmp_path):
+    folder = tmp_path / "clips"
+    folder.mkdir()
+    _clip(folder / "0_red.mp4", "red")
+    _clip(folder / "1_blue.mp4", "blue")
+    log = tmp_path / "pinned.log"
+    pinned = tmp_path / "pinned-ffmpeg"
+    pinned.write_text(
+        f'#!/bin/sh\necho ran >> "{log}"\nexec "{_software_ffmpeg_binary()}" "$@"\n'
+    )
+    pinned.chmod(0o755)
+    SETTINGS.paths.set(ffmpeg_binary=str(pinned))
+    # With no FFmpeg on the PATH, a bare "ffmpeg" cannot start at all.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    output = concatenate_videos(folder)
+
+    assert output is not None
+    assert log.read_text() == "ran\n"
+    assert len(_frames(output)) == 4

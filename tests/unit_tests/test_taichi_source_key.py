@@ -636,9 +636,14 @@ def test_quadrants_own_fastcache_is_deferred_to(hooks):
 
 
 def _run_child(script, env, cwd):
+    # The children share a kernel cache of the test's own, beside the probe
+    # module. The key includes the module's path, and pytest's temp path is the
+    # same from session to session on a fresh machine, so a cache kept between
+    # sessions (CI restores one) already holds what the first child must miss.
+    cache = {"TI_OFFLINE_CACHE_FILE_PATH": str(Path(cwd) / "kernel_cache")}
     result = subprocess.run(
         [sys.executable, "-c", script],
-        env={**os.environ, **CHILD_ENV, **env},
+        env={**os.environ, **CHILD_ENV, **cache, **env},
         cwd=str(cwd),
         capture_output=True,
         text=True,
