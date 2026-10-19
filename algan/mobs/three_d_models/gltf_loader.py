@@ -22,7 +22,11 @@ import warnings
 import numpy as np
 import torch
 
-from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
+from algan.errors import (
+    AlganWarning,
+    UnsupportedFeatureError,
+    UnsupportedFeatureWarning,
+)
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.scene_data import (
     AnimationData,
@@ -411,6 +415,41 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         return static_nodes, []
 
 
+def _uri_resolver(file_path):
+    """A trimesh resolver that reads a glTF's external URIs as the format
+    defines them.
+
+    glTF requires a URI to be RFC 3986 encoded, so a texture named
+    ``my tex.png`` is referenced as ``my%20tex.png``, and a relative URI may
+    climb out of the model's folder (``../textures/wood.png``). trimesh's
+    default resolver neither decodes nor (since trimesh 5) leaves the folder,
+    and it reports a miss only at debug level. A name is tried as written
+    first, so every file that resolved before still resolves the same way.
+    Names that cannot be read at all are kept on ``missing``.
+    """
+    import urllib.parse
+
+    import trimesh
+
+    class _Resolver(trimesh.resolvers.FilePathResolver):
+        def get(self, name):
+            try:
+                return super().get(name)
+            except Exception:
+                decoded = urllib.parse.unquote(name)
+                if decoded != name:
+                    try:
+                        return super().get(decoded)
+                    except Exception:
+                        pass
+                self.missing.append(name)
+                raise
+
+    resolver = _Resolver(file_path, allow_anywhere=True)
+    resolver.missing = []
+    return resolver
+
+
 def load_scene(file_path):
     """Parse ``file_path`` (glTF/glB/OBJ/PLY/... anything trimesh reads) into a
     :class:`SceneData`. Node-instance world transforms from the scene graph are
@@ -424,10 +463,13 @@ def load_scene(file_path):
     # process=False keeps the authored vertex/UV/normal arrays aligned (no
     # vertex merging), which matters for textured meshes.
     source, load_options = file_path, {}
+    resolver = None
     suffix = os.path.splitext(file_path)[1].lower()
     if suffix in (".glb", ".gltf"):
         from pygltflib import GLTF2
 
+        resolver = _uri_resolver(file_path)
+        load_options = {"resolver": resolver}
         gltf = GLTF2().load(file_path)
         if gltf.animations:
             # trimesh preserves mesh extras on every primitive. Carry identity
@@ -443,10 +485,22 @@ def load_scene(file_path):
             source = io.BytesIO(payload)
             load_options = {
                 "file_type": suffix[1:],
-                "resolver": trimesh.resolvers.FilePathResolver(file_path),
+                "resolver": resolver,
                 "merge_primitives": False,
             }
     loaded = trimesh.load(source, process=False, force="scene", **load_options)
+    # trimesh drops an image it cannot read and carries on, so without this
+    # the model would render in its flat fallback color with no word why.
+    for uri in dict.fromkeys(resolver.missing if resolver is not None else ()):
+        warnings.warn(
+            f"Could not read {uri!r}, which {os.path.basename(file_path)!r} "
+            f"references (looked beside the model, in "
+            f"{os.path.dirname(os.path.abspath(file_path))!r}); a texture "
+            "that uses it is left out and its material falls back to a flat "
+            "color.",
+            AlganWarning,
+            stacklevel=2,
+        )
 
     meshes: list[MeshData] = []
     materials: list[MaterialData] = []
