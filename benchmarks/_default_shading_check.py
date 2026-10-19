@@ -20,7 +20,7 @@ Run one arm per process::
     <venv-python> benchmarks/_default_shading_check.py manim
 
 Two processes rather than one because several of the renderer's shading gates
-are ``ti.static`` and resolve when the kernel first compiles (see ``CLAUDE.md``),
+are ``ti.static`` and resolve when the kernel first compiles (see ``AGENTS.md``),
 and because ``use_manim_defaults`` mutates process-global ``SETTINGS``.
 
 Frames land in ``algan_outputs/default_shading_<arm>.png``.

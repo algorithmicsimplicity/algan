@@ -458,7 +458,7 @@ key.** `get_offline_cache_key_of_compile_config` serializes an *explicit* list
 of fields rather than the whole struct — `cache_loop_invariant_global_vars` is
 already missing from it — so a flag added without that line would let the two
 A/B arms share a compiled artifact and report the first arm's numbers as the
-second's. That is the same class of silent-stale-arm bug `CLAUDE.md` warns about
+second's. That is the same class of silent-stale-arm bug `AGENTS.md` warns about
 for `ti.static` gates, and it is why this is not an env var read in codegen.
 Being a config field also means Quadrants' generic plumbing gives
 `qd.init(invariant_arg_loads=False)` **and** `QD_INVARIANT_ARG_LOADS=0` with no
@@ -809,7 +809,7 @@ decisions on these values — `ti.min(cx * cx, ti.exp(-6.4324058 * nv))` at
 `wavefront_kernels_taichi.py:1047` is a comparison, and acceptance thresholds
 elsewhere are — so a last-bit change can flip a branch and move one edge pixel by
 a lot. That is the same exposure `fast_math` already carries for sin/cos/log, and
-the answer is the same as `CLAUDE.md` prescribes for any legitimate rendering
+the answer is the same as `AGENTS.md` prescribes for any legitimate rendering
 change: clear the offline cache, run `pytest -q tests/full_renders` **on CUDA**,
 look at the diff videos, and re-baseline `expected_outputs_cuda/` with
 `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` only if the differences are the expected

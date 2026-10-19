@@ -16,7 +16,7 @@ gate moved and, of those, how many landed closer to the reference.
 into a module global, so flipping it in-process would leave the first arm's
 value compiled into everything downstream; this script therefore re-executes
 itself per arm rather than looping. That is the same discipline
-``CLAUDE.md`` states for every ``ti.static``-gated toggle.
+``AGENTS.md`` states for every ``ti.static``-gated toggle.
 
 A ceded sample is claimed by the surface that won it, so the failure mode worth
 watching for is a sample nobody claims -- which shows as the BACKGROUND. The

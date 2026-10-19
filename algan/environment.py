@@ -71,7 +71,7 @@ _DAEMON_ADOPTED_STARTUP_VARIABLES = ("ALGAN_RENDER_DEVICE",)
 
 #: Variables read by the test and benchmark harnesses rather than by the
 #: package. Declared so that a contributor who exports one -- as
-#: ``CLAUDE.md``, ``tests/README.md`` and the contributing docs tell them to
+#: ``AGENTS.md``, ``tests/README.md`` and the contributing docs tell them to
 #: -- does not get told it is unknown on every import.
 _HARNESS_VARIABLES = (
     "ALGAN_BASELINE_DIR",

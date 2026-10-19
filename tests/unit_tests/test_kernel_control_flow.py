@@ -43,7 +43,7 @@ _PACKAGE = Path(__file__).resolve().parents[2] / "algan"
 
 #: Kernel modules. The hazard is in Taichi's codegen, so only code Taichi
 #: compiles can carry it, and this project keeps all of that behind the
-#: ``_taichi`` suffix (see CLAUDE.md's linting notes, which key three separate
+#: ``_taichi`` suffix (see AGENTS.md's linting notes, which key three separate
 #: things off the same convention).
 _KERNEL_MODULES = sorted(_PACKAGE.rglob("*_taichi.py"))
 

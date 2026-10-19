@@ -45,7 +45,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # A warm daemon carries the previous arm's import-time renderer state, and these
-# arms differ in exactly that; see CLAUDE.md on _IMPORT_TIME_VARIABLES.
+# arms differ in exactly that; see AGENTS.md on _IMPORT_TIME_VARIABLES.
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
 import numpy as np  # noqa: E402
@@ -56,7 +56,7 @@ from algan.scene_manager import SceneManager  # noqa: E402
 OUT_DIR = os.path.join("algan_outputs", "shadow_flags")
 ARMS = ("control", "noshadow", "drop", "noncaster", "allcast", "allrecv", "silhouette")
 
-# The suite-wide tolerance (CLAUDE.md). Demanded as an exact 0 only where the two
+# The suite-wide tolerance (AGENTS.md). Demanded as an exact 0 only where the two
 # arms are the same render of the same geometry.
 TOL = 2
 

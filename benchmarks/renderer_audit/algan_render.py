@@ -467,7 +467,7 @@ def main(argv=None):
     # at compile time: the glossy route, the interleave and prefilter flags are
     # `ti.static` gates resolved when the kernel compiles, so a second arm in
     # the same process would silently reuse the first arm's compiled code and
-    # report its numbers as its own (CLAUDE.md's Taichi gotchas; it has
+    # report its numbers as its own (AGENTS.md's Taichi gotchas; it has
     # produced two wrong measurements in this repo already). Those arrive as
     # environment variables and flags, which are per-process by construction --
     # so keep one process per *setting* combination, and batch only over
