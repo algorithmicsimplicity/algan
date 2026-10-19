@@ -252,3 +252,74 @@ def test_alpha_mode_decides_what_alpha_means(
     assert textured.diffuse_image[0, :, 3].tolist() == pytest.approx(
         expected_texels, abs=2e-3
     )
+
+
+_VERTEX_RGBA = np.array(
+    [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [1, 1, 1, 0.25]], np.float32
+)
+
+
+def _corner_colors(mesh):
+    """Per-vertex RGBA the renderer receives, in the quad's vertex order."""
+    colors = mesh.grid.color.reshape(-1, 5)
+    order = mesh.corner_index.tolist()
+    return torch.stack([colors[order.index(v)] for v in range(4)])[:, [0, 1, 2, 4]]
+
+
+@pytest.mark.parametrize("uvs", [True, False])
+@pytest.mark.parametrize("pbr_materials", [True, False])
+def test_gltf_vertex_colors_are_the_albedo_beside_a_material(
+    tmp_path, uvs, pbr_materials
+):
+    path = _write_gltf(
+        tmp_path / "painted.gltf",
+        {"pbrMetallicRoughness": {"metallicFactor": 0}},
+        uvs=uvs,
+        colors=_VERTEX_RGBA,
+    )
+    with Scene():
+        mesh = Model3D(str(path), pbr_materials=pbr_materials).mesh_mobs[0]
+        expected = torch.tensor(_VERTEX_RGBA)
+        expected[:, 3] = 1  # OPAQUE (the default): COLOR_0's alpha is ignored
+        torch.testing.assert_close(_corner_colors(mesh), expected)
+
+
+def test_gltf_vertex_colors_are_linear_and_multiply_the_factor(tmp_path):
+    colors = np.array(
+        [[0.2, 0.2, 0.2, 1], [1, 1, 1, 0.5], [0, 0, 0, 1], [1, 1, 1, 1]], np.float32
+    )
+    path = _write_gltf(
+        tmp_path / "tinted.gltf",
+        {
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [1.0, 0.2, 1.0, 0.6],
+                "metallicFactor": 0,
+            },
+            "alphaMode": "BLEND",
+        },
+        colors=colors,
+    )
+    srgb = linear_to_srgb(torch.tensor([0.2, 0.04, 0.2], dtype=torch.float64))
+    with Scene():
+        actual = _corner_colors(Model3D(str(path)).mesh_mobs[0])
+    # Linear COLOR_0 times the linear factor, shown as display sRGB.
+    torch.testing.assert_close(
+        actual[0], torch.tensor([srgb[0], srgb[1], srgb[0], 0.6]).float()
+    )
+    torch.testing.assert_close(
+        actual[1], torch.tensor([1.0, float(srgb[2]), 1.0, 0.3]), atol=2e-3, rtol=0
+    )
+
+
+def test_ply_vertex_colors_survive_the_default_material(tmp_path):
+    import trimesh
+
+    vertices, _, faces = _quad()
+    mesh = trimesh.Trimesh(vertices, faces.reshape(-1, 3), process=False)
+    mesh.visual.vertex_colors = (_VERTEX_RGBA * 255).round().astype(np.uint8)
+    path = tmp_path / "painted.ply"
+    mesh.export(str(path))
+    with Scene():
+        actual = _corner_colors(Model3D(str(path)).mesh_mobs[0])
+    expected = torch.tensor((_VERTEX_RGBA * 255).round() / 255, dtype=torch.float32)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

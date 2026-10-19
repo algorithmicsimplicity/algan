@@ -116,6 +116,17 @@ def _linear_to_display(values):
     return linear_to_srgb(torch.as_tensor(values, dtype=torch.float64)).float()
 
 
+def _gltf_alpha(material):
+    """A glTF material's linear ``baseColorFactor`` (``[1, 1, 1, 1]`` when
+    omitted), ``alphaMode`` (``OPAQUE`` when omitted) and ``alphaCutoff``
+    (``0.5`` when omitted).
+    """
+    factor = _normalize_color(getattr(material, "baseColorFactor", None))
+    mode = getattr(material, "alphaMode", None) or "OPAQUE"
+    cutoff = getattr(material, "alphaCutoff", None)
+    return factor, mode, 0.5 if cutoff is None else float(cutoff)
+
+
 def _resolve_alpha(alpha, mode, cutoff):
     """Apply a glTF ``alphaMode`` to alpha values: ``OPAQUE`` ignores alpha,
     ``MASK`` makes each value fully opaque or fully transparent at ``cutoff``,
@@ -174,10 +185,7 @@ def _convert_material(visual, gltf=False):
     if gltf:
         # Omitted factors are the specification's defaults, never trimesh's
         # placeholder grey: base color [1, 1, 1, 1], metallic and roughness 1.
-        factor = _normalize_color(getattr(material, "baseColorFactor", None))
-        alpha_mode = getattr(material, "alphaMode", None) or "OPAQUE"
-        alpha_cutoff = getattr(material, "alphaCutoff", None)
-        alpha_cutoff = 0.5 if alpha_cutoff is None else float(alpha_cutoff)
+        factor, alpha_mode, alpha_cutoff = _gltf_alpha(material)
         base = (
             *_linear_to_display(factor[:3]).tolist(),
             float(_resolve_alpha(factor[3], alpha_mode, alpha_cutoff)),
@@ -229,7 +237,28 @@ def _convert_material(visual, gltf=False):
     )
 
 
-def _convert_mesh(geom, material_index, name):
+def _gltf_vertex_colors(colors, material):
+    """glTF ``COLOR_0`` ``[V, 3 or 4]`` as display sRGB, its alpha resolved by
+    the primitive's ``alphaMode``.
+
+    ``COLOR_0`` is linear, like the factors. Its alpha multiplies the base
+    color factor's, which the model builder multiplies back in, so a ``MASK``
+    cutoff is applied to the product here and the factor's own (already
+    thresholded) alpha leaves the result unchanged.
+    """
+    rgb = _linear_to_display(colors[:, :3])
+    if material is None or colors.shape[-1] < 4:
+        return torch.cat((rgb, colors[:, 3:]), -1)
+    factor, mode, cutoff = _gltf_alpha(material)
+    alpha = colors[:, 3:4]
+    if mode == "MASK":
+        alpha = _resolve_alpha(alpha * factor[3], mode, cutoff)
+    else:
+        alpha = _resolve_alpha(alpha, mode, cutoff)
+    return torch.cat((rgb, alpha), -1)
+
+
+def _convert_mesh(geom, material_index, name, gltf=False):
     vertices = _to_tensor(geom.vertices)
     faces = _to_tensor(getattr(geom, "faces", None), dtype=torch.int64)
     if vertices is None or faces is None:
@@ -251,9 +280,19 @@ def _convert_mesh(geom, material_index, name):
         uvs = _to_tensor(uv)[..., :2].contiguous()
 
     vertex_colors = None
-    vc = getattr(visual, "vertex_colors", None) if visual is not None else None
-    if uvs is None and vc is not None and len(vc) == vertices.shape[0]:
+    # A glTF primitive with a material keeps its COLOR_0 beside the material
+    # (TextureVisuals.vertex_attributes), textured or not; trimesh only makes
+    # it the visual's own vertex_colors when there is no material.
+    vc = getattr(visual, "vertex_attributes", {}).get("color")
+    authored = vc is not None or getattr(visual, "kind", None) == "vertex"
+    if vc is None and uvs is None and visual is not None:
+        vc = getattr(visual, "vertex_colors", None)
+    if vc is not None and len(vc) == vertices.shape[0]:
         vertex_colors = _image_to_float_hwc(np.asarray(vc)[None])[0]
+        if gltf and authored:
+            vertex_colors = _gltf_vertex_colors(
+                vertex_colors, getattr(visual, "material", None)
+            )
 
     return MeshData(
         vertices=vertices,
@@ -593,7 +632,7 @@ def load_scene(file_path):
             continue
         material_index = len(materials)
         materials.append(_convert_material(getattr(geom, "visual", None), gltf=is_gltf))
-        md = _convert_mesh(geom, material_index, name)
+        md = _convert_mesh(geom, material_index, name, gltf=is_gltf)
         if md is None:
             materials.pop()
             continue
