@@ -513,7 +513,11 @@ def _cached_audio_file_clip(file):
     if temporary is not None:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
-    return clip
+    # Lazy on a miss as well: a decoder held from authoring on is an ffmpeg
+    # process and two pipes, and a narrated scene's first render authors one
+    # clip per sentence -- enough of them exhaust the descriptor limit.
+    clip.close()
+    return _lazy_audio_file_clip_class()(file, info)
 
 
 _LAZY_AUDIO_FILE_CLIP = None
@@ -600,6 +604,9 @@ def _lazy_audio_file_clip_class():
             # original's, which copies share along with the closure itself.
             # write_composite_audio calls it ahead of the mix, on a worker.
             self.open_reader = lambda: self.reader
+            # And closes it, reopened if read again; write_composite_audio
+            # calls it once the mix is past every member reading through it.
+            self.close_reader = lambda: self.close()
 
         @property
         def reader(self):
@@ -693,14 +700,23 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
         key=lambda k: (ranges[k][0], k),
     )
 
-    # One opener per distinct decoder, in order of first use.
+    # One opener per distinct decoder, in order of first use, and the closer
+    # and last chunk of each decoder that can be closed and reopened.
     openers = {}
     opener_of = {}
+    closers = {}
+    last_chunk = {}
     for k in order:
         opener = getattr(clips[k], "open_reader", None)
         if callable(opener):
             openers.setdefault(id(opener), opener)
             opener_of[k] = id(opener)
+            closer = getattr(clips[k], "close_reader", None)
+            if callable(closer):
+                closers[id(opener)] = closer
+                last_chunk[id(opener)] = max(
+                    last_chunk.get(id(opener), 0), ranges[k][1] - 1
+                )
     queue = list(openers)
     futures = {}
     prefetch = 3
@@ -762,6 +778,10 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
             frame = np.zeros((len(t), nchannels)) + sum(sounds)
             frame = np.maximum(-0.99, np.minimum(0.99, frame))
             pending.append((scale * frame).astype(inttype))
+            # Each decoder is a process and two pipes: release it once the
+            # mix is past it, or a few hundred sounds run out of descriptors.
+            for key in [key for key in opened if last_chunk.get(key) == i]:
+                closers.pop(key)()
             pending_samples += len(t)
             if pending_samples >= 1 << 20:
                 writer.write_frames(np.concatenate(pending))
@@ -773,4 +793,6 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
         # decoder is left half-built behind a clip the caller will close.
         pool.shutdown(wait=True, cancel_futures=True)
         writer.close()
+        for key in [key for key in openers if key in closers]:
+            closers.pop(key)()
     return True

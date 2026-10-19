@@ -170,3 +170,46 @@ def test_another_output_rate_is_resampled_not_sampled_nearest(tmp_path, lazy):
     samples = written.get_frame(np.arange(24000, 72000) / 48000)[:, 0]
     written.close()
     assert _tone_snr(samples, 48000, 6000.0) > 50
+
+
+def test_mix_closes_each_decoder_once_past_it_and_files_open_none_early(
+    tmp_path, tones
+):
+    # Every decoder is an ffmpeg process and two pipes. They were opened by
+    # Audio("file") at authoring and kept for good, so ~120 sounds exhausted
+    # macOS's 256 descriptors; now each opens in the mix and closes after it.
+    clips = [audio_utils._cached_audio_file_clip(path) for path in tones * 3]
+    assert all(clip._reader is None for clip in clips), "a miss is lazy too"
+    opened, peak = [], [0]
+    for clip in clips:
+        open_reader = clip.open_reader
+
+        def counted(clip=clip, open_reader=open_reader):
+            opened.append(clip)
+            live = sum(other._reader is not None for other in clips)
+            peak[0] = max(peak[0], live + 1)
+            return open_reader()
+
+        clip.open_reader = counted
+    starts = [1.5 * i for i in range(len(clips))]
+    composite = moviepy.CompositeAudioClip(
+        [clip.with_start(start) for clip, start in zip(clips, starts)]
+    )
+    composite.duration = starts[-1] + 3
+    first, second = tmp_path / "first.wav", tmp_path / "second.wav"
+    for path in (first, second):
+        assert audio_utils.write_composite_audio(
+            composite, str(path), fps=44100, nbytes=4, codec="pcm_s32le"
+        )
+        assert all(clip._reader is None for clip in clips)
+    assert len(opened) == 2 * len(clips)
+    assert peak[0] <= 5  # the three-deep prefetch plus the overlapping members
+    assert _digest(first) == _digest(second)
+
+
+def test_audio_from_a_file_opens_no_decoder_while_authoring(fresh_scene, tones):
+    from algan import Audio, Scene
+
+    with Audio(tones[0]) as block:
+        Scene.wait(0.1)
+    assert block.audio_clip._reader is None

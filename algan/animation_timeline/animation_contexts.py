@@ -1292,9 +1292,10 @@ class Audio(AnimationContext):
     def __init__(self, source: str, *, wait_at_end: float = 0.0, **kwargs):
         audio_clip = source
         if isinstance(source, str):
-            from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+            from algan.utils.audio_utils import _cached_audio_file_clip
 
-            audio_clip = AudioFileClip(source)
+            # Lazy: opens no decoder until the mix, which closes it again.
+            audio_clip = _cached_audio_file_clip(source)
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
         kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
