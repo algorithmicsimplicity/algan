@@ -213,3 +213,31 @@ def test_audio_from_a_file_opens_no_decoder_while_authoring(fresh_scene, tones):
     with Audio(tones[0]) as block:
         Scene.wait(0.1)
     assert block.audio_clip._reader is None
+
+
+def _seconds_written(path):
+    import wave as wave_module
+
+    with wave_module.open(str(path), "rb") as reader:
+        return reader.getnframes() / reader.getframerate()
+
+
+def test_audio_track_is_as_long_as_the_video(fresh_scene, tmp_path):
+    from algan import SMOKE_TEST, Audio, Scene, Seq, Sync
+
+    scene = Scene.current()
+    scene.set_video_settings(SMOKE_TEST.set(frames_per_second=2))
+    sound = moviepy.AudioClip(lambda t: np.full(np.shape(t) + (2,), 0.25), duration=1.2)
+    with Audio(sound):  # ends at 1.2 s; at 2 fps the video stops at 1.0 s
+        Scene.wait(0.1)
+    assert scene.save_audio(tmp_path / "rounded.wav") is not None
+    assert _seconds_written(tmp_path / "rounded.wav") == pytest.approx(1.0, abs=1e-4)
+    # From inside a block, the innermost context's end (3.2 s) is not the
+    # end of what is recorded: the enclosing Sync already runs to 4.2 s.
+    with Sync():
+        with Seq():
+            Scene.wait(3)
+        with Seq():
+            Scene.wait(2)
+            scene.save_audio(tmp_path / "midblock.wav")
+    assert _seconds_written(tmp_path / "midblock.wav") == pytest.approx(4, abs=1e-4)
