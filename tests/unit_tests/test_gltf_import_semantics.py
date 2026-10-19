@@ -9,13 +9,18 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
+import subprocess
+import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 from PIL import Image
 
+import algan
 from algan import Model3D, Scene
 from algan.mobs.three_d_models.gltf_loader import load_scene
 from algan.utils.color_space import linear_to_srgb, srgb_to_linear
@@ -323,3 +328,45 @@ def test_ply_vertex_colors_survive_the_default_material(tmp_path):
         actual = _corner_colors(Model3D(str(path)).mesh_mobs[0])
     expected = torch.tensor((_VERTEX_RGBA * 255).round() / 255, dtype=torch.float32)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_utf8_gltf_loads_under_a_non_utf8_locale(tmp_path):
+    """A ``.gltf`` is UTF-8 by definition, whatever the locale's encoding is
+    (cp1252 on many Windows machines, ASCII under ``LC_ALL=C``).
+    """
+    path = _write_gltf(
+        tmp_path / "named.gltf",
+        {"name": "Würfel-の材質", "pbrMetallicRoughness": {"metallicFactor": 0}},
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    script = (
+        "import locale, sys\n"
+        "from algan.mobs.three_d_models.gltf_loader import load_scene\n"
+        "name = load_scene(sys.argv[1]).materials[0].name\n"
+        "print(locale.getpreferredencoding(False), ascii(name))\n"
+    )
+    root = Path(algan.__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            [str(root), *filter(None, [os.environ.get("PYTHONPATH")])]
+        ),
+        "ALGAN_USE_DAEMON": "0",
+        "LC_ALL": "C",
+        "LANG": "C",
+        "PYTHONUTF8": "0",
+        "PYTHONCOERCECLOCALE": "0",
+        "PYTHONIOENCODING": "ascii",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip().endswith(ascii("Würfel-の材質"))

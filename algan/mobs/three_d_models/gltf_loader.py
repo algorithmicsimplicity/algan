@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import os
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -484,6 +485,25 @@ def _parse_animations(gltf, blob):
     return clips
 
 
+def _read_gltf(gltf_class, file_path):
+    """``gltf_class().load(file_path)``, except that a ``.gltf`` is read as
+    UTF-8, which the format requires.
+
+    pygltflib opens a ``.gltf`` in text mode, so it decodes with the locale's
+    encoding and a valid file with a non-ASCII name in it fails to load
+    wherever that is not UTF-8 (cp1252 or cp932 on Windows, ``C`` in a
+    container).
+    """
+    if os.path.splitext(file_path)[1].lower() != ".gltf":
+        return gltf_class().load(file_path)
+    with open(file_path, "rb") as file:
+        gltf = gltf_class.gltf_from_json(file.read().decode("utf-8-sig"))
+    # What pygltflib's own loader records, for URIs relative to the file.
+    gltf._path = Path(file_path).parent
+    gltf._name = Path(file_path).name
+    return gltf
+
+
 def _augment_with_animations(file_path, meshes, static_nodes):
     """When ``file_path`` carries glTF animations, return ``(nodes, animations)``
     with the real hierarchy and parsed clips; otherwise return the static nodes
@@ -508,7 +528,7 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         return static_nodes, []
 
     try:
-        gltf = GLTF2().load(file_path)
+        gltf = _read_gltf(GLTF2, file_path)
         if not gltf.animations:
             return static_nodes, []
         blob = gltf.binary_blob()
@@ -590,7 +610,7 @@ def load_scene(file_path):
 
         resolver = _uri_resolver(file_path)
         load_options = {"resolver": resolver}
-        gltf = GLTF2().load(file_path)
+        gltf = _read_gltf(GLTF2, file_path)
         if gltf.animations:
             # trimesh preserves mesh extras on every primitive. Carry identity
             # through that boundary instead of guessing from vertex/face counts
