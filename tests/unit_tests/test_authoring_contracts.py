@@ -459,6 +459,22 @@ def test_a_bare_name_lands_in_the_output_directory(isolated_output):
     assert resolved == isolated_output / "algan_outputs" / "intro.mp4"
 
 
+def test_a_tilde_in_the_output_settings_means_home(isolated_output, monkeypatch):
+    """Joined as written, ``~/renders`` was a directory named ``~`` in the cwd."""
+    home = isolated_output / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(isolated_output)
+    SETTINGS.paths.output_root = "~/renders"
+    assert Path(SETTINGS.paths.output_root) == home / "renders"
+    resolved = _resolve_output_destination("intro", ".mp4")
+    assert resolved == home / "renders" / "algan_outputs" / "intro.mp4"
+    SETTINGS.paths.set(cache_directory="~/cache", ffmpeg_binary="~/bin/ffmpeg")
+    assert Path(SETTINGS.paths.cache_directory) == home / "cache"
+    assert Path(SETTINGS.paths.ffmpeg_binary) == home / "bin" / "ffmpeg"
+    assert not (isolated_output / "~").exists()
+
+
 def test_an_existing_directory_is_a_directory_to_write_into(
     isolated_output, monkeypatch
 ):
