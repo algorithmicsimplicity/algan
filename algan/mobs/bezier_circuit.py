@@ -1282,9 +1282,6 @@ class BezierCircuitCubic(Mob):
         self._memory_per_timestep_cache = None
         return self
 
-    def get_animatable_attrs(self):
-        return {"stroke_width"}.union(super().get_animatable_attrs())
-
     def _stroke_style_key(self):
         style = _stroke_style(self.cap_style, self.joint_type, self.miter_limit)
         return None if style[:2] == ("round", "round") else style

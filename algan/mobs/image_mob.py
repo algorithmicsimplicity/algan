@@ -126,9 +126,3 @@ class ImageMob(Surface):
             )
             self.basis = torch.stack((right, up, forward)).flatten()
             self.move_to((corners[0] + corners[3]) * 0.5)
-
-    def setattr_absolute(self, attr_name, value):
-        if attr_name == "color":
-            self.glow = value[..., -2:-1]
-            return self
-        return super().setattr_absolute(attr_name, value)
