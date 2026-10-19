@@ -584,6 +584,22 @@ def _circuit_point_region(border_w, outline_w, filled, centered, crossings,
 def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                           edges_2d: ti.template(),
                           edge_accel: ti.template()):
+    """:func:`_bezier_point_metrics_in` measured in the circuit's plane.
+
+    The query every path but the anisotropic analytic coverage makes; its
+    results are plane units throughout.
+    """
+    return _bezier_point_metrics_in(circuit, te, u, v, query_radius,
+                                    num_circuits, edges_2d, edge_accel,
+                                    0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+@ti.func
+def _bezier_point_metrics_in(circuit, te, u, v, query_radius, num_circuits,
+                             edges_2d: ti.template(),
+                             edge_accel: ti.template(),
+                             screen: ti.template(), m00, m01, m10, m11,
+                             screen_reach, screen_tie):
     """Return even/odd crossings, nearest visible-edge distance, and its direction.
 
     Crossing candidates come from the circuit's local-y scanline bin. Border
@@ -613,6 +629,22 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     boundary LINE and so into an exact, angle-aware coverage
     (``_halfplane_clip_area``). Zero when no edge is within the query radius, in
     which case there is no boundary near the pixel to orient.
+
+    With ``screen`` set (compile time) the edges are measured ON SCREEN: each
+    candidate segment is carried onto the screen by the plane's local map
+    ``M = ((m00, m01), (m10, m11))`` (``raster_taichi._circuit_screen_map``,
+    pixel_size units around the query point), and its distance, its
+    closest-point vector, its direction and its stored inward side are all
+    reported there -- the inward side flipped where ``M`` mirrors. Candidates
+    are ranked and accepted by that distance against ``screen_reach``, the
+    filter's own reach, while ``query_radius`` only bounds the cell walk and
+    has to be wide enough to hold every point that reach can see. Ranking in
+    the plane instead picks, on a tilted plane, segments the filter cannot see
+    and misses ones it can, and the wedge then extends their LINES across the
+    pixel: the notch speck above, in another guise. The crossing parity is
+    taken in the plane either way; inside is inside. On screen, a repeat of
+    the nearest segment cannot take the second slot from a segment within
+    ``screen_tie`` of it (see the slot's bar below).
     """
     header = ((te * num_circuits + circuit)
               * BEZIER_ACCEL_HEADER_SIZE)
@@ -659,12 +691,20 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     e2x = 0.0
     e2y = 0.0
     sg2 = 0.0
+    # The nearest segment's index, for the screen query's repeat test.
+    i1 = -1
     if ((query_radius > 0.0) and (u + query_radius >= min_u)
             and (u - query_radius <= max_u)
             and (v + query_radius >= min_v)
             and (v - query_radius <= max_v)):
         # The cell walk below is a superset filter; this is the exact one.
         radius_sq = query_radius * query_radius
+        # Which side of a segment is inward survives the map unless it mirrors.
+        side = 1.0
+        if ti.static(screen):
+            radius_sq = screen_reach * screen_reach
+            if m00 * m11 - m01 * m10 < 0.0:
+                side = -1.0
         grid_inv_u = ti.bit_cast(
             edge_accel[header + BEZIER_GRID_INV_U], ti.f32)
         grid_inv_v = ti.bit_cast(
@@ -702,6 +742,21 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                     cx = x0 + seg_t * dx - u
                     cy = y0 + seg_t * dy - v
                     dsq = cx * cx + cy * cy
+                    if ti.static(screen):
+                        # The segment carried onto the screen around the query
+                        # point, and its closest point measured there.
+                        ax = m00 * (x0 - u) + m01 * (y0 - v)
+                        ay = m10 * (x0 - u) + m11 * (y0 - v)
+                        sdx = m00 * dx + m01 * dy
+                        sdy = m10 * dx + m11 * dy
+                        st = ti.math.clamp(
+                            -(ax * sdx + ay * sdy)
+                            / ti.max(sdx * sdx + sdy * sdy, 1e-12), 0.0, 1.0)
+                        cx = ax + st * sdx
+                        cy = ay + st * sdy
+                        dx = sdx
+                        dy = sdy
+                        dsq = cx * cx + cy * cy
                     if dsq < radius_sq:
                         if dsq < min_dist_sq:
                             sec_dist_sq = min_dist_sq
@@ -715,14 +770,37 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                             ccv = cy
                             e1x = dx
                             e1y = dy
-                            sg1 = edges_2d[te, e, 5]
-                        elif dsq < sec_dist_sq:
-                            sec_dist_sq = dsq
-                            scu = cx
-                            scv = cy
-                            e2x = dx
-                            e2y = dy
-                            sg2 = edges_2d[te, e, 5]
+                            sg1 = edges_2d[te, e, 5] * side
+                            i1 = e
+                        else:
+                            # The second slot's bar. A segment is listed in
+                            # every cell it crosses, so the nearest comes round
+                            # again, tied with itself. A corner's other wall,
+                            # closest at the vertex the two share, is just as
+                            # near: in the plane the two distances mostly come
+                            # out equal and the repeat cannot take its slot, but
+                            # through the screen map they differ by rounding,
+                            # the repeat took it, and the wedge, handed one wall
+                            # twice, drew the corner as if its edge ran on
+                            # (DESIGN_analytic_aa.md ss22.3). So on screen the
+                            # nearest's repeat must beat the slot by more than
+                            # ``screen_tie``. Only the repeat: between DISTINCT
+                            # segments the ranking stays strict, as it was, since
+                            # which of two near-equal walls the wedge gets
+                            # decides its convex/reflex call.
+                            bar = sec_dist_sq
+                            if ti.static(screen):
+                                if e == i1:
+                                    lim = ti.max(
+                                        ti.sqrt(sec_dist_sq) - screen_tie, 0.0)
+                                    bar = lim * lim
+                            if dsq < bar:
+                                sec_dist_sq = dsq
+                                scu = cx
+                                scv = cy
+                                e2x = dx
+                                e2y = dy
+                                sg2 = edges_2d[te, e, 5] * side
 
     return (crossings, min_dist_sq, ccu, ccv, e1x, e1y, sg1,
             sec_dist_sq, scu, scv, e2x, e2y, sg2)

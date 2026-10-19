@@ -77,6 +77,9 @@ KERNEL_COMPILED_IN_FIELDS = (
     # raytrace_kernels_taichi.watertight_tri: which triangle test _tri_hit
     # compiles.
     "watertight_tri",
+    # raster_taichi._bez_anisotropic: whether _bez_pixel_hit measures circuit
+    # coverage through the plane's projection or in camera-facing pixels.
+    "analytic_aa_bez_anisotropic",
 )
 
 
@@ -2594,6 +2597,36 @@ analytic_aa_exact = env_flag("ALGAN_ANALYTIC_AA_EXACT", True)
 # stem/corner/glyph and improves slant -- the ss21.2 stem failure
 # (text -6.8% vs the box filter) is gone.
 analytic_aa_bez_wedge = env_flag("ALGAN_ANALYTIC_AA_BEZ_WEDGE", True)
+
+# Measure a circuit's coverage ON SCREEN (DESIGN_analytic_aa.md ss22). The box
+# filter is a pixel on screen, but a circuit's signed distance is taken in its
+# own plane; off, it is converted with the camera-facing pixel size, which is
+# exact only where the plane faces the camera. Tilted away, the plane is
+# squeezed along its foreshortened direction and the filter came out narrower
+# than a pixel there, so a thin stroke on it beaded as it crossed pixel rows (a
+# floor grid seen from 42 degrees up: a line's brightness varied by 7.7 % along
+# its length at 1080p, against 1.2 % supersampled).
+# On, ``_bez_pixel_hit`` makes its nearest-edge query on screen, through the
+# plane's own projection at the pixel, and carries the plane's widths across.
+# Byte-identical off, and for a circuit facing an unrotated camera. Behind
+# ``ti.static`` (``raster_taichi._bez_anisotropic``), hence one of
+# KERNEL_COMPILED_IN_FIELDS. DEFAULT ON.
+analytic_aa_bez_anisotropic = env_flag("ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC", True)
+
+
+def set_analytic_aa_bez_anisotropic(enabled):
+    """Toggle screen-space circuit coverage (see ``analytic_aa_bez_anisotropic``).
+
+    The gate compiles into the circuit raster kernels, so a variant that
+    already exists bakes the previous value; ``KERNEL_COMPILED_IN_FIELDS``
+    makes the next render job rebuild the Taichi program instead, so both arms
+    are right in one process at the cost of a kernel-preparation pass. Set
+    ``ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC`` before importing algan to choose an
+    arm without paying for the switch.
+    """
+    global analytic_aa_bez_anisotropic
+    analytic_aa_bez_anisotropic = bool(enabled)
+
 
 # The ss21.3/21.8/21.9 exact-triangle formulations (single exact area vs the
 # mask, packed cells, scalar surface accounting) are DELETED, not parked:

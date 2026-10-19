@@ -526,7 +526,7 @@ behavior:
     walls of the SAME stroke; a bent stroke's corner keeps its current
     rounding;
   * anisotropy of `pixel_size` on tilted planes (ss4's caveat): orthogonal,
-    unchanged.
+    unchanged. (Since closed, wedge included: DESIGN_analytic_aa.md ss22.)
 
 Flattening tolerance (`ANALYTIC_AA_CHORD_TOLERANCE`) is unchanged: the wedge
 consumes the same chords the SDF does.
