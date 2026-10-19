@@ -73,8 +73,8 @@ the composite, and the post-process downsample. AA=2 is a 4x tax on the
 primary pipeline; AA=4 (`THUMBNAIL`) is 16x.
 
 Two post-filters exist but are not substitutes: `fxaa` (wired via
-`RenderSettings.fxaa`) and `SMAA` (`post_processing/anti_aliasing/smaa.py`,
-implemented but **not wired into `post_process_frames`**). Both are morphological
+`RenderSettings.fxaa`) and `SMAA` (an unwired implementation, since removed;
+see TODO.md item 6). Both are morphological
 guesses from the final image; they cannot recover sub-pixel geometry (a 0.7-pixel
 text stem, a hairline) and they shimmer temporally.
 

@@ -109,20 +109,6 @@ def _flat_corner_normals(corners):
     )
 
 
-def _carrier_values(carrier, corners):
-    rows = corners.shape[-2]
-    return {
-        "color": _expand_rows(carrier.color, rows).as_subclass(Color),
-        "opacity": _expand_rows(carrier.opacity, rows),
-        "glow": _expand_rows(carrier.glow, rows),
-        "shader": carrier.shader,
-        "shader_params": {
-            name: _expand_rows(value, rows)
-            for name, value in carrier.get_shader_params().items()
-        },
-    }
-
-
 def _grid_to_pn_soup(surface, *, add_to_scene=False):
     from algan.mobs.surfaces.surface import (
         compute_grid_vertex_normals,

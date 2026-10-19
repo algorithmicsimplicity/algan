@@ -132,19 +132,15 @@ the full one finds no tensor storage on any of them.
 are bounded, cyclic garbage is still reclaimed, and low-memory/retry tests pass.
 Do not treat the older profiling percentages as the current bottleneck ranking.
 
-## 6. Remove confirmed legacy render experiments in a separate code change
+## 6. Remove confirmed legacy render experiments in a separate code change — landed
 
-**Current gap.** [`bloom.py`](algan/rendering/post_processing/bloom.py) still contains
-unused `bloom_filter_old`/`bloom_filter_conv` experiments and a compatibility probe
-for a removed glow helper. An SMAA module also exists without a normal
-post-processing route. Their presence is not evidence of supported public features.
-
-**Work.** Audit callers and imports, remove unused implementations and stale guards,
-or deliberately integrate and test an alternative that is still wanted. Keep
-this behavior-affecting cleanup separate from documentation-only changes.
-
-**Done when.** No public export, import or supported post-processing configuration
-depends on the removed code, and bloom/alpha/export regression tests remain green.
+**Landed on 2026-10-16.** [`bloom.py`](algan/rendering/post_processing/bloom.py)
+lost the unused `bloom_filter_old`/`bloom_filter_conv` experiments, their
+`fft_conv2d`/`gaussian_kernel_2d` helpers, and `_should_bypass_bloom`, whose
+import of the removed glow helper always failed, so it never bypassed anything.
+The unwired SMAA module and its two lookup textures were deleted. Kept, marked,
+so the item numbers that [RENDERER_WORK_QUEUE.md](RENDERER_WORK_QUEUE.md) cites
+stay valid.
 
 ## Later design work, not missing implementations
 

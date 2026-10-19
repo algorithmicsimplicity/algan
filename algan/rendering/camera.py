@@ -973,10 +973,8 @@ class Camera(Mob):
         f = self.get_forward_direction()
         r = self.get_right_direction()
         u = self.get_up_direction()
-        # mob_boundary_points = [mob.get_boundary_point(_) + _ * buffer for _ in [u, r, -u, -r]]
         mob_boundary_points = [mob.get_boundary_point(_) for _ in [-r, u, r, -u]]
         mob_boundary_points = torch.stack(mob_boundary_points)
-        # mobl = sum(mob_boundary_points) / len(mob_boundary_points)
         mobl = 0.5 * ((mob_boundary_points).amax(0) + (mob_boundary_points).amin(0))
         mob_boundary_points = (mob_boundary_points - mobl) * (1 + buffer_portion) + mobl
         selfl = self.location

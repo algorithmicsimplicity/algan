@@ -39,7 +39,6 @@ from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
-# mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     Off,

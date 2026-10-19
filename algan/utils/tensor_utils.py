@@ -227,16 +227,6 @@ def cast_to_direction(name, x):
     return reject_non_finite(name, value, given=x)
 
 
-def cast_to_tensor_single(x):
-    if isinstance(x, (list, tuple)):
-        return torch.stack(x, -2)  # [cast_to_tensor(_) for _ in x]
-    if isinstance(x, torch.Tensor):
-        return x  # .view(-1,x.shape[-1])
-    if x is None:
-        return torch.tensor((0,), dtype=torch.get_default_dtype()).view(1)
-    return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
-
-
 def make_grid(
     height, width=None, min_coord=-1, max_coord=1, min_coord2=None, max_coord2=None
 ):
@@ -262,14 +252,6 @@ def make_grid(
     )
 
 
-def add_dummy_dims_right(x, y):
-    return x.view(list(x.shape) + [1] * (len(y.shape)))
-
-
-def add_dummy_dims_left(x, y):
-    return x.view([1] * (len(y.shape)) + list(x.shape))
-
-
 def unsqueeze_right(x, y, offset: int = 0):
     if not isinstance(x, torch.Tensor):
         return x
@@ -287,27 +269,6 @@ def unsqueeze_left(x, y, offset: int = 0):
     )
 
 
-def unsqueeze_dims(x, y, insert_dim=0):
-    if not isinstance(x, torch.Tensor):
-        return x
-    while x.dim() < y.dim():
-        x = x.unsqueeze(insert_dim)
-    return x
-
-
-def expand_as_left(x, y, offset: int = 0):
-    x = unsqueeze_left(x, y)
-    return x.expand(
-        torch.Size([-1 if x.shape[i] != 1 else y.shape[i] for i in range(x.dim())])
-    )
-
-
-def expand_as_right(x, y, offset: int = 0):
-    n = x.dim()
-    x = unsqueeze_right(x, y)
-    return x.expand(([-1] * (n)) + list(y.shape[n:]))
-
-
 def broadcast(x, y, ignored_dims: list[int]):
     return x.expand(
         [
@@ -315,13 +276,6 @@ def broadcast(x, y, ignored_dims: list[int]):
             for i in range(len(x.shape))
         ]
     )
-
-
-def broadcast_both(x, y, ignored_dims: list[int]):
-    x = unsqueeze_right(x, y)
-    x = broadcast(x, y, ignored_dims=ignored_dims)
-    y = broadcast(y, x, ignored_dims=ignored_dims)
-    return x, y
 
 
 def broadcast_both_left(x, y, ignored_dims: list[int]):
@@ -380,14 +334,6 @@ def broadcast_gather(src, dim: int, ind, keepdim=True, out=None, **kwargs):
     return out
 
 
-def broadcast_scatter(input_tensor, dim, ind, src, **kwargs):
-    input_tensor, ind, src = broadcast_all(
-        [input_tensor, ind, src],
-        ignored_dims=[dim if dim >= 0 else len(src.shape) + dim],
-    )
-    return input_tensor.scatter_reduce(dim, ind, src, **kwargs)
-
-
 def offset(x):
     return torch.cat((x[1:], x[:1]))
 
@@ -434,28 +380,11 @@ def interpolate(x, y, a):
     return x * (1 - a) + (a) * y
 
 
-def pad_dim_left(x, num_dims):
-    if x.dim() < num_dims:
-        x = x.view(*([1] * (num_dims - x.dim())), *x.shape)
-    return x
-
-
-def pad_dim_right(x, num_dims):
-    if x.dim() < num_dims:
-        x = x.view(*x.shape, *([1] * (num_dims - x.dim())))
-    return x
-
-
 def broadcast_cross_product(x, y, dim=-1):
     x, y = broadcast_both_left(
         x, y, ignored_dims=[dim]
     )  # [dim if dim >= 0 else len(y.shape) + dim])
     return torch.cross(x, y, dim=dim)
-
-
-def dot_product_in_place(x, y, dim=-1):
-    x *= y
-    return x.sum(dim, keepdim=True)
 
 
 def mean(xs):
@@ -520,23 +449,6 @@ def dot_product(x, y, dim=-1, keepdim=True, out=None):
     return out
 
 
-def broadcast_interleave(x, counts, inds, dim=-2):
-    x = broadcast_gather(
-        x, dim, unsqueeze_right(inds.clamp_max(x.shape[dim] - 1), x, dim), keepdim=True
-    )
-    return torch.repeat_interleave(x, counts, dim)
-
-
-def pad_dims(xs, unsqueeze_dim=-2):
-    max_dim = max([_.dim() for _ in xs])
-    outs = []
-    for x in xs:
-        while x.dim() < max_dim:
-            x = x.unsqueeze(unsqueeze_dim)
-        outs.append(x)
-    return outs
-
-
 def pack_tensor(x, packing):
     if packing is None:
         return x
@@ -547,63 +459,12 @@ def pack_tensor(x, packing):
     return torch.repeat_interleave(x, counts, d)
 
 
-def unsqueeze_pack_tensors(xs, packing):
-    if packing is None:
-        return xs
-    xs = pad_dims(xs)
-    return [pack_tensor(x, packing) for x in xs]
-
-
 def unpack_tensor(x, packing):
     if packing is None:
         return x
     counts, num_dims = packing
     d = x.dim() - (num_dims + 1)
     return torch.split(x, [_.item() for _ in counts], d)
-
-
-def reduce_max_score(x, scores, dim=-1):
-    max_score, max_score_ind = scores.max(dim, keepdim=True)
-    x = broadcast_gather(x, dim, max_score_ind, keepdim=True)
-    return x, max_score
-
-
-def robust_concat(xs):
-    """Concatenates multiple tensors together while broadcasting as necessary to ensure shapes match."""
-    xs = [cast_to_tensor_single(x) for x in xs]
-    max_dim = max([x.dim() for x in xs])
-
-    def unsqueeze_left_to_max_dim(x):
-        if len(x) == max_dim:
-            return x
-        return torch.cat((torch.ones((max_dim - len(x),), dtype=x.dtype), x))
-
-    max_shape = torch.stack(
-        [unsqueeze_left_to_max_dim(torch.tensor(x.shape)) for x in xs]
-    ).amax(0)
-    xs = [x.view(*([1] * (max_dim - x.dim())), *x.shape) for x in xs]
-    return torch.cat(
-        [
-            x.expand([_ if x.shape[i] == 1 else -1 for i, _ in enumerate(max_shape)])
-            for x in xs
-        ]
-    )
-
-
-def concat_dicts(kwargs):
-    """
-    Concatenates a list of dicts sharing the same keys, the resulting dictionary has
-    the same keys and concatenated values.
-    """
-    kwargs = [{k: cast_to_tensor(v) for k, v in d.items()} for d in kwargs]
-    return {
-        a: (
-            robust_concat([kwargs[i][a] for i in range(len(kwargs))])
-            if (isinstance(kwargs[0][a], torch.Tensor))
-            else kwargs[0][a]
-        )
-        for a in kwargs[0]
-    }
 
 
 def implements(torch_function):

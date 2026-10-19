@@ -146,7 +146,6 @@ bloom._downsample_bloom, bloom._upsample_bloom, bloom.fft_conv1d = (
     up_capture,
     fft_capture,
 )
-bloom._should_bypass_bloom = lambda: False
 torch.manual_seed(1238)
 frames = torch.randint(1, 220, (1, 127, 193, 4), dtype=torch.uint8)
 frames[..., 3] = 100

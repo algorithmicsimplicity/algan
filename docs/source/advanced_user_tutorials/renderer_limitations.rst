@@ -925,8 +925,6 @@ Other anti-aliasing notes
 * FXAA is available (``video_settings.fxaa``). It runs on linear HDR values
   before tonemapping, where its luma-based edge detection is not the one it was
   designed around.
-* An SMAA implementation exists in the source tree but is not connected to
-  anything and cannot be enabled.
 * A filled shape's drawn region is given a minimum half-width of 0.3 output
   pixels so that hairlines, thin glyph stems and degenerate zero-area fills
   survive at all

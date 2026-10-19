@@ -782,26 +782,6 @@ def _axis_cos(f, ro, rd, screen_point: ti.template()):
 
 
 @ti.func
-def _random_unit_vector():
-    """Uniformly distributed point on the unit sphere."""
-    z = 2.0 * ti.random(ti.f32) - 1.0
-    phi = 6.283185307179586 * ti.random(ti.f32)
-    r_xy = ti.sqrt(ti.max(0.0, 1.0 - z * z))
-    return ti.math.vec3(r_xy * ti.cos(phi), r_xy * ti.sin(phi), z)
-
-
-@ti.func
-def _cosine_hemisphere_direction(normal):
-    """Cosine-weighted random direction in the hemisphere around ``normal``
-    (the Lambertian scattering distribution).
-    """
-    d = normal + _random_unit_vector()
-    if d.norm() < 1e-6:
-        d = normal
-    return d.normalized()
-
-
-@ti.func
 def _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
     """Spatio-temporal test of internal node ``blk``'s whole sibling group:
     per-child frame containment + slab test restricted to the parametric
@@ -998,76 +978,6 @@ def _nearest_pending_child(mask, near):
                 best_t = near[c]
                 found = 1
     return best_c
-
-
-@ti.func
-def _test_root(f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
-    """Box test of the tree's root, reconstructed from block 0: the retired
-    per-node walk tested the root's stored row, which the builders computed
-    as the (min/max) union of its children -- min/max are exact, so unioning
-    block 0's lanes here recovers the very same floats and the test is
-    bit-identical to the old root visit. Matters only for rays grazing the
-    scene bound (a hit exactly on the root box face can sit within an ulp of
-    the test boundary), but bit-parity needs it.
-    """
-    lox = blocks[0, 0]
-    loy = blocks[0, 1]
-    loz = blocks[0, 2]
-    hix = blocks[0, 3]
-    hiy = blocks[0, 4]
-    hiz = blocks[0, 5]
-    ts_a = blocks[0, 6]
-    ts_b = blocks[0, 7]
-    lo_x = ti.cast(lox[0], ti.f32)
-    lo_y = ti.cast(loy[0], ti.f32)
-    lo_z = ti.cast(loz[0], ti.f32)
-    hi_x = ti.cast(hix[0], ti.f32)
-    hi_y = ti.cast(hiy[0], ti.f32)
-    hi_z = ti.cast(hiz[0], ti.f32)
-    t0 = 0
-    t1 = 0
-    if ti.static(bvh_block_f16):
-        t0 = ti.cast(ti.bit_cast(ts_a[0], ti.u16), ti.i32)
-        t1 = ti.cast(ti.bit_cast(ts_b[0], ti.u16), ti.i32)
-    else:
-        ts = ti.bit_cast(ts_a[0], ti.i32)
-        t0 = ts & 0xFFFF
-        t1 = (ts >> 16) & 0x7FFF
-    for c in ti.static(range(1, bvh_arity)):
-        lo_x = ti.min(lo_x, ti.cast(lox[c], ti.f32))
-        lo_y = ti.min(lo_y, ti.cast(loy[c], ti.f32))
-        lo_z = ti.min(lo_z, ti.cast(loz[c], ti.f32))
-        hi_x = ti.max(hi_x, ti.cast(hix[c], ti.f32))
-        hi_y = ti.max(hi_y, ti.cast(hiy[c], ti.f32))
-        hi_z = ti.max(hi_z, ti.cast(hiz[c], ti.f32))
-        tc0 = 0
-        tc1 = 0
-        if ti.static(bvh_block_f16):
-            tc0 = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32)
-            tc1 = ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32)
-        else:
-            ts = ti.bit_cast(ts_a[c], ti.i32)
-            tc0 = ts & 0xFFFF
-            tc1 = (ts >> 16) & 0x7FFF
-        t0 = ti.min(t0, tc0)
-        t1 = ti.max(t1, tc1)
-    hit = False
-    if (t0 <= f) and (f <= t1):
-        tx0 = (lo_x - ro[0]) * inv_rd[0]
-        tx1 = (hi_x - ro[0]) * inv_rd[0]
-        t_near = ti.min(tx0, tx1)
-        t_far = ti.max(tx0, tx1)
-        ty0 = (lo_y - ro[1]) * inv_rd[1]
-        ty1 = (hi_y - ro[1]) * inv_rd[1]
-        t_near = ti.max(t_near, ti.min(ty0, ty1))
-        t_far = ti.min(t_far, ti.max(ty0, ty1))
-        tz0 = (lo_z - ro[2]) * inv_rd[2]
-        tz1 = (hi_z - ro[2]) * inv_rd[2]
-        t_near = ti.max(t_near, ti.min(tz0, tz1))
-        t_far = ti.min(t_far, ti.max(tz0, tz1))
-        hit = ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
-               and (t_far >= t_lo))
-    return hit
 
 
 @ti.func
@@ -1603,14 +1513,6 @@ def _triangle_color(f, prim, w0, w1, w2, tri_colors: ti.template()):
              + w1 * tri_colors[tc, prim, 1, 4]
              + w2 * tri_colors[tc, prim, 2, 4])
     return color, alpha
-
-
-@ti.func
-def _triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template()) -> ti.f32:
-    tc = f % tri_colors.shape[0]
-    return (w0 * tri_colors[tc, prim, 0, 4]
-            + w1 * tri_colors[tc, prim, 1, 4]
-            + w2 * tri_colors[tc, prim, 2, 4])
 
 
 @ti.func
@@ -2227,27 +2129,6 @@ def _nearest_surface_g(refit: ti.template(),
 
 
 @ti.func
-def _barycentric_coords(p, v0, v1, v2):
-    e0 = v1 - v0
-    e1 = v2 - v0
-    e2 = p - v0
-    d00 = e0.dot(e0)
-    d01 = e0.dot(e1)
-    d11 = e1.dot(e1)
-    d20 = e2.dot(e0)
-    d21 = e2.dot(e1)
-    denom = d00 * d11 - d01 * d01
-    w0 = 1.0
-    w1 = 0.0
-    w2 = 0.0
-    if ti.abs(denom) > 1e-9:
-        w1 = (d11 * d20 - d01 * d21) / denom
-        w2 = (d00 * d21 - d01 * d20) / denom
-        w0 = 1.0 - w1 - w2
-    return w0, w1, w2
-
-
-@ti.func
 def agx_default_contrast_approx(x: ti.f32) -> ti.f32:
     x2 = x * x
     x4 = x2 * x2
@@ -2348,47 +2229,6 @@ def finalize_pixel_color(csum: ti.math.vec4, inv_samples: ti.f32, tonemapping: t
             ti.math.vec4(color_hdr[0] + 0.5, color_hdr[1] + 0.5, color_hdr[2] + 0.5, glow_val + 0.5),
             0.0, 255.0
         )
-
-
-@ti.func
-def _closest_point_segment_segment(ro, rd, t_max, p0, p1):
-    u = rd
-    v = p1 - p0
-    w = ro - p0
-    a = 1.0
-    b = u.dot(v)
-    c = v.dot(v)
-    d = u.dot(w)
-    e = v.dot(w)
-    D = a * c - b * b
-    
-    s = 0.0
-    t = 0.0
-    if D < 1e-8:
-        s = 0.0
-        t = 0.0 if e < 0.0 else (1.0 if e > c else e / c)
-    else:
-        t = (a * e - b * d) / D
-        t = ti.math.clamp(t, 0.0, 1.0)
-        s = (b * t - d) / a
-        s = ti.math.clamp(s, 0.0, t_max)
-        t = (b * s + e) / c
-        t = ti.math.clamp(t, 0.0, 1.0)
-        s = (b * t - d) / a
-        s = ti.math.clamp(s, 0.0, t_max)
-        
-    p_ray = ro + s * rd
-    p_seg = p0 + t * v
-    return p_ray, p_seg
-
-
-@ti.func
-def _distance_sq_to_point(ro, rd, t_max, p):
-    t_proj = (p - ro).dot(rd)
-    t_proj = ti.math.clamp(t_proj, 0.0, t_max)
-    p_ray = ro + t_proj * rd
-    diff = p_ray - p
-    return diff.dot(diff)
 
 
 @ti.func

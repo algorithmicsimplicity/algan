@@ -108,7 +108,6 @@ def test_full_bloom_matches_cpu_reference(monkeypatch, batch, channels):
     device = render_device()
     original_gate = kernels.can_use_bloom_taichi
     assert original_gate(device)
-    monkeypatch.setattr(bloom, "_should_bypass_bloom", lambda: False)
     generator = torch.Generator().manual_seed(1234 + channels)
     frames = torch.randint(
         1, 220, (batch, 127, 193, channels), dtype=torch.uint8, generator=generator

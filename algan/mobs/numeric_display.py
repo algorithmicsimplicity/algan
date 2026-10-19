@@ -315,7 +315,6 @@ class DecimalNumber(Mob):
         for c in self.children:
             c.on_create = lambda c=c: c
         _keep_glyph_selection(self.get_descendants())
-        # self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
     @property
     def value(self):
