@@ -211,12 +211,6 @@ class Scene(RenderLoopMixin):
         ``SETTINGS.style.background``. It is the same background
         :meth:`~.Scene.set_background` sets and ``save_video(background=...)``
         overrides for one render.
-    memory
-        A :class:`~algan.utils.memory_utils.ManualMemory` to keep as
-        ``scene.memory`` between renders. Each render currently builds its own
-        arena, sized by ``SETTINGS.computing.rendering_memory_fraction``, and
-        puts this one back when it finishes, so passing one does not change how
-        a render allocates. Defaults to ``None``.
     scene_initializer
         Callable run with the Scene on (re)creation. Defaults to ``None``,
         meaning the one :meth:`~algan.scene_manager.SceneManager.set_scene_class`
@@ -231,7 +225,6 @@ class Scene(RenderLoopMixin):
         self,
         video_settings: VideoSettings | None = None,
         background: Color | str | torch.Tensor | Callable | None = None,
-        memory=None,
         scene_initializer=None,
         *,
         premultiplied_over: bool = False,
@@ -301,7 +294,10 @@ class Scene(RenderLoopMixin):
         self.id_count = 0
         self.allow_new_actors = True
         self.animate_scene_clear = False
-        self.memory = memory
+        # Each render builds its own arena, sized by
+        # SETTINGS.computing.rendering_memory_fraction, and clears this again
+        # when it finishes.
+        self.memory = None
         self._project_run = None
         self._suppress_automatic_transcript = False
 

@@ -22,7 +22,6 @@ class SceneManager(Singleton):
     authoring style while allowing nested, isolated scenes.
     """
 
-    _memory = None
     _scene_class = None
     _scene_initializer = None
 
@@ -83,7 +82,6 @@ class SceneManager(Singleton):
             # camera/light mobs constructed by the initializer resolve back to
             # this partially-created but already active scene.
             scene_class(
-                memory=manager_type._memory,
                 scene_initializer=scene_initializer,
             )
         finally:
