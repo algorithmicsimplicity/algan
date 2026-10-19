@@ -174,6 +174,43 @@ def test_model_builds_mesh_tree():
     assert quad_x < -1.0 < 1.0 < octa_x
 
 
+def test_location_and_basis_place_the_imported_geometry():
+    """``location``/``basis`` given to Model3D carry its parts along, exactly as
+    the same transform applied after construction would.
+    """
+    from algan import ORIGIN, OUT, RIGHT, UP, Off, Scene
+
+    v = torch.tensor([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0]])
+    data = SceneData(
+        meshes=[
+            MeshData(
+                vertices=v,
+                faces=torch.tensor([[0, 1, 2]]),
+                normals=torch.tensor([[1.0, 0, 0]] * 3),
+                material_index=0,
+            )
+        ],
+        materials=[MaterialData()],
+        nodes=[NodeData(name="root", mesh_indices=[0])],
+    )
+    with Scene():
+        model = Model3D(scene_data=data, location=RIGHT * 5)
+        corners = model.mesh_mobs[0].grid.location.reshape(-1, 3)
+        torch.testing.assert_close(corners, v + RIGHT * 5)
+        with Off():
+            model.move_to(ORIGIN)
+        torch.testing.assert_close(model.mesh_mobs[0].grid.location.reshape(-1, 3), v)
+
+        # A quarter turn about OUT, scaled by 2, then moved.
+        basis = torch.stack([UP * 2, -RIGHT * 2, OUT * 2]).reshape(-1)
+        mesh = Model3D(scene_data=data, location=RIGHT * 5, basis=basis).mesh_mobs[0]
+        corners = mesh.grid.location.reshape(-1, 3)
+        expected = torch.tensor([[5.0, 0, 0], [5.0, 2, 0], [3.0, 0, 0]])
+        torch.testing.assert_close(corners, expected)
+        normals = mesh._compute_corner_normals(mesh.grid.location)
+        torch.testing.assert_close(normals.reshape(-1, 3), UP.expand(3, 3))
+
+
 def test_triangle_mesh_requires_uvs_for_texture():
     SceneManager.reset()
     v, f, n, uv = _quad()

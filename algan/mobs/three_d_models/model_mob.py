@@ -201,6 +201,12 @@ class Model3D(Mob):
         pbr_materials: bool = True,
         **kwargs,
     ):
+        # The parts are built in the file's own coordinates about an
+        # untransformed Model3D, then a placement given here is applied the way
+        # any later transform is, so it carries the parts along with it.
+        placement = {
+            name: kwargs.pop(name) for name in ("basis", "location") if name in kwargs
+        }
         super().__init__(**kwargs)
         device = self.location.device
         self.normal_maps = normal_maps
@@ -266,6 +272,12 @@ class Model3D(Mob):
 
         if fit_to_size is not None:
             self._normalize(fit_to_size)
+
+        with Off(animation_manager=self.animation_manager):
+            # Basis first, so the parts turn and scale about the model's
+            # origin before the whole is moved to ``location``.
+            for name, value in placement.items():
+                setattr(self, name, value)
 
     def _build_mesh_mob(
         self, scene_data, mesh, matrix, device, load_textures, smooth_normals
