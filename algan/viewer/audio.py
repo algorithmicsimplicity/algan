@@ -11,6 +11,32 @@ import wave
 import numpy as np
 
 
+def _get_frames(clip, times):
+    """``clip.get_frame(times)`` in requests moviepy's file reader serves whole.
+
+    moviepy 2.1.2's ``FFMPEG_AudioReader.get_frame`` splits a request wider
+    than half its buffer by recursing on its in-range *mask* instead of the
+    times, which then fail as times 0 and 1. A file's buffer is only one frame
+    longer than the file, so any sound shorter than two mixing chunks failed.
+    ``buffersize`` marks a file-backed clip; ``fps`` is its decoder's rate.
+    """
+    buffersize = getattr(clip, "buffersize", None)
+    if buffersize is None or len(times) < 2:
+        return np.asarray(clip.get_frame(times))
+    # Consecutive times span this many decoder frames, plus one for rounding;
+    # the reader serves a span below half its buffer without recursing.
+    spacing = (times[-1] - times[0]) / (len(times) - 1) * clip.fps
+    step = max(1, int((buffersize // 2 - 2) / max(spacing, 1e-9)))
+    if len(times) <= step:
+        return np.asarray(clip.get_frame(times))
+    return np.concatenate(
+        [
+            np.asarray(clip.get_frame(times[first : first + step]))
+            for first in range(0, len(times), step)
+        ]
+    )
+
+
 class SceneAudio:
     """Mix existing clips, never author speech or close Scene-owned readers.
 
@@ -71,7 +97,7 @@ class SceneAudio:
                     active = (times >= start) & (times < end)
                     if not active.any():
                         continue
-                    samples = np.asarray(clip.get_frame(times[active] - start))
+                    samples = _get_frames(clip, times[active] - start)
                     if samples.ndim == 1 and clip.nchannels == 1:
                         samples = samples[:, None]
                     mixed[active] += samples

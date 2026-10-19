@@ -244,3 +244,24 @@ def test_scene_view_without_audio_stays_silent(fresh_scene, monkeypatch):
     with Scene.view(PREVIEW, block=False, open_browser=False) as handle:
         assert handle.session.state()["has_audio"] is False
         assert handle.session.audio() is None
+
+
+def test_short_sound_files_mix_whole(tmp_path):
+    # moviepy's reader failed on any request wider than half its buffer, and a
+    # short file's buffer is barely longer than the file: under ~0.74 s at
+    # the viewer's chunk size, the whole mix raised OSError.
+    from moviepy import AudioArrayClip, AudioFileClip
+
+    path = str(tmp_path / "blip.wav")
+    tone = np.full((22050, 2), 0.25)
+    AudioArrayClip(tone, fps=44100).write_audiofile(path, fps=44100, logger=None)
+    sound = AudioFileClip(path)
+    try:
+        track = SceneAudio([effect(sound, 0.5)], 1.5, 44100)
+        _, samples = pcm(track.wav())
+    finally:
+        sound.close()
+    assert samples.shape == (66150, 2)
+    np.testing.assert_array_equal(samples[:22050], 0)
+    np.testing.assert_allclose(samples[22060:44090], 0.25, atol=1e-3)
+    np.testing.assert_array_equal(samples[44110:], 0)
