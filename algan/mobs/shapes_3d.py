@@ -786,42 +786,45 @@ class Cone(Surface):
             (radial - closest_radial).square() + (axial - closest_axial).square()
         )
 
-    def get_start(self):
-        """Get the centre of the cone's base, relative to the cone's centre.
+    def _axis_half_extent(self):
+        """Half the cone's axis, base to tip, in world units, scale included."""
+        return self.get_up_basis() * (self.height * 0.5)
 
-        It is fixed when the cone is built, as ``-direction * height / 2`` for
-        the normalized ``direction``: moving or rotating the cone afterwards
-        does not change it.
+    def get_start(self):
+        """Get the centre of the cone's base, where it is now.
+
+        Follows the cone when it is moved, rotated or scaled, and reflects
+        animations recorded so far.
 
         Returns
         -------
         torch.Tensor
-            The offset in world units, shape ``(*, 3)``.
+            The point in world units, shape ``(*, 3)``.
         """
-        return self.start_point
+        return self.location - self._axis_half_extent()
 
     def get_end(self):
-        """Get the cone's tip, relative to the cone's centre.
+        """Get the cone's tip, where it is now.
 
-        Fixed when the cone is built, like :meth:`get_start`.
+        As :meth:`get_start`, for the tip.
 
         Returns
         -------
         torch.Tensor
-            The offset in world units, shape ``(*, 3)``.
+            The point in world units, shape ``(*, 3)``.
         """
-        return self.end_point
+        return self.location + self._axis_half_extent()
 
     def get_direction(self):
-        """Get the direction the cone was built to point its tip in.
+        """Get the direction the cone's tip points in, as it is now.
 
         Returns
         -------
         torch.Tensor
-            The ``direction`` passed to the constructor, as given -- not
-            normalized, and not updated if the cone is rotated afterwards.
+            The unit direction from the base to the tip, shape ``(*, 3)``.
+            Follows the cone when it is rotated.
         """
-        return self.direction
+        return self.get_up_direction()
 
 
 class Cylinder(Surface):
@@ -1638,30 +1641,31 @@ class Line3D(Cylinder):
         self.move_between_points(self.start, self.end)
 
     def get_start(self):
-        """Get the point the line was last set to start at.
+        """Get the point the line starts at, where it is now.
 
-        That is the ``start`` it was built with, or the one given to
-        :meth:`move_between_points` or :meth:`set_start_and_end_attrs` since.
-        Moving or rotating the line by other means does not update it.
+        Follows the line however it is moved, rotated, scaled or stretched,
+        and reflects animations recorded so far.
 
         Returns
         -------
         torch.Tensor
-            A copy of the start point, in world units, shape ``(*, 3)``.
+            The start point, in world units, shape ``(*, 3)``.
         """
-        return self.start.clone()
+        # A cylinder's up basis row spans its whole length (see
+        # set_start_point), so each end is half of it from the centre.
+        return self.location - self.get_up_basis() * 0.5
 
     def get_end(self):
-        """Get the point the line was last set to end at.
+        """Get the point the line ends at, where it is now.
 
         As :meth:`get_start`, for the other end.
 
         Returns
         -------
         torch.Tensor
-            A copy of the end point, in world units, shape ``(*, 3)``.
+            The end point, in world units, shape ``(*, 3)``.
         """
-        return self.end.clone()
+        return self.location + self.get_up_basis() * 0.5
 
     def set_start_and_end_attrs(self, start, end, **kwargs):
         """Move the line to span two points, or the centres of two Mobs.
