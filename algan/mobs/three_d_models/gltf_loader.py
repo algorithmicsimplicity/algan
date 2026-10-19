@@ -103,18 +103,91 @@ def _normalize_color(color):
     return tuple(c)
 
 
-def _convert_material(visual):
+def _linear_to_display(values):
+    """glTF's linear color factors as the display-referred sRGB values Algan
+    colors are authored in.
+
+    Computed in float64 and rounded to float32, Algan's color precision, so a
+    factor of exactly 0 or 1 comes back exactly 0 or 1 (in float32 the sRGB
+    curve maps 1.0 to 0.99999994).
+    """
+    from algan.utils.color_space import linear_to_srgb
+
+    return linear_to_srgb(torch.as_tensor(values, dtype=torch.float64)).float()
+
+
+def _resolve_alpha(alpha, mode, cutoff):
+    """Apply a glTF ``alphaMode`` to alpha values: ``OPAQUE`` ignores alpha,
+    ``MASK`` makes each value fully opaque or fully transparent at ``cutoff``,
+    and ``BLEND`` keeps it.
+    """
+    alpha = torch.as_tensor(alpha, dtype=torch.float32)
+    if mode == "OPAQUE":
+        return torch.ones_like(alpha)
+    if mode == "MASK":
+        return (alpha >= cutoff).float()
+    return alpha
+
+
+def _tint_base_color_image(image, factor, mode, cutoff):
+    """``baseColorFactor * baseColorTexture`` as glTF defines it.
+
+    The texture is sRGB-encoded and the factor linear, so the product is
+    taken in linear light; alpha is linear in both and multiplies directly
+    before ``alphaMode`` is applied. A channel whose factor is exactly 1 is
+    left untouched, so an untinted texture keeps its exact texel values.
+    """
+    from algan.utils.color_space import linear_to_srgb, srgb_to_linear
+
+    if image.shape[-1] >= 3:
+        rgb = image[..., :3]
+        alpha = image[..., 3] if image.shape[-1] > 3 else None
+    else:  # greyscale, possibly with alpha
+        rgb = image[..., :1].expand(*image.shape[:-1], 3)
+        alpha = image[..., 1] if image.shape[-1] > 1 else None
+    channels = []
+    for c in range(3):
+        channel = rgb[..., c]
+        if factor[c] != 1.0:
+            channel = linear_to_srgb(srgb_to_linear(channel) * factor[c])
+        channels.append(channel)
+    if alpha is None:
+        alpha = torch.ones_like(channels[0])
+    if factor[3] != 1.0:
+        alpha = alpha * factor[3]
+    channels.append(_resolve_alpha(alpha, mode, cutoff))
+    return torch.stack(channels, -1)
+
+
+def _convert_material(visual, gltf=False):
     """trimesh visual -> :class:`MaterialData` (PBR base color + embedded
     diffuse texture where present).
+
+    With ``gltf`` the material is read with glTF 2.0's semantics: an omitted
+    factor takes the specification's default, the color factors are linear
+    (Algan's colors are display sRGB), ``baseColorFactor`` multiplies the
+    base-color texture, and ``alphaMode`` decides what alpha means.
     """
     material = getattr(visual, "material", None)
     if material is None:
         return MaterialData()
-    base = _normalize_color(
-        getattr(material, "baseColorFactor", None)
-        if getattr(material, "baseColorFactor", None) is not None
-        else getattr(material, "main_color", None)
-    )
+    if gltf:
+        # Omitted factors are the specification's defaults, never trimesh's
+        # placeholder grey: base color [1, 1, 1, 1], metallic and roughness 1.
+        factor = _normalize_color(getattr(material, "baseColorFactor", None))
+        alpha_mode = getattr(material, "alphaMode", None) or "OPAQUE"
+        alpha_cutoff = getattr(material, "alphaCutoff", None)
+        alpha_cutoff = 0.5 if alpha_cutoff is None else float(alpha_cutoff)
+        base = (
+            *_linear_to_display(factor[:3]).tolist(),
+            float(_resolve_alpha(factor[3], alpha_mode, alpha_cutoff)),
+        )
+    else:
+        base = _normalize_color(
+            getattr(material, "baseColorFactor", None)
+            if getattr(material, "baseColorFactor", None) is not None
+            else getattr(material, "main_color", None)
+        )
 
     def _img(attr):
         tex = getattr(material, attr, None)
@@ -131,6 +204,15 @@ def _convert_material(visual):
     metallic = getattr(material, "metallicFactor", None)
     roughness = getattr(material, "roughnessFactor", None)
     emissive = getattr(material, "emissiveFactor", None)
+    if emissive is not None:
+        emissive = tuple(float(x) for x in np.asarray(emissive).reshape(-1)[:3])
+    if gltf:
+        if diffuse_image is not None:
+            diffuse_image = _tint_base_color_image(
+                diffuse_image, factor, alpha_mode, alpha_cutoff
+            )
+        if emissive is not None:
+            emissive = tuple(_linear_to_display(emissive).tolist())
     return MaterialData(
         name=getattr(material, "name", "") or "",
         base_color=base,
@@ -138,13 +220,11 @@ def _convert_material(visual):
         normal_image=_img("normalTexture"),
         metallic_roughness_image=_img("metallicRoughnessTexture"),
         emissive_image=_img("emissiveTexture"),
-        metallic_factor=float(metallic) if metallic is not None else 0.0,
-        roughness_factor=float(roughness) if roughness is not None else 1.0,
-        emissive=(
-            tuple(float(x) for x in np.asarray(emissive).reshape(-1)[:3])
-            if emissive is not None
-            else (0.0, 0.0, 0.0)
+        metallic_factor=(
+            float(metallic) if metallic is not None else (1.0 if gltf else 0.0)
         ),
+        roughness_factor=float(roughness) if roughness is not None else 1.0,
+        emissive=emissive if emissive is not None else (0.0, 0.0, 0.0),
         opacity=base[3],
     )
 
@@ -465,7 +545,8 @@ def load_scene(file_path):
     source, load_options = file_path, {}
     resolver = None
     suffix = os.path.splitext(file_path)[1].lower()
-    if suffix in (".glb", ".gltf"):
+    is_gltf = suffix in (".glb", ".gltf")
+    if is_gltf:
         from pygltflib import GLTF2
 
         resolver = _uri_resolver(file_path)
@@ -511,7 +592,7 @@ def load_scene(file_path):
         if not hasattr(geom, "vertices") or not hasattr(geom, "faces"):
             continue
         material_index = len(materials)
-        materials.append(_convert_material(getattr(geom, "visual", None)))
+        materials.append(_convert_material(getattr(geom, "visual", None), gltf=is_gltf))
         md = _convert_mesh(geom, material_index, name)
         if md is None:
             materials.pop()

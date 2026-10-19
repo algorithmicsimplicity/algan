@@ -16,7 +16,9 @@ import pytest
 import torch
 from PIL import Image
 
+from algan import Model3D, Scene
 from algan.mobs.three_d_models.gltf_loader import load_scene
+from algan.utils.color_space import linear_to_srgb, srgb_to_linear
 
 FLOAT, UBYTE, USHORT = 5126, 5121, 5123
 
@@ -156,3 +158,97 @@ def test_unreadable_texture_uri_warns_with_its_name(tmp_path):
     with pytest.warns(UserWarning, match="missing%20wood.png"):
         material = load_scene(str(path)).materials[0]
     assert material.diffuse_image is None
+
+
+def _material(tmp_path, material, **kwargs):
+    path = _write_gltf(tmp_path / "material.gltf", material, **kwargs)
+    return load_scene(str(path)).materials[0]
+
+
+def test_omitted_factors_take_the_gltf_defaults(tmp_path):
+    material = _material(tmp_path, {"pbrMetallicRoughness": {}})
+    assert material.base_color == (1.0, 1.0, 1.0, 1.0)
+    assert material.metallic_factor == 1.0
+    assert material.roughness_factor == 1.0
+
+    # A metallic-roughness map with B = 1 is fully metallic under the default.
+    mr = np.zeros((2, 2, 3), np.uint8)
+    mr[..., 1:] = 255
+    path = _write_gltf(
+        tmp_path / "mr.gltf",
+        {"pbrMetallicRoughness": {}},
+        images=[("metallicRoughnessTexture", _png(mr))],
+    )
+    with Scene():
+        mesh = Model3D(str(path)).mesh_mobs[0]
+        assert float(mesh.grid.metalness.reshape(-1)[0]) == pytest.approx(1.0)
+        torch.testing.assert_close(
+            mesh.grid.color.reshape(-1, 5)[:, :3], torch.ones(6, 3)
+        )
+
+
+def test_color_factors_are_linear(tmp_path):
+    # 0.2 and 0.6 survive trimesh's 8-bit storage of the factors exactly.
+    material = _material(
+        tmp_path,
+        {
+            "pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.0, 1.0, 1.0]},
+            "emissiveFactor": [0.6, 0.0, 1.0],
+        },
+    )
+    srgb = linear_to_srgb(torch.tensor([0.2, 0.6], dtype=torch.float64)).tolist()
+    assert material.base_color == pytest.approx((srgb[0], 0.0, 1.0, 1.0), abs=1e-6)
+    assert material.base_color[2] == 1.0
+    assert material.emissive == pytest.approx((srgb[1], 0.0, 1.0), abs=1e-6)
+
+
+def test_base_color_factor_multiplies_the_texture_in_linear_light(tmp_path):
+    texture = np.full((2, 2, 4), 255, np.uint8)
+    texture[0, 0] = (128, 64, 255, 200)
+    material = _material(
+        tmp_path,
+        {
+            "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.2, 0.0, 0.6]},
+            "alphaMode": "BLEND",
+        },
+        images=[("baseColorTexture", _png(texture))],
+    )
+    image = material.diffuse_image
+    source = torch.tensor(texture / 255, dtype=torch.float32)
+    # A factor of 1 leaves its channel bit-exact; 0 clears it.
+    torch.testing.assert_close(image[..., 0], source[..., 0], rtol=0, atol=0)
+    assert float(image[..., 2].abs().max()) == 0.0
+    expected_green = linear_to_srgb(srgb_to_linear(source[..., 1]) * 0.2)
+    torch.testing.assert_close(image[..., 1], expected_green)
+    torch.testing.assert_close(image[..., 3], source[..., 3] * 0.6)
+
+
+@pytest.mark.parametrize(
+    ("mode", "cutoff", "expected_base", "expected_texels"),
+    [
+        (None, None, 1.0, [1.0, 1.0]),  # OPAQUE by default: alpha is ignored
+        ("OPAQUE", None, 1.0, [1.0, 1.0]),
+        ("MASK", None, 1.0, [0.0, 1.0]),  # default cutoff 0.5
+        ("MASK", 0.9, 0.0, [0.0, 0.0]),
+        ("BLEND", None, 0.8, [0.8 * 100 / 255, 0.8]),
+    ],
+)
+def test_alpha_mode_decides_what_alpha_means(
+    tmp_path, mode, cutoff, expected_base, expected_texels
+):
+    material = {"pbrMetallicRoughness": {"baseColorFactor": [1, 1, 1, 0.8]}}
+    if mode is not None:
+        material["alphaMode"] = mode
+    if cutoff is not None:
+        material["alphaCutoff"] = cutoff
+    assert _material(tmp_path, material).base_color[3] == pytest.approx(
+        expected_base, abs=2e-3
+    )
+    texture = np.full((1, 2, 4), 255, np.uint8)
+    texture[0, 0, 3] = 100
+    textured = _material(
+        tmp_path, material, images=[("baseColorTexture", _png(texture))]
+    )
+    assert textured.diffuse_image[0, :, 3].tolist() == pytest.approx(
+        expected_texels, abs=2e-3
+    )
