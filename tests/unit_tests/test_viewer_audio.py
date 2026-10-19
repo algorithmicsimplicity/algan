@@ -283,3 +283,16 @@ def test_sound_files_are_not_resampled_nearest_neighbour(tmp_path):
         sound.close()
     assert rate == 44100
     np.testing.assert_allclose(samples[:44000], tone[:44000], atol=1e-3)
+
+
+def test_mono_array_clips_mix():
+    # A (n, 1) AudioArrayClip -- moviepy's mono form -- returns two equal
+    # columns while reporting one channel; the viewer answered HTTP 400.
+    from moviepy import AudioArrayClip
+
+    mono = AudioArrayClip(np.full((8000, 1), 0.25), fps=8000)
+    _, samples = pcm(SceneAudio([effect(mono, 0.5)], 2, 8000).wav())
+    assert samples.shape == (16000, 1)
+    np.testing.assert_array_equal(samples[:4000], 0)
+    np.testing.assert_array_equal(samples[4000:12000], 0.25)
+    np.testing.assert_array_equal(samples[12000:], 0)

@@ -241,3 +241,33 @@ def test_audio_track_is_as_long_as_the_video(fresh_scene, tmp_path):
             Scene.wait(2)
             scene.save_audio(tmp_path / "midblock.wav")
     assert _seconds_written(tmp_path / "midblock.wav") == pytest.approx(4, abs=1e-4)
+
+
+@pytest.mark.parametrize("stereo_bed", [False, True])
+def test_mono_in_memory_clips_mix(tmp_path, tones, stereo_bed):
+    # A 1-D mono AudioClip times the column mask made a len(t)-square array,
+    # and a (n, 1) AudioArrayClip returns two columns while reporting one:
+    # both raised ValueError in the mix.
+    function = moviepy.AudioClip(lambda t: 0.125 + 0 * t, duration=1.0)
+    array = moviepy.AudioArrayClip(np.full((44100, 1), 0.25), fps=44100)
+    clips = [function.with_start(0.0), array.with_start(0.5)]
+    if stereo_bed:
+        clips.append(moviepy.AudioFileClip(tones[0]).with_start(2.0))
+    composite = moviepy.CompositeAudioClip(clips)
+    composite.duration = 2.0
+    out = tmp_path / "mono.wav"
+    assert audio_utils.write_composite_audio(
+        composite, str(out), fps=44100, nbytes=2, codec="pcm_s16le"
+    )
+    composite.close()
+    import wave as wave_module
+
+    with wave_module.open(str(out), "rb") as reader:
+        channels = reader.getnchannels()
+        samples = np.frombuffer(reader.readframes(reader.getnframes()), "<i2")
+    samples = samples.reshape(-1, channels) / 32768
+    assert channels == (2 if stereo_bed else 1)
+    assert samples.shape[0] == 88200
+    np.testing.assert_allclose(samples[100:22000], 0.125, atol=1e-4)
+    np.testing.assert_allclose(samples[22100:44000], 0.375, atol=1e-4)
+    np.testing.assert_allclose(samples[44200:66000], 0.25, atol=1e-4)

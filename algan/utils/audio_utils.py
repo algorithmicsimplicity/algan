@@ -773,7 +773,13 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
                 part = 1 * (t >= start)
                 if end is not None:
                     part *= t <= end
-                sounds.append(clip.get_frame(t - start) * np.array([part]).T)
+                # A mono AudioClip returns a 1-D array, which times the column
+                # mask is a len(t)-square one; a mono AudioArrayClip returns
+                # two equal columns while reporting one channel.
+                frames = np.asarray(clip.get_frame(t - start))
+                if frames.ndim == 1:
+                    frames = frames[:, None]
+                sounds.append(frames[:, :nchannels] * np.array([part]).T)
             # CompositeAudioClip.frame_function and AudioClip.to_soundarray.
             frame = np.zeros((len(t), nchannels)) + sum(sounds)
             frame = np.maximum(-0.99, np.minimum(0.99, frame))

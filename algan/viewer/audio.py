@@ -108,9 +108,11 @@ class SceneAudio:
                     if not active.any():
                         continue
                     samples = _get_frames(clip, times[active] - start)
-                    if samples.ndim == 1 and clip.nchannels == 1:
+                    if samples.ndim == 1:
                         samples = samples[:, None]
-                    mixed[active] += samples
+                    # A mono AudioArrayClip returns two equal columns while
+                    # reporting one channel.
+                    mixed[active] += samples[:, :channels]
                 np.nan_to_num(mixed, copy=False)
                 np.clip(mixed, -1, 1 - 1 / 32768, out=mixed)
                 wav.writeframesraw((mixed * 32768).astype("<i2").tobytes())
