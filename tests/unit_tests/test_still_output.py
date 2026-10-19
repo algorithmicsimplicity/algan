@@ -1,7 +1,9 @@
-"""What ``save_frame`` writes.
+"""What ``save_frame`` writes, and which moment it shows.
 
-A write that failed part way left a broken file where the last good one had
-been.
+- A write that failed part way left a broken file where the last good one was.
+- A ``video_settings`` preset's frame rate quantized ``at``: THUMBNAIL's 1 fps
+  turned ``at=2.4`` into the frame at 2.0 s, and the default capture, 1.5
+  frames past the cursor, into one 1.5 s past it.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import pytest
 import torch
 from PIL import Image
 
-from algan import Scene, SceneManager, Square
+from algan import RIGHT, Scene, SceneManager, Seq, Square
 from algan.constants.color import BLUE, TRANSPARENT
 from algan.settings.video_settings import VideoSettings
 
@@ -72,3 +74,22 @@ def test_a_failed_write_leaves_the_file_that_was_there(monkeypatch, tmp_path):
         scene.save_frame(existing)
     assert existing.read_bytes() == b"an earlier render"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["shot.png"]
+
+
+def test_a_preset_sizes_the_still_without_moving_it_in_time(monkeypatch, tmp_path):
+    calls = _spy_on_frames(monkeypatch)
+    thumbnail = VideoSettings((32, 18), 1, supersampling=1)
+    with Scene(video_settings=STILL) as scene:
+        square = Square().spawn(animate=False)
+        with Seq(runtime=4):
+            square.move(RIGHT)
+        scene.save_frame(tmp_path / "own", at=2.4)
+        scene.save_frame(tmp_path / "thumbnail", thumbnail, at=2.4)
+        scene.save_frame(tmp_path / "now", thumbnail)
+        assert scene.video_settings.frames_per_second == 30
+    assert calls == [
+        ([72], 30, (16, 12)),
+        ([72], 30, (32, 18)),
+        # 1.5 frames past the 4 s cursor, at the Scene's 30 fps.
+        ([round((4 + 1.5 / 30) * 30)], 30, (32, 18)),
+    ]

@@ -248,7 +248,9 @@ def test_per_call_settings_are_snapshotted_and_separate_incompatible_jobs(
         before_render=lambda scene: observed.append(SETTINGS.raytracing.shadows),
     )
     results = _project(tmp_path, intro).render_screenshots()
-    assert [call[0] for call in calls] == [(1, 2), (6, 8), (5, 6)]
+    # Every still is a frame of the Scene's own 10 fps video: the per-call
+    # settings' 20 fps sizes nothing in time.
+    assert [call[0] for call in calls] == [(1, 2), (3, 4), (5, 6)]
     assert [call[1].resolution for call in calls] == [(8, 6), (12, 9), (8, 6)]
     assert calls[1][2]["post_processes"] == (postprocess,)
     assert observed == [previous_shadows, False, previous_shadows]

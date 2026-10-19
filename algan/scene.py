@@ -1541,8 +1541,9 @@ class Scene(RenderLoopMixin):
             written is reported, absolute, as ``result.output_path``.
         video_settings
             Resolution and anti-aliasing for this still only, normally a
-            preset such as ``HD``. Defaults to ``None``, meaning the Scene's
-            current settings.
+            preset such as ``HD``. Its frame rate is not used: the still shows
+            the frame the Scene's own video shows at ``at``. Defaults to
+            ``None``, meaning the Scene's current settings.
         at
             Timestamp in seconds to capture, or a sequence of timestamps to
             capture several stills in one call. A negative timestamp is an
