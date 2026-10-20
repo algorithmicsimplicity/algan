@@ -42,6 +42,9 @@ WORD_HEIGHT = 3.1
 ASPECT = 16 / 9
 TAGLINE = "Programmatic animation for explanatory mathematics"
 FADE = 0.7
+# The title is a sharper mirror than the logo's chrome, so the gallery reads in it; it settles
+# to the chrome's roughness as "Algan" forms, and the swap to the wordmark is then invisible.
+MIRROR_ROUGHNESS = 0.02
 
 
 def at(x, y, z):
@@ -87,10 +90,19 @@ with Off():
         Text(TITLE, font=brand.FONT, weight=brand.WEIGHT, font_size=110, color=WHITE)
     )
     top.move(OUT * 0.03)
+    # Unlit, so the plain layer is not a reflector. The renderer blurs one glossy reflection
+    # per pixel, the first reflector's; while a reflective plain letter was still fading out in
+    # front of the mirror it took that, the mirror behind it fell back to a sharp reflection,
+    # and the letter snapped to its blurred self the moment the plain one vanished.
+    top.set_material(MeshBasicMaterial())
     mirror = place_title(
         Text(TITLE, font=brand.FONT, weight=brand.WEIGHT, font_size=110)
     )
-    mirror.set_material(brand.chrome())
+    mirror.set_material(
+        MeshStandardMaterial(
+            color=Color(brand.CHROME_TINT), metalness=1.0, roughness=MIRROR_ROUGHNESS
+        )
+    )
     lo, hi = mirror.get_bounding_box_min()[0, 0], mirror.get_bounding_box_max()[0, 0]
     cy = 0.5 * (lo[1] + hi[1]).item()
     look_title = at(0.0, cy, 0.0)
@@ -232,6 +244,8 @@ with Sync():
         with Sync(runtime=1.7):
             for mob in gallery:
                 mob.opacity = 0.0
+            for mob in survivors:
+                mob.roughness = brand.chrome().roughness
     with Sync(runtime=2.2, easing=easings.ease_in_out_sine):
         cam.move_to(cam_mid)
         cam.look_at(look_mid)
