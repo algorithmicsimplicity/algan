@@ -332,10 +332,16 @@ def gloss_scatter(
 
         # Contact hardening (DESIGN_glossy_prefilter.md §3): the lobe's screen
         # footprint scales with how far past the reflector the reflected
-        # content sits. d_tot is the total camera path length to the nearest
-        # thing the glossy ray found; a ray that found nothing left it at the
-        # host's +inf, which is k = 1 -- a reflection of the sky, fully blurred.
-        d_tot = pix_accum[gr, GL_ROW_DIST]
+        # content sits. The drain sums each surface the glossy ray met as its
+        # coverage over its total camera path length, so d_tot is their
+        # coverage-weighted harmonic distance and ``1 - d_p / d_tot`` the
+        # coverage-weighted mean cone factor, a miss counting as 1. A ray that
+        # found nothing left the sum at zero, which is k = 1 -- a reflection
+        # of the sky, fully blurred.
+        d_inv = pix_accum[gr, GL_ROW_DIST]
+        d_tot = 1e30
+        if d_inv > 1e-30:
+            d_tot = 1.0 / d_inv
         d_p = pix_accum[gr, GL_ROW_DP]
         k_cone = 1.0
         if d_tot < 1e29:

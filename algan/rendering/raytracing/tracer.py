@@ -112,7 +112,6 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_MAIN_SIGMA,
     GL_MAIN_WIDTH,
     GL_PYR_WIDTH,
-    GL_ROW_DIST,
     GL_ROW_WIDTH,
     gloss_composite,
     gloss_pyramid_level,
@@ -3575,12 +3574,10 @@ def raytrace_render_wavefront(
                                 state[3][:, _SCA_IOR_DEPTH:].zero_()
                             pix_accum.zero_()
                             if gl_active:
-                                # A glossy ray that never hits anything writes no
-                                # distance at all, and that has to read as "the
-                                # reflection is infinitely far", i.e. fully
-                                # blurred -- not as the zero a cleared buffer
-                                # would give, which is a contact reflection.
-                                pix_accum[attempt_primary:, GL_ROW_DIST] = float("inf")
+                                # ``GL_ROW_DIST`` sums coverage over distance,
+                                # so the zero the clear leaves is what a glossy
+                                # ray that never hits anything should read as:
+                                # a reflection infinitely far, fully blurred.
                                 layer_offsets_t[7] = float(attempt_primary)
                             rs_int[:, 2].fill_(1)
                             rs_alloc.zero_()

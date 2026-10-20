@@ -2774,18 +2774,6 @@ def wavefront_shade_arena(
                         kb_prim[q] = -1
                 drained += 1
                 processed += 1
-                if is_gloss_ray:
-                    # SPLIT-SUM PREFILTER (DESIGN_glossy_prefilter.md §4.3):
-                    # how far past its reflector this reflection turned out to
-                    # be, which is what sets its blur radius. The TOTAL camera
-                    # path length, not the segment: a descendant's is always
-                    # larger than its parent's, so the minimum over the whole
-                    # sub-tree is exactly the first hit of the reflection ray
-                    # itself. A short segment three bounces in would win a
-                    # ``t_hit`` minimum and report a distant reflection as
-                    # being in contact.
-                    ti.atomic_min(pix_accum[accum_pix, _GL_ROW_DIST],
-                                  base_dist + t_hit)
                 htype = flags & 3
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
@@ -2834,6 +2822,32 @@ def wavefront_shade_arena(
                     cm = f % circuit_meta.shape[0]
                     reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, prim, _M_ROUGHNESS]
+                if is_gloss_ray:
+                    # SPLIT-SUM PREFILTER (DESIGN_glossy_prefilter.md §3,
+                    # §4.3): how far past its reflector this reflection turned
+                    # out to be, which is what sets its blur radius. Each
+                    # surface the reflection ray ITSELF meets adds the share of
+                    # the ray it covers over its TOTAL camera path length, so
+                    # the composite reads the coverage-weighted mean of the
+                    # cone factor ``1 - d_p / d``, a miss counting as 1. An
+                    # opaque first hit covers all of it, which is the first
+                    # hit's distance exactly. A faint or fully transparent
+                    # layer covers almost none, where a nearest-hit record let
+                    # it pull the whole reflection into contact: a fading veil
+                    # in front of a rough mirror kept its reflection sharp
+                    # until the veil was gone, and then it blurred in a frame.
+                    #
+                    # The ray itself is the one still on the segment it was
+                    # spawned on, whose start is the claim's ``d_p`` to the
+                    # bit (both are stored from one value). Its descendants
+                    # are what the covering surfaces show, already counted at
+                    # their surface.
+                    if base_dist == pix_accum[accum_pix, _GL_ROW_DP]:
+                        ti.atomic_add(
+                            pix_accum[accum_pix, _GL_ROW_DIST],
+                            ti.max(weight[0], ti.max(weight[1], weight[2]))
+                            * ti.math.clamp(alpha, 0.0, 1.0)
+                            / ti.max(base_dist + t_hit, 1e-6))
                 # Where a continuation starts: on the surface hit, never
                 # ``ro + t_hit * rd``, which a distant camera's primary ray (an
                 # eye thousands of units out) rounds

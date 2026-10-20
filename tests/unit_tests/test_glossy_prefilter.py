@@ -534,9 +534,9 @@ def _interior_local_maxima(png_path, margin):
 def test_a_creases_siblings_share_the_pixels_prefiltered_claim(tmp_path):
     """No bright seam down the interior edges of a rough metal solid.
 
-    The prefiltered glossy event is a per-pixel resource, so the first
-    qualifying sheet claims it and later ones fall back to the
-    ``_mirror_share`` throttle (§2.2). A §4.4 band's siblings are not "later
+    The prefiltered glossy event is a per-pixel resource, so one sheet claims
+    it and the pixel's other reflective sheets fall back to the
+    ``_mirror_share`` throttle (§2.2). A §4.4 band's siblings are not "other
     sheets": they are one surface's coverage of the pixel, subdivided so each
     shades with its own normal, and §4.4's contract is that the subdivision
     changes nothing the band commits.
@@ -696,6 +696,111 @@ def test_a_rough_metal_seen_in_a_mirror_reflects_as_itself(tmp_path):
     assert ((ratio > 0.9) & (ratio < 1.1)).all(), (
         "the panel's mirror image is not shaded like the panel: "
         f"reflection / panel = {ratio.round(3).tolist()} (linear, RGB)"
+    )
+
+
+# A rough white-metal mirror reflecting a striped environment, rendered bare and
+# then behind a nearly invisible veil: a smaller rough-metal panel at 2% opacity
+# floating 0.4 in front of it. The stripes give the mirror's blur something to
+# show, so a reflection that turns sharp under the veil cannot hide.
+_VEIL_SCENE = """
+import sys
+import torch
+from algan import (
+    OUT, WHITE, MeshStandardMaterial, Off, Prism, SETTINGS, Scene, VideoSettings,
+)
+
+SETTINGS.paths.set(output_root=sys.argv[1], output_directory=".")
+stripes = torch.full((32, 64, 3), 0.05)
+for c in range(0, 64, 8):
+    stripes[:, c : c + 4] = 1.0
+for name, veil_opacity in (("bare", None), ("veiled", 0.02)):
+    with Scene() as scene:
+        scene.clear_lights()
+        scene.set_environment_map(stripes, ambient=False)
+        with Off():
+            mirror = Prism(width=3.2, height=2.4, depth=0.05, color=WHITE)
+            mirror.set_material(
+                MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.15))
+            mirror.spawn()
+            if veil_opacity is not None:
+                veil = Prism(width=2.0, height=1.6, depth=0.02, color=WHITE)
+                veil.set_material(
+                    MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.5))
+                veil.move(OUT * 0.4)
+                veil.opacity = veil_opacity
+                veil.spawn()
+        scene.save_frame(
+            name,
+            VideoSettings(resolution=(192, 144), supersampling=1),
+            overwrite=True,
+        )
+"""
+
+
+def test_a_faint_veil_does_not_change_the_mirror_behind_it(tmp_path):
+    """A 2%-opaque layer in front of a rough mirror changes it by about 2%.
+
+    Two rules made the mirror snap instead, both about the pixel's one
+    prefiltered glossy event (§2.2):
+
+    * The event went to the first qualifying sheet, so the veil, reflecting
+      2% of the light, took the blur, and the mirror behind it fell back to the
+      throttle's sharp, half-strength reflection.
+    * The blur radius came from the reflection ray's NEAREST hit, whatever its
+      opacity, so once the mirror did claim, the veil 0.4 in front of it put
+      the reflection in contact with it and the blur all but vanished.
+
+    Either way the mirror under the veil changed at once, at any opacity, and
+    a fading veil made it snap back in the frame it disappeared. The event now
+    goes to the sheet reflecting the most light, and each surface the
+    reflection meets counts toward its distance by the share of the ray it
+    covers.
+
+    Largest change between the bare and the veiled frame, in sRGB levels:
+    **30 with the first-come claim, 79 with the strongest-reflector claim
+    alone, 3 with both fixes**. The bound sits far from all three.
+
+    Its own process for the reason the module docstring gives; both frames
+    are one kernel variant, so they share it.
+    """
+    import numpy as np
+    from PIL import Image
+
+    env = dict(os.environ)
+    for name in (
+        "ALGAN_GLOSSY_REFLECTION",
+        "ALGAN_GLOSSY_PREFILTER",
+        "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
+    ):
+        env.pop(name, None)
+    env["ALGAN_AUTO_DAEMON"] = "0"
+    proc = subprocess.run(
+        [sys.executable, "-c", _VEIL_SCENE, str(tmp_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1200,
+        cwd=str(_REPO_ROOT),
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+    frames = []
+    for name in ("bare", "veiled"):
+        frame = tmp_path / f"{name}.png"
+        assert frame.exists(), proc.stdout[-2000:]
+        frames.append(np.asarray(Image.open(frame).convert("RGB")).astype(np.int32))
+    bare, veiled = frames
+    # The mirror must actually show its stripes blurred where the veil covers
+    # it, or the comparison below has nothing to see: a gradient across the
+    # middle of the frame (measured 64 levels), not a flat.
+    h, w = bare.shape[:2]
+    middle = bare[h // 2, int(w * 0.4) : int(w * 0.6), 0]
+    assert middle.max() - middle.min() > 30, middle.tolist()
+    change = np.abs(veiled - bare).max()
+    assert change <= 10, (
+        f"a 2%-opaque veil changed the mirror behind it by {change} sRGB levels"
     )
 
 

@@ -162,6 +162,48 @@ Measured:
 * the reported cone's reflection / object ratio went from 0.31 to 0.96 in
   linear light (path tracer, 16 spp: 0.93 / 0.87 / 0.76 per channel).
 
+**CORRECTED 2026-10-20: the event goes to the sheet reflecting the most light,
+not the first.** First-come made the claim snap. A faint reflective sheet in
+front of a rough mirror (a title layer fading out over chrome, a translucent
+label) took the event, and the mirror behind it fell back to the throttle's
+sharp, partial reflection. The frame the faint sheet's weight dropped under
+`min_weight`, or it despawned, the mirror's reflection blurred all at once.
+
+The resolve walks front to back and cannot know in advance which sheet
+reflects most, so the claim can now change hands:
+
+* The first qualifying sheet claims, as before, and its band shares the claim
+  (the 2026-08-31 rule).
+* A later qualifying sheet outside that band takes the claim when its
+  `weight * alpha * E` exceeds the band's summed `W` (largest channel; ties
+  stay with the earlier sheet). It is weighed with `E` on both sides.
+* The band that loses the claim becomes what it would have been had it never
+  claimed: its reflection leaves as one sharp pool ray into the pixel's own
+  row at `W * _mirror_share(roughness)`, and the rest of `W`, already taken
+  out of its local term, goes back in, at the colors its sheets shaded with.
+  `E` stands in for its Schlick term, which is the one difference left.
+* The glossy ray is spawned once the walk ends, from registers the claim
+  fills (origin, direction, `d_p`, bounces, roughness, `m`), so a takeover
+  needs no pool slot back.
+
+The handover now happens where the two reflect equally, so what changes hands
+is the weaker of two equal shares. Sweeping a rough-metal veil's opacity over
+a rough mirror (0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.45, 0.5, 0.55) moves the
+frame in proportion to the step: 2 sRGB levels from 0 to 0.01, at most 9 for
+each 0.05 step, and no jump anywhere. §3's coverage-weighted distance is the
+other half of that.
+
+On `tests/fast` it moves 44 pixel-frames by more than 2, in three frames,
+all on the Icosahedron's silhouette: mostly less red, by up to 39, with green
+and blue within 7, and a few pixels up to 11 redder. That reads as the §2.2
+seam signature going away (inferred from the colors, not from a dump): a
+larger sheet of the solid there had kept its lobe as local red under the
+first-come rule, and now takes the event. On the 28 changed pixels of the
+left and right silhouettes, measured against a blend of the facet and the
+background, the mean red error fell from 28 to 13 levels; 22 moved closer.
+`test_a_faint_veil_does_not_change_the_mirror_behind_it` pins the
+veil case.
+
 ## 3. Blur radius
 
 The lobe's median microfacet half-angle is `atan(alpha)` with `alpha =
@@ -189,6 +231,16 @@ orthographic camera there is no angular size and the world pixel width
 
 `k` is what gives **contact hardening**: a reflection touching its reflector is
 sharp, a distant one is fully blurred.
+
+`d_r` is not one distance when the reflection passes a translucent surface:
+part of it ends there and the rest goes on. So `k` is the mean of the cone
+factor over what the glossy ray meets, each surface weighted by the share of
+the ray it covers (its opacity times what earlier surfaces let through), and a
+miss counts as 1. An opaque first hit covers all of it, which is the first
+hit's `k` exactly. Recording only the nearest hit, as the route first did, let
+a faint or fully transparent layer pull the whole reflection into contact. A
+2%-opaque veil 0.4 in front of a rough mirror turned its blurred reflection
+nearly sharp until the veil was gone. §4.3 says how the drain records it.
 
 ### 3.1 Curved reflectors
 
@@ -224,9 +276,8 @@ Without it, the logo's roughness-0.04 chrome sphere, 23 units from the camera
 along its rim, beside a sharp copy of itself in a mirror floor -- a deeper
 bounce, which is never prefiltered (§5). `d_p` is known at the primary hit; `d_r`
 is not known until the glossy ray hits something, so the ray records it — see
-§4.3. A glossy ray that escapes to the background never records one, and its
-`d_r` stays at the initialised infinity, which is `k = 1`: the right answer for
-a reflection of the sky.
+§4.3. A glossy ray that escapes to the background records nothing, which reads
+as `k = 1`: the right answer for a reflection of the sky.
 
 `sigma_px` at roughness 0.35 and a PREVIEW frame is ~300 px — a rough metal
 really does reflect an almost featureless average of its surroundings, which is
@@ -254,17 +305,18 @@ per pixel, and a strided approximation of it aliases.
 
 Under `ti.static(glossy == 3)`, and for a sheet that is reflective, **not**
 transmissive (no glass, no pane), has `roughness > _GLOSSY_MIN_ROUGHNESS`, has
-bounces left, and is the first such sheet in this pixel's walk:
+bounces left, and either holds the pixel's claim or takes it (§2.2,
+corrected 2026-10-20):
 
 1. `R = E` (§2.1) instead of `R *= _mirror_share(rough)`, so the `share` term
    that follows keeps `1 - E` for local shading. Both shading modes (0 and 2)
    and the event-build mode (1) take this substitution, so the three walks stay
    identical.
-2. A new branch, ahead of `elif is_pane or split_refl`, spawns **one** pool ray:
-   mirror direction from the un-jittered surface point, `weight = (1,1,1)`,
-   `bounces_left - 1`, and an accumulator row of `r + num_covered` — the
-   glossy half of `pix_accum` (§4.3). No `sec_aa` fan: the taps are what the
-   prefilter replaces.
+2. A new branch, ahead of `elif is_pane or split_refl`, records **one** pool
+   ray, which the walk spawns once it ends: mirror direction from the
+   un-jittered surface point, `weight = (1,1,1)`, `bounces_left - 1`, and an
+   accumulator row of `r + num_covered` — the glossy half of `pix_accum`
+   (§4.3). No `sec_aa` fan: the taps are what the prefilter replaces.
 3. It writes the per-pixel meta into **spare columns of `pix_accum`'s glossy
    row** rather than into a new ndarray. Both kernels involved sit at 72
    parameters, and Taichi's argument ceiling is why the environment map's
@@ -276,7 +328,7 @@ bounces left, and is the first such sheet in this pixel's walk:
    | --- | --- | --- |
    | 0-3 | drain | reflected radiance + glow, premultiplied |
    | 4-6 | drain | leftover throughput (what the background shows through) |
-   | 7 | drain | `min(base_dist + t_hit)` over the ray and its descendants |
+   | 7 | drain | `sum(coverage / (base_dist + t_hit))` over the surfaces the glossy ray itself meets (§3) |
    | 8-10 | resolve, drain (§4.3) | `W = weight * alpha * E`, the factored-out energy |
    | 11 | resolve, drain (§4.3) | `sigma_angle / theta_px`, the full-lobe radius in pixels; `-1 / theta_px` where nothing has claimed the pixel |
    | 12 | resolve, drain (§4.3) | `d_p`, the camera path length to the claiming hit |
@@ -310,16 +362,22 @@ per-use argument loads in the kernel, and Metal allows 31 buffers; the
 The environment map placement rides there for the same reason. `0` means the feature is off. It is
 paired with a `ti.template()` gate so that off compiles the whole thing out.
 
-The one addition to the drain body: at each hit of a glossy ray,
-`ti.atomic_min(pix_accum[accum_pix, 7], base_dist + t_hit)` — the total path
-length from the camera, not the segment. Two reasons it is that and not `t_hit`:
-a descendant's `base_dist + t_hit` is always larger than its parent's, so the
-minimum is exactly the *first* hit of the directly-spawned glossy ray (a
-descendant's own short segment would win a `t_hit` minimum and report a
-reflection as being in contact when it is not); and the composite already knows
-`d_p`, so `d_r = d_tot - d_p` costs nothing there and saves the drain from
-needing `d_p` at all. A glossy ray that never hits anything writes nothing, and
-the host's initialised `+inf` is `k = 1`: a reflection of the sky, fully blurred.
+The one addition to the drain body: at each surface the glossy ray itself
+meets, `ti.atomic_add(pix_accum[accum_pix, 7], cover / (base_dist + t_hit))`,
+with `cover` the ray's remaining throughput (largest channel) times the
+surface's opacity. The distance is the total path length from the camera, not
+the segment. The composite reads `d_tot = 1 / column 7`, so
+`1 - d_p / d_tot` is the coverage-weighted mean of each surface's cone factor,
+a miss counting as 1 (§3). An opaque first hit gives exactly its own `d_tot`,
+as the nearest-hit record this replaced did.
+
+Only the glossy ray itself records, not its descendants. What a covering
+surface reflects or refracts is what that surface shows, already counted at
+its own distance; counting it again would pull the mean nearer. The ray
+itself is the one still on the segment it was spawned on: its `base_dist` is
+the claim's `d_p` (column 12) to the bit, because both are stored from one
+value. Rows `[primaries:]` start at zero, so a glossy ray that never hits
+anything reads as `k = 1`: a reflection of the sky, fully blurred.
 
 The drain can also hold the pixel's event (§2.2, corrected 2026-10-20). The
 resolve writes `-gl_px_per_rad` into column 11 of every pixel it shades. A
@@ -339,7 +397,7 @@ A zero in column 11 means the resolve never ran on this route for the pixel,
 so the drain falls back to the throttle. `gl_take` in
 `wavefront_shade_arena` is the code.
 
-Rows `[primaries:]` are initialised with column 7 at `+inf`.
+Rows `[primaries:]` start zeroed with the rest of `pix_accum`.
 `wf_composite_accum_sparse` is handed the first `primaries` rows as a view, so
 it never sees the glossy half and is otherwise untouched.
 
@@ -364,7 +422,7 @@ overwrites the raw prefilled background this reads):
 * `gloss_scatter` — for each compact row with a glossy branch: write `csum`
   (the same `pix_accum·255 + leftover·bg` arithmetic the composite does), `W`,
   and `sigma_px = clamp(k · sigma_scale)` computed from the glossy row's `d_p`
-  (column 12) and `d_tot` (column 7), into `gl_main[pixel]`; and level 0 of
+  (column 12) and `d_tot` (one over column 7), into `gl_main[pixel]`; and level 0 of
   `gl_pyr[pixel] = (B, 1)` with `B` the glossy row's radiance composited against
   the same background.
 
@@ -422,10 +480,10 @@ rather than the render, but that is a backstop, not the budget.
   is the background, as it is today. The prefilter widens the lobe over what the
   screen has; on a reflector that is small on screen a wide lobe averages mostly
   its own pixels.
-* **One glossy event per pixel** (§2.2). It goes to the first rough opaque
-  reflector on the pixel's transport: the primary hit, or a surface seen in a
-  mirror or through glass. Bounces inside a glossy reflection keep the
-  throttle.
+* **One glossy event per pixel** (§2.2). Among the primary's sheets it goes
+  to the one reflecting the most light. A rough opaque reflector seen in a
+  mirror or through glass claims it only when no primary sheet did. Bounces
+  inside a glossy reflection keep the throttle.
 * **A claim made in the drain is blurred at the primary ray's angular scale.**
   That is exact through a planar mirror, where path length unfolds. Through a
   curved mirror or a refraction it is an approximation.
@@ -440,9 +498,15 @@ rather than the render, but that is a backstop, not the budget.
   refraction transport; the DFG substitution is for the opaque reflective branch,
   where the throttle was the visible error.
 * **Several reflective sheets in one pixel** share one `B`, one `W` and one
-  radius — the first qualifying sheet's. Later sheets in the resolve's walk
-  fall back to the throttle. Rough reflectors met in the drain join the event
-  instead (§2.2, corrected 2026-10-20).
+  radius — the strongest sheet's. The others in the resolve's walk fall back
+  to the throttle, and one that held the claim and lost it keeps a single
+  sharp ray, not a `sec_aa` fan. A band challenging the claim is weighed one
+  sheet at a time, so a band split across many siblings can lose to a smaller
+  one-sheet band. Rough reflectors met in the drain join the event instead
+  (§2.2, corrected 2026-10-20).
+* **The contact distance is a mean.** A reflection that passes a
+  half-transparent surface gets one radius between the surface's and the
+  background's, not a sharp image of the surface over a blurred background.
 * **A box-mip prefilter is not a GGX prefilter.** It is the shape of the
   footprint, not of the lobe. That is the same approximation every real-time
   split-sum implementation makes for the radiance half.
