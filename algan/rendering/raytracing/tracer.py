@@ -142,6 +142,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     wf_finalize_aa,
     wf_finalize_uncovered,
 )
+from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ensure_render_headroom,
@@ -958,6 +959,26 @@ def _append_env_texture(textures, env, intensity, device):
     return textures, (offset, w, h, float(intensity))
 
 
+def _environment_radiance(scene):
+    """The Scene's environment map in the working space: what the renderer samples.
+
+    An 8-bit source -- an image file or an integer tensor -- holds sRGB-encoded
+    color like every other authored color, so the linear working space decodes
+    it here, at the render boundary. Left encoded, it was encoded a second time
+    at the byte write: a grey-128 map showed as a 188 backdrop, and lit and
+    reflected as brightly. A float map is authored radiance and is sampled as
+    given.
+    """
+    env = getattr(scene, "environment_map", None)
+    if (
+        env is None
+        or not getattr(scene, "environment_map_is_srgb", False)
+        or not rt_settings.linear_color_space
+    ):
+        return env
+    return srgb_to_linear(env)
+
+
 def _env_sh_coeffs(env, intensity):
     """Order-1 spherical-harmonics irradiance of an equirect environment map,
     as the linear form ``E(n) / pi = A + Bx*nx + By*ny + Bz*nz`` consumed by
@@ -1292,7 +1313,7 @@ def render_batch_raytraced(
     fragment_shading = rt_settings.fragment_shading
     max_bounces = rt_settings.max_bounces
     tonemap_exposure = rt_settings.tonemap_exposure
-    scene_env_map = getattr(scene, "environment_map", None)
+    scene_env_map = _environment_radiance(scene)
     env_map = scene_env_map
     env_source = env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
     env_meta = getattr(primitives[0], "_rt_env_meta", None)

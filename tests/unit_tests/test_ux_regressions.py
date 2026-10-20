@@ -2432,7 +2432,9 @@ def test_constructor_background_image_uses_the_setter_path(tmp_path):
     Image.new("RGB", (3, 2), "red").save(path)
     scene = algan.Scene(SMOKE_TEST, background=str(path))
     expected = scene.background.clone()
-    assert expected.shape[-3:] == (32, 32, 5)
+    # Kept at its own size, and fitted to the frame when a render reads it.
+    assert expected.shape[-3:] == (2, 3, 5)
+    assert scene._background_fitted_to_frame(expected).shape[-3:] == (32, 32, 5)
     scene.set_background(algan.BLACK, overwrite=False)
     assert torch.equal(scene.background, expected)
     scene.reset()

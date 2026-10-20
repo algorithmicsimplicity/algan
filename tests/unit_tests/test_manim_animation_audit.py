@@ -5,6 +5,7 @@ import pytest
 import torch
 
 import algan
+from algan.errors import InvalidColorError
 from algan.scene_manager import SceneManager
 
 
@@ -387,6 +388,47 @@ def test_surface_fixed_topology_preserves_parent_rotation_and_scale():
         for mob in auto_group
         if isinstance(mob, algan.Surface)
     ] == initial_resolutions
+
+
+@pytest.mark.parametrize(
+    "red",
+    [
+        0xFF0000,
+        (1.0, 0.0, 0.0),
+        [1.0, 0.0, 0.0],
+        "red",
+        "#FF0000",
+        torch.tensor([1.0, 0.0, 0.0]),
+    ],
+    ids=["hex int", "tuple", "list", "css name", "hex string", "rgb tensor"],
+)
+def test_animated_boundary_takes_every_color_spelling(red):
+    """REGRESSION. The colors were read as tensors, so a hex int was one
+    channel: alone it drew a wrong color, and beside any other color it failed
+    the render with "stack expects each tensor to be equal size".
+    """
+    source = algan.Circle(add_to_scene=False).spawn(False)
+    boundary = algan.AnimatedBoundary(
+        source,
+        colors=(red, algan.BLUE),
+        cycle_rate=1,
+        back_and_forth=False,
+        add_to_scene=False,
+    ).spawn(False)
+
+    # A quarter of the way through the first cycle: the first color draws.
+    materialize(0.25)
+    drawn = boundary._growing_paths[0].stroke_color.reshape(-1, 5)[0]
+    torch.testing.assert_close(drawn, algan.Color((1.0, 0.0, 0.0)).reshape(5))
+
+
+def test_animated_boundary_refuses_a_non_color_where_it_is_built():
+    """A color that is not one fails at the call that gave it, not inside the
+    updater when the boundary is first drawn.
+    """
+    source = algan.Circle(add_to_scene=False).spawn(False)
+    with pytest.raises(InvalidColorError, match="not a color"):
+        algan.AnimatedBoundary(source, colors=("not a color",), add_to_scene=False)
 
 
 def test_animated_boundary_tracks_source_and_can_stop():

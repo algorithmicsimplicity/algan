@@ -49,17 +49,17 @@ constants:
 Because they are unit vectors, you compose positions by arithmetic:
 ``UP * 2 + RIGHT * 3`` is two units up and three to the right.
 
-The default camera sits at ``OUT * 7`` looking at the ``ORIGIN``. With the
-default settings that makes the visible area at the origin plane roughly
-**12.4 units wide by 7 units tall** -- so ``x`` runs about ``-6.2`` to ``6.2``
-and ``y`` about ``-3.5`` to ``3.5``:
+The default camera sits at ``OUT * 20`` looking at the ``ORIGIN``, Manim's
+viewpoint. With the default settings that makes the visible area at the origin
+plane **14.2 units wide by 8 units tall**, Manim's frame -- so ``x`` runs about
+``-7.1`` to ``7.1`` and ``y`` from ``-4`` to ``4``:
 
 .. algan:: PositioningExtent
 
     from algan import *
 
-    Dot(color=YELLOW).move_to(RIGHT * 6.2 + UP * 3.4).spawn()
-    Dot(color=YELLOW).move_to(LEFT * 6.2 + DOWN * 3.4).spawn()
+    Dot(color=YELLOW).move_to(RIGHT * 6.9 + UP * 3.8).spawn()
+    Dot(color=YELLOW).move_to(LEFT * 6.9 + DOWN * 3.8).spawn()
     Dot(color=RED).move_to_screen_corner((UP, LEFT)).spawn()
     Dot(color=RED).move_to_screen_corner((DOWN, RIGHT)).spawn()
     Scene.wait()

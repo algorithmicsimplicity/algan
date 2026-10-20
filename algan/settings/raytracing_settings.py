@@ -510,7 +510,21 @@ class RayTracingPreset:
                     f"RayTracingSettings, got {type(source).__name__}"
                 )
             values.update(source.to_dict())
-        values.update(kwargs)
+
+        # A field named here is checked now, as SETTINGS.raytracing.set checks
+        # it, not when the preset is applied: a preset is made in one place and
+        # applied in another, so a bad value used to surface far from the line
+        # that wrote it. A field fixed at import is refused outright -- applying
+        # a preset restores every field it carries, and that restore does not
+        # (and must not) refuse them, so the write would reach the renderer.
+        _resolve()
+        for name, value in kwargs.items():
+            if name not in self._values:
+                _unknown(name)
+            message = _INERT_FIELDS.get(name) or _IMPORT_FROZEN_FIELDS.get(name)
+            if message is not None:
+                raise AlganConfigurationError(message)
+            values[name] = _check_value(name, value, _module(name))
 
         normalized = {}
         for name, value in values.items():

@@ -5,6 +5,9 @@ body, and replay passes a batch of frames, so a body is written against
 tensors. Inside ``Off()``, or before the Mob spawned, nothing is recorded, and
 the body used to get the raw value instead: ``t.reshape(...)`` that worked in
 every animation raised ``AttributeError`` on a plain number there.
+
+A recorded call is kept by parameter name, so its positional arguments have
+to be named, and any past the named parameters handed back by position.
 """
 
 from __future__ import annotations
@@ -88,3 +91,45 @@ def test_a_function_without_animated_arguments_is_called_as_given():
         tag(square, 2.5)
 
     assert seen == [3, 2.5]
+
+
+def _call_where(where, function, *args, **kwargs):
+    square = Square()
+    if where != "unspawned":
+        square.spawn()
+    if where == "off":
+        with Off():
+            return function(square, *args, **kwargs)
+    return function(square, *args, **kwargs)
+
+
+@pytest.mark.parametrize("where", ["recorded", "off", "unspawned"])
+def test_arguments_past_the_named_ones_reach_the_body_in_order(where):
+    """REGRESSION. A recorded call named its positional arguments by counting
+    through every parameter, so the ones meant for ``*steps`` came back as
+    keywords -- ``steps=2.0`` and ``scale=3.0``, clobbering the real
+    ``scale`` -- and the body raised ``TypeError``.
+    """
+    seen = []
+
+    @animated_function(animated_args={"t": 0})
+    def slide(mob, t, *steps, scale=1):
+        seen.append((steps, scale))
+        mob.location = mob.location + RIGHT * t * sum(steps) * scale
+
+    _call_where(where, slide, 1, 2.0, 3.0, scale=2)
+    assert seen[-1] == ((2.0, 3.0), 2)
+
+
+@pytest.mark.parametrize("where", ["recorded", "off", "unspawned"])
+def test_one_positional_argument_too_many_raises_as_a_direct_call_does(where):
+    """REGRESSION. Recorded, it ran the count past the parameter list and
+    raised ``IndexError``; unrecorded, Python raises ``TypeError``.
+    """
+
+    @animated_function(animated_args={"amount": 0})
+    def nudge(mob, amount):
+        mob.location = mob.location + RIGHT * amount
+
+    with pytest.raises(TypeError, match="takes 2 positional arguments but 3 were"):
+        _call_where(where, nudge, 1, 2)

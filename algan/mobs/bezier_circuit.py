@@ -933,6 +933,18 @@ class BezierCircuitCubic(Mob):
         # of points fail with AttributeError instead.
         control_points = cast_to_tensor(control_points)
         control_points = control_points.reshape(-1, control_points.shape[-1])
+        if (
+            control_points.shape[-1] != 3
+            or not control_points.shape[0]
+            or control_points.shape[0] % 4
+        ):
+            # Otherwise the circuit builds, and the first render fails reshaping
+            # the points into segments ("shape '[1, 1, 4, 3]' is invalid").
+            raise AlganConfigurationError(
+                f"{type(self).__name__} needs its control points as 3-D points "
+                f"in groups of four, P0, P1, P2, P3 per cubic segment; got "
+                f"{control_points.shape[0]} of size {control_points.shape[-1]}"
+            )
 
         # A circuit's ``location`` is DERIVED below, from the control points --
         # it is the centroid of the region they enclose, not a free parameter --
@@ -1018,7 +1030,9 @@ class BezierCircuitCubic(Mob):
             self.num_texture_points = texture_triangle_vertices.shape[-2]
 
         self.stroke_width = cast_to_tensor(stroke_width)
-        stroke_color = cast_to_tensor(stroke_color)
+        # Parsed as ``color`` is above: a hex int cast as it stands is one
+        # channel of 16711680, and a string cannot have its alpha set below.
+        stroke_color = cast_to_tensor(to_color(stroke_color))
         if self.empty:
             stroke_color = stroke_color.as_subclass(Color).set_opacity(0)
 
@@ -1216,15 +1230,19 @@ class BezierCircuitCubic(Mob):
 
         return restore
 
-    def _set_texture_grid_resolution(self, width, height):
+    def _set_texture_grid_resolution(self, width, height, resample=None):
         """Internal: rebuild the texture grid at ``width x height`` per circuit.
 
         The grid is laid out exactly as the constructor lays it out, so the
         renderer's texture lookup is unchanged: ``width`` samples along the first
         basis vector, each holding ``height`` samples along the second. Existing
-        per-texel values are resampled onto the new grid. Row counts change, so
+        per-texel values are resampled onto the new grid, by
+        ``resample(value, old_size, new_size)`` when it is given and bilinearly
+        between the texels' positions otherwise. Row counts change, so
         callers must be prepared for the history split this performs.
         """
+        if resample is None:
+            resample = _resample_texture_grid
         old_size = (self.grid_width, self.grid_height)
         old_points = self.num_texture_points
         objects = self.location.shape[-2]
@@ -1269,7 +1287,7 @@ class BezierCircuitCubic(Mob):
                 if attr == "location" or value.shape[-2] != objects * old_points:
                     continue
                 texture_mob._setattr_and_rebatch_without_record(
-                    attr, _resample_texture_grid(value, old_size, (width, height))
+                    attr, resample(value, old_size, (width, height))
                 )
 
             if texture_mob.parent_batch_sizes is not None:

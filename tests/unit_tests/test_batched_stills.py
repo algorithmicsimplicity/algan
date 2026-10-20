@@ -156,6 +156,24 @@ def test_a_nan_timestamp_is_not_called_an_offset_backwards(monkeypatch, tmp_path
     assert not calls
 
 
+@pytest.mark.parametrize(
+    "at",
+    [torch.tensor(9.0), np.array(9.0), np.float32(9.0)],
+    ids=["0-d tensor", "0-d array", "numpy scalar"],
+)
+def test_a_scalar_tensor_or_array_is_one_timestamp(monkeypatch, tmp_path, at):
+    """REGRESSION. Anything with a ``__len__`` was walked as a sequence of
+    timestamps, and a 0-d tensor or array has one that raises: "iteration over
+    a 0-d tensor".
+    """
+    calls, _ = _frame_spy(monkeypatch)
+    with Scene(video_settings=STILLS) as scene:
+        result = scene.save_frame(tmp_path / "shot", at=at)
+    assert [call[0] for call in calls] == [(90,)]
+    assert result.output_path.name == "shot.png"
+    assert _pixel(result) == 90
+
+
 @pytest.mark.fast
 def test_project_authors_all_checkpoints_before_one_batched_render(
     monkeypatch, tmp_path

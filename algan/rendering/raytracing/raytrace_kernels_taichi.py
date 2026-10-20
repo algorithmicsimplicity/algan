@@ -2364,7 +2364,16 @@ def agx_default_contrast_approx(x: ti.f32) -> ti.f32:
 
 
 @ti.func
-def agx_tonemap(color: ti.math.vec3) -> ti.math.vec3:
+def agx_tonemap(color: ti.math.vec3, linearize: ti.template()) -> ti.math.vec3:
+    """AgX, as three.js and Filament ship it.
+
+    The sigmoid's output is display-encoded (roughly a 2.2 power). ``linearize``
+    is three.js's "Linearize" step, ``pow(max(0, c), 2.2)``, and is for a
+    caller that applies the sRGB OETF afterwards -- without it the curve's
+    already-encoded output is encoded a second time and every value washes out
+    (linear mid-grey 0.18 landed on byte 187, not 128). A caller that writes
+    the result as bytes directly, the display-referred space, passes 0.
+    """
     r_rec2020 = 0.627409 * color[0] + 0.329282 * color[1] + 0.043309 * color[2]
     g_rec2020 = 0.069055 * color[0] + 0.919540 * color[1] + 0.011405 * color[2]
     b_rec2020 = 0.016390 * color[0] + 0.088013 * color[1] + 0.895597 * color[2]
@@ -2388,6 +2397,11 @@ def agx_tonemap(color: ti.math.vec3) -> ti.math.vec3:
     r_out = 1.1271005818144368 * r_curve - 0.11060664309660323 * g_curve - 0.016493938717834573 * b_curve
     g_out = -0.1413297634984383 * r_curve + 1.157823702216272 * g_curve - 0.016493938717834257 * b_curve
     b_out = -0.14132976349843826 * r_curve - 0.11060664309660294 * g_curve + 1.2519364065950405 * b_curve
+
+    if ti.static(linearize):
+        r_out = ti.pow(ti.max(r_out, 0.0), 2.2)
+        g_out = ti.pow(ti.max(g_out, 0.0), 2.2)
+        b_out = ti.pow(ti.max(b_out, 0.0), 2.2)
     
     # Linear Rec.2020 -> linear Rec.709. Both spaces share the D65 white point,
     # so this must map white to white and every row must therefore sum to 1.
@@ -2441,7 +2455,9 @@ def finalize_pixel_color(csum: ti.math.vec4, inv_samples: ti.f32, tonemapping: t
     if ti.static(tonemapping == 1):
         color_hdr = pbr_neutral_tonemap(color_hdr * (tonemap_exposure / 255.0)) * 255.0
     elif ti.static(tonemapping == 2):
-        color_hdr = agx_tonemap(color_hdr * (tonemap_exposure / 255.0)) * 255.0
+        # The in-composite route writes these bytes directly -- no OETF
+        # follows -- so the curve's display-encoded output is what it wants.
+        color_hdr = agx_tonemap(color_hdr * (tonemap_exposure / 255.0), 0) * 255.0
     elif ti.static(tonemapping == 3):
         color_hdr = ti.math.max(color_hdr, 0.0)
     else:

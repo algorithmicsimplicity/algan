@@ -112,7 +112,10 @@ class MobMovementMixin:
             This Mob, so calls can be chained.
         """
         start, end = [
-            _.get_center() if hasattr(_, "get_center") else _ for _ in [start, end]
+            value.get_center()
+            if hasattr(value, "get_center")
+            else cast_to_direction(name, value)
+            for name, value in (("start", start), ("end", end))
         ]
         return self.move_to((start + end) / 2)
 

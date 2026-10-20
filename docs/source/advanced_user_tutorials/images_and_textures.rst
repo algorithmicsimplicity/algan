@@ -15,9 +15,12 @@ There are four ways to use images in Algan:
 
 .. note::
 
-    The Three.js material classes accept Three.js's image slots (``map``,
-    ``normalMap``, ``roughnessMap``, ...) for API parity but **do not sample them**.
-    Texturing goes through :class:`~algan.mobs.surfaces.surface.Surface`, as described below.
+    The Three.js material classes also take image slots, under ``snake_case``
+    names (``map``, ``normal_map``, ``roughness_map``, ...). The four the renderer
+    samples need a Mob with per-vertex UVs, such as a
+    :class:`~algan.mobs.surfaces.surface.Surface`, and the rest are accepted and
+    ignored; :doc:`shaders_and_materials` says which is which.
+    Texturing a Surface directly is described below.
 
 Showing an Image
 ================

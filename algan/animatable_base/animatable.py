@@ -53,6 +53,8 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     RowRanges,
     TimelineEvent,
     TimelineManager,
+    _arguments_by_name,
+    _call_recorded,
     _opt_disabled,
 )
 from algan.constants.color import BLACK, Color
@@ -119,8 +121,7 @@ def _check_updater_signature(update_function, extra_positional):
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     """Combine args and kwargs and record the call on this mob's timeline."""
     params = inspect.signature(func).parameters
-    arg_names = list(params.keys())[1:]
-    kwargs.update({arg_names[i]: args[i] for i in range(len(args))})
+    kwargs.update(_arguments_by_name(func, args))
     default_kwargs = {
         param.name: param.default
         for param in params.values()
@@ -338,7 +339,7 @@ def animated_function(
                         with AnimationContext(
                             record_funcs=False, animation_manager=self.animation_manager
                         ):
-                            out = func(self, **kwargs)
+                            out = _call_recorded(func, self, kwargs)
                     finally:
                         timeline.set_active_edit_event(previous_event)
                     self.animation_manager.context.increment_times()

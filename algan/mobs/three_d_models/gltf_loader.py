@@ -348,9 +348,21 @@ _TYPE_COMPONENTS = {
 }
 
 
-def _accessor_array(gltf, accessor_idx, blob):
+def _buffer_blobs(gltf):
+    """The bytes of every glTF buffer, by index. A glB's binary chunk is the
+    buffer without a URI; any other is read from its URI (a file beside the
+    model, or base64 data).
+    """
+    return [
+        gltf.get_data_from_buffer_uri(buffer.uri) if buffer.uri else gltf.binary_blob()
+        for buffer in gltf.buffers or []
+    ]
+
+
+def _accessor_array(gltf, accessor_idx, blobs):
     """Read glTF accessor ``accessor_idx`` into a torch tensor ``[count, C]``
-    (or ``[count]`` for SCALAR).
+    (or ``[count]`` for SCALAR), from the buffer its view names in ``blobs``
+    (:func:`_buffer_blobs`).
     """
     acc = gltf.accessors[accessor_idx]
     view = gltf.bufferViews[acc.bufferView]
@@ -358,6 +370,7 @@ def _accessor_array(gltf, accessor_idx, blob):
     ncomp = _TYPE_COMPONENTS[acc.type]
     start = (view.byteOffset or 0) + (acc.byteOffset or 0)
     count = acc.count * ncomp
+    blob = blobs[view.buffer or 0]
     arr = np.frombuffer(blob, dtype=dtype, count=count, offset=start)
     arr = np.array(arr, copy=True)
     if ncomp > 1:
@@ -382,7 +395,7 @@ def _node_local_transform(node):
     return _anim.compose_trs(translation, rotation, scale)
 
 
-def _map_gltf_meshes(gltf, meshes, blob):
+def _map_gltf_meshes(gltf, meshes, blobs):
     """Map stable glTF mesh IDs to every imported primitive of that mesh."""
     mapping = {index: [] for index in range(len(gltf.meshes or []))}
     for index, mesh in enumerate(meshes):
@@ -396,13 +409,13 @@ def _map_gltf_meshes(gltf, meshes, blob):
     return mapping
 
 
-def _build_hierarchy(gltf, meshes, blob):
+def _build_hierarchy(gltf, meshes, blobs):
     """Recover the real node hierarchy from the glTF, mapping mesh-carrying
     nodes onto built ``MeshData`` indices. Returns an ordered ``list[NodeData]``
     with ``parent < child`` (so a single forward compose pass works), or
     ``None`` if the mesh mapping is ambiguous.
     """
-    mesh_map = _map_gltf_meshes(gltf, meshes, blob)
+    mesh_map = _map_gltf_meshes(gltf, meshes, blobs)
     if mesh_map is None:
         return None
     gnodes = gltf.nodes or []
@@ -445,7 +458,7 @@ def _build_hierarchy(gltf, meshes, blob):
     return out
 
 
-def _parse_animations(gltf, blob):
+def _parse_animations(gltf, blobs):
     """Parse glTF animation clips into ``list[AnimationData]`` keyed by node
     name (matching :class:`NodeData.name`).
     """
@@ -472,8 +485,8 @@ def _parse_animations(gltf, blob):
                     f"interpolation for {target.path}; Model3D currently supports "
                     "LINEAR channels. Export a baked LINEAR clip instead."
                 )
-            times = _accessor_array(gltf, sampler.input, blob).float().reshape(-1)
-            values = _accessor_array(gltf, sampler.output, blob).float()
+            times = _accessor_array(gltf, sampler.input, blobs).float().reshape(-1)
+            values = _accessor_array(gltf, sampler.output, blobs).float()
             runtime = max(runtime, float(times[-1]) if times.numel() else 0.0)
             na = per_node.setdefault(
                 target.node, NodeAnimation(node_name=node_name(target.node))
@@ -543,12 +556,9 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         gltf = _read_gltf(GLTF2, file_path)
         if not gltf.animations:
             return static_nodes, []
-        blob = gltf.binary_blob()
-        if blob is None and gltf.buffers:
-            # .gltf with an external/base64 buffer.
-            blob = gltf.get_data_from_buffer_uri(gltf.buffers[0].uri)
-        nodes = _build_hierarchy(gltf, meshes, blob)
-        animations = _parse_animations(gltf, blob)
+        blobs = _buffer_blobs(gltf)
+        nodes = _build_hierarchy(gltf, meshes, blobs)
+        animations = _parse_animations(gltf, blobs)
         if nodes is None:
             raise UnsupportedFeatureError(
                 "Cannot bind glTF animation: imported primitives do not match "

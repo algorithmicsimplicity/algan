@@ -23,8 +23,10 @@ as fragment shaders and compose with custom ones, e.g.
 with a cosine wave and then lights the result with Blinn-Phong.
 """
 
+from algan.rendering.raytracing.raytrace_kernels_taichi import min_alpha
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
+    _reflect_frame,
     _stage_lambert,
     _stage_manim,
     _stage_phong,
@@ -33,6 +35,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _stage_unlit,
     make_pipeline_func,
 )
+from algan.rendering.raytracing.transport_taichi import _offset_ray_origin
 from algan.taichi_compat import ti
 
 
@@ -410,20 +413,53 @@ def _scatter_forced_mirror(
     throughput along the mirror direction (no transmission). Branch weights
     are vec3 per-channel throughput multipliers (color transport); this
     scatter reflects achromatically, so all three channels match.
+
+    The bounce is set up the way the built-in scatter sets up its own:
+    :func:`~algan.rendering.raytracing.shading_taichi._reflect_frame` picks the
+    mirror direction and the side to leave from (so a smooth-shaded silhouette
+    cannot launch its reflection into the solid), and
+    :func:`~algan.rendering.raytracing.transport_taichi._offset_ray_origin`
+    lifts the origin by a scale-aware epsilon rather than a fixed distance.
+
+    Coverage is honoured: the ``1 - alpha`` that misses the surface continues
+    through it. The scatter contract uses ``pass_w`` only when ``refl_w`` is
+    zero, so where a partly covering surface has both continuations the
+    reflection takes the split slot (``trans_*``) and the pass-through stays
+    the primary ray -- what the built-in scatter does for a semi-transparent
+    reflector. Without the split pool (``refraction == 0``) only the heavier
+    of the two is traced.
     """
-    n = n_interp.normalized()
-    if n.dot(rd) > 0.0:
-        n = -n
-    refl_dir = (rd - 2.0 * rd.dot(n) * n).normalized()
-    refl_orig = hit_point + n * 1e-3  # 10 * min_hit_distance
+    refl_dir, offset_n = _reflect_frame(rd, n_interp.normalized(), face_n)
+    refl_orig = _offset_ray_origin(hit_point, offset_n)
     contrib = (alpha * 0.15) * shaded
     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
     rw = 0.85 * alpha
     if bounces_left <= 0:  # out of bounces: absorb instead of reflecting
         rw = 0.0
+    through = 1.0 - alpha  # the share that misses the surface
     refl_w = ti.math.vec3(rw, rw, rw)
-    pass_w = ti.math.vec3(1.0 - alpha, 1.0 - alpha, 1.0 - alpha)
-    return (contrib, pass_w, refl_orig, refl_dir, refl_w, zero3, zero3, zero3)
+    pass_w = ti.math.vec3(through, through, through)
+    trans_orig = zero3
+    trans_dir = zero3
+    trans_w = zero3
+    if through > min_alpha:
+        if ti.static(refraction != 0):
+            trans_orig = refl_orig
+            trans_dir = refl_dir
+            trans_w = refl_w
+            refl_w = zero3
+        elif through > rw:
+            refl_w = zero3
+    return (
+        contrib,
+        pass_w,
+        refl_orig,
+        refl_dir,
+        refl_w,
+        trans_orig,
+        trans_dir,
+        trans_w,
+    )
 
 
 #: Example custom scatter: forces mirror bouncing regardless of the mob's

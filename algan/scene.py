@@ -38,8 +38,6 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import torch.nn.functional as F
-
 from algan.animation_timeline.animation_contexts import (
     AnimationManager,
     Seq,
@@ -326,7 +324,7 @@ class Scene(RenderLoopMixin):
     def __init__(
         self,
         video_settings: VideoSettings | None = None,
-        background: Color | str | torch.Tensor | Callable | None = None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None = None,
         scene_initializer=None,
         *,
         premultiplied_over: bool = False,
@@ -390,6 +388,7 @@ class Scene(RenderLoopMixin):
         self.animation_off = False
         self.context_max_time = 0
         self.environment_map = None
+        self.environment_map_is_srgb = False
         self.environment_intensity = 1.0
         self.environment_ambient = True
         self.priority = 0
@@ -743,18 +742,20 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         source
-            Path to an image file, or an image tensor of shape
-            ``[height, width, >=3]``. ``None`` removes the current map. A
-            relative path that is not found from the working directory is
-            looked up beside the running script.
+            Path to an image file, as a ``str`` or :class:`~pathlib.Path`, or an
+            image tensor of shape ``[height, width, >=3]``. ``None`` removes the
+            current map. A relative path is looked for in the working directory
+            and then beside the running script, as every asset path is.
 
-            An image file is scaled to ``[0, 1]`` from its bit depth (0-255, or
-            0-65535 for 16-bit greyscale), and an integer-dtype tensor is
-            divided by 255. A **float tensor is taken as authored**, so
-            values above 1 are kept: that is what makes a light source in the
-            map brighter than white, which is the whole point of an HDR
-            environment. Author in whatever units you like and use ``intensity``
-            to set the overall level.
+            An image file -- scaled to ``[0, 1]`` from its bit depth (0-255, or
+            0-65535 for 16-bit greyscale) -- and an integer-dtype tensor, divided
+            by 255, hold sRGB-encoded color like every other authored color, and
+            are decoded to linear light when rendered, so the backdrop shows the
+            image's own colors. A **float tensor is taken as authored**
+            radiance and is not decoded, so values above 1 are kept: that is
+            what makes a light source in the map brighter than white, which is
+            the whole point of an HDR environment. Author in whatever units you
+            like and use ``intensity`` to set the overall level.
         intensity
             Brightness multiplier for the map's contribution. Defaults to ``1.0``.
         ambient
@@ -775,8 +776,10 @@ class Scene(RenderLoopMixin):
         """
         if source is None:
             self.environment_map = None
+            self.environment_map_is_srgb = False
             return self
         env = source
+        from_file = False
         if isinstance(env, (str, os.PathLike)):
             import numpy as np
             from PIL import Image, UnidentifiedImageError
@@ -792,6 +795,8 @@ class Scene(RenderLoopMixin):
                     f"Could not read environment map image: {os.fspath(env)}"
                 ) from exc
             env = torch.from_numpy(img)
+            # Already in [0, 1], and sRGB-encoded as an 8-bit source is.
+            from_file = True
         if not torch.is_tensor(env):
             env = torch.tensor(env)
         # Only an integer-dtype source is 0-255. A float tensor is an authored
@@ -808,39 +813,64 @@ class Scene(RenderLoopMixin):
         if byte_ranged:
             env = env / 255.0
         self.environment_map = env[..., :3].contiguous()
+        # Bytes are sRGB-encoded, like every other authored color, and are
+        # decoded at the render boundary (``tracer._environment_radiance``)
+        # rather than here, so the working space in force at render time
+        # decides, as it does for a Mob's colors.
+        self.environment_map_is_srgb = byte_ranged or from_file
         self.environment_intensity = float(intensity)
         self.environment_ambient = bool(ambient)
         return self
 
-    def length_to_pixels(self, length: float) -> float:
+    @active_scene_method
+    def length_to_pixels(self, length: float, at: torch.Tensor = ORIGIN) -> float:
         """Convert a world-space length to a length in rendered pixels.
+
+        Measured on the plane facing the camera through ``at``. Under a
+        perspective camera a length further away covers fewer pixels, so the
+        answer holds at that depth; the default camera sees 8 world units of
+        height at the origin, as Manim's frame does.
 
         Parameters
         ----------
         length
             Length in world units.
+        at
+            Point whose depth sets the scale, shape ``(3,)``. Defaults to
+            ``ORIGIN``.
 
         Returns
         -------
         float
             The equivalent number of pixels at the Scene's current resolution.
         """
-        return length * 0.5 * self.num_pixels_screen_height
+        return length * self.num_pixels_screen_height / self._visible_height_at(at)
 
-    def pixels_to_length(self, length: float) -> float:
+    def _visible_height_at(self, at):
+        """World height the camera sees on the plane through ``at``."""
+        return float(self.camera.visible_size_at(at).reshape(-1)[1])
+
+    @active_scene_method
+    def pixels_to_length(self, length: float, at: torch.Tensor = ORIGIN) -> float:
         """Convert a length in rendered pixels to a world-space length.
+
+        The inverse of :meth:`~.Scene.length_to_pixels`, measured on the same
+        plane.
 
         Parameters
         ----------
         length
             Length in pixels.
+        at
+            Point whose depth sets the scale, shape ``(3,)``. Defaults to
+            ``ORIGIN``.
 
         Returns
         -------
         float
             The equivalent length in world units at the Scene's current resolution.
         """
-        return length / (0.5 * self.num_pixels_screen_height)
+        return length * self._visible_height_at(at) / self.num_pixels_screen_height
 
     def _set_current_time(self, t: float):
         """Internal: move the authoring cursor to an absolute time.
@@ -909,6 +939,7 @@ class Scene(RenderLoopMixin):
         self.current_time = self.max_time
         return self
 
+    @active_scene_method
     def add_actor(self, actor):
         """Register a Mob with this Scene so it takes part in rendering.
 
@@ -934,6 +965,7 @@ class Scene(RenderLoopMixin):
             self.actors.append(actor)
         return self
 
+    @active_scene_method
     def add_effect(self, effect):
         """Register an audio effect with this Scene.
 
@@ -962,6 +994,7 @@ class Scene(RenderLoopMixin):
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
         return
 
+    @active_scene_method
     def despawn_mobs(
         self,
         retain_history: bool = False,
@@ -1018,6 +1051,7 @@ class Scene(RenderLoopMixin):
                 if actor.is_spawned():
                     actor.despawn(**kwargs)
 
+    @active_scene_method
     def save_audio(
         self,
         file_path: str | Path,
@@ -1034,7 +1068,9 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         file_path
-            Where to write the audio.
+            Destination using the same path rules as :meth:`save_video`: a bare
+            filename goes in the output directory, a missing extension becomes
+            ``.wav``, and missing directories are made.
         sample_rate
             Sample rate in Hz. Defaults to ``44100``.
         codec
@@ -1044,11 +1080,29 @@ class Scene(RenderLoopMixin):
 
         Returns
         -------
-        str or pathlib.Path or None
-            The path written, or ``None`` if the Scene has no audio effects.
+        pathlib.Path or None
+            The absolute path written, or ``None`` if the Scene has no audio
+            effects.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If FFmpeg wrote no file, as it does for an extension that names no
+            audio format it can write with ``codec``.
         """
+        # Asking for the audio on its own is asking for output, as
+        # save_subtitles is: without this a script ending in save_audio was
+        # told at exit that it "finished without rendering anything".
+        _note_render_requested()
         if len(self.effects) == 0:
             return None
+        from algan.utils.algan_utils import _resolve_output_destination
+
+        # The rules every other output follows. Written as given, a bare name
+        # landed in the working directory rather than beside the video, and a
+        # missing directory or extension wrote nothing at all -- FFmpeg failed
+        # where nobody looked, and the path came back as if it had worked.
+        destination = _resolve_output_destination(file_path, ".wav")
 
         clips_to_compose = []
         start_time = self.scene_times[-1][0] / self.video_settings.frames_per_second
@@ -1073,13 +1127,21 @@ class Scene(RenderLoopMixin):
         # The same samples either way (write_composite_audio says why it is
         # faster); ALGAN_OPT_DISABLE=audiomix writes through moviepy for A/B.
         if _opt_disabled("audiomix") or not write_composite_audio(
-            audio_clip, str(file_path), fps=sample_rate, nbytes=nbytes, codec=codec
+            audio_clip, str(destination), fps=sample_rate, nbytes=nbytes, codec=codec
         ):
             audio_clip.write_audiofile(
-                file_path, fps=sample_rate, codec=codec, nbytes=nbytes
+                str(destination), fps=sample_rate, codec=codec, nbytes=nbytes
             )
         audio_clip.close()
-        return file_path
+        # FFmpeg's exit status goes unread by the writer, so a failure shows
+        # only as a missing file.
+        if not destination.exists():
+            raise AlganConfigurationError(
+                f"FFmpeg wrote no audio to {destination}. Check that "
+                f"{destination.suffix!r} is an audio format it can write with "
+                f"codec {codec!r}, such as '.wav' for the default codec."
+            )
+        return destination
 
     @active_scene_method
     def add_subcaption(
@@ -1244,6 +1306,7 @@ class Scene(RenderLoopMixin):
             destination, _scene_cues(self, options), subtitle_format, overwrite
         )
 
+    @active_scene_method
     def reset(self, rebuild_timeline: bool = True):
         """Empty the Scene completely and start over.
 
@@ -1293,6 +1356,7 @@ class Scene(RenderLoopMixin):
             fill_value=1e12,
         )
         self.environment_map = None
+        self.environment_map_is_srgb = False
         self.environment_intensity = 1.0
         self.environment_ambient = True
         self.animation_off = False
@@ -1324,36 +1388,33 @@ class Scene(RenderLoopMixin):
             self.scene_initializer(self)
         return self
 
-    def _background_image_frame(self, path, not_a_color):
+    def _background_image_frame(self, path, not_a_color=None):
         """Load ``path`` as a full-frame background image.
 
         Reached when a background string did not parse as a color, so a
         missing file has to say that the string was neither -- otherwise the
-        two mistakes are indistinguishable. The check resolves the path the
-        way ``get_image`` will, so an image beside the running script counts.
+        two mistakes are indistinguishable. (``not_a_color`` is None for a
+        :class:`~pathlib.Path`, which can only have been meant as a file.)
+
+        The image keeps its own resolution: a render fits it to the frame it
+        makes (``RenderLoopMixin._background_fitted_to_frame``), since a
+        one-off preset, the viewer or a camera view's capture can each render
+        at a size other than this Scene's settings. Baked to the frame here, it
+        failed every such render with "background resolution does not match
+        render output".
         """
-        if not Path(resolve_asset_path(path)).exists():
+        resolved = resolve_asset_path(path)
+        if not Path(resolved).exists():
+            if not_a_color is None:
+                raise AlganConfigurationError(
+                    f"background image {os.fspath(path)!r} does not exist."
+                )
             raise _neither_color_nor_image(path, not_a_color)
-        a = self.video_settings.supersampling
-        # get_image returns [height, width, channels]; interpolate wants
-        # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
-        # the image's rows and columns instead, rendering it transposed.)
-        image = get_image(path).permute(2, 0, 1).unsqueeze(0)
-        image = (
-            F.interpolate(
-                image,
-                [_ * a for _ in tuple(self.frame_size)],
-                mode="bilinear",
-                antialias="bilinear",
-            )
-            .squeeze(0)
-            .permute(1, 2, 0)
-        )
         # Frame buffers are bottom-up (post_process_frames flips them on the
         # way out, matching the tracer's py = height-1-row), so the background
         # rows have to be stored bottom-up too -- as the procedural background
         # path already produces them.
-        return image.flip(0).unsqueeze(0)
+        return get_image(resolved).flip(0).unsqueeze(0)
 
     @active_scene_method
     def set_video_settings(self, video_settings, _explicit: bool = True):
@@ -1472,6 +1533,7 @@ class Scene(RenderLoopMixin):
         self.premultiplied_over = enabled
         return self
 
+    @active_scene_method
     def background_is_transparent(self) -> bool:
         """Whether the Scene's background has any transparency.
 
@@ -1505,6 +1567,7 @@ class Scene(RenderLoopMixin):
         """
         return "rgba" if self.background_is_transparent() else "rgb"
 
+    @active_scene_method
     def show_frame(self, at: float | None = None):
         """Render one frame and display it, for interactive work.
 
@@ -1530,6 +1593,7 @@ class Scene(RenderLoopMixin):
         """
         from algan.utils.plotting_utils import plot_tensor
 
+        _note_render_requested()
         if at is None:
             at = (
                 self.animation_manager.context.current_time
@@ -1547,7 +1611,10 @@ class Scene(RenderLoopMixin):
                 frame = frame.float() / 255
                 frames.append(frame.squeeze(0).permute(-1, 0, 1))
         for frame in frames:
-            plot_tensor(frame)
+            # The frame is already in [0, 1]. plot_tensor's default stretches
+            # each image to its own min and max, which shifted every color and
+            # turned a frame of one flat color into 0 / 0.
+            plot_tensor(frame, norm=False)
 
         return frames
 
@@ -1618,7 +1685,7 @@ class Scene(RenderLoopMixin):
         at: float | Sequence[float] | None = None,
         *,
         overwrite: bool = True,
-        background: Color | str | torch.Tensor | Callable | None = None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None = None,
         post_processes=None,
         passes: str | Sequence[str] | None = None,
     ) -> RenderResult | list[RenderResult]:
@@ -1880,7 +1947,7 @@ class Scene(RenderLoopMixin):
     @active_scene_method
     def set_background(
         self,
-        background: Color | str | torch.Tensor | Callable | None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None,
         overwrite: bool = True,
     ) -> Scene:
         """Set what the Scene is drawn against.
@@ -1894,11 +1961,19 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         background
-            A color -- a :class:`~.Color` such as ``BLUE``, a name or hex string,
-            a hex int, or an ``(r, g, b)`` tuple of floats in ``[0, 1]`` -- a path
-            to an image (scaled to the frame), or a procedural callable
-            ``(x, y, time) -> color``. A color with alpha below 1 makes the
-            output transparent. ``None`` leaves the background unchanged.
+            A color, a path to an image, or a procedural callable
+            ``(x, y, time) -> color``. The color takes any spelling a Mob's color
+            does: a :class:`~.Color`, a hex string or int, a CSS name, or an RGB
+            or RGBA sequence of floats in ``[0, 1]``. A color with alpha below 1
+            makes the output transparent. ``None`` leaves the background
+            unchanged.
+
+            The path is a ``str`` or a :class:`~pathlib.Path`; a relative one is
+            looked for in the working directory and then beside the running script.
+            The image is scaled to fill the frame of each render, whatever its
+            resolution: the Scene's own, a preset passed to
+            :meth:`~.Scene.save_video` or :meth:`~.Scene.save_frame`, or the
+            viewer's.
 
             The callable is evaluated on the **render device** and receives
             broadcastable grids, not scalars: ``x`` is ``[1, width, 1]`` and ``y``
@@ -1948,8 +2023,11 @@ class Scene(RenderLoopMixin):
         if (background is None) or (self.background_is_set and not overwrite):
             return self
         if isinstance(background, os.PathLike):
-            background = os.fspath(background)
-        if isinstance(background, str):
+            # Only a str was read as a file: a Path was stored as the
+            # background itself and failed the render with "'PosixPath'
+            # object is not subscriptable".
+            background = self._background_image_frame(background)
+        elif isinstance(background, str):
             # A string is a color first and an image path second. Read as a
             # path unconditionally, ``set_background("blue")`` answered
             # ``No such file or directory: 'blue'`` -- blaming the filesystem
@@ -1998,7 +2076,7 @@ class Scene(RenderLoopMixin):
         *,
         overwrite: bool = True,
         reset: bool = False,
-        background: Color | str | torch.Tensor | Callable | None = None,
+        background: Color | str | os.PathLike | torch.Tensor | Callable | None = None,
         animate_fade_out: bool | None = None,
         post_processes=None,
         codec: str | None = None,
