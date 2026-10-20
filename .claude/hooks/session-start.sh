@@ -80,3 +80,32 @@ uv sync --locked --all-extras --dev
 # which the default Trusted network policy blocks. See AGENTS.md if you want to
 # allowlist it.
 log "ready: $(uv run python -c 'import algan, torch; print("torch", torch.__version__, "| cuda", torch.cuda.is_available())' 2>/dev/null | tail -1)"
+
+# ---------------------------------------------------------------------------
+# Warm the fast suite's caches in the background
+# ---------------------------------------------------------------------------
+# A fresh container has no kernel cache, so the first `pytest --fast` compiles
+# ~40 render-kernel specializations one after another: measured on a 4-vCPU
+# session VM, 240 s cold against 65 s warm. None of that depends on the change
+# under review, so it is done here, while the session reads code, by running
+# the fast suite once against a snapshot of HEAD. A snapshot, because a run in
+# the checkout itself would write the same output files as the agent's own run
+# if both overlapped. The snapshot imports this checkout's `algan` (the venv's
+# editable install), so the kernels it caches are the ones the agent's run
+# looks up.
+#
+# Only when the kernel cache does not exist yet, so a resumed session does not
+# pay twice; at low priority and detached, so the session does not wait for
+# it. An agent run that starts before it finishes is no worse off than without
+# it: it compiles whatever is not cached yet.
+KERNEL_CACHE="${ALGAN_CACHE_DIR:-$HOME/.algan/cache}"
+WARM_LOG=/tmp/algan-fast-suite-warmup.log
+if [ ! -d "$KERNEL_CACHE/quadrants" ] && [ -x .venv/bin/pytest ]; then
+  snapshot=$(mktemp -d /tmp/algan-warmup.XXXXXX)
+  git archive HEAD | tar -x -C "$snapshot"
+  log "warming the fast suite's kernel cache in the background (log: $WARM_LOG)"
+  setsid nohup nice -n 10 bash -c '
+    cd "$1" && "$2/.venv/bin/pytest" -q --fast -p no:cacheprovider
+    rm -rf "$1"
+  ' _ "$snapshot" "$PWD" > "$WARM_LOG" 2>&1 < /dev/null &
+fi
