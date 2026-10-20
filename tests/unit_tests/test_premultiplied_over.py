@@ -126,6 +126,8 @@ def test_bloom_keeps_alpha_and_does_not_mutate_its_input():
 def test_encoding_preserves_additive_light_and_coverage(kernel, monkeypatch):
     monkeypatch.setattr(rt_settings, "linear_color_space", True)
     monkeypatch.setattr(rt_settings, "post_tonemap_kernel", kernel)
+    # The expectation rounds to the nearest byte; the dither would move it.
+    monkeypatch.setattr(rt_settings, "dither", False)
     frame = torch.tensor(
         [
             [

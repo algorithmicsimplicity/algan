@@ -73,6 +73,17 @@ def _expect_byte(working_value, linear):
     return round(255 * (_linear_to_srgb(v) if linear else v))
 
 
+@pytest.fixture(autouse=True)
+def _undithered():
+    """Round to the nearest byte, as these guards' expectations do.
+
+    The dither, on by default and covered by ``test_dither.py``, moves a
+    value that is not already a byte by one. Restored afterwards by the
+    suite's settings isolation.
+    """
+    SETTINGS.raytracing.set(dither=False)
+
+
 @pytest.fixture
 def color_space(request):
     """Select the working space for one test, restoring it afterwards."""

@@ -71,10 +71,13 @@ def _memory(managed=False):
 def _post_stage_defaults():
     """The shipped post stage: linear working space, HDR buffer, no curve.
 
-    Restored afterwards by the suite's settings isolation.
+    Undithered, because these compute each byte from the specification and
+    the dither moves a value that is not already a byte by one;
+    ``test_dither.py`` covers it. Restored afterwards by the suite's settings
+    isolation.
     """
     SETTINGS.raytracing.set(
-        linear_color_space=True, tonemapping=False, tonemap_exposure=1.0
+        linear_color_space=True, tonemapping=False, tonemap_exposure=1.0, dither=False
     )
     SETTINGS.raytracing.experimental.set(post_process_tonemap=True)
 

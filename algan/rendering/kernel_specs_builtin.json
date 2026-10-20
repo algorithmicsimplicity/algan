@@ -3950,6 +3950,69 @@
     "shadows"
    ]
   },
+  "d234d7577202e0e7254398b87f118e08": {
+   "requires": {},
+   "seconds": 0.12,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "float32",
+      4,
+      []
+     ],
+     [
+      "A",
+      "uint8",
+      4,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ]
+    ],
+    "kernel": "algan.rendering.post_processing.tonemap_kernels_taichi:tonemap_to_u8"
+   },
+   "variants": [
+    "2d",
+    "3d",
+    "shadows",
+    "glass"
+   ]
+  },
   "de854f83aa8fc88fb1845d8b220fc4ba": {
    "requires": {
     "shadows": true
@@ -4339,65 +4402,6 @@
     "kernel": "algan.rendering.raytracing.sheet_sort_taichi:pixel_group_order"
    },
    "variants": [
-    "3d",
-    "shadows",
-    "glass"
-   ]
-  },
-  "f1205c4de0d366b65cc55925c491a514": {
-   "requires": {},
-   "seconds": 0.12,
-   "spec": {
-    "args": [
-     [
-      "A",
-      "float32",
-      4,
-      []
-     ],
-     [
-      "A",
-      "uint8",
-      4,
-      []
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ]
-    ],
-    "kernel": "algan.rendering.post_processing.tonemap_kernels_taichi:tonemap_to_u8"
-   },
-   "variants": [
-    "2d",
     "3d",
     "shadows",
     "glass"

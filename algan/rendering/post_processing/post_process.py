@@ -229,6 +229,22 @@ def _validate_premultiplied_over(*, tonemap_enabled=None, tonemapping=None):
         )
 
 
+def _dither_amplitude():
+    """How far the byte rounding is dithered: ``DITHER``, or 0 when it is off."""
+    from algan.rendering.post_processing.tonemap_kernels_taichi import DITHER
+
+    return DITHER if SETTINGS.raytracing.dither else 0.0
+
+
+def _ordered_dither(height, width, device):
+    """Twin of ``ordered_dither`` in ``tonemap_to_u8``: ``[H, W, 1]`` offsets."""
+    y = torch.arange(height, device=device, dtype=torch.float32).view(-1, 1)
+    x = torch.arange(width, device=device, dtype=torch.float32).view(1, -1)
+    t = 0.06711056 * x + 0.00583715 * y
+    t = 52.9829189 * (t - t.floor())
+    return ((t - t.floor() - 0.5) * (2.0 * _dither_amplitude())).unsqueeze(-1)
+
+
 def _finalize_on_device(
     frame,
     original_num_channels,
@@ -296,6 +312,7 @@ def _finalize_on_device(
             1 if frame.shape[-1] == 5 else 0,
             1 if _rt.linear_color_space else 0,
             1 if premultiplied_over else 0,
+            _dither_amplitude(),
         )
         return output
 
@@ -351,7 +368,10 @@ def _finalize_on_device(
                     rgb_tonemapped = linear_to_srgb(rgb_tonemapped)
 
             scaled = memory.clone(rgb_tonemapped)
-            scaled.mul_(255.0).add_(0.5).clamp_(0.0, 255.0)
+            scaled.mul_(255.0).add_(0.5)
+            if _dither_amplitude() > 0.0:
+                scaled.add_(_ordered_dither(*scaled.shape[-3:-1], scaled.device))
+            scaled.clamp_(0.0, 255.0)
             output[..., :3].copy_(scaled)
             if stripped.shape[-1] == 4:
                 alpha = stripped[..., 3:]

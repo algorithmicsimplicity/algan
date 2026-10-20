@@ -189,6 +189,12 @@ ambient_strength_linear = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 tonemapping = False
 tonemap_exposure = 1.0
 tonemap_method = "neutral"
+# Dither the final rounding to bytes. A slow, dark gradient -- a vignette, the
+# falloff of a light across a floor -- spans only a few byte values, so plain
+# rounding draws it as flat rings, and a video encoder makes the rings worse.
+# The dither moves no value by more than one byte and leaves a value that is
+# already a byte exactly where it is, so authored colours stay exact.
+dither = True
 # Tonemap in post-processing (composite writes linear HDR float) rather than
 # in the composite kernel. This is the physically-correct order: bloom/glow
 # and the supersample downsample run in linear HDR and tonemapping is applied
@@ -3812,6 +3818,19 @@ def set_tonemap_exposure(exposure):
     """
     global tonemap_exposure
     tonemap_exposure = float(exposure)
+
+
+def set_dither(enabled):
+    """Enable or disable the dither applied when the frame is rounded to bytes.
+
+    On by default. Each pixel adds a fixed offset of under half a byte before
+    rounding, so a gradient too shallow to have a byte value per pixel comes
+    out as a fine mix of its two neighbouring values instead of flat bands. A
+    value that is already a byte -- an authored colour with tonemapping off --
+    is unchanged. Turn it off for byte-exact rounding of everything else.
+    """
+    global dither
+    dither = bool(enabled)
 
 
 def set_tonemap_method(method):

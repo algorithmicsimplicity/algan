@@ -23,12 +23,35 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.taichi_compat import ti
 
+#: Half a byte, less a margin: the dither's amplitude when it is on. Rounding
+#: ``v * 255`` after adding an offset in ``[-DITHER, DITHER]`` leaves every value
+#: within ``0.5 - DITHER`` of an integer exactly where it was, so a flat colour
+#: that survives the colour-space round trip a hair off its byte still lands on
+#: that byte.
+DITHER = 0.49
+
+
+@ti.func
+def ordered_dither(y, x, amplitude):
+    """A fixed screen-space offset in ``[-amplitude, amplitude]`` for (y, x).
+
+    Interleaved gradient noise (Jimenez, 2014): cheap, deterministic and
+    spread evenly over the range, so a slow gradient that would round to
+    bands of one byte value comes out as a fine mix of the two neighbours
+    instead. It is the same in every frame, so a still background stays still
+    for the encoder, and the same in every channel, so it adds no colour.
+    ``post_process._ordered_dither`` is its torch twin.
+    """
+    t = 0.06711056 * ti.cast(x, ti.f32) + 0.00583715 * ti.cast(y, ti.f32)
+    t = 52.9829189 * (t - ti.floor(t))
+    return (t - ti.floor(t) - 0.5) * (2.0 * amplitude)
+
 
 @ti.kernel
 def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
                   method: ti.template(), exposure: ti.f32,
                   transparent: ti.template(), linear_color: ti.template(),
-                  premultiplied_over: ti.template()):
+                  premultiplied_over: ti.template(), dither: ti.f32):
     """Tonemap a linear-HDR frame (channels 0-2 in [0, 1+HDR]) to uint8.
 
     ``frame`` is ``[N, H, W, C]`` float (C = 4 opaque [R,G,B,glow] or 5
@@ -36,8 +59,11 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
     ``[N, H, W, 4]`` (transparent RGBA) uint8. The glow channel (3) is
     dropped. ``method``: 0 = clamp only, 1 = neutral, 2 = AgX. Matches
     ``finalize_pixel_color`` / the torch ``_neutral_tonemap`` arithmetic
-    (tonemap the exposure-scaled 0-1 color, then ``*255 + 0.5`` round).
-    Alpha is already byte-range (never normalised) so it is only clamped.
+    (tonemap the exposure-scaled 0-1 color, then ``*255 + 0.5`` round),
+    except that the rounding is dithered by ``ordered_dither`` at amplitude
+    ``dither`` (``DITHER`` when on, 0 when off) -- one byte at most -- so dark
+    gradients do not band. Alpha is already byte-range (never normalised) so
+    it is only clamped.
     """
     for f, y, x in ti.ndrange(frame.shape[0], frame.shape[1], frame.shape[2]):
         c = ti.math.vec3(frame[f, y, x, 0], frame[f, y, x, 1],
@@ -76,9 +102,10 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
                 # light, including emission at zero alpha. The consumer must
                 # decode RGB directly BEFORE applying linear premultiplied over.
                 c = linear_to_srgb_v3(c)
+        offset = ordered_dither(y, x, dither)
         for ci in ti.static(range(3)):
             out[f, y, x, ci] = ti.cast(
-                ti.math.clamp(c[ci] * 255.0 + 0.5, 0.0, 255.0), ti.u8)
+                ti.math.clamp(c[ci] * 255.0 + 0.5 + offset, 0.0, 255.0), ti.u8)
         if ti.static(transparent):
             out[f, y, x, 3] = ti.cast(
                 ti.math.clamp(frame[f, y, x, 4], 0.0, 255.0), ti.u8)

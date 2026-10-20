@@ -108,6 +108,7 @@ def _tonemap_args():
         0,
         1,
         0,
+        0.49,
     )
 
 
@@ -415,7 +416,7 @@ ensure_taichi_for_render()
 torch.manual_seed(0)
 frame = torch.rand((1, 8, 12, 4))
 out = torch.zeros((1, 8, 12, 3), dtype=torch.uint8)
-args = (frame, out, 1, 1.0, 0, 1, 0)
+args = (frame, out, 1, 1.0, 0, 1, 0, 0.49)
 mode = sys.argv[1]
 report = {}
 if mode == "touched":

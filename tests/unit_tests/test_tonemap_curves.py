@@ -194,9 +194,11 @@ def _assert_curve(got, colors, **expectation):
 def _tonemap_defaults():
     """The shipped post stage: HDR buffer and the standalone kernel.
 
+    Undithered, because these pin each curve to the byte and the dither moves
+    a value that is not already a byte by one; ``test_dither.py`` covers it.
     Restored afterwards by the suite's settings isolation.
     """
-    SETTINGS.raytracing.set(linear_color_space=True)
+    SETTINGS.raytracing.set(linear_color_space=True, dither=False)
     SETTINGS.raytracing.experimental.set(
         post_process_tonemap=True, post_tonemap_kernel=True
     )
