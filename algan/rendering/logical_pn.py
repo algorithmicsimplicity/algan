@@ -75,10 +75,14 @@ Inductor's CPU backend cannot vectorize an innermost loop whose length it does
 not know. Measured on this module's captured shapes, one thread: eager 5.7 /
 2.6 / 2.0 / 4.0 ms per :func:`evaluate_logical_pn` call against 0.50 / 0.35 /
 0.24 / 0.66 ms at ``dynamic=None`` and 15.6 / 15.9 / 15.3 / 0.47 ms at
-``dynamic=True``. Letting Dynamo specialize on the first shape and mark only
-the axis that actually moved as dynamic keeps the vectorized inner loop; a
-whole PN render (three meshes, three batches) recompiles the three of them six
-times between them, well inside the decorator's raised recompile limit.
+``dynamic=True``. Marking only the axes that move keeps the vectorized inner
+loop. Each function names those axes up front (``compiled``'s
+``dynamic_dims``) rather than letting Dynamo discover them: discovered, they
+cost a static first graph, a recompile per axis, another for a view where a
+copy came before, and a graph of its own for a batch of one -- twelve graphs
+for these three on the graphics workload, each traced again in every new
+process at about half a second apiece on the T4. Named, it is one graph per
+function, and a batch of one runs padded to two rows (``batch_args``).
 """
 
 from __future__ import annotations
@@ -333,7 +337,10 @@ def evaluate_cubic_curve(control_points, t):
     return total
 
 
-@compiled
+@compiled(
+    dynamic_dims={"control_points": (0,), "uv": (0,)},
+    batch_args=("control_points",),
+)
 def evaluate_logical_pn(control_points, uv):
     """Evaluate cubic logical PN position patches at coordinates ``uv``.
 
@@ -359,6 +366,10 @@ def evaluate_logical_pn(control_points, uv):
     ``dynamic`` is left at its default even though the leading count is the
     chunk's ``(frame, patch)`` row count, which differs on every call; the
     module docstring has the measurement that says why forcing it on is a loss.
+    The axes that do move -- the patch count and the parameter count -- are
+    named in ``dynamic_dims`` instead, which is why the dice passes
+    ``[P, 10, 3]`` rather than a ``T = 1`` axis: patches lead, so a single
+    patch is a batch of one.
     """
     extra_dims = uv.ndim - 1
     controls = control_points.view(
@@ -438,7 +449,10 @@ def evaluate_logical_pn_normals(control_points, uv):
     )
 
 
-@compiled
+@compiled(
+    dynamic_dims={"control_points": (0,), "uv": (0,)},
+    batch_args=("control_points",),
+)
 def _evaluate_logical_pn_normals_fused(control_points, uv):
     """The unnormalized quadratic normal patch of :func:`evaluate_logical_pn_normals`.
 
@@ -651,7 +665,17 @@ def snap_boundary_values(values, pattern_edge_levels, edge_levels, boundary):
     )
 
 
-@compiled
+@compiled(
+    dynamic_dims={
+        "values": (0, 1),
+        "shift": (0,),
+        "edge_of_vertex": (0,),
+        "index_on_edge": (0,),
+        "is_interior": (0,),
+        "edge_vertex_ids": (1,),
+    },
+    batch_args=("values", "shift"),
+)
 def _snap_boundary_values_fused(
     values,
     shift,

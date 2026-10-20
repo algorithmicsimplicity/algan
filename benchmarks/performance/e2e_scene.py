@@ -28,10 +28,14 @@ Diagnostics, all off by default: ``--compile-stats`` prints what Dynamo and
 Inductor compiled or loaded during each run, and the Taichi source-key
 counters; ``--torch-profile N`` records run ``N`` with ``torch.profiler`` and
 prints how much of it the GPU was busy, its largest idle gaps and its top
-kernels; ``--torch-compile off`` renders with ``SETTINGS.computing.torch_compile``
-off (a setting, so the Taichi kernel cache key is unchanged); ``--rt NAME=VALUE``
-flips a raytracing knob through ``set_NAME`` (or the module attribute) before
-the first run, which keeps the arm on the same kernel cache.
+kernels, and with ``--trace-stages`` also names the pipeline stage the host was
+in during each idle gap (``profiling_utils``' stage hooks, re-pointed at
+``torch.profiler.record_function`` so they add no device syncs);
+``--torch-compile off`` renders with ``SETTINGS.computing.torch_compile`` off;
+``--rt NAME=VALUE`` flips a raytracing knob through ``set_NAME`` (or the module
+attribute) before the first run. Both settings are part of the Taichi kernel
+cache key, so such an arm's first run compiles or loads its own kernels:
+compare its later runs.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ import time
 PROCESS_START = time.perf_counter()
 
 import argparse  # noqa: E402
+import contextlib  # noqa: E402
 import cProfile  # noqa: E402
 import importlib  # noqa: E402
 import io  # noqa: E402
@@ -233,39 +238,106 @@ def _summarize_trace(path, wall_seconds, top=30):
             buckets["10-100ms"] += gap
         else:
             buckets[">=100ms"] += gap
-    # The host ops alive during the largest gaps say what the GPU waited on.
-    host = [
-        e
-        for e in events
-        if e.get("ph") == "X" and e.get("cat") in ("cpu_op", "user_annotation")
+    # The innermost pipeline stage the host was in at each gap's midpoint
+    # says what the GPU waited on (``--trace-stages``; without it there are no
+    # stage annotations and every gap reads "(no stage)").
+    stage_of_gap = _innermost_stage(events, [at + gap / 2 for gap, at in gaps])
+    idle_by_stage = {}
+    for (gap, _), name in zip(gaps, stage_of_gap):
+        if gap >= 100:
+            idle_by_stage[name] = idle_by_stage.get(name, 0.0) + gap
+    largest = [
+        {
+            "ms": round(gap / 1000, 2),
+            "at_s": round((at - intervals[0][0]) / 1e6, 3),
+            "stage": name,
+        }
+        for (gap, at), name in list(zip(gaps, stage_of_gap))[:20]
     ]
-    largest = []
-    for gap, at in gaps[:12]:
-        names = sorted(
-            {
-                e.get("name", "?")[:60]
-                for e in host
-                if float(e["ts"]) < at + gap and float(e["ts"]) + float(e["dur"]) > at
-            }
-        )[:8]
-        largest.append(
-            {
-                "ms": round(gap / 1000, 2),
-                "at_s": round((at - intervals[0][0]) / 1e6, 3),
-                "host_ops": names,
-            }
-        )
     return {
         "wall_s": round(wall_seconds, 3),
         "device_span_s": round(span / 1e6, 3),
         "device_busy_s": round(busy / 1e6, 3),
         "device_idle_s": round((span - busy) / 1e6, 3),
         "idle_by_gap_size_s": {k: round(v / 1e6, 3) for k, v in buckets.items()},
+        "idle_by_stage_s (gaps >= 0.1 ms)": {
+            name: round(total / 1e6, 3)
+            for name, total in sorted(idle_by_stage.items(), key=lambda kv: -kv[1])[:25]
+        },
         "largest_gaps": largest,
         "top_device_work": [
             {"name": n, "s": round(t / 1e6, 3), "count": c} for n, (t, c) in ranked
         ],
     }
+
+
+def _innermost_stage(events, times):
+    """The innermost stage annotation open at each of ``times`` (host clock).
+
+    Stage annotations nest on the thread that opened them, so one sweep over
+    their starts and ends with a stack answers every query. Only the thread
+    with the most annotated time is read: the render loop's, rather than a
+    prefetch worker's.
+    """
+    stages = [
+        e
+        for e in events
+        if e.get("ph") == "X"
+        and e.get("cat") == "user_annotation"
+        and not str(e.get("name", "")).startswith("ProfilerStep")
+    ]
+    if not stages:
+        return ["(no stage)"] * len(times)
+    per_thread = {}
+    for e in stages:
+        per_thread[e.get("tid")] = per_thread.get(e.get("tid"), 0.0) + float(e["dur"])
+    main = max(per_thread, key=per_thread.get)
+    sweep = []
+    for index, e in enumerate(e for e in stages if e.get("tid") == main):
+        start = float(e["ts"])
+        sweep.append((start, 1, index, e.get("name", "?")))
+        sweep.append((start + float(e["dur"]), 0, index, None))
+    for index, at in enumerate(times):
+        sweep.append((at, 2, index, None))
+    sweep.sort(key=lambda item: (item[0], item[1]))
+    stack = []
+    out = ["(no stage)"] * len(times)
+    for _, kind, index, name in sweep:
+        if kind == 1:
+            stack.append((index, name))
+        elif kind == 0:
+            for position in range(len(stack) - 1, -1, -1):
+                if stack[position][0] == index:
+                    del stack[position]
+                    break
+        elif stack:
+            out[index] = stack[-1][1]
+    return out
+
+
+@contextlib.contextmanager
+def _stage_annotations():
+    """Every pipeline stage as a ``torch.profiler`` range, with no syncs.
+
+    ``install_pipeline_hooks`` wraps the pipeline's entry points in
+    ``TIMERS.stage``, which syncs the devices on both boundaries to time them
+    -- the opposite of what an idle-gap trace wants. The wrappers look the
+    method up at call time, so shadowing it on the instance turns each of
+    them into a bare ``record_function`` range; the kernel hooks, which sync
+    on their own, are not installed.
+    """
+    import torch
+
+    from algan.utils import profiling_utils
+
+    timers = profiling_utils.TIMERS
+    with profiling_utils._temporary_instrumentation():
+        profiling_utils.install_pipeline_hooks()
+        timers.stage = lambda name, items=None: torch.profiler.record_function(name)
+        try:
+            yield
+        finally:
+            del timers.stage
 
 
 def _print_profile(profiler, limit):
@@ -298,6 +370,7 @@ def main(argv=None):
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--compile-stats", action="store_true")
     parser.add_argument("--torch-profile", default="", metavar="RUNS")
+    parser.add_argument("--trace-stages", action="store_true")
     parser.add_argument("--torch-compile", choices=("auto", "on", "off"), default=None)
     parser.add_argument("--rt", action="append", default=[], metavar="NAME=VALUE")
     args = parser.parse_args(argv)
@@ -369,8 +442,14 @@ def main(argv=None):
 
             tracer = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
             tracer.__enter__()
-        result = scene.save_video(str(output), preset, **kwargs)
-        _sync()
+        annotate = (
+            _stage_annotations()
+            if tracer is not None and args.trace_stages
+            else contextlib.nullcontext()
+        )
+        with annotate:
+            result = scene.save_video(str(output), preset, **kwargs)
+            _sync()
         if profiler is not None:
             profiler.disable()
         finished = time.perf_counter()

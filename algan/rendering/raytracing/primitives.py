@@ -2447,7 +2447,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             # the rows over patch-major (see ``share_patches``).
             shared = _PatchChunk.of(patches, frames, share_patches)
             controls, deduped = shared.rows_of(control_points, share_patches)
-            evaluated = evaluate_logical_pn(controls.unsqueeze(0), combined_uv)[0]
+            evaluated = evaluate_logical_pn(controls, combined_uv)
             vertices = evaluated[:, :num_vertices]
             # The sample points stay in their flat (microtriangle, sample)
             # order and the approximation is flattened to match, rather than
@@ -2783,7 +2783,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 controls, deduped = chunk_rows.rows_of(control_points, geometry_static)
                 positions = snap_boundary_values(
                     chunk_rows.fan_out(
-                        evaluate_logical_pn(controls.unsqueeze(0), vertex_uv)[0],
+                        evaluate_logical_pn(controls, vertex_uv),
                         deduped,
                     ),
                     pattern.edge_levels,
@@ -2796,9 +2796,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 vertex_normals = F.normalize(
                     snap_boundary_values(
                         chunk_rows.fan_out(
-                            evaluate_logical_pn_normals(
-                                normal_controls.unsqueeze(0), vertex_uv
-                            )[0],
+                            evaluate_logical_pn_normals(normal_controls, vertex_uv),
                             deduped,
                         ),
                         pattern.edge_levels,

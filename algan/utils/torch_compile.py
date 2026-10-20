@@ -59,6 +59,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import hashlib
+import inspect
 import json
 import os
 import platform
@@ -426,18 +427,89 @@ def _inductor_compile_options(compile_options):
     return result
 
 
+def _parameter_slots(fn, names):
+    """``{name: positional index or None}`` for ``names`` in ``fn``'s signature."""
+    parameters = list(inspect.signature(fn).parameters.values())
+    positions = {
+        parameter.name: index
+        for index, parameter in enumerate(parameters)
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    }
+    keywords = {parameter.name for parameter in parameters}
+    unknown = [name for name in names if name not in keywords]
+    if unknown:
+        raise TypeError(
+            f"{fn.__qualname__} has no parameter named {', '.join(unknown)}"
+        )
+    return {name: positions.get(name) for name in names}
+
+
+def _argument(args, kwargs, name, position):
+    if position is not None and position < len(args):
+        return args[position]
+    return kwargs.get(name)
+
+
+def _replace_argument(args, kwargs, name, position, value):
+    if position is not None and position < len(args):
+        args[position] = value
+    else:
+        kwargs[name] = value
+
+
 class _CompiledFunction:
     """One pipeline function, compiled lazily and demoted to eager on failure."""
 
-    __slots__ = ("compiled", "failed", "fn", "name", "options", "reason")
+    __slots__ = (
+        "batch_args",
+        "compiled",
+        "dynamic_dims",
+        "failed",
+        "fn",
+        "name",
+        "options",
+        "reason",
+    )
 
-    def __init__(self, fn, options):
+    def __init__(self, fn, options, dynamic_dims=None, batch_args=()):
         self.fn = fn
         self.name = f"{fn.__module__}.{fn.__qualname__}"
         self.options = options
         self.compiled = None
         self.failed = False
         self.reason = ""
+        dynamic_dims = dict(dynamic_dims or {})
+        slots = _parameter_slots(fn, [*dynamic_dims, *batch_args])
+        self.dynamic_dims = tuple(
+            (name, slots[name], tuple(dims)) for name, dims in dynamic_dims.items()
+        )
+        self.batch_args = tuple((name, slots[name]) for name in batch_args)
+
+    def _shape_arguments(self, args, kwargs):
+        """Mark the moving axes, and pad a batch of one; see :func:`compiled`.
+
+        Returns the arguments to call with and whether the result's leading
+        row is all the caller asked for.
+        """
+        if not self.dynamic_dims and not self.batch_args:
+            return args, kwargs, False
+        args = list(args)
+        kwargs = dict(kwargs)
+        padded = False
+        batch = [_argument(args, kwargs, name, slot) for name, slot in self.batch_args]
+        if batch and all(
+            isinstance(value, torch.Tensor) and value.ndim and value.shape[0] == 1
+            for value in batch
+        ):
+            for (name, slot), value in zip(self.batch_args, batch):
+                _replace_argument(args, kwargs, name, slot, torch.cat((value, value)))
+            padded = True
+        for name, slot, dims in self.dynamic_dims:
+            value = _argument(args, kwargs, name, slot)
+            if isinstance(value, torch.Tensor):
+                torch._dynamo.maybe_mark_dynamic(value, dims)
+        return tuple(args), kwargs, padded
 
     def _get_compiled(self):
         with _lock:
@@ -483,16 +555,27 @@ class _CompiledFunction:
         args = tuple(_plain_tensor(arg) for arg in args)
         if kwargs:
             kwargs = {name: _plain_tensor(arg) for name, arg in kwargs.items()}
+        shaped_args, shaped_kwargs, padded = self._shape_arguments(args, kwargs)
         try:
-            return compiled(*args, **kwargs)
+            result = compiled(*shaped_args, **shaped_kwargs)
         except Exception as exc:
             if not _is_compile_failure(exc):
                 raise
             self._demote(exc)
             return self.fn(*args, **kwargs)
+        return result[:1] if padded else result
 
 
-def compiled(fn=None, *, dynamic=None, fullgraph=False, mode=None, options=None):
+def compiled(
+    fn=None,
+    *,
+    dynamic=None,
+    fullgraph=False,
+    mode=None,
+    options=None,
+    dynamic_dims=None,
+    batch_args=(),
+):
     """Compile a pipeline function with ``torch.compile`` when the switch is on.
 
     Usable bare (``@compiled``) or with ``torch.compile``'s own keywords
@@ -506,6 +589,22 @@ def compiled(fn=None, *, dynamic=None, fullgraph=False, mode=None, options=None)
     and costs the CPU backend its vectorized inner loop (the module docstring
     has the measurement); reserve it for regions whose trailing extents are
     large, such as a frame buffer.
+
+    Left to itself, automatic dynamic shapes costs a function a graph per axis
+    it discovers moving: the first call compiles a fully static graph, the
+    first change of size recompiles, and so does each axis that moves later.
+    Every graph is traced again in each new process even when Inductor's cache
+    has its code, about half a second apiece on the T4, so a function whose
+    moving axes are known up front names them in ``dynamic_dims`` --
+    ``{"parameter": (axis, ...)}`` -- and its first call compiles the one graph
+    the later ones would have arrived at, with every other axis still static.
+
+    ``batch_args`` names parameters whose axis 0 is one batch axis that the
+    result also leads with, row for row. Dynamo specializes an axis whose size
+    is 1 however it was marked, so a call with a batch of one would compile a
+    graph of its own; such a call instead runs on the arguments with their row
+    duplicated, and returns the result's first row. Only a function whose rows
+    are computed independently of each other may name its arguments here.
     """
 
     def decorate(function):
@@ -514,7 +613,7 @@ def compiled(fn=None, *, dynamic=None, fullgraph=False, mode=None, options=None)
             compile_options["mode"] = mode
         if options is not None:
             compile_options["options"] = options
-        state = _CompiledFunction(function, compile_options)
+        state = _CompiledFunction(function, compile_options, dynamic_dims, batch_args)
         with _lock:
             _REGISTRY.append(state)
 
