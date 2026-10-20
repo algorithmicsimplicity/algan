@@ -264,6 +264,44 @@ def test_invalid_point_sources_are_rejected(fresh_scene, source):
         TracedPath(source)
 
 
+def test_a_callable_that_takes_arguments_is_refused_when_the_trail_is_built(
+    fresh_scene,
+):
+    with pytest.raises(
+        AlganConfigurationError,
+        match=r"^TracedPath calls its callable with no arguments, with the scene "
+        r"in the state of the times it samples, but <lambda>\(t\) cannot be: "
+        r"missing a required argument: 't'\. Read the point from a Mob",
+    ):
+        TracedPath(lambda t: ORIGIN)
+    assert not Scene.current().timeline_manager._traced_paths
+
+
+def test_an_error_inside_the_callable_is_raised_as_it_is(fresh_scene):
+    dot = Dot().spawn(animate=False)
+    with pytest.raises(TypeError, match="unsupported operand"):
+        TracedPath(lambda: dot.location + "a")
+
+
+@pytest.mark.parametrize(
+    ("source", "returned"),
+    [
+        (lambda: None, "None"),
+        (lambda: "up", "'up'"),
+        (lambda: torch.zeros(2), r"a Tensor of shape \(2,\)"),
+    ],
+)
+def test_a_callable_that_returns_no_point_is_told_what_it_returned(
+    fresh_scene, source, returned
+):
+    with pytest.raises(
+        AlganConfigurationError,
+        match=rf"must return one 3-D point per sampled time; .+\. It returned "
+        rf"{returned}\.$",
+    ):
+        TracedPath(source)
+
+
 def test_failed_sampling_cleans_buffers_and_allows_retry(fresh_scene):
     scene = Scene.current()
     dot = Dot().spawn(animate=False)
@@ -281,7 +319,8 @@ def test_failed_sampling_cleans_buffers_and_allows_retry(fresh_scene):
     authored_dict = dot.__dict__
     authored = dot.location.clone()
     fail[0] = True
-    with pytest.raises(AlganConfigurationError, match="3-D point"):
+    # The callable's own error, not one about what it returned.
+    with pytest.raises(ValueError, match="^unavailable$"):
         _sample(scene, trail, [0.5])
     assert not scene.timeline_manager._sampling_traced_paths
     assert dot.__dict__ is authored_dict

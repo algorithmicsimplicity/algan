@@ -347,16 +347,91 @@ def _write_alignment_cache(path, rows):
                 temporary.unlink(missing_ok=True)
 
 
-def get_speech_generator_from_file(audio_file, transcript_file):
-    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+#: A source FFmpeg opens through one of its protocols -- ``https://...``,
+#: ``concat:a.mp3|b.mp3``, ``file:a.mp3`` -- rather than as a path. A scheme is two
+#: characters or more, so a Windows drive (``C:\voice.wav``) is still a path.
+_FFMPEG_PROTOCOL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 
+
+def _is_ffmpeg_protocol(source):
+    """Whether FFmpeg, not the file system, should resolve ``source``.
+
+    A file that exists by that name is a file, colon or not.
+    """
+    return bool(_FFMPEG_PROTOCOL.match(source)) and not os.path.isfile(source)
+
+
+#: The line ``ffmpeg -i`` ends on once it has opened its input, since it was
+#: given no output: that is how moviepy probes a file, not why one failed.
+_FFMPEG_NO_OUTPUT = "At least one output file must be specified"
+
+
+def _open_audio_file_clip(path):
+    """moviepy's ``AudioFileClip`` of ``path``, or an ``OSError`` naming the file.
+
+    moviepy reports a file FFmpeg reads no sound from by what its parser
+    tripped over: a video without a sound track as ``KeyError:
+    'audio_bitrate'``, a damaged file as FFmpeg's whole report chained to an
+    internal ``TypeError``. Either way the half-built reader's ``__del__`` then
+    printed an ``AttributeError`` once the traceback had gone, which in a
+    script is the last thing on the screen.
+    """
+    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+    from moviepy.audio.io.readers import FFMPEG_AudioReader
+
+    if not hasattr(FFMPEG_AudioReader, "proc"):
+        # The reader sets ``proc``, which its ``__del__`` reads, only once its
+        # probe of the file has succeeded. None is what ``close()`` takes for
+        # a reader with no FFmpeg process to stop.
+        FFMPEG_AudioReader.proc = None
+    try:
+        return AudioFileClip(path)
+    except (OSError, KeyError) as error:
+        if _is_ffmpeg_protocol(path) or getattr(error, "errno", None) is not None:
+            # A URL FFmpeg could not fetch, FFmpeg itself not starting, or a
+            # file that could not be opened: the error says which.
+            raise
+        problem = _why_ffmpeg_reads_no_sound(path)
+        if problem is None:
+            raise
+        raise OSError(f"Could not read {path!r} as audio. {problem}") from error
+
+
+def _why_ffmpeg_reads_no_sound(path):
+    """Why FFmpeg reads no sound from the file at ``path``, or None if it does."""
+    from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
+
+    try:
+        infos = ffmpeg_parse_infos(path, check_duration=False)
+    except OSError as error:
+        # moviepy's heading, a blank line, then FFmpeg's report, which ends on
+        # its reason: "Invalid data found when processing input".
+        report = str(error).partition("\n\n")[2].splitlines()
+        reasons = [
+            line.strip()
+            for line in report
+            if line.strip() and line.strip() != _FFMPEG_NO_OUTPUT
+        ]
+        said = f'FFmpeg says "{reasons[-1]}"' if reasons else "FFmpeg cannot open it"
+        return (
+            f"{said}. Check that it plays in another player, and if it does "
+            f"not, export it again."
+        )
+    if infos.get("audio_found"):
+        return None
+    if infos.get("video_found"):
+        return "FFmpeg finds a video stream in it, but no audio stream."
+    return "FFmpeg finds no audio stream in it."
+
+
+def get_speech_generator_from_file(audio_file, transcript_file):
     audio_path = Path(audio_file).resolve(strict=True)
     transcript_path = Path(transcript_file).resolve(strict=True)
     cache_key, words = _alignment_cache_key(audio_path, transcript_path)
     time_stamp_file = (
         Path(SETTINGS.paths.cache_directory) / "audio" / f"{cache_key}.json"
     )
-    full_ac = AudioFileClip(str(audio_path))
+    full_ac = _open_audio_file_clip(str(audio_path))
     try:
         word_time_stamps = None
         try:
@@ -476,19 +551,17 @@ def _cached_audio_file_clip(file):
     in practice when ``Scene.save_video`` mixes the audio track. Validating,
     screenshots and ``Scene.view`` then never decode the narration at all.
     """
-    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
-
     info_path = Path(f"{file}.info.json")
     try:
         stat = os.stat(file)
         key = [stat.st_size, stat.st_mtime_ns]
     except OSError:
-        return AudioFileClip(file)
+        return _open_audio_file_clip(file)
     with suppress(Exception):
         info = json.loads(info_path.read_text(encoding="utf-8"))
         if info.get("version") == _AUDIO_INFO_VERSION and info.get("key") == key:
             return _lazy_audio_file_clip_class()(file, info)
-    clip = AudioFileClip(file)
+    clip = _open_audio_file_clip(file)
     info = {
         "version": _AUDIO_INFO_VERSION,
         "key": key,

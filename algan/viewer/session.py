@@ -50,6 +50,7 @@ from collections import OrderedDict
 import psutil
 import torch
 
+from algan.logging.logger import get_logger
 from algan.rendering import fragment_capture
 from algan.settings.video_settings import (
     HD,
@@ -65,6 +66,8 @@ from algan.sound.transcript import snapshot_transcript
 from algan.viewer import hierarchy
 from algan.viewer.audio import SceneAudio
 from algan.viewer.pixels import PixelRecord
+
+logger = get_logger()
 
 #: Stop prefetching once this many frames are cached, so a long video does not
 #: fill memory with PNGs nobody scrolled to.
@@ -614,9 +617,19 @@ class ViewerSession:
                 while not self._closed and self._render_next():
                     pass
             except Exception as exc:  # noqa: BLE001
+                message = f"{type(exc).__name__}: {exc}"
                 with self._lock:
-                    self._error = f"{type(exc).__name__}: {exc}"
+                    repeated = message == self._error
+                    self._error = message
                     self._frame_ready.notify_all()
+                # The page shows one line, so the traceback goes to the
+                # terminal: an error from the Scene, say in an updater, is
+                # otherwise impossible to place. Every request from the page
+                # retries the render, so an error is logged once, not per retry.
+                if not repeated:
+                    logger.error(
+                        "The viewer could not render the Scene:", exc_info=True
+                    )
 
     def _render_next(self):
         """Render one chunk from where the page is looking. False when idle."""

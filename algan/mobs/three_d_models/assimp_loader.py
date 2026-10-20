@@ -43,14 +43,27 @@ _INSTALL_HINT = (
 )
 
 
+def _is_assimp_error(error):
+    """Whether ``error`` is pyassimp's own ``AssimpError``.
+
+    pyassimp derives that class from ``BaseException``, so ``except Exception``
+    lets it through; and it is defined in the package whose import raises it, so
+    it cannot be named before that import succeeds.
+    """
+    kind = type(error)
+    return kind.__name__ == "AssimpError" and kind.__module__.startswith("pyassimp")
+
+
 def _require_pyassimp():
     try:
         import pyassimp
         import pyassimp.postprocess as pp
     except ImportError as e:
         raise ImportError("pyassimp is not installed.\n" + _INSTALL_HINT) from e
-    except Exception as e:  # pragma: no cover - native lib lookup failure
+    except BaseException as e:
         # pyassimp raises AssimpError (not ImportError) when the DLL is absent.
+        if not _is_assimp_error(e):
+            raise
         raise ImportError(
             f"pyassimp could not load the native assimp library ({e}).\n"
             + _INSTALL_HINT
@@ -334,8 +347,8 @@ def load_scene(file_path, extra_flags=0):
     """Parse ``file_path`` into a :class:`SceneData` using pyassimp.
 
     Raises :class:`ImportError` with install guidance if the native assimp
-    library is unavailable, and :class:`FileNotFoundError` if the model file
-    does not exist.
+    library is unavailable, :class:`FileNotFoundError` if the model file does
+    not exist, and :class:`OSError` naming the file if assimp cannot import it.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
@@ -344,20 +357,30 @@ def load_scene(file_path, extra_flags=0):
     flags = _default_flags(pp) | extra_flags
     # pyassimp.load frees native memory on context exit, so pull everything we
     # need into torch tensors inside the `with` block.
-    with pyassimp.load(file_path, processing=flags) as scene:
-        materials = [
-            _parse_material(m, base_dir) for m in getattr(scene, "materials", []) or []
-        ]
-        meshes = []
-        scene_meshes = list(getattr(scene, "meshes", []) or [])
-        kept = {}  # index into scene_meshes -> index into meshes
-        for i, m in enumerate(scene_meshes):
-            md = _parse_mesh(m)
-            if md is not None:
-                kept[i] = len(meshes)
-                meshes.append(md)
-        nodes = _parse_nodes(getattr(scene, "rootnode", None), scene_meshes, kept)
-        animations = _parse_animations(scene)
+    try:
+        with pyassimp.load(file_path, processing=flags) as scene:
+            materials = [
+                _parse_material(m, base_dir)
+                for m in getattr(scene, "materials", []) or []
+            ]
+            meshes = []
+            scene_meshes = list(getattr(scene, "meshes", []) or [])
+            kept = {}  # index into scene_meshes -> index into meshes
+            for i, m in enumerate(scene_meshes):
+                md = _parse_mesh(m)
+                if md is not None:
+                    kept[i] = len(meshes)
+                    meshes.append(md)
+            nodes = _parse_nodes(getattr(scene, "rootnode", None), scene_meshes, kept)
+            animations = _parse_animations(scene)
+    except BaseException as e:
+        # pyassimp's "Could not import file!" names no file.
+        if not _is_assimp_error(e):
+            raise
+        raise OSError(
+            f"assimp could not import {file_path!r}: it is not in a format "
+            "assimp reads, or it is damaged."
+        ) from e
     return SceneData(
         meshes=meshes,
         materials=materials,

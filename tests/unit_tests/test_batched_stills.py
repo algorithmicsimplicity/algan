@@ -226,7 +226,7 @@ def test_per_call_settings_are_snapshotted_and_separate_incompatible_jobs(
 ):
     observed = []
 
-    def postprocess(frames):
+    def postprocess(frames, memory=None):
         return frames
 
     def intro():

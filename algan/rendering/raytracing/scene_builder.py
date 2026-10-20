@@ -387,14 +387,9 @@ _UPLOAD_ALIGNMENT_FLOOR = None
 def _upload_alignment_floor():
     global _UPLOAD_ALIGNMENT_FLOOR
     if _UPLOAD_ALIGNMENT_FLOOR is None:
-        _UPLOAD_ALIGNMENT_FLOOR = 1
-        try:
-            from algan.rendering.mps_zero_copy import installed
+        from algan.rendering.mps_zero_copy import installed
 
-            if installed():
-                _UPLOAD_ALIGNMENT_FLOOR = 16
-        except Exception:
-            _UPLOAD_ALIGNMENT_FLOOR = 1
+        _UPLOAD_ALIGNMENT_FLOOR = 16 if installed() else 1
     return _UPLOAD_ALIGNMENT_FLOOR
 
 
@@ -2987,6 +2982,32 @@ def _fill_unsupplied_background_channels(out, filled, last, source_channels):
         out[..., 4:].fill_(255)
 
 
+def _callback_color(value, device):
+    """A procedural background's result that is not a tensor, as one.
+
+    A color name or a hex string is read as
+    :func:`~algan.constants.color.to_color` reads it, where it failed with
+    "new(): invalid data type 'str'". A number stays a gray level, as it always
+    was: a callback returning ``1`` draws white. A result that is no color is
+    refused by what it is: a callback that forgot to ``return`` failed with
+    "Could not infer dtype of NoneType".
+    """
+    from algan.constants.color import to_color
+    from algan.errors import AlganConfigurationError
+
+    if isinstance(value, str):
+        value = to_color(value)
+    try:
+        return torch.as_tensor(value, device=device)
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise AlganConfigurationError(
+            f"The background callable returned {value!r} "
+            f"({type(value).__name__}). It must return a color, such as "
+            f"x.new_tensor((0.1, 0.2, 0.3)), or a tensor of them; see "
+            f"Scene.set_background."
+        ) from error
+
+
 def _prefill_deferred_background(out, background, frame_offset):
     """Evaluate a callback directly into its target-device output.
 
@@ -3082,7 +3103,7 @@ def _prefill_deferred_background(out, background, frame_offset):
         time = indices.view(k, 1, 1, 1) / background.frames_per_second
         frame = background.callback(x, y, time)
         if not torch.is_tensor(frame):
-            frame = torch.as_tensor(frame, device=device)
+            frame = _callback_color(frame, device)
         frame = frame.to(device)
 
         if frame.dim() <= 1:

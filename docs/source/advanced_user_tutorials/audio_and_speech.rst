@@ -36,7 +36,8 @@ Both ``Audio`` and ``Speech`` contexts take ``wait_at_end``, a number of extra s
 clip finishes, so you can add longer pauses to parts of the narration.
 ``Speech`` defaults it to 1 second; ``Audio`` defaults it to 0.
 
-``Audio`` accepts string file paths or MoviePy ``AudioFileClip`` objects (allowing you
+``Audio`` accepts a file path, as a string or a ``pathlib.Path`` (a relative path is
+taken from the current directory), or a MoviePy ``AudioFileClip`` object (allowing you
 to trim or preprocess audio beforehand):
 
 .. code-block:: python

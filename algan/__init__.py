@@ -467,6 +467,7 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         # Timeline recording introspection, engine memory, version counters.
         "attr_ranges_for_mob",
         "release_torch_memory",
+        "is_out_of_memory",
         "ANIMATABLE_PROPERTY_VERSION",
         # Colour coercion: deliberately passes tensors through untouched so a
         # per-row colour buffer is not collapsed to one colour, which makes it

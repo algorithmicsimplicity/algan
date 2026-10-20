@@ -24,6 +24,7 @@ animatable per-corner ``location``.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 
 import torch
@@ -32,7 +33,11 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
 from algan.constants.easings import identity
-from algan.errors import AlganConfigurationError
+from algan.errors import (
+    AlganConfigurationError,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.mesh import (
     TriangleMesh,
@@ -135,19 +140,32 @@ def _modulate_colors(colors, base_color):
     return colors
 
 
-def _load_image_hwc(path):
-    """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}),
-    or ``None`` on failure.
+def _load_image_hwc(path, fallback="in its material's flat color instead"):
+    """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}).
+
+    ``None`` when it cannot be read, after a warning that names the file, why
+    it could not be read, and ``fallback``: how the model is drawn instead,
+    by default the way a model whose diffuse texture fails is drawn.
     """
-    try:
-        from PIL import Image
+    if not os.path.exists(path):
+        reason = "no such file"
+    else:
+        try:
+            from PIL import Image
 
-        from algan.utils.file_utils import _decode_pil_image
+            from algan.utils.file_utils import _decode_pil_image
 
-        with Image.open(path) as pil_image:
-            return torch.from_numpy(_decode_pil_image(pil_image))
-    except Exception:
-        return None
+            with Image.open(path) as pil_image:
+                return torch.from_numpy(_decode_pil_image(pil_image))
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+    warnings.warn(
+        f"Could not load the texture {path!r} ({reason}), so the model is drawn "
+        f"{fallback}.",
+        UnsupportedFeatureWarning,
+        stacklevel=_user_stacklevel(),
+    )
+    return None
 
 
 class Model3D(Mob):
@@ -168,7 +186,12 @@ class Model3D(Mob):
     load_textures
         Load and apply diffuse texture maps referenced by materials. When False
         (or a texture fails to load) meshes fall back to their material's flat
-        base color. Defaults to True.
+        base color. Defaults to True. A texture file that a model read through
+        assimp names, or an image embedded in a glTF, that cannot be read warns
+        with an :class:`~algan.errors.UnsupportedFeatureWarning` naming it and
+        why; a glTF texture *file* that is missing warns with an
+        :class:`~algan.errors.AlganWarning` naming it. A missing OBJ texture
+        file is left out without a warning: trimesh drops it silently.
     fit_to_size
         Recenter the model and uniformly scale it so its bounding-box diagonal
         is this many world units -- handy, since model files use wildly
@@ -428,8 +451,8 @@ class Model3D(Mob):
         """
         if material.normal_image is not None:
             return image_to_normal_map(material.normal_image.to(device)).to(device)
-        if material.normal_texture and os.path.exists(material.normal_texture):
-            image = _load_image_hwc(material.normal_texture)
+        if material.normal_texture:
+            image = _load_image_hwc(material.normal_texture, "without that normal map")
             if image is not None:
                 return image_to_normal_map(image).to(device)
         return None
@@ -449,7 +472,7 @@ class Model3D(Mob):
         if path in self._texture_cache:
             return self._texture_cache[path]
         tex_map = None
-        image = _load_image_hwc(path) if os.path.exists(path) else None
+        image = _load_image_hwc(path)
         if image is not None:
             tex_map = image_to_texture_map(image).to(device)
         self._texture_cache[path] = tex_map

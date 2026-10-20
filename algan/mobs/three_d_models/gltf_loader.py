@@ -15,6 +15,7 @@ through one shared path.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import warnings
@@ -27,6 +28,7 @@ from algan.errors import (
     AlganWarning,
     UnsupportedFeatureError,
     UnsupportedFeatureWarning,
+    _user_stacklevel,
 )
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.scene_data import (
@@ -37,6 +39,7 @@ from algan.mobs.three_d_models.scene_data import (
     NodeData,
     SceneData,
 )
+from algan.utils.memory_utils import is_out_of_memory
 
 
 def _to_tensor(array, dtype=torch.float32):
@@ -198,18 +201,27 @@ def _convert_material(visual, gltf=False):
             else getattr(material, "main_color", None)
         )
 
-    def _img(attr):
+    name = getattr(material, "name", "") or ""
+
+    def _img(attr, role):
         tex = getattr(material, attr, None)
         if tex is None:
             return None
         try:
             return _image_to_float_hwc(tex)
-        except Exception:
+        except Exception as exc:
+            owner = f" of material {name!r}" if name else ""
+            warnings.warn(
+                f"Could not decode the {role} texture{owner} "
+                f"({type(exc).__name__}: {exc}), so the model is drawn without it.",
+                UnsupportedFeatureWarning,
+                stacklevel=_user_stacklevel(),
+            )
             return None
 
-    diffuse_image = _img("baseColorTexture")
+    diffuse_image = _img("baseColorTexture", "base color")
     if diffuse_image is None:
-        diffuse_image = _img("image")  # some trimesh materials
+        diffuse_image = _img("image", "base color")  # some trimesh materials
     metallic = getattr(material, "metallicFactor", None)
     roughness = getattr(material, "roughnessFactor", None)
     emissive = getattr(material, "emissiveFactor", None)
@@ -223,12 +235,12 @@ def _convert_material(visual, gltf=False):
         if emissive is not None:
             emissive = tuple(_linear_to_display(emissive).tolist())
     return MaterialData(
-        name=getattr(material, "name", "") or "",
+        name=name,
         base_color=base,
         diffuse_image=diffuse_image,
-        normal_image=_img("normalTexture"),
-        metallic_roughness_image=_img("metallicRoughnessTexture"),
-        emissive_image=_img("emissiveTexture"),
+        normal_image=_img("normalTexture", "normal"),
+        metallic_roughness_image=_img("metallicRoughnessTexture", "metallic-roughness"),
+        emissive_image=_img("emissiveTexture", "emissive"),
         metallic_factor=(
             float(metallic) if metallic is not None else (1.0 if gltf else 0.0)
         ),
@@ -549,7 +561,7 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         warnings.warn(
             f"Could not load glTF animation ({exc}); loading the model as static.",
             UnsupportedFeatureWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
         return static_nodes, []
 
@@ -589,11 +601,46 @@ def _uri_resolver(file_path):
     return resolver
 
 
+@contextlib.contextmanager
+def _reading(file_path):
+    """Raise a failure to parse ``file_path`` as one that names the file.
+
+    pygltflib and trimesh report a damaged file by whatever it tripped --
+    ``struct.error`` for an empty glB, ``chunk was not expected length!`` for
+    a truncated one, an ``IndexError`` from a broken OBJ -- and not by the file.
+    """
+    try:
+        yield
+    except Exception as exc:
+        if (
+            isinstance(exc, ImportError)
+            or is_out_of_memory(exc)
+            or (isinstance(exc, OSError) and exc.errno is not None)
+        ):
+            # A parser that is not installed, memory running out, or a file
+            # that could not be opened or read: nothing to do with what it holds.
+            raise
+        suffix = os.path.splitext(file_path)[1].lower()
+        kind = type(exc).__qualname__
+        if type(exc).__module__ != "builtins":
+            # struct.error, not a bare "error".
+            kind = f"{type(exc).__module__}.{kind}"
+        # OSError, as the assimp loader raises for a file it cannot import.
+        raise OSError(
+            f"Could not read {file_path!r} as a {suffix} model ({kind}: {exc}). "
+            f"Check that it opens in another 3D viewer, and if it does not, "
+            f"export it again."
+        ) from exc
+
+
 def load_scene(file_path):
     """Parse ``file_path`` (glTF/glB/OBJ/PLY/... anything trimesh reads) into a
     :class:`SceneData`. Node-instance world transforms from the scene graph are
     baked into flat root nodes (parent -1), which the shared model builder then
     applies to the geometry.
+
+    Raises :class:`FileNotFoundError` if the model file does not exist, and
+    :class:`OSError` naming the file if it cannot be parsed.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
@@ -610,7 +657,8 @@ def load_scene(file_path):
 
         resolver = _uri_resolver(file_path)
         load_options = {"resolver": resolver}
-        gltf = _read_gltf(GLTF2, file_path)
+        with _reading(file_path):
+            gltf = _read_gltf(GLTF2, file_path)
         if gltf.animations:
             # trimesh preserves mesh extras on every primitive. Carry identity
             # through that boundary instead of guessing from vertex/face counts
@@ -628,7 +676,8 @@ def load_scene(file_path):
                 "resolver": resolver,
                 "merge_primitives": False,
             }
-    loaded = trimesh.load(source, process=False, force="scene", **load_options)
+    with _reading(file_path):
+        loaded = trimesh.load(source, process=False, force="scene", **load_options)
     # trimesh drops an image it cannot read and carries on, so without this
     # the model would render in its flat fallback color with no word why.
     for uri in dict.fromkeys(resolver.missing if resolver is not None else ()):

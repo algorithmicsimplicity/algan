@@ -11,7 +11,10 @@ import inspect
 import warnings
 from typing import TYPE_CHECKING
 
-from algan.rendering.shaders.material_shaders import SHADER_FIXED_PARAM_COUNT
+from algan.rendering.shaders.material_shaders import (
+    SHADER_FIXED_PARAM_COUNT,
+    basic_material_shader,
+)
 from algan.utils.tensor_utils import cast_to_tensor
 
 if TYPE_CHECKING:
@@ -19,10 +22,91 @@ if TYPE_CHECKING:
 
 from algan.errors import (
     AlganConfigurationError,
+    AlganWarning,
     ModifiedProtectedAttributeError,
     UnsupportedFeatureWarning,
     _user_stacklevel,
 )
+from algan.utils.python_utils import callable_signature
+
+#: The fixed parameters, by the names the convention's reference shader and
+#: every built-in one give them.
+_FIXED_SHADER_PARAMETERS = tuple(inspect.signature(basic_material_shader).parameters)[
+    :SHADER_FIXED_PARAM_COUNT
+]
+
+_POSITIONAL = (
+    inspect.Parameter.POSITIONAL_ONLY,
+    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+)
+
+
+def _vertex_shader_parameters(shader):
+    """``shader``'s parameters, checked against how the renderer calls it.
+
+    It is called with the nine fixed values by position and then each material
+    parameter by position. A shader that cannot take them so failed only once
+    the first frame was shaded, with Python's own arity error. One that left a
+    fixed parameter out was given the wrong values without a word: in
+    ``def toon(memory, ..., light_intensity, bands=4)``, which has no
+    ``ambient_light_intensity``, ``bands`` received the ambient intensity and
+    never became an attribute.
+    """
+    signature = callable_signature(shader)
+    parameters = signature.parameters
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters.values()):
+        # It takes any number of values by position.
+        return parameters
+    name = getattr(shader, "__name__", None) or type(shader).__name__
+    convention = (
+        f"Algan calls a vertex shader with nine fixed parameters, by position: "
+        f"{', '.join(_FIXED_SHADER_PARAMETERS)}. Then come the shader's own "
+        f"material parameters, by position too"
+    )
+    by_keyword = [str(p) for p in parameters.values() if p.kind not in _POSITIONAL]
+    if by_keyword:
+        raise AlganConfigurationError(
+            f"{name} takes {', '.join(by_keyword)} by keyword only. {convention}."
+        )
+    if len(parameters) < SHADER_FIXED_PARAM_COUNT:
+        raise AlganConfigurationError(
+            f"{name}{signature} takes {len(parameters)} parameters. {convention}. "
+            f"Declare all nine fixed parameters, even those it ignores."
+        )
+    # A default in a fixed slot says it was meant as a material parameter only
+    # of a shader written to the fixed names, wherever it puts them: one that
+    # renames them may give its own names defaults.
+    written_to_the_names = all(
+        parameter.name in _FIXED_SHADER_PARAMETERS
+        for parameter in list(parameters.values())[:SHADER_FIXED_PARAM_COUNT]
+        if parameter.default is inspect.Parameter.empty
+    )
+    misplaced = []
+    for index, parameter in enumerate(parameters.values()):
+        fixed = (
+            _FIXED_SHADER_PARAMETERS[index]
+            if index < SHADER_FIXED_PARAM_COUNT
+            else None
+        )
+        if parameter.name == fixed:
+            continue
+        if fixed is None:
+            if parameter.name in _FIXED_SHADER_PARAMETERS:
+                misplaced.append(f"{parameter.name} is taken as a material parameter")
+        elif parameter.name in _FIXED_SHADER_PARAMETERS or (
+            # A fixed parameter is always given, so a default is never used:
+            # this one was meant to be a material parameter.
+            written_to_the_names and parameter.default is not inspect.Parameter.empty
+        ):
+            misplaced.append(f"{parameter.name} is given {fixed}")
+    if misplaced:
+        warnings.warn(
+            f"{name} will be given the wrong values: {'; '.join(misplaced)}. "
+            f"{convention}.",
+            AlganWarning,
+            stacklevel=_user_stacklevel(),
+        )
+    return parameters
 
 
 class MobMaterialsMixin:
@@ -60,7 +144,14 @@ class MobMaterialsMixin:
         shader
             Shading function used at render time, e.g. ``phong_shader`` or
             ``standard_shader``. ``None`` clears the shader, leaving the Mob
-            unlit.
+            unlit. A shader of your own is called with nine fixed parameters
+            -- ``memory, vertex_location, vertex_normal, albedo_color,
+            camera_location, light_origin, light_color, light_intensity,
+            ambient_light_intensity`` -- and then its own material parameters,
+            all by position. Declare all nine first, even those it ignores: a
+            shader that puts one of them in another place, or another parameter
+            with a default in one of theirs, warns that it will be given the
+            wrong values.
 
         Returns
         -------
@@ -71,6 +162,9 @@ class MobMaterialsMixin:
         ------
         :class:`.ModifiedProtectedAttributeError`
             If called on a Mob that has already been spawned.
+        :class:`.AlganConfigurationError`
+            If ``shader`` cannot be called that way: it takes fewer than nine
+            parameters, or a parameter by keyword only.
 
         See Also
         --------
@@ -93,7 +187,7 @@ class MobMaterialsMixin:
                 d.shader = shader
             return self
 
-        shader_params = inspect.signature(shader).parameters
+        shader_params = _vertex_shader_parameters(shader)
         num_shader_independent_params = SHADER_FIXED_PARAM_COUNT
         shader_specific_param_names = list(shader_params.keys())[
             num_shader_independent_params:

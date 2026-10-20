@@ -18,7 +18,10 @@ warns once, naming the function and the reason, and runs that function eagerly
 from then on; it never fails a render. A function wrapped here must therefore
 be safe to *re-run* after a partial execution: pure, or writing only outputs
 computed from unmodified inputs, so that an eager retry after a mid-function
-compile failure cannot apply an in-place update twice.
+compile failure cannot apply an in-place update twice. Running out of memory
+is not a compile failure, even inside generated code: it propagates, as it
+would from the eager function, to the render loop, which retries the batch
+with fewer frames.
 
 Two measured rules for what goes inside a compiled region, on top of the
 re-runnability above. **No division by a float constant, and no
@@ -314,13 +317,35 @@ def _write_vec_isa_memo(path, fingerprint, names):
             staging.unlink()
 
 
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Whether ``exc`` is memory running out rather than the compiler failing.
+
+    Exhausted memory belongs to the batch: the render loop retries it with
+    fewer frames, which demoting the function would hide from it, and the
+    function would then run eagerly for the rest of the process. That holds
+    whether the compiled code raised it or the compiler did while benchmarking
+    kernels, which Dynamo reports wrapped. A wrapper is judged by the type of
+    the error it carries, not by its text: a C++ compiler that runs out of
+    memory says so in its output, and that is a compile failure.
+    """
+    from algan.utils.memory_utils import is_cuda_oom
+
+    inner = getattr(exc, "inner_exception", None)
+    if inner is not None:
+        return isinstance(inner, (MemoryError, torch.OutOfMemoryError))
+    return isinstance(exc, MemoryError) or is_cuda_oom(exc)
+
+
 def _is_compile_failure(exc: BaseException) -> bool:
     """Whether ``exc`` came from Dynamo/Inductor rather than the function body.
 
     An error the function itself raises when run must propagate exactly as
     eager execution would raise it; only the compiler's own refusals are
-    grounds for the eager fallback.
+    grounds for the eager fallback. Running out of memory is neither, and
+    propagates too (see :func:`_is_out_of_memory`).
     """
+    if _is_out_of_memory(exc):
+        return False
     try:
         from torch._dynamo.exc import TorchDynamoException
 

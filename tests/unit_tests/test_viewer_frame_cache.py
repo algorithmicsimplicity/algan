@@ -406,3 +406,44 @@ def test_timed_out_waiters_do_not_retain_deliveries(session):
     assert not session._frame_waiters
     session._store_png(0, b"oversized PNG payload")
     assert not session._frame_deliveries
+
+
+def test_a_failed_render_logs_where_it_was_raised(fresh_scene, monkeypatch):
+    """The page shows the error's one line, and the traceback used to go
+    nowhere, so an error from the Scene could not be placed. Each request
+    retries the render, and the same error is logged only the first time.
+    """
+    import logging
+
+    calls = []
+    retried = threading.Event()
+
+    def render_that_fails(self):
+        calls.append(None)
+        if len(calls) >= 2:
+            retried.set()
+        raise NameError("name 'wobble' is not defined")
+
+    monkeypatch.setattr(viewer, "_frame_cache_budget", lambda: 10)
+    monkeypatch.setattr(viewer.ViewerSession, "_render_next", render_that_fails)
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    capture = _Capture(level=logging.ERROR)
+    algan_logger = logging.getLogger("algan")
+    algan_logger.addHandler(capture)
+    Scene.wait(1)
+    session = viewer.ViewerSession(Scene.current(), PREVIEW.set(resolution=(4, 4)))
+    try:
+        for index in (0, 1):
+            with pytest.raises(RuntimeError, match="NameError: name 'wobble'"):
+                session.frame(index, timeout=10)
+        # Closing joins the worker, so the retry has finished logging (or not).
+        assert retried.wait(10)
+    finally:
+        session.close()
+        algan_logger.removeHandler(capture)
+    assert [record.exc_info[0] for record in records if record.exc_info] == [NameError]

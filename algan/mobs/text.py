@@ -177,7 +177,9 @@ class _TexGlyphs(NamedTuple):
     glyphs each holds; ``points`` is each outline glyph's Manim point array
     and ``is_svg_path`` whether it came from an SVG path (which decides the
     triangulated path's orientation). ``styled_fills`` is each Pango glyph's
-    fill color and opacity (None for LaTeX).
+    fill color and opacity (None for LaTeX). ``typesetting_warnings`` are the
+    warnings typesetting raised, as ``(category, message)`` pairs, for a
+    :class:`Tex` built from these outlines to raise again.
     """
 
     tex_keys: tuple | None
@@ -185,6 +187,7 @@ class _TexGlyphs(NamedTuple):
     points: tuple
     is_svg_path: tuple
     styled_fills: tuple | None
+    typesetting_warnings: tuple = ()
 
 
 #: Typeset outlines by source, so a formula is typeset and parsed once per
@@ -455,8 +458,12 @@ class Tex(Mob):
             self.tex_strings, delimiter, tex_environment, latex, pango_kwargs, kwargs
         )
         glyphs = _TEX_GLYPH_MEMO.get(memo_key) if memo_key is not None else None
+        raised = []
         if glyphs is not None:
             t = None
+            # The outlines were remembered from typesetting this source, which
+            # is skipped now, and with it whatever typesetting warned about.
+            _raise_again(glyphs.typesetting_warnings)
         elif self.latex:
             tex_kwargs = {
                 "arg_separator": delimiter,
@@ -474,13 +481,18 @@ class Tex(Mob):
                     'package: `pip install "algan[pango]"`. Or use algan.Text, '
                     "which typesets through LaTeX's text mode without it."
                 )
-            t = mn.Text(
-                delimiter.join(self.tex_strings),
-                font_size=base_font_size,
-                # Pango defaults this off. Use Algan's existing content-keyed
-                # SVG recipe cache, just as MathTex does, for repeated labels.
-                **{"use_svg_cache": True, **(pango_kwargs or {})},
-            )
+            previous = getattr(_TYPESETTING, "warnings", None)
+            _TYPESETTING.warnings = raised
+            try:
+                t = mn.Text(
+                    delimiter.join(self.tex_strings),
+                    font_size=base_font_size,
+                    # Pango defaults this off. Use Algan's existing content-keyed
+                    # SVG recipe cache, just as MathTex does, for repeated labels.
+                    **{"use_svg_cache": True, **(pango_kwargs or {})},
+                )
+            finally:
+                _TYPESETTING.warnings = previous
 
         if latex:
             if glyphs is None:
@@ -526,6 +538,7 @@ class Tex(Mob):
                         (c.fill_color.to_hex().upper(), float(c.fill_opacity))
                         for c in outlines
                     ),
+                    tuple(raised),
                 )
                 if memo_key is not None and len(outlines) == len(chars):
                     _remember_tex_glyphs(memo_key, glyphs)
@@ -943,6 +956,149 @@ def _pango_style(kind: str, value):
     return upper
 
 
+#: Generic family names: CSS's, and the shorter ones fontconfig knows. Pango
+#: maps each to a font of that kind (on Linux through fontconfig's aliases)
+#: rather than looking for a font by that name, so whichever font it picks,
+#: possibly its fallback, is the one asked for.
+_GENERIC_FONT_FAMILIES = frozenset(
+    {
+        "sans",
+        "sans-serif",
+        "serif",
+        "mono",
+        "monospace",
+        "cursive",
+        "fantasy",
+        "math",
+        "emoji",
+        "fangsong",
+        "system-ui",
+        "ui-sans-serif",
+        "ui-serif",
+        "ui-monospace",
+        "ui-rounded",
+    }
+)
+
+#: A family no font has, so Pango draws it in its fallback.
+_NO_SUCH_FONT = "Algan No Such Font"
+
+#: What :func:`_pango_draws_a_substitute` draws in each font it compares.
+_FONT_SAMPLE = "Hamburgefonstiv"
+
+
+def _font_key(name: str) -> str:
+    # fontconfig matches family names ignoring case and blanks.
+    return "".join(name.split()).casefold()
+
+
+def _pango_drawing(family: str) -> bytes:
+    """The SVG Pango draws :data:`_FONT_SAMPLE` as in ``family``."""
+    import tempfile
+    from pathlib import Path
+
+    import manimpango
+
+    with tempfile.TemporaryDirectory(prefix="algan-font-") as directory:
+        path = Path(directory) / "sample.svg"
+        manimpango.text2svg(
+            [
+                manimpango.TextSetting(
+                    0, len(_FONT_SAMPLE), family, "NORMAL", "NORMAL", 0
+                )
+            ],
+            48,
+            0,
+            False,
+            str(path),
+            30,
+            20,
+            1000,
+            200,
+            _FONT_SAMPLE,
+        )
+        return path.read_bytes()
+
+
+def _pango_draws_a_substitute(font: str) -> bool:
+    """Whether Pango draws ``font`` in the font it falls back to.
+
+    Neither the installed families nor the name can say: fontconfig maps many
+    names it has no font by to one it has of the same kind or metrics
+    ("Arial" to Liberation Sans, "Helvetica" to Nimbus Sans), and takes the
+    first installed family of a list such as ``"Nope, DejaVu Serif"``, and a
+    font registered since the families were listed is drawn too. So a line is
+    drawn in ``font`` and in a name no font has, and compared. Each takes a
+    millisecond or so, and only a name that is not installed as written gets
+    here.
+    """
+    return _pango_drawing(font) == _pango_drawing(_NO_SUCH_FONT)
+
+
+#: Per thread, while Manim typesets a Pango text: the list the warnings it
+#: raises are added to, as ``(category, message)`` pairs, so that a later Text
+#: built from the outlines remembered from it can raise them again.
+_TYPESETTING = threading.local()
+
+
+def _raise_again(raised):
+    """Raise ``(category, message)`` warnings again, at the script's line."""
+    import warnings
+
+    from algan.errors import _user_stacklevel
+
+    for category, message in raised:
+        warnings.warn(message, category, stacklevel=_user_stacklevel())
+
+
+def _installed_font(font: str, installed) -> str:
+    """The installed spelling of ``font``, after a warning if Pango has none.
+
+    The vendored Manim's ``Text`` and ``MarkupText`` call this when ``font`` is
+    not in ``installed`` (their ``font_list()``) as written, nor in the three
+    capitalizations they try. A family that is installed under another case or
+    spacing (``"dejavu sans mono"``, ``"DejaVuSansMono"``) is returned as it is
+    installed. Otherwise Pango may still draw it -- a generic family, a name
+    fontconfig maps to an installed font, a comma-separated list, a font
+    registered since ``font_list()`` was cached -- or may draw a substitute
+    without a word, where Manim logged the whole installed list, hundreds of
+    names on a Mac. Only then does this warn, at the script's line, naming the
+    installed fonts closest to ``font``.
+    """
+    import difflib
+    import warnings
+
+    from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
+
+    key = _font_key(font)
+    by_key = {_font_key(name): name for name in installed}
+    if key in by_key:
+        return by_key[key]
+    families = [_font_key(family) for family in font.split(",")]
+    if any(family in _GENERIC_FONT_FAMILIES or family in by_key for family in families):
+        # Pango takes the list's first family it has, so this one is drawn.
+        return font
+    if not _pango_draws_a_substitute(font):
+        return font
+    close = [by_key[match] for match in difflib.get_close_matches(key, by_key, n=3)]
+    if len(close) > 1:
+        suggestion = f" The closest installed fonts are {', '.join(map(repr, close))}."
+    elif close:
+        suggestion = f" The closest installed font is {close[0]!r}."
+    else:
+        suggestion = ""
+    message = (
+        f"No installed font is named {font!r}, so Pango draws this text in a "
+        f"substitute.{suggestion} manimpango.list_fonts() lists the installed "
+        "fonts, and warn_missing_font=False turns this warning off."
+    )
+    raised = getattr(_TYPESETTING, "warnings", None)
+    if raised is not None:
+        raised.append((UnsupportedFeatureWarning, message))
+    warnings.warn(message, UnsupportedFeatureWarning, stacklevel=_user_stacklevel())
+    return font
+
+
 def _to_pango_hex(color, color_map):
     """Convert a color spec (algan Color/tensor, hex/named string, or manim
     color) to an RGB hex string that manim's Pango renderer accepts.
@@ -1245,7 +1401,7 @@ def _warn_latex_text_fallback():
     _LATEX_TEXT_FALLBACK_WARNED = True
     import warnings
 
-    from algan.errors import UnsupportedFeatureWarning
+    from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
 
     warnings.warn(
         "Text is typesetting through LaTeX's text mode, because the optional "
@@ -1259,7 +1415,7 @@ def _warn_latex_text_fallback():
         "LaTeX's text fonts lack (most non-Latin scripts, emoji) cannot be "
         "typeset.",
         UnsupportedFeatureWarning,
-        stacklevel=3,
+        stacklevel=_user_stacklevel(),
     )
 
 
@@ -1350,8 +1506,12 @@ class Text(Tex):
     tab_width
         How many spaces a tab in ``text`` expands to. Defaults to ``4``.
     warn_missing_font
-        Whether to log a warning when ``font`` is not installed. Defaults to
-        ``True``.
+        Whether to check ``font`` against the installed fonts. A name that
+        differs from an installed font only in case or spacing is then sent to
+        Pango as the installed font spells it, and a name no installed font
+        has raises an :class:`~algan.errors.UnsupportedFeatureWarning` naming
+        the closest ones, since Pango draws the text in a substitute. Defaults
+        to ``True``; ``False`` sends ``font`` to Pango as written.
     height
         Scale the finished text uniformly so it is this tall, in world units.
         Defaults to ``None``, its natural size for ``font_size``.

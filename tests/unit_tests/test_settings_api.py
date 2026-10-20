@@ -21,6 +21,7 @@ from algan import (
     PREVIEW,
     SETTINGS,
     AlganConfigurationError,
+    AlganWarning,
     ComputingSettings,
     RayTracingSettings,
     VideoSettings,
@@ -239,6 +240,40 @@ def test_the_render_device_rejects_what_it_cannot_render_on():
     if not torch.cuda.is_available():
         with pytest.raises(AlganConfigurationError, match="CUDA"):
             SETTINGS.computing.set(render_device="cuda")
+
+
+def test_a_cuda_device_that_fails_its_probe_says_why(monkeypatch):
+    """A CUDA device torch sees but cannot use was rejected without the reason,
+    and 'auto' moved to the CPU without a word.
+    """
+    from algan.settings import _startup
+
+    zeros = torch.zeros
+
+    def zeros_without_cuda_kernels(*args, device=None, **kwargs):
+        if device == "cuda":
+            raise RuntimeError(
+                "CUDA error: no kernel image is available for execution on the "
+                "device\nCUDA kernel errors might be asynchronously reported"
+            )
+        return zeros(*args, device=device, **kwargs)
+
+    reason = "RuntimeError: CUDA error: no kernel image is available"
+    # Undone before restore_settings restores the render device, which checks
+    # it again: on a CUDA or MPS machine that check must see the real probes.
+    with monkeypatch.context() as patch:
+        patch.setattr(_startup, "_CUDA_USABLE", None)
+        patch.setattr(_startup, "_CUDA_PROBE_FAILURE", None)
+        patch.setattr(torch.cuda, "is_available", lambda: True)
+        # 'auto' would take MPS ahead of the CPU, on a Mac that has it.
+        patch.setattr(_startup, "_mps_is_usable", lambda: False)
+        patch.setattr(torch, "zeros", zeros_without_cuda_kernels)
+        with pytest.raises(AlganConfigurationError, match=reason) as caught:
+            _startup.coerce_device("cuda", "render_device")
+        assert "asynchronously" not in str(caught.value)
+        with pytest.warns(AlganWarning, match=reason):
+            device = _startup.coerce_device("auto", "ALGAN_RENDER_DEVICE")
+    assert device == torch.device("cpu")
 
 
 def test_the_render_device_cannot_change_mid_render():

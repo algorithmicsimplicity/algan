@@ -331,6 +331,90 @@ def test_a_backend_that_fails_when_its_code_runs_is_demoted(monkeypatch, tmp_pat
     assert "NameError" in _wrapped_state(f).reason
 
 
+def _generated_call(tmp_path, body):
+    """A ``call`` defined in a file under a ``torchinductor`` cache directory."""
+    generated = tmp_path / "torchinductor_test" / "kernel.py"
+    generated.parent.mkdir()
+    generated.write_text(f"import torch\n\ndef call(*args):\n    {body}\n")
+    namespace = {}
+    exec(compile(generated.read_text(), str(generated), "exec"), namespace)
+    return namespace["call"]
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        "torch.OutOfMemoryError('CUDA out of memory. Tried to allocate 2.00 GiB')",
+        "RuntimeError('CUDA error: out of memory')",
+    ],
+    ids=["torch", "driver"],
+)
+def test_running_out_of_memory_in_generated_code_is_not_a_compile_failure(
+    monkeypatch, tmp_path, raised
+):
+    """The render loop retries an out-of-memory batch with fewer frames. The
+    error used to be taken for the compiler's, so the function was rerun at
+    once on the same batch and stayed eager for the rest of the process.
+    """
+    call = _generated_call(tmp_path, f"raise {raised}")
+    monkeypatch.setattr(tc, "_BACKEND", lambda gm, example_inputs: call)
+    SETTINGS.computing.set(torch_compile=True)
+    eager_calls = []
+
+    @tc.compiled
+    def f(x):
+        eager_calls.append(x)
+        return x + 1
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(RuntimeError, match="out of memory"):
+            f(torch.zeros(2))
+    assert not [w for w in caught if w.category is AlganWarning]
+    assert not _wrapped_state(f).failed
+    assert not eager_calls
+
+
+def test_running_out_of_memory_while_compiling_is_not_a_compile_failure(
+    monkeypatch,
+):
+    def backend(gm, example_inputs):
+        raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+    monkeypatch.setattr(tc, "_BACKEND", backend)
+    SETTINGS.computing.set(torch_compile=True)
+
+    @tc.compiled
+    def f(x):
+        return x + 1
+
+    with pytest.raises(RuntimeError, match="out of memory"):
+        f(torch.zeros(2))
+    assert not _wrapped_state(f).failed
+
+
+def test_a_compiler_that_runs_out_of_memory_is_a_compile_failure(monkeypatch):
+    """Its own output says "out of memory", but the function is not at fault
+    and runs eagerly instead.
+    """
+
+    def backend(gm, example_inputs):
+        raise RuntimeError("cc1plus: out of memory allocating 65536 bytes")
+
+    monkeypatch.setattr(tc, "_BACKEND", backend)
+    SETTINGS.computing.set(torch_compile=True)
+
+    @tc.compiled
+    def f(x):
+        return x + 1
+
+    x = torch.zeros(2)
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        assert torch.equal(f(x), x + 1)
+    assert _wrapped_state(f).failed
+
+
 def test_auto_declines_torch_compile_on_metal(monkeypatch):
     """``'auto'`` is off on MPS, and an explicit setting still forces it on.
 
