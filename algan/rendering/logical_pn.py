@@ -83,6 +83,18 @@ copy came before, and a graph of its own for a batch of one -- twelve graphs
 for these three on the graphics workload, each traced again in every new
 process at about half a second apiece on the T4. Named, it is one graph per
 function, and a batch of one runs padded to two rows (``batch_args``).
+
+On CUDA they also turn off Inductor's pointwise autotuning
+(:data:`_DICE_COMPILE_OPTIONS`). Left on, it times a few block sizes for each
+generated kernel on its first launch and keeps the fastest, and the block size
+changes the kernel's machine code enough to move a diced vertex by an ulp: on
+the T4 the one dynamic position kernel, byte-identical across three fresh
+Inductor caches, was timed to a 128-element block in one and 256 in the other
+two, and the 128 one rendered the graphics workload's HD video 5 channel
+values away from the others at a few silhouette pixels. Which one wins is a
+matter of timing noise, so the same scene could render differently from one
+fresh cache to the next. Off, the block size is the heuristic's own pick,
+which depends only on the kernel, and no timing is spent finding it.
 """
 
 from __future__ import annotations
@@ -94,6 +106,11 @@ import torch.nn.functional as F
 
 from algan.rendering.mps_compat import clamp_floor
 from algan.utils.torch_compile import compiled
+
+#: Inductor options for every compiled dice function: one block size per
+#: kernel rather than the fastest of several timed on first launch, which made
+#: a diced vertex depend on timing noise (module docstring).
+_DICE_COMPILE_OPTIONS = {"triton.autotune_pointwise": False}
 
 #: Frame height, in pixels, at which a ``render_tolerance_pixels`` budget is
 #: spent in full. Below it the budget is scaled down in proportion, so a small
@@ -340,6 +357,7 @@ def evaluate_cubic_curve(control_points, t):
 @compiled(
     dynamic_dims={"control_points": (0,), "uv": (0,)},
     batch_args=("control_points",),
+    options=_DICE_COMPILE_OPTIONS,
 )
 def evaluate_logical_pn(control_points, uv):
     """Evaluate cubic logical PN position patches at coordinates ``uv``.
@@ -452,6 +470,7 @@ def evaluate_logical_pn_normals(control_points, uv):
 @compiled(
     dynamic_dims={"control_points": (0,), "uv": (0,)},
     batch_args=("control_points",),
+    options=_DICE_COMPILE_OPTIONS,
 )
 def _evaluate_logical_pn_normals_fused(control_points, uv):
     """The unnormalized quadratic normal patch of :func:`evaluate_logical_pn_normals`.
@@ -675,6 +694,7 @@ def snap_boundary_values(values, pattern_edge_levels, edge_levels, boundary):
         "edge_vertex_ids": (1,),
     },
     batch_args=("values", "shift"),
+    options=_DICE_COMPILE_OPTIONS,
 )
 def _snap_boundary_values_fused(
     values,
