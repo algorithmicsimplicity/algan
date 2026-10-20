@@ -43,8 +43,9 @@ import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+# Only the scene modules' directory: ``algan`` itself must resolve the way a
+# user's import does, so ``PYTHONPATH`` can point a run at another checkout.
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parents[1]))
 # In-process on purpose: the daemon would hide the first run's cost.
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
