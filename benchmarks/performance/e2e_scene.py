@@ -18,9 +18,11 @@ dies half way keeps what it measured (``agent_guidance/gpu_harnesses.md``).
     python benchmarks/performance/e2e_scene.py --scene graphics --quality HD \
         --seconds 2 --runs 3 --label base
 
-``--lossless`` encodes x264 at CRF 0 so ``--compare-to`` (another arm's video)
-can decode both and report the largest channel difference; the repository's
-render tolerance is 2. ``--cprofile N`` profiles run ``N`` and prints its top
+``--lossless`` encodes RGB x264 (``libx264rgb``) at CRF 0, so ``--compare-to``
+(another arm's video) decodes the rendered pixels themselves and reports the
+largest channel difference; the repository's render tolerance is 2. (Plain
+``libx264`` at CRF 0 is lossless only after its 4:2:0 conversion, which can
+turn a 2 in one pixel into a 3 in its neighbours.) ``--cprofile N`` profiles run ``N`` and prints its top
 functions by own and cumulative time
 (authoring included; comma-separate several runs).
 
@@ -31,6 +33,9 @@ prints how much of it the GPU was busy, its largest idle gaps and its top
 kernels, and with ``--trace-stages`` also names the pipeline stage the host was
 in during each idle gap (``profiling_utils``' stage hooks, re-pointed at
 ``torch.profiler.record_function`` so they add no device syncs);
+``--first-launches N`` times the host side of every kernel launch in run ``N``
+and prints the slowest first launches, where a kernel's compiled code is loaded
+from the offline cache (or compiled) and handed to the driver;
 ``--torch-compile off`` renders with ``SETTINGS.computing.torch_compile`` off;
 ``--rt NAME=VALUE`` flips a raytracing knob through ``set_NAME`` (or the module
 attribute) before the first run. Both settings are part of the Taichi kernel
@@ -340,6 +345,54 @@ def _stage_annotations():
             del timers.stage
 
 
+class _LaunchTimer:
+    """Host seconds of each kernel specialization's first launch.
+
+    The first launch is where a specialization's compiled code is fetched --
+    from the offline cache, or compiled -- and loaded into the driver. Later
+    launches take ``taichi_fast_launch``'s cached plan and never reach
+    ``Kernel.launch_kernel``, so only first launches are counted. Nothing
+    here syncs the device.
+    """
+
+    def __init__(self):
+        self.first = {}
+
+    def __enter__(self):
+        from algan.taichi_compat import submodule
+
+        kernel_type = submodule("lang.kernel_impl").Kernel
+        original = kernel_type.launch_kernel
+        first = self.first
+
+        def timed(kernel, *args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return original(kernel, *args, **kwargs)
+            finally:
+                key = args[0] if args and isinstance(args[0], tuple) else None
+                name = f"{kernel.func.__qualname__}[{key[1] if key else '?'}]"
+                if name not in first:
+                    first[name] = time.perf_counter() - started
+
+        self._restore = (kernel_type, original)
+        kernel_type.launch_kernel = timed
+        return self
+
+    def __exit__(self, *exc):
+        kernel_type, original = self._restore
+        kernel_type.launch_kernel = original
+        return False
+
+    def summary(self, top=20):
+        slowest = sorted(self.first.items(), key=lambda item: -item[1])[:top]
+        return {
+            "specializations": len(self.first),
+            "first_launch_s": round(sum(self.first.values()), 3),
+            "slowest_first": [[name, round(t, 4)] for name, t in slowest],
+        }
+
+
 def _print_profile(profiler, limit):
     for key in ("tottime", "cumulative"):
         stream = io.StringIO()
@@ -371,11 +424,13 @@ def main(argv=None):
     parser.add_argument("--compile-stats", action="store_true")
     parser.add_argument("--torch-profile", default="", metavar="RUNS")
     parser.add_argument("--trace-stages", action="store_true")
+    parser.add_argument("--first-launches", default="", metavar="RUNS")
     parser.add_argument("--torch-compile", choices=("auto", "on", "off"), default=None)
     parser.add_argument("--rt", action="append", default=[], metavar="NAME=VALUE")
     args = parser.parse_args(argv)
     profiled_runs = {int(r) for r in args.cprofile.split(",") if r.strip()}
     traced_runs = {int(r) for r in args.torch_profile.split(",") if r.strip()}
+    launch_runs = {int(r) for r in args.first_launches.split(",") if r.strip()}
     if args.torch_compile is not None:
         SETTINGS.computing.torch_compile = {"auto": "auto", "on": True, "off": False}[
             args.torch_compile
@@ -420,6 +475,7 @@ def main(argv=None):
 
     kwargs = {"overwrite": True, "animate_fade_out": False}
     if args.lossless:
+        kwargs["codec"] = "libx264rgb"
         kwargs["ffmpeg_params"] = ["-crf", "0", "-preset", "ultrafast"]
     runs = []
     output = None
@@ -447,9 +503,12 @@ def main(argv=None):
             if tracer is not None and args.trace_stages
             else contextlib.nullcontext()
         )
-        with annotate:
+        launches = _LaunchTimer() if index in launch_runs else None
+        with annotate, launches or contextlib.nullcontext():
             result = scene.save_video(str(output), preset, **kwargs)
             _sync()
+        if launches is not None:
+            print(f"E2E_LAUNCHES run {index} " + json.dumps(launches.summary()))
         if profiler is not None:
             profiler.disable()
         finished = time.perf_counter()
