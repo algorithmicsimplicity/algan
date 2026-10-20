@@ -29,7 +29,7 @@ from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import DOWN, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
-from algan.utils.python_utils import traverse
+from algan.utils.python_utils import integer_or_none, traverse
 from algan.utils.tensor_utils import cast_to_direction
 
 
@@ -580,8 +580,10 @@ class Group(Mob):
             column_buffer = row_buffer
         if num_rows is None:
             num_rows = max(1, math.ceil(math.sqrt(len(self.children))))
-        if not isinstance(num_rows, int) or isinstance(num_rows, bool) or num_rows <= 0:
+        rows = None if isinstance(num_rows, bool) else integer_or_none(num_rows)
+        if rows is None or rows <= 0:
             raise AlganConfigurationError("num_rows must be a positive integer")
+        num_rows = rows
         num_cols = len(self.children) // num_rows
         if num_rows * num_cols < len(self.children):
             num_cols += 1

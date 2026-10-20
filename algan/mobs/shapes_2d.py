@@ -34,7 +34,7 @@ from algan.animation_timeline.animation_contexts import (
 from algan.constants.color import *
 from algan.constants.spatial import INWARD, LEFT, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
-from algan.geometry.geometry import map_local_to_global_coords
+from algan.geometry.geometry import get_orthonormal_vector, map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.stroke_style import _warn_background_stroke
 from algan.settings import SETTINGS
@@ -276,65 +276,82 @@ class Line(BezierCircuitCubic):
             )
         super().__init__(control_points, *args, **kwargs)
 
-    def get_start(self):
-        """Get the point the line starts at, where it is now.
+    def _path_ends(self):
+        """The first and last control point of each line, one row per line.
 
-        Follows the line when it is moved, rotated or scaled, and reflects
-        animations recorded so far. On an arc built with ``path_arc`` it is
-        where the arc starts.
+        Not the first point of every cubic: an arc is drawn with several, and a
+        pack of lines (``batch_mobs``) holds each line's cubics end to end.
+        """
+        points = self.control_points.location
+        sizes = self.control_points.parent_batch_sizes
+        if sizes is None or int(sizes.sum()) != points.shape[-2]:
+            return points[..., :1, :], points[..., -1:, :]
+        last = sizes.to(points.device).cumsum(0) - 1
+        first = last - sizes.to(points.device) + 1
+        return points[..., first, :], points[..., last, :]
+
+    def get_start(self) -> torch.Tensor:
+        """Get the point the line starts at.
+
+        For an arc this is where the whole arc starts, not where each of the
+        cubic segments it is drawn with does.
 
         Returns
         -------
         torch.Tensor
-            The start, in world units, shape ``(*, 3)``.
+            The start point in world units, shape ``(*, 1, 3)``; a pack of lines
+            made with :func:`~algan.utils.mob_utils.batch_mobs` has one row per
+            line.
         """
-        return self.control_points.location[..., :1, :]
+        return self._path_ends()[0]
 
-    def get_end(self):
-        """Get the point the line ends at, where it is now.
+    def get_end(self) -> torch.Tensor:
+        """Get the point the line ends at.
 
-        As :meth:`get_start`, for the other end.
+        For an arc this is where the whole arc ends, not where each of the
+        cubic segments it is drawn with does.
 
         Returns
         -------
         torch.Tensor
-            The end, in world units, shape ``(*, 3)``.
+            The end point in world units, shape ``(*, 1, 3)``; a pack of lines
+            made with :func:`~algan.utils.mob_utils.batch_mobs` has one row per
+            line.
         """
-        return self.control_points.location[..., -1:, :]
+        return self._path_ends()[1]
 
-    def get_vector(self):
+    def get_vector(self) -> torch.Tensor:
         """Get the vector from the line's start to its end.
 
-        On an arc, the chord from where it starts to where it ends.
+        For an arc this is its chord.
 
         Returns
         -------
         torch.Tensor
-            ``get_end() - get_start()``, in world units, shape ``(*, 3)``.
+            :meth:`get_end` minus :meth:`get_start`, shape ``(*, 1, 3)``.
         """
         return self.get_end() - self.get_start()
 
-    def get_unit_vector(self):
-        """Get the direction the line runs in, from its start to its end.
+    def get_unit_vector(self) -> torch.Tensor:
+        """Get the direction from the line's start to its end.
 
         Returns
         -------
         torch.Tensor
-            :meth:`get_vector` normalized to length 1, shape ``(*, 3)``.
+            :meth:`get_vector` normalized to length 1, shape ``(*, 1, 3)``.
         """
         return F.normalize(self.get_vector(), p=2, dim=-1)
 
-    def get_length(self):
+    def get_length(self) -> torch.Tensor:
         """Get the distance from the line's start to its end.
 
-        On an arc, the length of the chord between its ends, not the length
-        along the arc.
+        For an arc this is the length of its chord, as in Manim, not of the
+        curve.
 
         Returns
         -------
         torch.Tensor
-            The length in world units, shape ``(*)``: :meth:`get_vector`'s
-            shape without its last axis.
+            The length in world units, shape ``(*, 1)``.
         """
         return self.get_vector().norm(p=2, dim=-1)
 
@@ -447,6 +464,10 @@ class Line(BezierCircuitCubic):
         turns it at its full length.
         Stroke color, opacity, width, caps, joins and draw order are preserved.
 
+        Inside an updater it takes effect on every frame without animating, so
+        ``line.add_updater(lambda mob, t: mob.put_start_and_end_on(
+        a.get_center(), b.get_center()))`` keeps a line between two moving Mobs.
+
         Parameters
         ----------
         start
@@ -471,6 +492,10 @@ class Line(BezierCircuitCubic):
             line.put_start_and_end_on(DOWN, UP)
             Scene.save_video()
         """
+        if self.scene.timeline_manager.is_replaying():
+            # An updater, rendering a batch of frames at once: its points hold
+            # one row per frame, and no Line can be built for a batch to become.
+            return self._place_ends_now(start, end)
         target = Line(
             start,
             end,
@@ -490,6 +515,47 @@ class Line(BezierCircuitCubic):
         )
         target.z_index = self.z_index
         return self.become(target, detach_history=False)
+
+    def _place_ends_now(self, start, end):
+        """Turn, scale and move the line so its ends land on ``start`` and ``end``.
+
+        Vectorized over the frames of a batch. A line with no length has no
+        direction to turn from, so its points are laid along the new ends
+        directly.
+        """
+        start, end = cast_to_tensor(start), cast_to_tensor(end)
+        old_start, old_end = self.get_start(), self.get_end()
+        old_vector, new_vector = torch.broadcast_tensors(
+            old_end - old_start, end - start
+        )
+        old_length = old_vector.norm(p=2, dim=-1, keepdim=True)
+        new_length = new_vector.norm(p=2, dim=-1, keepdim=True)
+        pointless = old_length <= 1e-9
+        cross = torch.cross(old_vector, new_vector, dim=-1)
+        sine = cross.norm(p=2, dim=-1, keepdim=True)
+        cosine = (old_vector * new_vector).sum(-1, keepdim=True)
+        # Parallel or opposite ends have no cross product to turn about; any
+        # axis perpendicular to the line turns it the 0 or 180 degrees needed.
+        axis = torch.where(
+            sine > 1e-9 * old_length * new_length,
+            cross,
+            get_orthonormal_vector(old_vector),
+        )
+        angle = torch.where(pointless, 0.0, torch.rad2deg(torch.atan2(sine, cosine)))
+        factor = torch.where(pointless, 1.0, new_length / old_length.clamp_min(1e-9))
+        self.rotate(angle, axis, about=old_start)
+        self.scale(factor)
+        self.move(start - self.get_start())
+        if bool(pointless.any()):
+            points = self.control_points.location
+            cubics = points.shape[-2] // 4
+            along = (
+                torch.arange(cubics, device=points.device, dtype=points.dtype)[:, None]
+                + torch.tensor([0, 1 / 3, 2 / 3, 1], device=points.device)
+            ).reshape(-1, 1) / cubics
+            laid = start + along * (end - start)
+            self.control_points.location = torch.where(pointless, laid, points)
+        return self
 
 
 class Point(BezierCircuitCubic):
@@ -739,10 +805,10 @@ class Polygon(BezierCircuitCubic):
     Parameters
     ----------
     *vertex_locations
-        The vertices in order, in world units: either one point per argument,
-        ``Polygon(LEFT, RIGHT, UP)``, or a single tensor of shape ``(N, 3)``.
-        Each vertex is joined to the next and the last back to the first. At
-        least three are required.
+        The vertices in order, in world units: one point per argument,
+        ``Polygon(LEFT, RIGHT, UP)``, one list of them, or a single tensor of
+        shape ``(N, 3)``. Each vertex is joined to the next and the last back
+        to the first. At least three are required.
     **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``color``, which
         defaults to ``RED``, and the ``stroke_*`` styling.
@@ -757,13 +823,17 @@ class Polygon(BezierCircuitCubic):
         kwargs = _translate_vector_style_kwargs(
             kwargs, default_color=RED, shape=type(self)
         )
-        if not vertex_locations:
+        if not vertex_locations or (
+            len(vertex_locations) == 1
+            and isinstance(vertex_locations[0], (list, tuple))
+            and not vertex_locations[0]
+        ):
             # ``torch.stack([])`` below would answer "stack expects a
             # non-empty TensorList", which says nothing about polygons.
             raise AlganConfigurationError(
                 f"{type(self).__name__} needs its vertices: pass them as "
-                f"points ({type(self).__name__}(LEFT, RIGHT, UP)) or as one "
-                f"[N, 3] tensor."
+                f"points ({type(self).__name__}(LEFT, RIGHT, UP)), as a list "
+                f"of points or as one [N, 3] tensor."
             )
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])

@@ -31,7 +31,10 @@ what each block can actually support, in four tiers:
     Executes every block that is a complete script, with ``save_video`` /
     ``save_frame`` stubbed out. Catches everything that goes wrong while
     *authoring* a scene: wrong constructor arguments, a value of the wrong
-    width, a method that no longer exists.
+    width, a method that no longer exists. Also fails an example that leaves a
+    Mob registered and never spawned, which ``save_video`` would warn its
+    reader about -- a morph or match target built without
+    ``add_to_scene=False``.
 
 ``test_doc_example_renders`` (opt-in)
     Actually renders those scripts at ``SMOKE_TEST``. This is the only tier that
@@ -538,7 +541,15 @@ def _run_example(example: DocExample, *, render: bool):
     originals = {name: Scene.__dict__.get(name) for name in stubbed}
     previous_cwd = Path.cwd()
 
+    unshown = []
+
     def _skip_render(*args, **kwargs):
+        # What a reader would be warned about at this point: a Mob the example
+        # registered and never spawned. A Mob that only feeds a morph, a match
+        # or a pack is data, and says so with add_to_scene=False.
+        scene = SceneManager.instance().current_scene
+        if any(actor.is_spawned() for actor in scene.actors):
+            unshown.extend(m._describe() for m in scene._never_spawned_root_mobs())
         return None
 
     SceneManager.reset()
@@ -549,6 +560,11 @@ def _run_example(example: DocExample, *, render: bool):
                 setattr(Scene, name, staticmethod(_skip_render))
         namespace = {"__name__": "__algan_doc_example__"}
         exec(compile(example.code, example.id, "exec"), namespace)
+        assert not unshown, (
+            f"{example.id} leaves Mobs it never spawns ({', '.join(sorted(set(unshown)))}), "
+            "so a reader running it is warned they will not appear; build data-only "
+            "Mobs with add_to_scene=False"
+        )
     finally:
         os.chdir(previous_cwd)
         if not render:

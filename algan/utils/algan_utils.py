@@ -225,6 +225,10 @@ _SUPPORTED_VIDEO_CONTAINERS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")
 #: Still-image formats :meth:`~algan.scene.Scene.save_frame` will write.
 _SUPPORTED_IMAGE_FORMATS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
+#: The still formats that keep an alpha channel. JPEG has none, and Pillow's
+#: BMP is read back without one, so a transparent background is lost in both.
+_TRANSPARENT_IMAGE_FORMATS = (".png", ".webp", ".tif", ".tiff")
+
 #: How Algan encodes transparent output, by container. The codec cannot be
 #: chosen blind to the container: ``png`` carries RGBA losslessly in the
 #: QuickTime/Matroska/AVI muxers, but WebM has no PNG track, and asking for one
@@ -301,6 +305,24 @@ def _check_transparent_container_is_supported(destination) -> None:
         f"Algan's transparent output. Use "
         f"{', '.join(sorted(_TRANSPARENT_CODECS))}, or choose an opaque "
         f"background."
+    )
+
+
+def _check_transparent_still_is_supported(destination) -> None:
+    """Fail before rendering a transparent still into a format with no alpha.
+
+    The video counterpart is :func:`_check_transparent_container_is_supported`.
+    Without this, a JPEG was refused only once its frame had been rendered,
+    by Pillow, as ``OSError: cannot write mode RGBA as JPEG``, and a BMP was
+    written and read back opaque.
+    """
+    suffix = Path(destination).suffix.lower()
+    if suffix in _TRANSPARENT_IMAGE_FORMATS:
+        return
+    raise AlganConfigurationError(
+        f"{suffix.lstrip('.').upper()} does not support Algan's transparent "
+        f"output. Use {', '.join(_TRANSPARENT_IMAGE_FORMATS)}, or choose an "
+        f"opaque background."
     )
 
 
@@ -552,12 +574,18 @@ def _render_scene_to_file(
             animate_fade_out = SETTINGS.style.fade_out_on_scene_end
         render_started = True
         # A scene authored entirely inside Off() otherwise has zero runtime,
-        # which produces an empty video. Keep one frame alive. This is needed
-        # in every mode, because it decides how many frames get rendered.
+        # which produces an empty video, and so does one shorter than half a
+        # frame: the frame count is the duration rounded to whole frames. Keep
+        # one frame alive. This is needed in every mode, because it decides
+        # how many frames get rendered.
         timeline_context = scene.animation_manager.context
         if (
             timeline_context is not None
-            and timeline_context.timespan.original_end <= 0
+            and round(
+                timeline_context.timespan.original_end
+                * video_settings.frames_per_second
+            )
+            < 1
             and any(actor.is_spawned() for actor in scene.actors)
         ):
             timeline_context.wait(1.0 / video_settings.frames_per_second)

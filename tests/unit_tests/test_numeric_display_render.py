@@ -8,7 +8,18 @@ import pytest
 import torch
 from PIL import Image
 
-from algan import BLACK, PREVIEW, RIGHT, DecimalNumber, Scene, Square, Sync, easings
+from algan import (
+    BLACK,
+    DOWN,
+    PREVIEW,
+    RIGHT,
+    DecimalNumber,
+    Off,
+    Scene,
+    Square,
+    Sync,
+    easings,
+)
 
 
 def _frames(scene, indices):
@@ -82,3 +93,30 @@ def test_significant_animation_matches_static_control(
     assert int(actual.max()) > 50
     assert int((actual.int() - expected.int()).abs().max()) <= 2
     Image.fromarray(actual.numpy()).save(tmp_path / f"significant_{target}.png")
+
+
+@pytest.mark.parametrize("precision", [None, 3])
+def test_a_clone_draws_like_a_number_built_where_it_stands(precision):
+    # The sign and point are views of a hidden placeholder pack. A clone drew
+    # neither, and drew a copy of the placeholder instead: a stale sign left
+    # beside the original after the original counted past zero.
+    settings = PREVIEW.set(resolution=(240, 160), frames_per_second=4)
+    kwargs = {} if precision is None else {"significant_figures": precision}
+    with Scene(settings, background=BLACK) as scene:
+        number = DecimalNumber(-12.5, **kwargs).scale(1.5).spawn(animate=False)
+        copy = number.clone()
+        with Off():
+            copy.move(DOWN * 1.5)
+        number.value = 7
+        scene.wait(1)
+        actual = _frames(scene, (6,))[0]
+
+    with Scene(settings, background=BLACK) as control:
+        layout = {} if precision is not None else {"integer_places": 2}
+        DecimalNumber(7, **layout, **kwargs).scale(1.5).spawn(animate=False)
+        DecimalNumber(-12.5, **kwargs).scale(1.5).move(DOWN * 1.5).spawn(animate=False)
+        control.wait(2)
+        expected = _frames(control, (6,))[0]
+
+    assert int(actual.max()) > 50
+    assert int((actual.int() - expected.int()).abs().max()) <= 2

@@ -1110,6 +1110,18 @@ class MobMorphMixin:
                     object.__setattr__(parent, name, replacement)
         return replacement
 
+    def _morphs_through_stand_in(self):
+        """Whether ``become`` morphs a copy of this Mob instead of detaching it.
+
+        True when the subtree holds a packed selection -- ``text[0]``, a
+        ``get_segment``, a Group of either -- whose rows its pack shares.
+        """
+        return any(node.data_sub_inds is not None for node in self.get_descendants())
+
+    def _morph_stand_in(self):
+        """A copy of this Mob, drawn as it is drawn, for ``become`` to morph."""
+        return self.clone(spawn=False)
+
     @staticmethod
     def _capture_parent_slots(source):
         slots = []
@@ -2075,7 +2087,7 @@ class MobMorphMixin:
         self,
         other_mob: Mob,
         *,
-        detach_history: bool = True,
+        detach_history: bool | None = None,
         minimize_movement: bool = False,
         strategy: str = "auto",
     ) -> Mob:
@@ -2096,11 +2108,17 @@ class MobMorphMixin:
         hierarchy and is spliced into this Mob's parent slot; use it for later
         animation. Surplus target primitives fade in as they grow from collapsed,
         target-shaped geometry at nearby source points, while surplus sources fade
-        out as they shrink to points.
+        out as they shrink to points. Part of a text (``text[0]``,
+        ``tex.get_segment(1)``) morphs the same way while the rest of the text
+        stays on screen; a :class:`~algan.mobs.numeric_display.DecimalNumber`
+        morphs from the glyphs it shows.
         ``detach_history=False`` keeps identity for compatibility and therefore
         uses a dissolve where a target-class replacement would be required.
         Updaters remain attached to replaced sources rather than being migrated
-        to replacements.
+        to replacements -- which is why, inside an updater, ``detach_history``
+        defaults to False and cannot be True: the Mob morphs in place, as
+        Manim's ``become`` does, rather than handing the screen to a
+        replacement the updater does not drive.
 
         Notes
         -----
@@ -2130,6 +2148,16 @@ class MobMorphMixin:
             raise AlganConfigurationError(
                 "become requires source and target Mobs in the same Scene"
             )
+        in_updater = self.scene.timeline_manager.is_running_updater()
+        if detach_history is None:
+            detach_history = not in_updater
+        elif detach_history and in_updater:
+            raise AlganConfigurationError(
+                "become(..., detach_history=True) cannot run inside an updater: "
+                "it hands the screen to a new Mob, while the updater stays on "
+                "this one and runs again every frame. Leave detach_history out, "
+                "or pass False, to morph this Mob in place."
+            )
         if (
             strategy == "morph"
             and self._morph_kind != other_mob._morph_kind
@@ -2141,6 +2169,21 @@ class MobMorphMixin:
             )
 
         am = self.animation_manager
+        if detach_history and self._morphs_through_stand_in():
+            # A packed selection's history is rows its pack shares with
+            # members outside it, which detach_history would hand away with
+            # it. A copy takes its place instead -- the selection despawns,
+            # leaving the rest of the pack on screen -- and the copy morphs.
+            with Off(animation_manager=am):
+                stand_in = self._morph_stand_in()
+                stand_in.spawn(animate=False)
+                self.despawn(animate=False)
+                self._splice_replacement(self, stand_in)
+            return stand_in.become(
+                other_mob,
+                minimize_movement=minimize_movement,
+                strategy=strategy,
+            )
         with Off(animation_manager=am):
             source = self
             if detach_history:

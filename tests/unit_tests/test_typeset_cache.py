@@ -113,9 +113,50 @@ def test_latex_errors_are_reported_from_the_log(tex_dir):
     message = str(caught.value)
     assert "Undefined control sequence" in message
     assert "dvisvgm" not in message
+    assert "math mode already" not in message
     kept = pathlib.Path(message.rsplit("Full log: ", 1)[1].strip())
     assert kept.is_file()
     assert kept.parent == typeset_cache.build_directory(tex_dir)
+
+
+@needs_latex
+def test_a_formula_written_for_manims_text_mode_tex_says_it_is_math_already(tex_dir):
+    # Manim's Tex takes ``$...$`` around its math; align* is math mode already,
+    # where LaTeX's own report is a bare "Missing } inserted".
+    with pytest.raises(ValueError) as caught:
+        _tex_to_svg("The area is $x^2$")
+
+    message = str(caught.value)
+    assert "Missing } inserted" in message
+    assert "math mode already (inside align*)" in message
+    assert "algan.manim.Tex" in message
+
+
+@pytest.mark.parametrize(
+    ("expression", "reads_a_dollar_in_math_mode"),
+    [
+        ("The area is $x^2$", True),
+        (r"x \\$y", True),  # a line break, then a mode switch
+        (r"\$5", False),
+        (r"\text{The area is $x^2$}", False),
+        (r"\text{a $\frac{1}{2}$ b}", False),
+        (r"\text{a$\sim$b} + $y$", True),
+        (r"\textcolor{red}{$x$}", True),  # only the color name is text
+        (r"x^2", False),
+    ],
+)
+def test_only_a_dollar_math_mode_would_read_earns_the_hint(
+    expression, reads_a_dollar_in_math_mode
+):
+    hint = typeset_cache._math_mode_dollar_hint(expression, "align*")
+    assert (hint is not None) == reads_a_dollar_in_math_mode
+
+
+def test_a_text_mode_environment_never_earns_the_math_mode_hint():
+    assert typeset_cache._math_mode_dollar_hint("$x$", "gather*") is not None
+    assert typeset_cache._math_mode_dollar_hint("$x$", "alignat*}{2") is not None
+    assert typeset_cache._math_mode_dollar_hint("$x$", "center") is None
+    assert typeset_cache._math_mode_dollar_hint("$x$", None) is None
 
 
 @needs_latex

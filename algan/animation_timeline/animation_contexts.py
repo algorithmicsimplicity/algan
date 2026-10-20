@@ -233,29 +233,39 @@ def _reject_invalid_easing(context, easing, parameter="easing"):
         ) from None
 
 
+def _finite_number(name, value, what="a finite number of seconds"):
+    """``value`` as a Python float, or an error naming ``name``.
+
+    A NaN or an infinity does not rewind the clock so much as destroy it: every
+    later time computed from it is NaN, and the frame window that comes out is
+    nonsense rather than short. It does not raise on its own, which is why it
+    is caught here, at the authoring line that supplied the value.
+
+    The float is the point as much as the check. Times are computed from Mob
+    positions, which are tensors, so a 0-d tensor or a NumPy scalar is an easy
+    thing to hand over -- and either one, written into the timeline's float64
+    buffers, failed several calls down on a dtype mismatch.
+    """
+    try:
+        finite = math.isfinite(value)
+    except (TypeError, ValueError, OverflowError, RuntimeError) as exc:
+        raise AlganConfigurationError(f"{name} must be {what}; got {value!r}") from exc
+    if not finite:
+        raise AlganConfigurationError(f"{name} must be {what}; got {value!r}")
+    return float(value)
+
+
 def _reject_invalid_runtime(name, value):
-    """Reject non-numeric, non-finite or negative seconds before recording.
+    """Return ``value`` as a float, rejecting non-finite or negative seconds.
 
     Time only moves forward. A negative runtime rewinds the scene clock, which
     then silently shortens or empties the render rather than failing -- and
     ``scene.wait(target - now)`` coming out negative is an easy thing to write.
-    A NaN or an infinity does not rewind the clock so much as destroy it: every
-    later time computed from it is NaN, and the frame window that comes out is
-    nonsense rather than short. Neither raises on its own, which is why both are
-    caught here, at the authoring line that supplied the value.
+    See ``_finite_number`` for the rest.
     """
     if value is None:
         return value
-    try:
-        finite = math.isfinite(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise AlganConfigurationError(
-            f"{name} must be a finite number of seconds; got {value!r}"
-        ) from exc
-    if not finite:
-        raise AlganConfigurationError(
-            f"{name} must be a finite number of seconds; got {value!r}"
-        )
+    value = _finite_number(name, value)
     if value < 0:
         raise AlganConfigurationError(
             f"{name}={value!r} is negative, and a runtime is a number of "
@@ -556,8 +566,12 @@ class AnimationContext:
     animation_manager: Any = None
 
     def __post_init__(self):
-        _reject_invalid_runtime("runtime", self.runtime)
-        _reject_invalid_runtime("runtime_per_part", self.runtime_per_part)
+        self.runtime = _reject_invalid_runtime("runtime", self.runtime)
+        self.runtime_per_part = _reject_invalid_runtime(
+            "runtime_per_part", self.runtime_per_part
+        )
+        if self.lag_ratio is not None:
+            self.lag_ratio = _finite_number("ratio", self.lag_ratio, "a finite number")
         _reject_invalid_easing(self, self.easing)
         _reject_invalid_easing(self, self.composed_easing, "composed_easing")
         if self.new_mobs is None:
@@ -653,21 +667,26 @@ class AnimationContext:
         """Where the authoring cursor sits within this context, in seconds.
 
         The time the next animation recorded in this context will start at.
+        Assign any finite number -- a 0-d tensor or NumPy scalar too -- to move
+        it; a NaN or an infinity raises :class:`.AlganConfigurationError`.
         """
         return self.timespan.current_time
 
     @current_time.setter
     def current_time(self, value):
-        self.timespan.current_time = value
+        self.timespan.current_time = _finite_number("current_time", value)
 
     @property
     def end_time(self):
-        """The furthest time anything recorded in this context reaches, in seconds."""
+        """The furthest time anything recorded in this context reaches, in seconds.
+
+        Like :attr:`current_time`, it takes any finite number.
+        """
         return self.timespan.original_end
 
     @end_time.setter
     def end_time(self, value):
-        self.timespan.original_end = value
+        self.timespan.original_end = _finite_number("end_time", value)
 
     def add_exit_callback(self, callback):
         """Register work to run once this block has finished, at its end time.
@@ -989,7 +1008,7 @@ class AnimationContext:
         """
         if t is None:
             t = self.runtime_per_part
-        _reject_invalid_runtime("t", t)
+        t = _reject_invalid_runtime("t", t)
         self.timespan.original_end = max(
             self.timespan.original_end, self.timespan.current_time + t
         )
@@ -1219,7 +1238,7 @@ class Lag(AnimationContext):
         ``0`` is fully simultaneous, ``1`` fully sequential, ``0.1`` starts each
         animation when the previous one is a tenth done. Can be larger than 1,
         in which case it introduces a pause (wait) after each animation finishes.
-        Defaults to ``0.5``.
+        Must be finite. Defaults to ``0.5``.
     runtime
         Duration of the whole block in seconds; the animations inside are
         rescaled to fit, keeping their relative timing. Must be finite and
@@ -1367,7 +1386,8 @@ class Audio(AnimationContext):
     The context's runtime is taken from the audio, so whatever you animate inside
     is stretched or squeezed to finish with the sound. That inversion is the point:
     you describe what should happen while a clip plays, rather than timing the clip
-    against the animation.
+    against the animation. A block that animates nothing holds still for the
+    sound, so the next block starts when it ends.
 
     Parameters
     ----------
@@ -1438,6 +1458,18 @@ class Audio(AnimationContext):
             self._audio_effect = AudioEffect(self.audio_clip, self.get_current_time())
             self.animation_manager.scene.add_effect(self._audio_effect)
         return context
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # A block that animates nothing takes no time, so its sound played over
+        # whatever came next -- the next line of narration included. Hold still
+        # instead; the block's runtime stretches the hold to the clip's length.
+        if (
+            exc_type is None
+            and self._audio_effect is not None
+            and self.timespan.original_end <= self.timespan.original_start
+        ):
+            self.wait(1)
+        return super().__exit__(exc_type, exc_val, exc_tb)
 
 
 class Speech(Audio):

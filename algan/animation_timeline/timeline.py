@@ -915,6 +915,15 @@ def _initial_buffer_rows(channels, requested):
     return max(2, min(int(requested), _INITIAL_RESERVATION_BYTES // row_bytes))
 
 
+class _ReplayUpdaterOneFrameAtATime(BaseException):
+    """Abandons a batched updater call that began building a Mob.
+
+    Raised by :meth:`AnimationTimeline.add_mob_attr` and caught by the replay
+    loop, which then runs the updater once per frame. A ``BaseException`` so an
+    ``except Exception`` in the updater cannot swallow it.
+    """
+
+
 class AttributeTimeline:
     """
     A Scene-owned timeline recording every Mob row for one attribute.
@@ -1252,6 +1261,9 @@ class AttributeTimeline:
         out = self.active_state.new_zeros(
             (n_times, key.shape[0], self.active_state.shape[2])
         )
+        if born is not None:
+            # A born row has no column in the window, however wide it is.
+            live = ~born if live is None else live & ~born
         kept = (
             torch.arange(key.shape[0], device=columns.device)
             if live is None
@@ -1266,7 +1278,12 @@ class AttributeTimeline:
             out[:, born_rows] = self._current_state_rows(key[born_rows], n_times)
         return out
 
+    #: Writes made through :meth:`modify`, by any timeline: whether a replayed
+    #: updater has written anything yet (see AnimationTimeline.add_mob_attr).
+    write_count = 0
+
     def modify(self, key, value):
+        AttributeTimeline.write_count += 1
         # Replaying an animation modifies the temporary materialized buffer,
         # not the recorded edit log/current state.  Invalidating the prepared
         # CSR query data here made every frame batch rebuild and re-sort the
@@ -1425,10 +1442,12 @@ class AttributeTimeline:
                     f"reshape itself while frames are being rendered.\n\n"
                     f"Updaters can set any animatable attribute (location, "
                     f"color, opacity, ...) but not restructure a Mob. For a "
-                    f"value that counts up, use DecimalNumber, whose digits "
-                    f"animate without rebuilding geometry:\n\n"
-                    f"    tracker = ValueTracker(0).spawn()\n"
-                    f"    display = DecimalNumber(0.0).spawn()\n"
+                    f"value that counts up, use Algan's DecimalNumber, whose "
+                    f"digits animate without rebuilding geometry, with room "
+                    f"for the largest value it will show:\n\n"
+                    f"    import algan.manim as mn\n\n"
+                    f"    tracker = mn.ValueTracker(0).spawn()\n"
+                    f"    display = DecimalNumber(0.0, integer_places=2).spawn()\n"
                     f"    display.add_updater(lambda m, t: m.set_value(tracker.get_value()))\n"
                 )
 
@@ -2226,6 +2245,7 @@ class UpdaterEvent:
         "_invocation_cache",
         "_known_clone_ids",
         "_known_clone_version",
+        "one_frame_at_a_time",
     )
 
     def __init__(self, function, caller, args, kwargs, time):
@@ -2253,6 +2273,10 @@ class UpdaterEvent:
         # AnimationTimeline._register_known_history_clones).
         self._known_clone_ids = {}
         self._known_clone_version = -1
+        # Replay it once per frame rather than once over a batch: it reads a
+        # value its code uses as a Python number. See
+        # AnimationTimeline.replay_running_updater_one_frame_at_a_time.
+        self.one_frame_at_a_time = False
 
     def register_history_clone(self, original, clone):
         entry = self._history_clones.setdefault(id(original), (original, []))
@@ -2536,6 +2560,9 @@ class AnimationTimeline:
         # Packed members share one lifespan. Partial spawns hide the remaining
         # opacity rows and retain their targets until those members are spawned.
         self._pending_packed_spawns = {}
+        # The mirror for despawns: opacity rows a despawned selection hid while
+        # the rest of its pack stayed on screen, one flag per row.
+        self._despawned_packed_rows = {}
         # Edit attribution state: a global execution counter for edits, the
         # function application the currently-executing animated function was
         # recorded as (edits made while it runs attach to it), and the most
@@ -2584,6 +2611,8 @@ class AnimationTimeline:
         # materialization; off, replay is batched over the window as always.
         self.replay_frame_by_frame = False
         self._active_updater_trace = None
+        # AttributeTimeline.write_count when the replayed updater call began.
+        self._updater_call_write_count = 0
         self._active_updater_write_capture = None
         # (id(updater event), parent mob id) pairs already warned about, so a
         # loop that re-parents the same Mob every iteration says it once.
@@ -2638,6 +2667,21 @@ class AnimationTimeline:
     def end_updater_dependency_trace(self, previous):
         self._active_updater_trace = previous
 
+    def replay_running_updater_one_frame_at_a_time(self):
+        """Replay the updater that is running now once per frame from here on.
+
+        For a Mob whose value an updater reads as a plain Python number --
+        Manim's ``ValueTracker``, whose ``get_value()`` goes into ``math.sin``,
+        an f-string or an ``if``. Replayed over a batch, such a value can only
+        hold the batch's first frame; one frame at a time, it holds each frame's.
+        Does nothing outside an updater. An updater that first reads such a
+        value while a render replays it is replayed one frame at a time from
+        its next batch on.
+        """
+        event = self._active_updater_trace
+        if event is not None:
+            event.one_frame_at_a_time = True
+
     def begin_updater_write_capture(self, event):
         """Capture attribute writes made by one updater during replay."""
         previous = self._active_updater_write_capture
@@ -2655,6 +2699,23 @@ class AnimationTimeline:
             return
         if isinstance(indexes, RowRanges):
             indexes = indexes.tensor()
+        timeline = self.attr_to_timeline.get(attr_name)
+        born = None if timeline is None else timeline._replay_born_rows(indexes)
+        if born is not None:
+            # Rows of a Mob this replay built, which is discarded when the
+            # replay ends: there is nothing left for the write to land on.
+            kept = (~born).nonzero().view(-1)
+            if kept.numel() == 0:
+                return
+            if (
+                torch.is_tensor(value)
+                and value.dim() >= 2
+                and value.shape[-2] == born.shape[0]
+            ):
+                value = value.index_select(-2, kept)
+            indexes = indexes[kept]
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value)
         capture[1].append((attr_name, indexes.detach().clone(), value.detach().clone()))
 
     def trace_updater_mob_access(self, mob, include_descendants=False):
@@ -2795,11 +2856,34 @@ class AnimationTimeline:
             return
         timeline = self.attr_to_timeline[attr]
         if self._replay_depth > 0 and mob.id not in timeline.mob_id_to_inds:
+            self._replay_updater_building_mobs_one_frame_at_a_time()
             # Built by an updater re-executed to materialize frames; rolled
             # back when the replay ends.
             self.note_replay_born_mob(mob.id)
         timeline.add(mob, value)
         return
+
+    def _replay_updater_building_mobs_one_frame_at_a_time(self):
+        """Have the updater running now replayed once per frame: it builds Mobs.
+
+        A Mob built while frames are replayed holds one pose -- its rows lie
+        outside the batch's window and have no frame axis -- so an updater that
+        builds one from per-frame values, as ``Line(a.get_center(),
+        b.get_center())``, gave it the batch's last frame on every frame, and
+        morphing into it failed outright. One frame at a time, each frame's
+        Mob is that frame's. A batched call that has written nothing yet is
+        abandoned here and replayed per frame at once; one that has would apply
+        those writes twice, so its next batch is the first replayed per frame.
+        """
+        event = self._active_updater_trace
+        if event is None or event.one_frame_at_a_time:
+            return
+        event.one_frame_at_a_time = True
+        if (
+            AttributeTimeline.write_count == self._updater_call_write_count
+            and len(self.replay_frames()) > 1
+        ):
+            raise _ReplayUpdaterOneFrameAtATime
 
     def get_inds(self, attr, mob, value=None):
         if attr not in self.attr_to_timeline:
@@ -3982,6 +4066,10 @@ class AnimationTimeline:
             for chunk in times[first:last].split(batch_size):
                 yield chunk, replacements
 
+    def is_running_updater(self) -> bool:
+        """Whether an updater is running now: applied as it is added, or replayed."""
+        return self._active_updater_trace is not None
+
     def is_replaying(self) -> bool:
         """Whether frames are currently being materialized from the timeline.
 
@@ -3991,6 +4079,39 @@ class AnimationTimeline:
         change the Scene: see :meth:`_discard_replay_born_mobs`.
         """
         return self._replay_depth > 0
+
+    def replay_frames(self) -> list[int]:
+        """The frames the replay is writing at the moment, as batch indices.
+
+        Inside an updater these are the frames of the batch it was called for,
+        in order. Empty when nothing is being replayed.
+        """
+        times = self._materialization_times
+        timeline = next(iter(self.attr_to_timeline.values()), None)
+        if self._replay_depth == 0 or times is None or timeline is None:
+            return []
+        selector = timeline.active_time_inds
+        if isinstance(selector, slice):
+            return list(range(*selector.indices(len(times))))
+        return [int(index) for index in selector.reshape(-1).tolist()]
+
+    @contextlib.contextmanager
+    def replaying_one_frame(self, frame: int):
+        """Narrow every attribute's reads and writes to one frame of the replay.
+
+        For work that can only be done for one pose at a time, such as asking
+        the Manim object behind a compatibility Mob where a coordinate lands.
+        ``frame`` is one of :meth:`replay_frames`.
+        """
+        timelines = list(self.attr_to_timeline.values())
+        selectors = [timeline.active_time_inds for timeline in timelines]
+        for timeline in timelines:
+            timeline.set_active_time_inds(slice(frame, frame + 1))
+        try:
+            yield
+        finally:
+            for timeline, selector in zip(timelines, selectors):
+                timeline.set_active_time_inds(selector)
 
     def note_replay_born_mob(self, mob_id):
         """Mark ``mob_id`` as a Mob that a replayed updater has just built."""
@@ -4158,33 +4279,41 @@ class AnimationTimeline:
             for signature, group_time_inds in (
                 (signature, frames)
                 for signature, time_inds in groups
-                for frames in self._replay_frame_groups(time_inds)
-            ):
-                group_selector = (
-                    group_time_inds
-                    if _opt_disabled("timeslice")
-                    else _contiguous_time_selector(group_time_inds)
+                for frames in self._replay_frame_groups(
+                    time_inds, f.one_frame_at_a_time
                 )
-                for timeline in self.attr_to_timeline.values():
-                    timeline.set_active_time_inds(group_selector)
-                elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
-                caller, args, kwargs = f.invocation_for_signature(signature)
-                previous_trace = self.begin_updater_dependency_trace(f)
+            ):
                 try:
-                    f.function(
-                        caller,
-                        elapsed.view(-1, 1, 1),
-                        *args,
-                        **kwargs,
-                    )
-                finally:
-                    self.end_updater_dependency_trace(previous_trace)
+                    self._replay_updater(f, signature, group_time_inds, times)
+                except _ReplayUpdaterOneFrameAtATime:
+                    # It began building a Mob; see
+                    # _replay_updater_building_mobs_one_frame_at_a_time.
+                    for frame in group_time_inds.split(1):
+                        self._replay_updater(f, signature, frame, times)
 
         for timeline in self.attr_to_timeline.values():
             timeline.set_active_time_inds(slice(None, None, None))
         self._materialization_times = None
         self._materialized_mob_ids = None
         return self
+
+    def _replay_updater(self, f, signature, group_time_inds, times):
+        """Run updater ``f`` over one ``[k, 1]`` group of the batch's frames."""
+        group_selector = (
+            group_time_inds
+            if _opt_disabled("timeslice")
+            else _contiguous_time_selector(group_time_inds)
+        )
+        for timeline in self.attr_to_timeline.values():
+            timeline.set_active_time_inds(group_selector)
+        elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
+        caller, args, kwargs = f.invocation_for_signature(signature)
+        previous_trace = self.begin_updater_dependency_trace(f)
+        self._updater_call_write_count = AttributeTimeline.write_count
+        try:
+            f.function(caller, elapsed.view(-1, 1, 1), *args, **kwargs)
+        finally:
+            self.end_updater_dependency_trace(previous_trace)
 
     @staticmethod
     def _in_execution_order(functions, plain_writes):
@@ -4204,11 +4333,12 @@ class AnimationTimeline:
         steps.sort(key=lambda step: step[0])
         return [step for _, step in steps]
 
-    def _replay_frame_groups(self, active_time_inds):
+    def _replay_frame_groups(self, active_time_inds, one_frame_at_a_time=False):
         """The ``[k, 1]`` frame-index groups a replay runs over, in order.
 
         One group of every active frame, or -- under
-        ``replay_frame_by_frame`` -- one group per frame. A recorded function
+        ``replay_frame_by_frame``, or for an updater marked
+        ``one_frame_at_a_time`` -- one group per frame. A recorded function
         rebuilds each frame from that frame's state alone, but its arithmetic
         is not shape-blind: a basis change spreads over a large subtree through
         an einsum whose GEMM rounds a frame's rows differently for a different
@@ -4219,7 +4349,7 @@ class AnimationTimeline:
         """
         if active_time_inds.numel() == 0:
             return []
-        if not self.replay_frame_by_frame:
+        if not (self.replay_frame_by_frame or one_frame_at_a_time):
             return [active_time_inds]
         return list(active_time_inds.split(1))
 

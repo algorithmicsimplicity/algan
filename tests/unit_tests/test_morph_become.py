@@ -20,6 +20,7 @@ from algan import (
     YELLOW,
     Circle,
     Cylinder,
+    DecimalNumber,
     Group,
     ImageMob,
     Off,
@@ -30,6 +31,7 @@ from algan import (
     Surface,
     Sync,
     Tetrahedron,
+    Tex,
     Text,
     TriangleMesh,
     TriangleVertices,
@@ -575,3 +577,79 @@ def test_chained_become_crosses_a_primitive_family_hop(scene):
     assert isinstance(mob, Circle)
     assert mob.is_spawned()
     assert not mob.is_despawned()
+
+
+@pytest.mark.parametrize(
+    ("select", "hidden"),
+    [
+        (lambda text: text[2], [2]),
+        (lambda text: Group(text[0], text[2]), [0, 2]),
+        (lambda text: text.get_segment(1), [2]),
+    ],
+    ids=["glyph", "glyphs", "segment"],
+)
+def test_become_on_part_of_a_text_morphs_only_that_part(scene, select, hidden):
+    # A selection's rows belong to its text's pack, and detaching its history
+    # handed the whole pack's rows to a copy of the selection: the morph or
+    # its render failed on the mismatch.
+    with Off():
+        text = Tex("ab", "+", "c").spawn()
+    scene.wait(1)
+    selection = select(text)
+    # One glyph becomes the circle; any others shrink away.
+    center = text[hidden[0]].get_center().reshape(-1, 3)[0].clone()
+    start = float(scene.animation_manager.context.timespan.current_time)
+    with Sync(runtime=1.0):
+        morphed = selection.become(Circle(radius=0.3).move(RIGHT * 3))
+    end = float(scene.animation_manager.context.timespan.current_time)
+
+    assert morphed in scene.actors
+    assert not text._character_batch.is_despawned()
+    _at(scene, morphed, [start - 0.5, start, end])
+    alpha = text._character_batch.opacity[..., 0]
+    shown = [member not in hidden for member in range(4)]
+    assert alpha[0].tolist() == [1.0] * 4
+    assert alpha[2].tolist() == [float(kept) for kept in shown]
+    centers = _center_per_time(morphed, 3)
+    assert torch.allclose(centers[1], center, atol=0.02)
+    assert torch.allclose(centers[2], torch.tensor([3.0, 0.0, 0.0]), atol=0.02)
+
+
+def _drawn_member_widths(circuit, time_index):
+    """The width of each member of a packed circuit drawn at ``time_index``."""
+    points = circuit.control_points.location[time_index].reshape(-1, 3)
+    sizes = circuit.control_points.parent_batch_sizes.tolist()
+    alpha = circuit.grid.get_animated_attribute("color")[time_index, ..., -1]
+    opacity = circuit.opacity[time_index].reshape(-1)
+    return [
+        float(block[:, 0].amax() - block[:, 0].amin())
+        for member, block in enumerate(torch.split(points, sizes))
+        if alpha.reshape(-1)[member] > 0 and opacity[member] > 0
+    ]
+
+
+def test_a_decimal_number_becomes_another_mob_from_the_digits_it_draws(scene):
+    # Its sign and point are glyphs of a hidden placeholder text, so detaching
+    # its history failed. And a digit slot holds all ten glyphs and draws one:
+    # a morph of the slots grew the target from glyphs that are never drawn,
+    # and the one that was drawn shrank away, leaving nothing on screen.
+    with Off():
+        number = DecimalNumber(-12.5).spawn()
+        group = Group(number, Square().move(LEFT * 3)).spawn()
+    scene.wait(1)
+    center = number.get_center().reshape(-1, 3)[0].clone()
+    start = float(scene.animation_manager.context.timespan.current_time)
+    with Sync(runtime=1.0):
+        morphed = number.become(Circle(radius=0.6).move(RIGHT * 3))
+    end = float(scene.animation_manager.context.timespan.current_time)
+
+    assert group[0] is morphed
+    assert number.is_despawned()
+    _at(scene, morphed, [start, end])
+    centers = _center_per_time(morphed, 2)
+    assert torch.allclose(centers[0], center, atol=0.02)
+    # It starts as the six glyphs of "-12.50" and ends as the circle, one of
+    # them grown into it and the rest shrunk away.
+    assert len(_drawn_member_widths(morphed, 0)) == 6
+    assert min(_drawn_member_widths(morphed, 0)) > 0.01
+    assert max(_drawn_member_widths(morphed, 1)) == pytest.approx(1.2, abs=0.01)

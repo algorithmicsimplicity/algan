@@ -132,6 +132,18 @@ def test_batched_manim_tex_reads_live_rows(scene):
         assert torch.allclose(end, start + UP * 2, atol=1e-5)
 
 
+def test_a_title_keys_its_underline_apart_from_its_text(scene):
+    # Manim's Title is a Tex with an underline added as one more part, and
+    # reading a LaTeX key off every part raised AttributeError on the Line:
+    # no Title could be built.
+    title = algan.Title("Hello", "World")
+    assert [key for key, _ in _tex_parts(title)] == ["Hello", "World", None]
+    with Off():
+        title.spawn(False)
+    result = TransformMatchingTex(title, algan.Title("World", "Hello"))
+    assert [key for key, _ in _tex_parts(result)] == ["World", "Hello", None]
+
+
 def test_explicit_mapping_overrides_identity_and_combines_repetitions():
     pairs, outgoing, incoming = _match_buckets(
         {"x": [1, 2], "y": [3], "a": [4]},
@@ -162,6 +174,22 @@ def test_shape_parts_split_native_glyphs_and_duplicate_groups_once(scene):
     assert set(_buckets(_shape_parts(word))) == set(
         _buckets(_shape_parts(Text("POST")))
     )
+
+
+def test_shape_parts_split_a_pack_whose_members_differ_in_parts(scene):
+    """A part with no parts of its own, packed beside one that has some.
+
+    Picking it out of the pack selected none of the packed parts' rows, and
+    the level below that concatenated nothing: ``torch.cat(): expected a
+    non-empty list of Tensors``. Matching splits a pack by picking out its
+    members, so it failed on any such drawing packed with ``batch=True``.
+    """
+    drawing = mn.VGroup(mn.Square(), mn.VGroup(mn.Dot(), mn.Line()), batch=True)
+    (_, square), (_, dot_and_line) = _shape_parts(drawing.spawn(animate=False))
+
+    assert square.get_non_component_children() == []
+    assert len(dot_and_line.get_descendants()) > len(square.get_descendants())
+    TransformMatchingShapes(drawing, Square().move(RIGHT * 2))
 
 
 @pytest.mark.parametrize("factory", [Tex, MathTex, mn.MathTex])

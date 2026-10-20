@@ -21,6 +21,7 @@ from algan import (
     Circle,
     Cube,
     DecimalNumber,
+    DespawnedMobWarning,
     DirectionalLight,
     Group,
     HemisphereLight,
@@ -324,6 +325,79 @@ def test_tex_segments_spawn_independently(animate, preselect):
             torch.tensor([last_start + 0.5, 0.5, 1.5])
         )
         assert torch.allclose(text._character_batch.opacity[..., 0], alpha[[2, 0, 1]])
+
+
+@pytest.mark.parametrize("animate", [False, True])
+def test_tex_segments_despawn_independently(animate):
+    # A pack's members share one lifespan, and despawning a segment ended it:
+    # the whole text left the screen with the one term.
+    with Scene() as scene:
+        text = Tex("ab", "+", "c").spawn(False)
+        pack = text._character_batch
+        scene.wait(1)
+        with Seq(easing=easings.identity):
+            text.get_segment(1).despawn(animate)
+        scene.wait(1)
+        second = float(scene.animation_manager.context.timespan.current_time)
+        text.get_segment(0).despawn(False)
+        assert not pack.is_despawned()
+        scene.wait(1)
+        # The last members on screen end the lifespan, as a whole despawn does.
+        text.get_segment(2).despawn(False)
+        assert pack.is_despawned()
+        scene.wait(1)
+
+        times = torch.tensor([0.5, 1.5, second + 0.5, second + 1.5])
+        scene.timeline_manager.set_state_to_times(times)
+        alpha = pack.opacity[..., 0]
+        assert torch.allclose(alpha[0], torch.ones(4))
+        assert torch.allclose(
+            alpha[1], torch.tensor([1.0, 1.0, 0.5 if animate else 0.0, 1.0])
+        )
+        assert torch.allclose(alpha[2], torch.tensor([0.0, 0.0, 0.0, 1.0]))
+        assert torch.allclose(alpha[3], torch.zeros(4))
+
+
+def test_a_despawned_glyph_stays_despawned_while_its_neighbours_spawn():
+    with Scene() as scene:
+        pack = Text("abc")._character_batch
+        pack[0:2].spawn(False)
+        pack[0].despawn(False)
+        assert pack[0].is_despawned()
+        assert not pack[1].is_despawned()
+        assert not pack.is_despawned()
+        scene.wait(1)
+        with pytest.warns(DespawnedMobWarning):
+            pack[0].spawn(False)
+        # One spawn of both: the despawned glyph stays hidden, the glyph that
+        # was never spawned is revealed.
+        Group(pack[0], pack[2]).spawn(False)
+        scene.wait(1)
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.5, 1.5]))
+        alpha = pack.opacity[..., 0]
+        assert torch.allclose(alpha[0], torch.tensor([0.0, 1.0, 0.0]))
+        assert torch.allclose(alpha[1], torch.tensor([0.0, 1.0, 1.0]))
+
+
+@pytest.mark.parametrize("collate", [False, True])
+def test_a_segment_despawned_with_whole_mobs_leaves_the_rest_of_its_text(
+    collate, monkeypatch
+):
+    if not collate:
+        monkeypatch.setenv("ALGAN_OPT_DISABLE", "collate")
+    with Scene() as scene:
+        with Off():
+            text = Tex("ab", "+", "c").spawn(False)
+            squares = [Square().spawn(False), Circle().spawn(False)]
+        with Seq(easing=easings.identity):
+            Group(*squares, text.get_segment(1)).despawn()
+
+        assert all(square.is_despawned() for square in squares)
+        assert not text._character_batch.is_despawned()
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.5, 1.0]))
+        alpha = text._character_batch.opacity[..., 0]
+        assert torch.allclose(alpha[0], torch.tensor([1.0, 1.0, 0.5, 1.0]))
+        assert torch.allclose(alpha[1], torch.tensor([1.0, 1.0, 0.0, 1.0]))
 
 
 @pytest.mark.parametrize("collate", [False, True])

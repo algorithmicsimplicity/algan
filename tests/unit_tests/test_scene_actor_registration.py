@@ -177,6 +177,34 @@ def test_composites_leave_no_invisible_geometry(build):
     assert invisible_geometry(_spawned(build())) == []
 
 
+@pytest.mark.parametrize(
+    "select",
+    [
+        pytest.param(lambda text: text[0], id="glyph"),
+        pytest.param(lambda text: algan.Group(text[0], text[2]), id="glyphs"),
+    ],
+)
+def test_a_copy_of_a_glyph_view_draws(select):
+    """A view is never registered itself -- its text's rows draw it -- but a
+    copy of one owns its rows, so its parts must be registered as the text's
+    were. The copy used to take the view's unregistered parts for reference
+    geometry and draw nothing.
+    """
+    copy = select(_spawned(algan.Tex("abc"))).clone()
+
+    assert copy.is_spawned()
+    assert invisible_geometry(copy) == []
+
+
+def test_a_detached_copy_of_a_glyph_view_registers_nothing():
+    view = _spawned(algan.Tex("abc"))[0]
+    before = len(view.scene.actors)
+
+    view.clone(add_to_scene=False, spawn=False)
+
+    assert len(view.scene.actors) == before
+
+
 def unbuilt_geometry(mob):
     """Spawned geometry of ``mob`` that the actor walk never asks to build.
 

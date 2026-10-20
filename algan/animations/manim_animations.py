@@ -28,6 +28,24 @@ def _with_opacity(color, opacity):
     return color
 
 
+def _outlines(mob):
+    """The curves :func:`DrawBorderThenFill` traces for ``mob``, in order.
+
+    A curve is traced as itself, a text glyph by glyph, and anything else
+    through its parts: iterating a Text gives a Group per glyph, a Group's
+    children may be Groups too, and a ``MathTex`` is an empty curve holding
+    its glyphs -- none of which has an outline of its own to trace.
+    """
+    from algan.mobs.bezier_circuit import BezierCircuitCubic
+    from algan.mobs.text import Tex
+
+    if isinstance(mob, Tex):
+        return list(mob.character_mobs)
+    if isinstance(mob, BezierCircuitCubic) and not (mob.empty and mob.children):
+        return [mob]
+    return [outline for child in mob.children for outline in _outlines(child)]
+
+
 def DrawBorderThenFill(
     mobs,
     runtime=None,
@@ -46,12 +64,14 @@ def DrawBorderThenFill(
     Parameters
     ----------
     mobs
-        Any iterable of Mobs: the glyphs of a :class:`~algan.mobs.text.Text`, a
-        :class:`~algan.mobs.group.Group`'s children, or a list you assembled yourself. Drawn in
-        iteration order.
+        A Mob, or any iterable of Mobs: a :class:`~algan.mobs.text.Text`, whose
+        glyphs are drawn one by one, a :class:`~algan.mobs.group.Group`'s
+        children, or a list you assembled yourself. Drawn in iteration order;
+        a Mob that is not a curve itself, such as a Group, is drawn curve by
+        curve.
     runtime
         Total seconds for the whole sequence. Defaults to 1 second, or 2 for
-        more than 15 mobs.
+        15 curves or more.
     lag_ratio
         Fraction of one mob's animation that elapses before the next begins.
         Defaults to a value that keeps the whole sequence legible.
@@ -72,7 +92,7 @@ def DrawBorderThenFill(
     Returns
     -------
     list of :class:`~.Mob`
-        The mobs that were animated, in the order they were drawn.
+        The curves that were traced, in the order they were drawn.
 
     Examples
     --------
@@ -90,7 +110,20 @@ def DrawBorderThenFill(
     --------
     :meth:`~algan.mobs.text.Tex.write` : the same animation over a text's glyphs.
     """
-    mobs = list(mobs)
+    from algan.animatable_base.mob import Mob
+
+    if isinstance(mobs, Mob):
+        mobs = [mobs]
+    traced = []
+    for mob in mobs:
+        outlines = _outlines(mob)
+        if not outlines:
+            raise TypeError(
+                f"DrawBorderThenFill traces outlines, and {type(mob).__name__} "
+                "has no curves to trace."
+            )
+        traced.extend(outlines)
+    mobs = traced
     if reverse:
         mobs.reverse()
     if not mobs:

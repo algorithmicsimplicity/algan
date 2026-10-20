@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 from PIL import Image
@@ -126,6 +127,33 @@ def test_invalid_timestamps_fail_before_any_output(monkeypatch, tmp_path, at):
         scene.save_frame(tmp_path / "bad", at=at)
     assert not calls
     assert not list(tmp_path.glob("*.png"))
+
+
+@pytest.mark.parametrize(
+    "at", [torch.tensor(0.2), np.array(0.2), "0.2"], ids=["tensor", "ndarray", "str"]
+)
+def test_a_timestamp_with_no_length_of_its_own_is_one_still(monkeypatch, tmp_path, at):
+    # A 0-d tensor or array has __len__ but holds one number, and a string's
+    # length is in characters: none of them asks for several stills.
+    calls, _ = _frame_spy(monkeypatch)
+    with Scene(video_settings=STILLS) as scene:
+        result = scene.save_frame(tmp_path / "one", at=at)
+    assert not isinstance(result, list)
+    assert result.output_path.name == "one.png"
+    assert [call[0] for call in calls] == [(2,)]
+
+
+def test_a_nan_timestamp_is_not_called_an_offset_backwards(monkeypatch, tmp_path):
+    calls, _ = _frame_spy(monkeypatch)
+    with (
+        Scene(video_settings=STILLS) as scene,
+        pytest.raises(
+            AlganConfigurationError, match="finite and non-negative"
+        ) as caught,
+    ):
+        scene.save_frame(tmp_path / "bad", at=float("nan"))
+    assert "counts backwards" not in str(caught.value)
+    assert not calls
 
 
 @pytest.mark.fast

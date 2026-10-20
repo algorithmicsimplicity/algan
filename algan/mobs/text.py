@@ -31,6 +31,7 @@ from typing import NamedTuple
 
 import torch.nn.functional as F
 
+from algan.animatable_base.animatable import _reports_refused_keywords
 from algan.settings._startup import _ANIMATION_DEVICE
 
 # Deferred: manim's import chain (sympy/networkx/scipy/...) costs ~2 s of
@@ -422,6 +423,7 @@ class Tex(Mob):
 
     triangulated = False
 
+    @_reports_refused_keywords
     def __init__(
         self,
         *tex_strings,
@@ -683,10 +685,10 @@ class Tex(Mob):
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
-            The morphed Mob. With the default ``detach_history=True`` this can be a
-            **different object** from the one you called the method on, so use the
-            return value afterwards. Character views are rebuilt when the result is
-            still text.
+            The morphed Mob. With ``detach_history=True``, the default outside an
+            updater, this can be a **different object** from the one you called the
+            method on, so use the return value afterwards. Character views are
+            rebuilt when the result is still text.
         """
         result = super().become(other_mob, *args, **kwargs)
         # ``detach_history`` returns a clone, and cubic morphing may expand the
@@ -736,7 +738,15 @@ class Tex(Mob):
         :class:`~algan.mobs.group.Group`
             A Group of the selected glyphs.
         """
-        return Group([self.character_mobs[item]], scene=self.scene)
+        # The view registers with the Scene only when this text did: a text
+        # built with add_to_scene=False is reference geometry -- a morph target,
+        # or DecimalNumber's spacing template -- and a registered view of it
+        # was reported as a Group the user had built and never spawned.
+        return Group(
+            [self.character_mobs[item]],
+            scene=self.scene,
+            add_to_scene=self._added_to_scene,
+        )
 
     def __len__(self):
         """Get the number of glyphs, so ``len(text)`` works.
@@ -1851,6 +1861,7 @@ class MarkupText(Text):
 class Paragraph(Group):
     """A group of individually addressable text lines."""
 
+    @_reports_refused_keywords
     def __init__(self, *text, line_spacing=None, alignment=None, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
