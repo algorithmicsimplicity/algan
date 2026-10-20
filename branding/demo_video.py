@@ -166,13 +166,21 @@ with Off():
     layout = brand.solid_layout(word_right, WORD_HEIGHT)
 
 # ---- 0.0: the title writes itself while the camera drifts --------------------------------
+with Off():
+    mirror.spawn(False)
+    mirror.opacity = 0.0
 with Sync():
     top.spawn(False).write(runtime=1.8)
     with Sync(runtime=2.5, easing=easings.ease_in_out_sine):
         cam.move_to(at(-0.6, cy + 0.4, 21.0))
         cam.look_at(look_title)
-with Off():
-    mirror.spawn(False)  # hidden under the now-opaque plain layer
+    # The chrome copy fades in under the finished plain layer. It is hidden there except at
+    # the antialiased edges, which two layers cover more of than one, so appearing in one
+    # frame it thickened every letter's outline at once.
+    with Seq():
+        Scene.wait(1.9)
+        with Sync(runtime=0.6):
+            mirror.opacity = 1.0
 Scene.wait(0.2)
 
 # ---- 2.5: one wave leaves the letters chrome; the camera keeps orbiting -------------------
