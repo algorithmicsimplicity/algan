@@ -3948,14 +3948,13 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         border_alpha = border_alpha_grid.amax(-1)
         border_min = border_alpha_grid.amin(-1)
         border_on = self._rt_border_width > 1e-3
-        glow_alpha = self._rt_circuit_colors[..., 3].amax(-1)
-        visible = (
-            (fill_alpha > min_alpha)
-            | ((border_alpha > min_alpha) & border_on)
-            | (glow_alpha > 0.0)
-        )
+        visible = (fill_alpha > min_alpha) | ((border_alpha > min_alpha) & border_on)
         # Alpha is pure coverage, so it alone decides presence (see
-        # ``_pack_frame_visibility``); transmission only bears on opacity.
+        # ``_pack_frame_visibility``); transmission only bears on opacity. Glow
+        # does not: every route weights the glow lane by alpha, so a glowing
+        # circuit at zero opacity draws nothing -- but kept as a sheet it still
+        # changed how the resolve shaded a reflective sheet behind it (a faded
+        # title left ghost letters in chrome text up to 36 levels deep).
         transmissive = self.transmission[..., 0] > 1e-6
         (
             (
