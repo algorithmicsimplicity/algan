@@ -60,6 +60,9 @@ def glyph(ch):
     return pen.getCommands(), glyphs[name].width, bounds.bounds
 
 
+DESCENDER = -glyph("g")[2][1]  # the g's, which sets the wordmark's height
+
+
 def word(text, x, baseline, cap_px):
     """Outlined ``text`` with its baseline at ``baseline``; returns (svg, right edge, scale)."""
     s = cap_px / CAP
@@ -99,41 +102,49 @@ def defs():
 
 
 def solids(x, floor, unit):
-    """Sphere, cube and cone left to right from ``x``, standing on ``floor``; ``unit`` is one
-    font unit in px. Sized as in the 3-D logo: the sphere as tall as a lowercase letter, the
-    cone as a capital, the cube between, half a letter after the word and a gap between each.
+    """Sphere, cube and cone in the logo's grouping, from the word's right edge ``x``, standing
+    on ``floor``; ``unit`` is one font unit in px.
+
+    Sized and placed as in the 3-D logo (``brand.solid_sizes`` and ``brand.solid_layout``): the
+    sphere as tall as a lowercase letter, in front, just clear of the n; the cube behind it and
+    to the right; the cone, as tall as a capital, in front of the cube. Drawn back to front and
+    seen from a little above, so a solid further back stands a little higher.
     """
-    em = 1000 * unit
-    gap = 0.2 * em
+    world = (CAP + DESCENDER) / 3.1 * unit  # one world unit of the 3-D logo, in px
+
+    def base(z):
+        return floor - 0.14 * (1.6 - z) * world
+
     r = 0.5 * X_HEIGHT * unit
-    x += 0.30 * em
+    sx = x + 1.05 * world
     sphere = (
-        f'<circle cx="{x + r:.1f}" cy="{floor - r:.1f}" r="{r:.1f}" fill="url(#sph)"/>'
+        f'<circle cx="{sx:.1f}" cy="{floor - r:.1f}" r="{r:.1f}" fill="url(#sph)"/>'
     )
-    x += 2 * r + gap
     edge = (X_HEIGHT + 0.25 * (CAP - X_HEIGHT)) * unit
     top = 0.16 * edge  # the top face, seen from a little above
+    b = base(-0.5)
+    c = sx + 1.9 * world - 0.70 * edge  # where the turned cube's left edge falls in 3-D
     cube = (
-        f'<polygon points="{x:.1f},{floor - edge:.1f} {x + edge:.1f},{floor - edge:.1f} '
-        f'{x + edge:.1f},{floor:.1f} {x:.1f},{floor:.1f}" fill="{CUBE[1]}"/>'
-        f'<polygon points="{x:.1f},{floor - edge:.1f} {x + 0.12 * edge:.1f},{floor - edge - top:.1f} '
-        f'{x + 1.12 * edge:.1f},{floor - edge - top:.1f} {x + edge:.1f},{floor - edge:.1f}" '
+        f'<polygon points="{c:.1f},{b - edge:.1f} {c + edge:.1f},{b - edge:.1f} '
+        f'{c + edge:.1f},{b:.1f} {c:.1f},{b:.1f}" fill="{CUBE[1]}"/>'
+        f'<polygon points="{c:.1f},{b - edge:.1f} {c + 0.12 * edge:.1f},{b - edge - top:.1f} '
+        f'{c + 1.12 * edge:.1f},{b - edge - top:.1f} {c + edge:.1f},{b - edge:.1f}" '
         f'fill="{CUBE[0]}"/>'
-        f'<polygon points="{x + edge:.1f},{floor - edge:.1f} {x + 1.12 * edge:.1f},{floor - edge - top:.1f} '
-        f'{x + 1.12 * edge:.1f},{floor - top:.1f} {x + edge:.1f},{floor:.1f}" fill="{CUBE[2]}"/>'
+        f'<polygon points="{c + edge:.1f},{b - edge:.1f} {c + 1.12 * edge:.1f},{b - edge - top:.1f} '
+        f'{c + 1.12 * edge:.1f},{b - top:.1f} {c + edge:.1f},{b:.1f}" fill="{CUBE[2]}"/>'
     )
-    x += 1.12 * edge + gap
     cr, ch = 0.40 * CAP * unit, CAP * unit
     ry = 0.16 * cr
-    cx = x + cr
+    cx = sx + 3.15 * world
+    b = base(1.1)
     cone = (
-        f'<ellipse cx="{cx:.1f}" cy="{floor - ry:.1f}" rx="{cr:.1f}" ry="{ry:.1f}" fill="{CONE[2]}"/>'
-        f'<polygon points="{cx:.1f},{floor - ch:.1f} {cx - cr:.1f},{floor - ry:.1f} '
-        f'{cx + cr:.1f},{floor - ry:.1f}" fill="{CONE[1]}"/>'
-        f'<polygon points="{cx:.1f},{floor - ch:.1f} {cx - cr:.1f},{floor - ry:.1f} '
-        f'{cx - 0.2 * cr:.1f},{floor:.1f}" fill="{CONE[0]}"/>'
+        f'<ellipse cx="{cx:.1f}" cy="{b - ry:.1f}" rx="{cr:.1f}" ry="{ry:.1f}" fill="{CONE[2]}"/>'
+        f'<polygon points="{cx:.1f},{b - ch:.1f} {cx - cr:.1f},{b - ry:.1f} '
+        f'{cx + cr:.1f},{b - ry:.1f}" fill="{CONE[1]}"/>'
+        f'<polygon points="{cx:.1f},{b - ch:.1f} {cx - cr:.1f},{b - ry:.1f} '
+        f'{cx - 0.2 * cr:.1f},{b:.1f}" fill="{CONE[0]}"/>'
     )
-    return sphere + cube + cone, x + 2 * cr
+    return cube + cone + sphere, max(cx + cr, c + 1.12 * edge)
 
 
 def svg(width, height, body, background=None, radius=0):

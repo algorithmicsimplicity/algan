@@ -66,7 +66,9 @@ with Off():
             mob.spawn()
         left, right = brand.logo_extent(word, WORD_HEIGHT)
         look = torch.tensor([0.5 * (left + right), brand.FLOOR_TOP + 1.45, 0.0])
-        cam.move_to(brand.frame_camera(cam, look, right - left, ASPECT, ELEVATION))
+        cam.move_to(
+            brand.frame_camera(cam, look, right - left, ASPECT, ELEVATION, margin=1.2)
+        )
     cam.look_at(look)
     brand.make_lights()
 

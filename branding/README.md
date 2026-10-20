@@ -23,11 +23,12 @@ Shipped assets live in `docs/source/_static/`:
 - `algan-icon-light.svg`, `algan-icon-dark.svg`, `algan-favicon.svg`, `favicon.ico`.
 
 The demo video, beat by beat, with the camera moving from the first frame: "Algorithmic
-Animation" writes itself on two lines while the camera drifts sideways; one blue wave sweeps
-through and leaves the letters chrome (a `wave_color` that fades a plain copy of the text to
+animation" writes itself on two lines while the camera drifts sideways; one blue wave sweeps
+through and leaves the letters a mirror (a `wave_color` that fades a plain copy of the text to
 reveal a chrome copy underneath), and as the camera orbits they reflect three large solids and a
-grid standing behind it; A-L-G and A-N light up, the rest dissolve, and the survivors slide into
-"Algan", the capital A of "Animation" turning lowercase; the A's crossbar lifts off as a straight
+grid standing behind it; the letters outside A-L-G and A-N fade out in a wave, left to right,
+while the survivors slide into "Algan" and the gallery fades out of their reflections, so the
+mirror settles into the logo's chrome; the A's crossbar lifts off as a straight
 bar, bends into y = sin x on faint axes and settles back as the wave, leaving a lambda; the
 sphere rolls in and the cube and cone drop onto the mirror while the camera cranes up to the
 banner framing; a tagline fades in, and the video fades to black so its loop on the docs page
@@ -43,10 +44,12 @@ Design notes that are easy to lose:
   registers the file with Pango per process, so nothing needs installing.
 - The wordmark floats just clear of the floor, its g's descender hovering over the mirror. A
   baseline on the floor sinks the g into it and makes the reflection illegible.
-- Sizes and spacing come from the font's own proportions (`brand.solid_sizes`): the sphere is as
-  tall as a lowercase letter, the cone as a capital, the cube between; half a letter separates
-  the n from the sphere, and nothing overlaps from the front. The banner is centred on the camera
-  from the measured layout, so a change of face or size cannot push the cone off the edge.
+- Sizes come from the font's own proportions (`brand.solid_sizes`): the sphere is as tall as a
+  lowercase letter, the cone as a capital, the cube between. Positions are the original logo's
+  grouping (`brand.solid_layout`): the sphere in front, just clear of the n, the cube behind it
+  and the cone in front of the cube, overlapping it from the camera's view. The banner is
+  centred on the camera from the measured layout, so a change of face or size cannot push the
+  cone off the edge.
 - One blue: the wave's `#4da3ff` is the brand colour; the cube is a deeper shade of its hue. The
   cube is lacquered rather than glass: in a black studio a glass cube has nothing behind it to
   refract and renders as a dark box.

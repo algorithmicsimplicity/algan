@@ -1,20 +1,21 @@
-"""The Algan demo video: "Algorithmic Animation" turns to chrome, keeps its acronym, and becomes
+"""The Algan demo video: "Algorithmic animation" turns to chrome, keeps its acronym, and becomes
 the logo.
 
 Usage:  python branding/demo_video.py STILLS [outdir]     # key-moment stills at preview size
         python branding/demo_video.py HD [outdir]         # the video (PREVIEW / LD / MD / HD / PRODUCTION)
 
 Beats, with the camera moving throughout:
-  0.0  "Algorithmic Animation" writes itself on two lines while the camera drifts sideways.
-  2.5  One blue wave sweeps through and leaves the letters chrome; they reflect three large
+  0.0  "Algorithmic animation" writes itself on two lines while the camera drifts sideways.
+  2.5  One blue wave sweeps through and leaves the letters a mirror; they reflect three large
        solids and a grid standing behind the camera, which slide across them as it orbits.
-  5.5  A-L-G and A-N light up, the rest dissolve, and the five survivors slide into "Algan"
-       (the capital A of "Animation" turning lowercase on the way).
-  8.0  The A's crossbar lifts off as a straight bar, bends into y = sin x on faint axes, and
+  5.5  The letters outside A-L-G and A-N fade out in a wave, left to right, while the five
+       survivors slide into "Algan"; the gallery fades out of their reflections as they go,
+       so the mirror settles into the logo's chrome.
+  7.7  The A's crossbar lifts off as a straight bar, bends into y = sin x on faint axes, and
        settles back into the A, now a lambda, as the wave.
- 11.0  The sphere rolls in and the cube and cone drop onto the mirror while the camera cranes
+ 10.5  The sphere rolls in and the cube and cone drop onto the mirror while the camera cranes
        up to the banner framing (branding/logo_scene.py), which is the logo.
- 14.0  A tagline fades in above the logo, then everything fades to black.
+ 12.9  A tagline fades in above the logo, then everything fades to black.
 
 The logo itself -- typeface, materials, studio, layout -- comes from branding/brand.py.
 The y = sin x label is typeset with LaTeX, so a TeX installation is needed.
@@ -34,10 +35,9 @@ from algan import *  # noqa: F403
 MODE = sys.argv[1] if len(sys.argv) > 1 else "STILLS"
 OUTDIR = sys.argv[2] if len(sys.argv) > 2 else "algan_outputs/branding"
 
-TITLE = "Algorithmic" + chr(10) + "Animation"
+TITLE = "Algorithmic" + chr(10) + "animation"
 TITLE_WIDTH = 12.8
-KEEP = [0, 1, 2, 11, 12]  # A l g . . . . . . . . A n  ->  "Algan"
-LOWERCASE = 3  # the survivor that becomes the wordmark's a
+KEEP = [0, 1, 2, 11, 12]  # A l g . . . . . . . . a n  ->  "Algan"
 WORD_HEIGHT = 3.1
 ASPECT = 16 / 9
 TAGLINE = "Programmatic animation for explanatory mathematics"
@@ -103,9 +103,16 @@ with Off():
     # A flat mirror facing the camera shows the region behind it, magnified with distance, so a
     # few large, recognisable things read better than many small ones: the logo's own solids,
     # oversized, and a bright grid behind them.
+    # The sphere is checkered: a plain white one, this close to its lights, fills the letters
+    # that reflect it with flat white, and they read as painted rather than mirrored.
     gallery = [
-        Sphere(radius=3.0, color=WHITE)
-        .set_material(MeshStandardMaterial(color=Color("#e9edf4"), roughness=0.3))
+        Sphere(
+            radius=3.0,
+            color_texture=get_checkerboard(
+                (Color("#e9edf4"), Color(brand.DEEP_BLUE)), resolution=(8, 6)
+            ),
+        )
+        .set_material(MeshStandardMaterial(color=WHITE, roughness=0.3))
         .move(at(-10.0, brand.FLOOR_TOP + 3.0, 38.0)),
         Cube(size=5.0, fill_opacity=1.0)
         .set_material(brand.blue_lacquer())
@@ -125,7 +132,8 @@ with Off():
             axis_config={"stroke_color": "#7d9cf0", "stroke_width": 5},
         ).move(at(0.0, brand.FLOOR_TOP + 10.0, 52.0)),
     ]
-    gallery = Group(gallery).spawn()
+    for mob in gallery:
+        mob.spawn()
     # Short-range lights on the gallery's camera-facing side. Their falloff keeps them off
     # everything near the origin.
     for x in (-10.0, 0.5, 10.5):
@@ -137,10 +145,6 @@ with Off():
     # ---- the pieces that arrive later -----------------------------------------------------
     sphere, cube, cone = brand.make_solids(WORD_HEIGHT)
     layout = brand.solid_layout(word_right, WORD_HEIGHT)
-    lowercase_a = Text("a", font=brand.FONT, weight=brand.WEIGHT, font_size=200)
-    lowercase_a.set_material(brand.chrome())
-    lowercase_a.scale_to_height(wordmark.character_mobs[3].get_height().item())
-    lowercase_a.move_to(targets[3])
     tagline = Text(
         TAGLINE,
         font=brand.FONT,
@@ -178,37 +182,42 @@ with Sync():
 with Off():
     top.despawn()
 
-# ---- 5.5: the acronym lights up, the rest dissolve, the survivors slide into "Algan" -------
+# ---- 5.5: the rest fade out in a wave, the survivors slide into "Algan" --------------------
 survivors = [mirror.character_mobs[i] for i in KEEP]
+leavers = [mob for i, mob in enumerate(mirror.character_mobs) if i not in KEEP]
+xs = [mob.get_center().flatten()[0].item() for mob in leavers]
+x_lo, x_hi = min(xs), max(xs)
+SWEEP = 1.3  # seconds for the fade to cross the title, left to right
 grow = (
     wordmark.character_mobs[1].get_height() / mirror.character_mobs[1].get_height()
 ).item()
-with Lag(0.12, runtime=0.6):
-    for mob in survivors:
-        mob.color = Color(brand.BRAND_BLUE)
 with Sync():
-    with Lag(0.06, runtime=0.9):
-        for i, mob in enumerate(mirror.character_mobs):
-            if i not in KEEP:
+    for mob, x in zip(leavers, xs):
+        with Seq():
+            Scene.wait(SWEEP * (x - x_lo) / (x_hi - x_lo) + 0.01)
+            with Sync(runtime=0.5):
                 mob.opacity = 0.0
-    with Sync(runtime=1.8):
-        for k, mob in enumerate(survivors):
-            mob.scale(grow)
-            mob.move_to(targets[k])
-            mob.color = Color(brand.CHROME_TINT)
     with Seq():
-        Scene.wait(1.0)
-        with Off():
-            lowercase_a.spawn(False)
-            lowercase_a.opacity = 0.0
-        with Sync(runtime=0.8):
-            lowercase_a.opacity = 1.0
-            survivors[LOWERCASE].opacity = 0.0
-    with Sync(runtime=2.0, easing=easings.ease_in_out_sine):
+        Scene.wait(0.3)
+        with Sync(runtime=1.9, easing=easings.ease_in_out_sine):
+            for k, mob in enumerate(survivors):
+                mob.scale(grow)
+                mob.move_to(targets[k])
+    # The gallery fades out of the reflections as the word forms, so the mirror settles into
+    # the logo's chrome, which reflects only the studio.
+    with Seq():
+        Scene.wait(0.5)
+        with Sync(runtime=1.7):
+            for mob in gallery:
+                mob.opacity = 0.0
+    with Sync(runtime=2.2, easing=easings.ease_in_out_sine):
         cam.move_to(cam_mid)
         cam.look_at(look_mid)
+with Off():
+    for mob in gallery:
+        mob.despawn()
 
-# ---- 8.0: the crossbar lifts off, becomes y = sin x, and comes back as the wave ------------
+# ---- 7.7: the crossbar lifts off, becomes y = sin x, and comes back as the wave ------------
 axes_centre = at(word_centre, brand.FLOOR_TOP + WORD_HEIGHT + 2.3, 0.0)
 half = 3.3
 radius = 0.07
@@ -226,7 +235,6 @@ label.move_to(axes_centre + at(half + 0.9, 0.55, 0.0))
 
 with Off():
     mirror.despawn()
-    lowercase_a.despawn()
     wordmark.spawn(False)
     bar = crossbar.build(amplitude=0.0).spawn()
     start = crossbar.center
@@ -263,7 +271,7 @@ with Off():
     axes.despawn()
     label.despawn()
 
-# ---- 11.0: the solids arrive and the camera cranes to the logo ---------------------------
+# ---- 10.5: the solids arrive and the camera cranes to the logo ---------------------------
 sphere_end, _ = layout["sphere"]
 cube_end, _ = layout["cube"]
 cone_end, _ = layout["cone"]
@@ -287,13 +295,8 @@ with Sync():
     with Sync(runtime=2.4, easing=easings.ease_in_out_sine):
         cam.move_to(cam_end)
         cam.look_at(look_end)
-    # The gallery leaves as the solids arrive, so the logo reflects only the studio.
-    with Seq():
-        Scene.wait(1.0)
-        with Off():
-            gallery.despawn()
 
-# ---- 14.0: a tagline, then fade to black --------------------------------------------------
+# ---- 12.9: a tagline, then fade to black --------------------------------------------------
 with Off():
     tagline.spawn(False)
     tagline.opacity = 0.0
@@ -315,7 +318,7 @@ Scene.wait(0.1)
 
 os.makedirs(OUTDIR, exist_ok=True)
 if MODE == "STILLS":
-    times = [1.2, 4.0, 6.2, 7.7, 9.3, 10.6, 12.2, 13.4, 14.6, 15.4, 16.0, 16.6]
+    times = [1.2, 4.0, 5.7, 6.1, 6.5, 6.9, 7.3, 7.7, 9.3, 10.9, 11.8, 13.2, 14.5, 15.3]
     for t in times:
         Scene.save_frame(
             os.path.join(OUTDIR, f"demo_still_{t:04.1f}.png"), PREVIEW, at=t

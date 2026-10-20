@@ -258,25 +258,33 @@ CUBE_TURN = 38.0
 
 
 def solid_layout(word_right, word_height):
-    """Where the three solids stand, left to right from the word's right edge.
+    """Where the three solids stand, from the word's right edge: the logo's original grouping.
 
-    Half a letter between the n and the sphere, and a clear gap between each pair, so nothing
-    overlaps from the front. Returns ``{name: (centre, size)}``.
+    The sphere stands in front, just clear of the n; the cube behind it and to the right; the
+    cone in front of the cube, overlapping it from the camera's view. Offsets are the original
+    logo's, in world units for a 3.1-unit wordmark, scaled with ``word_height``; the solids
+    clear one another in 3-D at the sizes ``solid_sizes`` gives them. Returns
+    ``{name: (centre, size)}`` and the group's right edge.
     """
     s = solid_sizes(word_height)
-    gap = 0.2 * s["em"]
-    cube_half = (
-        0.5
-        * s["cube"]
-        * (math.cos(math.radians(CUBE_TURN)) + math.sin(math.radians(CUBE_TURN)))
+    k = word_height / 3.1
+    x = word_right + 1.05 * k
+    sphere = (RIGHT * x + UP * (FLOOR_TOP + s["sphere"]) + OUT * 1.6 * k, s["sphere"])
+    cube = (
+        RIGHT * (x + 1.9 * k) + UP * (FLOOR_TOP + 0.5 * s["cube"]) + IN * 0.5 * k,
+        s["cube"],
     )
-    x = word_right + 0.30 * s["em"] + s["sphere"]
-    sphere = (RIGHT * x + UP * (FLOOR_TOP + s["sphere"]) + OUT * 0.5, s["sphere"])
-    x += s["sphere"] + gap + cube_half
-    cube = (RIGHT * x + UP * (FLOOR_TOP + 0.5 * s["cube"]) + IN * 0.2, s["cube"])
-    x += cube_half + gap + s["cone"][0]
-    cone = (RIGHT * x + UP * (FLOOR_TOP + 0.5 * s["cone"][1]) + OUT * 0.3, s["cone"])
-    return {"sphere": sphere, "cube": cube, "cone": cone, "right": x + s["cone"][0]}
+    cone_x = x + 3.15 * k
+    cone = (
+        RIGHT * cone_x + UP * (FLOOR_TOP + 0.5 * s["cone"][1]) + OUT * 1.1 * k,
+        s["cone"],
+    )
+    return {
+        "sphere": sphere,
+        "cube": cube,
+        "cone": cone,
+        "right": cone_x + s["cone"][0],
+    }
 
 
 def make_solids(word_height):
