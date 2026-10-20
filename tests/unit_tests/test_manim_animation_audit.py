@@ -5,6 +5,7 @@ import pytest
 import torch
 
 import algan
+from algan.errors import InvalidColorError
 from algan.scene_manager import SceneManager
 
 
@@ -389,6 +390,47 @@ def test_surface_fixed_topology_preserves_parent_rotation_and_scale():
     ] == initial_resolutions
 
 
+@pytest.mark.parametrize(
+    "red",
+    [
+        0xFF0000,
+        (1.0, 0.0, 0.0),
+        [1.0, 0.0, 0.0],
+        "red",
+        "#FF0000",
+        torch.tensor([1.0, 0.0, 0.0]),
+    ],
+    ids=["hex int", "tuple", "list", "css name", "hex string", "rgb tensor"],
+)
+def test_animated_boundary_takes_every_color_spelling(red):
+    """REGRESSION. The colors were read as tensors, so a hex int was one
+    channel: alone it drew a wrong color, and beside any other color it failed
+    the render with "stack expects each tensor to be equal size".
+    """
+    source = algan.Circle(add_to_scene=False).spawn(False)
+    boundary = algan.AnimatedBoundary(
+        source,
+        colors=(red, algan.BLUE),
+        cycle_rate=1,
+        back_and_forth=False,
+        add_to_scene=False,
+    ).spawn(False)
+
+    # A quarter of the way through the first cycle: the first color draws.
+    materialize(0.25)
+    drawn = boundary._growing_paths[0].stroke_color.reshape(-1, 5)[0]
+    torch.testing.assert_close(drawn, algan.Color((1.0, 0.0, 0.0)).reshape(5))
+
+
+def test_animated_boundary_refuses_a_non_color_where_it_is_built():
+    """A color that is not one fails at the call that gave it, not inside the
+    updater when the boundary is first drawn.
+    """
+    source = algan.Circle(add_to_scene=False).spawn(False)
+    with pytest.raises(InvalidColorError, match="not a color"):
+        algan.AnimatedBoundary(source, colors=("not a color",), add_to_scene=False)
+
+
 def test_animated_boundary_tracks_source_and_can_stop():
     source = algan.Circle(add_to_scene=False).spawn(False)
     boundary = algan.AnimatedBoundary(
@@ -427,6 +469,50 @@ def test_animated_boundary_tracks_source_and_can_stop():
         boundary.updater_id
     ]
     assert updater.time.end_event is not None
+
+
+@pytest.mark.parametrize(
+    "animation", ["draw", "show_passing_flash", "animated_boundary"]
+)
+def test_curve_reveals_run_along_a_texts_glyphs(animation):
+    """REGRESSION. A Text packs its glyphs into one circuit, each member as
+    long as its outline, and partial curves assumed equal-length members, so
+    all three of these raised on any real text -- ``AnimatedBoundary`` before
+    it got that far, writing back the per-glyph colors it had just read.
+    """
+    text = algan.Text("Hello", add_to_scene=False).spawn(False)
+    batch = text._character_batch
+    assert len(set(batch.control_points.parent_batch_sizes.tolist())) > 1
+    outline = batch.control_points.location.clone()
+    scene = SceneManager.instance().current_scene
+    actors_before = set(scene.actors)
+
+    if animation == "draw":
+        batch.draw()
+        revealed = batch
+    elif animation == "show_passing_flash":
+        algan.ShowPassingFlash(text, time_width=0.3)
+        (revealed,) = [
+            actor
+            for actor in scene.actors
+            if actor not in actors_before
+            and isinstance(actor, algan.BezierCircuitCubic)
+        ]
+    else:
+        boundary = algan.AnimatedBoundary(text, add_to_scene=False).spawn(False)
+        revealed = boundary._growing_paths[0]
+
+    materialize(0.25, 0.5, 0.75)
+    points = revealed.control_points.location
+    assert points.shape == (3, *outline.shape[1:])
+    sizes = batch.control_points.parent_batch_sizes.tolist()
+    for shown, whole in zip(points[1].split(sizes), outline[0].split(sizes)):
+        # Part of every glyph is showing, and not yet all of any.
+        assert (shown - shown[0]).abs().max() > 1e-3
+        assert not torch.allclose(shown, whole)
+    if animation == "draw":
+        materialize(1.0)
+        assert torch.allclose(batch.control_points.location, outline)
 
 
 def test_invalid_geometry_and_parameters_fail_early():

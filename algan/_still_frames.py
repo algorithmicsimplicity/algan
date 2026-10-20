@@ -8,6 +8,7 @@ cycle (RenderResult is imported only when a request is rendered).
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections import defaultdict, deque
 from contextlib import closing
@@ -38,6 +39,19 @@ def _background_key(value):
 
 def _snapshot(value):
     return value.detach().clone() if torch.is_tensor(value) else value
+
+
+def _save_image(image, path):
+    """Write ``image`` to ``path`` whole, or leave what was there alone."""
+    # Hidden, and named for this process, so it cannot be another still of
+    # the same call or of a render running beside this one. The suffix is
+    # kept: Pillow picks the format from it.
+    temporary = path.with_name(f".{path.stem}.{os.getpid()}.tmp{path.suffix}")
+    try:
+        image.save(str(temporary))
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -81,6 +95,7 @@ class _StillBatch:
     ):
         from algan._render_passes import check_pass_encoders, normalize_passes
         from algan.render_loop import _check_post_processes
+        from algan.scene import _coerce_background
 
         passes = normalize_passes(passes)
         if passes:
@@ -94,10 +109,18 @@ class _StillBatch:
                 "video_settings must be a VideoSettings instance or preset "
                 f"(for example HD or PREVIEW), got {type(settings).__name__}"
             )
-        settings = settings.as_preset()
+        # The preset sizes the picture; the moment it shows is the Scene's. A
+        # timestamp becomes a frame index at this rate, so THUMBNAIL's 1 fps
+        # took at=2.4 to the frame at 2.0 s -- and the default, 1.5 frames
+        # past the cursor, to 1.5 s past it.
+        scene_rate = scene._resolve_video_settings(None).frames_per_second
+        settings = settings.as_preset().set(frames_per_second=scene_rate)
         if post_processes is not None and not callable(post_processes):
             post_processes = tuple(post_processes)
         _check_post_processes(post_processes)
+        # The render applies it with set_background, which a deferred batch
+        # reaches only after authoring; what it would refuse is refused now.
+        background = _coerce_background(background)
         context = scene.animation_manager.context
         cursor = context.timespan.current_time
         captured = []
@@ -137,6 +160,7 @@ class _StillBatch:
                 scene.environment_intensity,
                 scene.environment_ambient,
                 scene.premultiplied_over,
+                scene.environment_map_is_srgb,
             ),
             passes,
         )
@@ -175,6 +199,7 @@ class _StillBatch:
             scene.environment_intensity,
             scene.environment_ambient,
             scene.premultiplied_over,
+            scene.environment_map_is_srgb,
         )
         try:
             scene.set_video_settings(self.video_settings)
@@ -184,12 +209,20 @@ class _StillBatch:
                 scene.environment_intensity,
                 scene.environment_ambient,
                 scene.premultiplied_over,
+                scene.environment_map_is_srgb,
             ) = self.environment
             (scene.background_frame, scene.background, scene.background_is_set) = (
                 self.background_state
             )
             if self.background_override is not None:
                 scene.set_background(self.background_override)
+            if scene.background_is_transparent():
+                from algan.utils.algan_utils import (
+                    _check_transparent_still_is_supported,
+                )
+
+                for target in self.targets:
+                    _check_transparent_still_is_supported(target.path)
             with scene.timeline_manager.preserving_authoring_state(
                 preserve_replay_resolution=scene.animation_manager.context.prev_context
                 is not None
@@ -203,6 +236,7 @@ class _StillBatch:
                 scene.environment_intensity,
                 scene.environment_ambient,
                 scene.premultiplied_over,
+                scene.environment_map_is_srgb,
             ) = previous_environment
             (scene.background_frame, scene.background, scene.background_is_set) = (
                 previous_background
@@ -318,7 +352,7 @@ class _StillBatch:
                             # Sorting times must not reverse last-write-wins when
                             # different requests intentionally share a destination.
                             if position > last_write.get(target.path, -1):
-                                image.save(str(target.path))
+                                _save_image(image, target.path)
                                 last_write[target.path] = position
                             if aux is not None and position > last_pass_write.get(
                                 target.path, -1

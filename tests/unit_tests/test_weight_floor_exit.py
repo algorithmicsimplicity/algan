@@ -54,9 +54,10 @@ from algan.settings import SETTINGS
 # call sites must pass. Pinned so a future signature reorder breaks HERE,
 # loudly, instead of silently un-gating the kernel.
 _WEIGHT_FLOOR_EXIT_ARG_INDEX = 47
-# 71 after appending the per-batch ``tri_shell`` table. The existing
+# 73 after appending the per-batch ``tri_shell`` table and then the camera's
+# ``cam_proj`` projection rows with their ``projected`` template. The existing
 # visibility and one-sided shadow-cull templates retain their positions.
-_EXPECTED_SHADE_ARGS = 71
+_EXPECTED_SHADE_ARGS = 73
 
 
 @pytest.mark.fast

@@ -271,3 +271,17 @@ def test_a_held_frame_is_one_queue_entry_written_its_repeat_count(workers):
     worker.put(_Frame(3))
     worker.finish()
     assert [int(a) for a in written] == [1] + [2] * 500 + [3]
+
+
+def test_an_encoder_that_cannot_start_raises_its_own_error(tmp_path):
+    """A TypeError starting the writer was retried with moviepy 1's spelling,
+    ``withmask``, which the moviepy Algan requires refuses: the error shown
+    was about that keyword, not what had gone wrong.
+    """
+    from algan.utils.algan_utils import get_file_writer
+
+    with pytest.raises(TypeError, match="not int"):
+        get_file_writer(
+            str(tmp_path / "clip.mp4"), (16, 16), "libx264", 2, False,
+            ["-crf", 18], None, None,
+        )  # fmt: skip

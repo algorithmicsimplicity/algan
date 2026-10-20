@@ -6,6 +6,9 @@ Split out of ``mob.py`` for readability; :class:`MobMovementMixin` is mixed into
 
 from __future__ import annotations
 
+from numbers import Real
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -25,6 +28,38 @@ from algan.utils.tensor_utils import (
 
 def _resolve_buffer(buffer):
     return SETTINGS.style.buffer if buffer is None else buffer
+
+
+def _is_one_direction(value):
+    """Whether ``value`` is one direction rather than a collection of them."""
+    if isinstance(value, (torch.Tensor, np.ndarray)):
+        return value.ndim < 2 or value.shape[-2] == 1
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 3
+        and all(isinstance(part, Real) for part in value)
+    )
+
+
+def _corner_edges(directions):
+    """The screen edges a corner is named by, one direction each.
+
+    Each direction is split into its ``x``, ``y`` and ``z`` parts, every part
+    naming one edge, so the diagonal ``UP + LEFT`` names the top and left edges.
+    Moved against as one edge, a diagonal casts a ray along itself that leaves
+    the frame through whichever edge it meets first, short of the corner.
+    """
+    if _is_one_direction(directions):
+        directions = [directions]
+    edges = []
+    for direction in directions:
+        direction = cast_to_direction("directions", direction)
+        for axis in range(3):
+            part = torch.zeros_like(direction)
+            part[..., axis] = direction[..., axis]
+            if bool(part.any()):
+                edges.append(part)
+    return edges
 
 
 class MobMovementMixin:
@@ -77,7 +112,10 @@ class MobMovementMixin:
             This Mob, so calls can be chained.
         """
         start, end = [
-            _.get_center() if hasattr(_, "get_center") else _ for _ in [start, end]
+            value.get_center()
+            if hasattr(value, "get_center")
+            else cast_to_direction(name, value)
+            for name, value in (("start", start), ("end", end))
         ]
         return self.move_to((start + end) / 2)
 
@@ -106,7 +144,7 @@ class MobMovementMixin:
         ---------
         Recorded as an animation: the Mob sweeps along the arc over the current
         context's runtime (1 second by default). Wrap the call to retime it --
-        ``with Seq(runtime=3): mob.move_to_point_along_arc(RIGHT, 90)``.
+        ``with Seq(runtime=3): mob.move_to(RIGHT, arc_angle=90)``.
 
         Parameters
         ----------
@@ -288,15 +326,24 @@ class MobMovementMixin:
             ``None``, meaning travel in a straight line.
         **kwargs
             Passed to :meth:`~algan.animatable_base.mob.Mob.set_location` (notably
-            ``recursive``), or to
-            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_point_along_arc`
-            when ``arc_angle`` is
-            given (notably ``arc_normal``).
+            ``recursive``). When ``arc_angle`` is given, the accepted keywords are
+            ``recursive`` and ``arc_normal``: the normal of the plane the arc lies
+            in, which must be perpendicular to the path from the Mob's current
+            location to ``location``. ``arc_normal`` defaults to ``OUTWARD`` (the
+            +z axis, out of the screen), which arcs in the screen plane.
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``arc_angle`` is given and the arc cannot be drawn: a value is
+            not finite, ``arc_normal`` is zero, the path is not perpendicular to
+            ``arc_normal``, or the endpoints differ and the sweep is a non-zero
+            whole number of turns.
 
         See Also
         --------
@@ -626,8 +673,10 @@ class MobMovementMixin:
     def move_to_screen_corner(self, directions, buffer: float | None = None) -> Mob:
         """Move the Mob into a corner of the screen.
 
-        The corner is named by the edges that meet there, e.g.
-        ``mob.move_to_screen_corner((UP, RIGHT))`` for the top-right.
+        The corner is named by the direction pointing into it, as Manim's
+        ``to_corner(UR)``, or by the edges that meet there:
+        ``mob.move_to_screen_corner(UP + RIGHT)`` and
+        ``mob.move_to_screen_corner((UP, RIGHT))`` both go to the top-right.
 
         Animation
         ---------
@@ -640,9 +689,10 @@ class MobMovementMixin:
         Parameters
         ----------
         directions
-            The screen edges meeting at the corner, as an iterable of direction
-            vectors in the camera's frame -- ``(UP, RIGHT)`` for the top-right,
-            whatever angle the camera is posed at.
+            The corner, in the camera's frame whatever angle the camera is posed
+            at: one direction pointing into it, such as ``UP + RIGHT``, or an
+            iterable of the edges meeting there, such as ``(UP, RIGHT)``. Each
+            direction's ``x``, ``y`` and ``z`` parts name one edge apiece.
         buffer
             Gap to leave from every screen border named, in world units.
             Defaults to ``SETTINGS.style.buffer`` (``0.6``).
@@ -651,12 +701,24 @@ class MobMovementMixin:
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~algan.errors.AlganConfigurationError`
+            If ``directions`` names no edge: no direction, or only zero
+            vectors.
         """
+        edges = _corner_edges(directions)
+        if not edges:
+            raise AlganConfigurationError(
+                "move_to_screen_corner needs a direction pointing into the corner, "
+                f"such as UP + RIGHT, or the edges meeting there; got {directions!r}"
+            )
         # Chained move_to_screen_edge calls, run together so the whole corner
         # move still takes one context runtime.
         with Sync(animation_manager=self.animation_manager):
-            for direction in directions:
-                self.move_to_screen_edge(direction, buffer=buffer)
+            for edge in edges:
+                self.move_to_screen_edge(edge, buffer=buffer)
         return self
 
     def move_off_screen(

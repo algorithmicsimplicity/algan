@@ -43,14 +43,27 @@ _INSTALL_HINT = (
 )
 
 
+def _is_assimp_error(error):
+    """Whether ``error`` is pyassimp's own ``AssimpError``.
+
+    pyassimp derives that class from ``BaseException``, so ``except Exception``
+    lets it through; and it is defined in the package whose import raises it, so
+    it cannot be named before that import succeeds.
+    """
+    kind = type(error)
+    return kind.__name__ == "AssimpError" and kind.__module__.startswith("pyassimp")
+
+
 def _require_pyassimp():
     try:
         import pyassimp
         import pyassimp.postprocess as pp
     except ImportError as e:
         raise ImportError("pyassimp is not installed.\n" + _INSTALL_HINT) from e
-    except Exception as e:  # pragma: no cover - native lib lookup failure
+    except BaseException as e:
         # pyassimp raises AssimpError (not ImportError) when the DLL is absent.
+        if not _is_assimp_error(e):
+            raise
         raise ImportError(
             f"pyassimp could not load the native assimp library ({e}).\n"
             + _INSTALL_HINT
@@ -85,9 +98,21 @@ def _t(array, dtype=torch.float32):
     return torch.as_tensor(np.ascontiguousarray(a), dtype=dtype)
 
 
-def _material_string(props, *keys):
+def _material_property(props, key, semantic=0, default=None):
+    """One material property. pyassimp's ``PropertyGetter`` is a ``dict``
+    keyed by ``(name, semantic)`` -- ``('diffuse', 0)``, or ``('file', 1)`` for
+    the diffuse texture -- whose ``get`` does not translate a bare name the way
+    its ``[]`` does; a plain ``dict`` keyed by bare names is accepted too.
+    """
+    value = dict.get(props, (key, semantic)) if isinstance(props, dict) else None
+    if value is None and semantic == 0:
+        value = props.get(key)
+    return default if value is None else value
+
+
+def _material_string(props, *keys, semantic=0):
     for k in keys:
-        v = props.get(k)
+        v = _material_property(props, k, semantic)
         if isinstance(v, (bytes, bytearray)):
             return v.decode("utf-8", "ignore")
         if isinstance(v, str):
@@ -96,7 +121,7 @@ def _material_string(props, *keys):
 
 
 def _material_tuple(props, key, n):
-    v = props.get(key)
+    v = _material_property(props, key)
     if v is None:
         return None
     try:
@@ -110,9 +135,9 @@ def _material_tuple(props, key, n):
 
 def _parse_material(mat, base_dir):
     """assimp material -> :class:`MaterialData`. pyassimp exposes a material's
-    properties as a plain ``dict`` keyed by short semantic names (e.g.
-    ``'diffuse'``, ``'file'``); different assimp versions vary, so every lookup
-    is defensive.
+    properties keyed by ``(short name, texture semantic)`` -- ``'diffuse'``,
+    ``'file'`` -- (see :func:`_material_property`); different assimp versions
+    vary, so every lookup is defensive.
     """
     props = getattr(mat, "properties", {}) or {}
     diffuse = _material_tuple(props, "diffuse", 4) or _material_tuple(
@@ -121,11 +146,11 @@ def _parse_material(mat, base_dir):
     if diffuse is not None and len(diffuse) == 3:
         diffuse = (*diffuse, 1.0)
     emissive = _material_tuple(props, "emissive", 3) or (0.0, 0.0, 0.0)
-    opacity = props.get("opacity", 1.0)
-    reflectivity = props.get("reflectivity", 0.0)
-    refracti = props.get("refracti", 0.0)
-    metallic = props.get("metallicFactor", props.get("reflectivity", 0.0))
-    roughness = props.get("roughnessFactor", 1.0)
+    opacity = _material_property(props, "opacity", default=1.0)
+    reflectivity = _material_property(props, "reflectivity", default=0.0)
+    refracti = _material_property(props, "refracti", default=0.0)
+    metallic = _material_property(props, "metallicFactor", default=reflectivity)
+    roughness = _material_property(props, "roughnessFactor", default=1.0)
 
     def _resolve(name):
         if not name:
@@ -134,9 +159,11 @@ def _parse_material(mat, base_dir):
         cand = name if os.path.isabs(name) else os.path.join(base_dir, name)
         return cand if os.path.exists(cand) else name
 
-    # Texture file properties: pyassimp collapses the per-semantic '$tex.file'
-    # into 'file'; keep it simple (diffuse) and fall through gracefully.
-    diffuse_tex = _resolve(_material_string(props, "file"))
+    # Texture files are '$tex.file' keyed by texture type: the diffuse map is
+    # semantic 1 (aiTextureType_DIFFUSE). A bare 'file' key is the fallback.
+    diffuse_tex = _resolve(
+        _material_string(props, "file", semantic=1) or _material_string(props, "file")
+    )
     return MaterialData(
         name=_material_string(props, "name") or "",
         base_color=diffuse or (1.0, 1.0, 1.0, 1.0),
@@ -221,18 +248,26 @@ def _parse_skin(mesh, num_vertices):
     )
 
 
-def _parse_nodes(root):
-    """Flatten the node tree to a list with parent indices (depth first)."""
+def _parse_nodes(root, scene_meshes=(), kept=None):
+    """Flatten the node tree to a list with parent indices (depth first).
+
+    ``scene_meshes`` is the scene's mesh list, which a node's meshes are
+    looked up in, and ``kept`` maps an index into it to the index of the
+    :class:`MeshData` built from that mesh (``None``: every mesh was kept).
+    """
     nodes: list[NodeData] = []
 
     def visit(node, parent_idx):
         idx = len(nodes)
+        indices = _node_mesh_indices(node, scene_meshes)
+        if kept is not None:
+            indices = [kept[i] for i in indices if i in kept]
         nodes.append(
             NodeData(
                 name=getattr(node, "name", "") or "",
                 transform=_t(getattr(node, "transformation", None)),
                 parent=parent_idx,
-                mesh_indices=[int(m) for m in _node_mesh_indices(node)],
+                mesh_indices=[int(m) for m in indices],
             )
         )
         for child in getattr(node, "children", []) or []:
@@ -243,17 +278,20 @@ def _parse_nodes(root):
     return nodes
 
 
-def _node_mesh_indices(node):
+def _node_mesh_indices(node, scene_meshes=()):
     meshes = getattr(node, "meshes", None)
     if meshes is None:
         return []
+    # pyassimp.load replaces each node's mesh indices with the Mesh objects
+    # of scene.meshes themselves (recur_pythonize), which carry no index of
+    # their own: find them in that list by identity.
+    position = {id(m): i for i, m in enumerate(scene_meshes)}
     out = []
     for m in meshes:
-        # pyassimp gives either an int index or the mesh object itself.
         if isinstance(m, (int, np.integer)):
             out.append(int(m))
         else:
-            idx = getattr(m, "index", None)
+            idx = position.get(id(m), getattr(m, "index", None))
             if idx is not None:
                 out.append(int(idx))
     return out
@@ -309,8 +347,8 @@ def load_scene(file_path, extra_flags=0):
     """Parse ``file_path`` into a :class:`SceneData` using pyassimp.
 
     Raises :class:`ImportError` with install guidance if the native assimp
-    library is unavailable, and :class:`FileNotFoundError` if the model file
-    does not exist.
+    library is unavailable, :class:`FileNotFoundError` if the model file does
+    not exist, and :class:`OSError` naming the file if assimp cannot import it.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
@@ -319,17 +357,30 @@ def load_scene(file_path, extra_flags=0):
     flags = _default_flags(pp) | extra_flags
     # pyassimp.load frees native memory on context exit, so pull everything we
     # need into torch tensors inside the `with` block.
-    with pyassimp.load(file_path, processing=flags) as scene:
-        materials = [
-            _parse_material(m, base_dir) for m in getattr(scene, "materials", []) or []
-        ]
-        meshes = []
-        for m in getattr(scene, "meshes", []) or []:
-            md = _parse_mesh(m)
-            if md is not None:
-                meshes.append(md)
-        nodes = _parse_nodes(getattr(scene, "rootnode", None))
-        animations = _parse_animations(scene)
+    try:
+        with pyassimp.load(file_path, processing=flags) as scene:
+            materials = [
+                _parse_material(m, base_dir)
+                for m in getattr(scene, "materials", []) or []
+            ]
+            meshes = []
+            scene_meshes = list(getattr(scene, "meshes", []) or [])
+            kept = {}  # index into scene_meshes -> index into meshes
+            for i, m in enumerate(scene_meshes):
+                md = _parse_mesh(m)
+                if md is not None:
+                    kept[i] = len(meshes)
+                    meshes.append(md)
+            nodes = _parse_nodes(getattr(scene, "rootnode", None), scene_meshes, kept)
+            animations = _parse_animations(scene)
+    except BaseException as e:
+        # pyassimp's "Could not import file!" names no file.
+        if not _is_assimp_error(e):
+            raise
+        raise OSError(
+            f"assimp could not import {file_path!r}: it is not in a format "
+            "assimp reads, or it is damaged."
+        ) from e
     return SceneData(
         meshes=meshes,
         materials=materials,

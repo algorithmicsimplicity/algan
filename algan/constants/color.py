@@ -137,6 +137,37 @@ def _as_color_scalar(value):
     return value
 
 
+def _is_channel(value):
+    """Whether ``value`` can be one channel of a color: a real number, not a bool.
+
+    NumPy's scalars count -- ``np.float32(0.5)`` is not a Python ``float``, but
+    it is what indexing a float32 array gives, and ``np.int64`` is not an
+    ``int`` -- and so does a 0-d tensor or array.
+    """
+    if isinstance(value, (torch.Tensor, np.ndarray)):
+        if value.ndim != 0:
+            return False
+        value = value.item()
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
+        value, bool
+    )
+
+
+def _channel_count_error(value):
+    """The error for a sequence of numbers that is the wrong length for a color.
+
+    Left alone, such a sequence reached the timeline as it was and failed there
+    as ``The size of tensor a (2) must match the size of tensor b (5)`` -- or,
+    built into a :class:`Color`, quietly became one with the wrong channels:
+    ``Color((1, 2))`` rendered yellow.
+    """
+    return InvalidColorError(
+        f"{value!r} is not a color: a color has 3 channels (red, green, blue), "
+        f"4 (then opacity) or 5 (then glow and opacity), and this has "
+        f"{len(value)}."
+    )
+
+
 class Color(torch.Tensor):
     """A color, as five channels: red, green, blue, glow and opacity.
 
@@ -235,6 +266,8 @@ class Color(torch.Tensor):
                 rgb, glow, opacity = tuple(rgb[:3]), rgb[3], rgb[4]
             elif len(rgb) == 3:
                 rgb = tuple(rgb)
+            else:
+                raise _channel_count_error(rgb)
         elif isinstance(rgb, (torch.Tensor, np.ndarray)):
             # Preserve batches; only the last axis contains color channels.
             # Clone before applying overrides so caller-owned arrays stay intact.
@@ -273,7 +306,7 @@ class Color(torch.Tensor):
 
     @opacity.setter
     def opacity(self, value):
-        self.data[..., -1:] = value
+        self.data[..., -1:] = self._channel_value(value)
 
     @property
     def glow(self):
@@ -281,11 +314,19 @@ class Color(torch.Tensor):
         return glow
 
     def is_transparent(self):
+        """Get whether this color is at all see-through.
+
+        Returns
+        -------
+        torch.Tensor
+            ``opacity < 1``, as a boolean tensor of shape ``(*, 1)``: one
+            answer per row of a batched color.
+        """
         return self.opacity < 1
 
     @glow.setter
     def glow(self, value):
-        self.data[..., -2:-1] = value
+        self.data[..., -2:-1] = self._channel_value(value)
 
     @property
     def rgb(self):
@@ -293,14 +334,54 @@ class Color(torch.Tensor):
 
     @rgb.setter
     def rgb(self, value):
-        self.data[..., :3] = value
+        self.data[..., :3] = self._channel_value(value)
+
+    def _channel_value(self, value):
+        """Internal: ``value`` as a tensor matching this color's dtype and device.
+
+        Lets the channel setters take plain Python tuples and lists, which a
+        tensor slice assignment refuses.
+        """
+        return torch.as_tensor(value, dtype=self.dtype, device=self.device)
 
     def set_rgb(self, rgb):
+        """Return a copy of this color with its red, green and blue replaced.
+
+        Glow and opacity are kept.
+
+        Parameters
+        ----------
+        rgb
+            The new red, green and blue, each in ``[0, 1]``: a tuple, list or
+            tensor of shape ``(3,)``, or ``(*, 3)`` for one per row -- per
+            vertex or per texel.
+
+        Returns
+        -------
+        :class:`Color`
+            A new color. The color it was called on is left unchanged.
+        """
         out = self.prep_set(rgb)
         out.rgb = rgb
         return out
 
     def mult_rgb(self, other):
+        """Return a copy of this color with its red, green and blue multiplied.
+
+        Glow and opacity are kept, unlike ordinary multiplication, which scales
+        all five channels.
+
+        Parameters
+        ----------
+        other
+            A :class:`Color`, whose red, green and blue are the factors, or a
+            number or tensor that broadcasts against shape ``(*, 3)``.
+
+        Returns
+        -------
+        :class:`Color`
+            A new color. The color it was called on is left unchanged.
+        """
         orgb = other.rgb if isinstance(other, Color) else other
         out = self.new_empty()
         out.data = self.data.clone()
@@ -308,6 +389,7 @@ class Color(torch.Tensor):
         return out
 
     def prep_set(self, value):
+        """Internal: copy this color, broadcast to ``value``'s rows, for a setter."""
         value = cast_to_tensor(value)
         out = self.new_empty()
         out.data = self.data.clone()
@@ -400,11 +482,37 @@ class Color(torch.Tensor):
         return self._set_opacity_unchecked(self.opacity * opacity)
 
     def set_glow(self, glow):
+        """Return a copy of this color with its glow replaced.
+
+        Red, green, blue and opacity are kept.
+
+        Parameters
+        ----------
+        glow
+            The new additive emissive brightness: ``0`` for none, unbounded
+            above. A tensor gives one per row -- per vertex or per texel.
+
+        Returns
+        -------
+        :class:`Color`
+            A new color. The color it was called on is left unchanged.
+        """
         out = self.prep_set(glow)
         out.glow = glow
         return out
 
     def convert_to_uint8(self):
+        """Get the channels scaled from ``[0, 1]`` to 8-bit integers.
+
+        All five channels are scaled, glow and opacity included, and fractions
+        are truncated rather than rounded. A channel outside ``[0, 1]`` -- a
+        glow above 1, say -- does not fit in 8 bits.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(self * 255)`` as ``torch.uint8``, shape ``(*, 5)``.
+        """
         return (self * 255).to(torch.uint8)
 
     def new_empty(self, *args, **kwargs):
@@ -450,15 +558,17 @@ def to_color(value):
     'reshape'`` from deep inside the timeline. This is the one place that
     decides, so both spellings mean the same thing.
 
-    Anything already tensor-shaped is returned untouched: a per-row color
-    buffer is a legitimate value and must not be collapsed to one color.
+    Anything already tensor-shaped keeps its values: a per-row color buffer is
+    a legitimate value and must not be collapsed to one color. A single
+    five-channel row comes back as a :class:`Color`.
 
     Parameters
     ----------
     value
         A :class:`Color`, a hex string (``"#ff0000"``) or CSS name
         (``"red"``), a hex int (``0xff0000``), an RGB/RGBA/RGBA+glow sequence
-        of floats in ``[0, 1]``, a tensor, or ``None``.
+        of numbers in ``[0, 1]`` (NumPy scalars included), a tensor or NumPy
+        array, or ``None``.
 
     Returns
     -------
@@ -471,13 +581,26 @@ def to_color(value):
     """
     if value is None:
         return value
+    if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.number):
+        # The same buffer as a tensor, so it is padded the same way -- left as
+        # an array, ``color=np.array([1.0, 0.0, 0.0])`` reached the timeline
+        # three wide and failed there against the five-channel layout.
+        value = torch.as_tensor(
+            value, dtype=torch.get_default_dtype(), device=_ANIMATION_DEVICE
+        )
     if isinstance(value, Color) or torch.is_tensor(value):
         # An RGB or RGBA buffer is a color that is merely missing Algan's
         # extra channels; pad it rather than making the caller know the
         # layout. Anything already 5 wide (or not shaped like a color at all)
-        # is left exactly as it is, including a per-row buffer.
+        # keeps its values exactly, including a per-row buffer.
         if value.shape and value.shape[-1] in (3, 4):
-            return Color.add_defaults(value)
+            value = Color.add_defaults(value)
+        if value.dim() == 1 and value.shape[0] == 5:
+            # One color is a Color whichever way it was spelled. The Manim
+            # layer converts a Color to a color Manim takes, but passes a
+            # plain tensor on as an array, which ManimColor refuses at five
+            # channels -- ``Arc(color=torch.tensor([1.0, 0.0, 0.0]))`` raised.
+            return value.as_subclass(Color)
         return value
     if isinstance(value, bool):
         # bool is an int subclass, and True as a color is a mistake, not black.
@@ -492,7 +615,7 @@ def to_color(value):
     if (
         isinstance(value, (tuple, list))
         and 3 <= len(value) <= 5
-        and all(isinstance(channel, (int, float)) for channel in value)
+        and all(_is_channel(channel) for channel in value)
     ):
         return Color(tuple(float(channel) for channel in value))
     return value

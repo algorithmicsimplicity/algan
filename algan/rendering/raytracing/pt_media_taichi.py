@@ -215,6 +215,7 @@ def _pt_medium_next(
         max_t,
         0.0,
         0.0,
+        None,
         layer_offset,
         nodes,
         miss,

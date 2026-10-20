@@ -28,11 +28,12 @@ frame.
 .. algan:: BasicAnimatedFunction
 
     from algan import *
-    import numpy as np
+    import torch
 
-    # Function mapping a scalar parameter t to a 3-D position
+    # Function mapping a parameter t to a 3-D position. t is a tensor, so the
+    # math is torch's.
     def path_func(t):
-        return UP * np.sin(t) + RIGHT * (t - PI)
+        return UP * torch.sin(t) + RIGHT * (t - PI)
 
     # An animated_function that moves our mob along that path.
     @animated_function(animated_args={'t': 0})
@@ -40,7 +41,7 @@ frame.
         mob.location = path_func(t)
 
     square = Square().spawn()
-    square.location = path_func(0)   # Jump to the starting point.
+    square.location = path_func(torch.tensor(0.0))   # Jump to the starting point.
     move_along_path(square, 2 * PI)
 
     Scene.save_video()
@@ -55,7 +56,10 @@ over one second.
 
     An :func:`~algan.animatable_base.animatable.animated_function` must take a
     :class:`~algan.animatable_base.mob.Mob` as its first
-    argument, and every name listed in ``animated_args`` must be a float.
+    argument. You call it with a number for each parameter listed in
+    ``animated_args``, but the body receives a tensor -- often a batch of
+    frames at once -- so do its math with ``torch`` (``torch.sin``,
+    ``torch.exp``) rather than ``math`` or NumPy.
 
 .. note::
 
@@ -78,12 +82,12 @@ value:
 .. algan:: CustomTwoAnimatedArgs
 
     from algan import *
-    import numpy as np
+    import torch
 
     @animated_function(animated_args={'turns': 0, 'radius': 0})
     def spiral_out(mob, turns, radius):
         angle = turns * 2 * PI
-        mob.location = (RIGHT * np.cos(angle) + UP * np.sin(angle)) * radius
+        mob.location = (RIGHT * torch.cos(angle) + UP * torch.sin(angle)) * radius
 
     dot = Dot(color=YELLOW).scale(2).spawn()
     with Seq(runtime=3, easing=easings.identity):

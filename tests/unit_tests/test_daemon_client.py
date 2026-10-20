@@ -683,6 +683,58 @@ def test_death_after_start_is_not_recoverable(tmp_path):
     daemon.join()
 
 
+def test_a_connection_reset_after_start_is_not_recoverable(tmp_path, monkeypatch):
+    """What a killed daemon gives on Windows. It used to escape as a plain
+    ConnectionResetError, which the handoff takes as safe to fall back from,
+    so the script ran a second time in-process.
+    """
+
+    def frames(stream, poll=0.2):
+        yield dc.FRAME_START, b""
+        raise ConnectionResetError(10054, "An existing connection was forcibly closed")
+
+    monkeypatch.setattr(dc, "read_frames", frames)
+    daemon = _FakeDaemon(lambda stream: None)
+    with pytest.raises(dc.DaemonRunFailed, match="ConnectionResetError") as caught:
+        dc.run_remote(daemon.state(), str(tmp_path / "s.py"), out=_Sink(), err=_Sink())
+    assert isinstance(caught.value.__cause__, ConnectionResetError)
+    daemon.join()
+
+
+def test_output_this_client_cannot_write_after_start_is_not_recoverable(tmp_path):
+    """``python scene.py | head`` closes the pipe while the daemon renders on;
+    falling back would have started a second render of the same script.
+    """
+
+    class _ClosedPipe(_Sink):
+        def write(self, chunk):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    def reply(stream):
+        dc.write_frame(stream, dc.FRAME_START)
+        dc.write_frame(stream, dc.FRAME_STDOUT, b"rendering\n")
+        dc.write_frame(stream, dc.FRAME_EXIT, struct.pack("!i", 0))
+
+    daemon = _FakeDaemon(reply)
+    with pytest.raises(dc.DaemonRunFailed, match="BrokenPipeError"):
+        dc.run_remote(
+            daemon.state(), str(tmp_path / "s.py"), out=_ClosedPipe(), err=_Sink()
+        )
+    daemon.join()
+
+
+def test_a_connection_reset_before_start_still_falls_back(tmp_path, monkeypatch):
+    def frames(stream, poll=0.2):
+        raise ConnectionResetError(10054, "An existing connection was forcibly closed")
+        yield  # pragma: no cover -- makes this a generator
+
+    monkeypatch.setattr(dc, "read_frames", frames)
+    daemon = _FakeDaemon(lambda stream: None)
+    with pytest.raises(ConnectionResetError):
+        dc.run_remote(daemon.state(), str(tmp_path / "s.py"), out=_Sink(), err=_Sink())
+    daemon.join()
+
+
 def test_death_before_start_falls_back(tmp_path):
     daemon = _FakeDaemon(lambda stream: None)
     with pytest.raises(dc.DaemonUnavailable):

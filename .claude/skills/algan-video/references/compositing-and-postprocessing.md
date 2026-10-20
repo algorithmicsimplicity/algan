@@ -65,8 +65,9 @@ Scene.save_video('renders/processed.mp4',
                  post_processes=(bloom_filter, user_pass))
 ```
 
-Algan passes `memory=` as a keyword. A callback accepting only `frames` fails when
-rendering reaches it; use `memory=None` or accept appropriate keyword arguments.
+Algan passes `memory=` as a keyword. A callback accepting only `frames` is refused
+with an `AlganConfigurationError` before rendering starts; use `memory=None` or
+accept appropriate keyword arguments.
 Frames are torch tensors on the render device. Preserve shape, device, and dtype.
 Do not assume the working buffer is an 8-bit RGBA image, or that its fourth
 component is always coverage alpha. Operate on RGB and preserve other channels

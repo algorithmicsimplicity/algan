@@ -15,6 +15,7 @@ from algan.animation_timeline.animation_contexts import Sync
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import project_point_onto_line
+from algan.rendering.projection import effective_depth
 from algan.utils.tensor_utils import (
     broadcast_gather,
     cast_to_direction,
@@ -208,6 +209,7 @@ class MobLayoutMixin:
         torch.Tensor
             The extreme boundary point, shape ``(*, 1, 3)``.
         """
+        direction = cast_to_direction("direction", direction)
         if not recursive:
             return self._select_in_direction(self.get_boundary_points(), direction)
         return self._edge_point_recursive(direction)
@@ -326,18 +328,22 @@ class MobLayoutMixin:
         top = torch.lerp(corners[1], corners[2], x)
         point_on_screen = torch.lerp(bottom, top, y)
 
-        camera_location = camera.location
-        ray = point_on_screen - camera_location
+        if camera._is_pinhole():
+            ray_origin = camera.location
+            ray = point_on_screen - ray_origin
+        else:
+            # The camera ray through that point of the frame, which an
+            # orthographic camera starts on its own plane and runs along the
+            # forward axis.
+            ray_origin, ray = camera._frame_rays(point_on_screen)
         screen_normal = camera.get_forward_direction()
         denominator = dot_product(ray, screen_normal)
         if torch.any(denominator.abs() <= torch.finfo(ray.dtype).eps):
             raise AlganConfigurationError(
                 "Cannot map screen coordinates at a depth parallel to the view ray"
             )
-        distance = (
-            dot_product(depth_point - camera_location, screen_normal) / denominator
-        )
-        return camera_location + ray * distance
+        distance = dot_product(depth_point - ray_origin, screen_normal) / denominator
+        return ray_origin + ray * distance
 
     def _screen_frame(self):
         """The camera plus the parameterization of its screen plane.
@@ -359,12 +365,22 @@ class MobLayoutMixin:
     def _resolved_screen_frame(self):
         """Everything :meth:`_project_to_screen_coords` needs, read once.
 
-        ``(camera_location, normal, origin, edge_x, edge_y)``. Reading the camera
-        costs animated-attribute lookups, so the fit solver resolves this before
-        its loop rather than inside it.
+        ``(camera_location, normal, origin, edge_x, edge_y, projection)``, where
+        ``projection`` is ``None`` for a pinhole camera and the camera's
+        ``(persp, spread)`` terms otherwise (``algan.rendering.projection``).
+        Reading the camera costs animated-attribute lookups, so the fit solver
+        resolves this before its loop rather than inside it.
         """
         camera, origin, edge_x, edge_y = self._screen_frame()
-        return camera.location, camera.get_forward_direction(), origin, edge_x, edge_y
+        projection = None if camera._is_pinhole() else camera._projection_terms()
+        return (
+            camera.location,
+            camera.get_forward_direction(),
+            origin,
+            edge_x,
+            edge_y,
+            projection,
+        )
 
     def _project_to_screen_coords(
         self, points: torch.Tensor, frame=None
@@ -375,15 +391,16 @@ class MobLayoutMixin:
         bottom-left of the frame and ``(1, 1)`` the top-right. This is the
         projection the renderer's ray generator inverts, so it accounts for
         perspective -- two points of equal world size project to different
-        screen sizes when they sit at different depths.
+        screen sizes when they sit at different depths, unless the camera is
+        orthographic.
 
-        ``frame`` is an already-resolved ``(camera_location, normal, origin,
-        edge_x, edge_y)``; callers that project repeatedly pass one so the loop
-        does not re-read the camera's animated attributes every time.
+        ``frame`` is an already-resolved :meth:`_resolved_screen_frame`;
+        callers that project repeatedly pass one so the loop does not re-read
+        the camera's animated attributes every time.
         """
         if frame is None:
             frame = self._resolved_screen_frame()
-        camera_location, normal, origin, edge_x, edge_y = frame
+        camera_location, normal, origin, edge_x, edge_y, projection = frame
         ray = points - camera_location
         depth = dot_product(ray, normal)
         if torch.any(depth <= torch.finfo(ray.dtype).eps):
@@ -391,7 +408,22 @@ class MobLayoutMixin:
                 "cannot project a Mob that is not entirely in front of the camera"
             )
         screen_depth = dot_product(origin - camera_location, normal)
-        offset = camera_location + ray * (screen_depth / depth) - origin
+        if projection is None:
+            offset = camera_location + ray * (screen_depth / depth) - origin
+        else:
+            # Where each point's own camera ray crosses the screen plane: its
+            # offset across the view, divided by the projection's divisor
+            # instead of the depth and drawn on the frame the screen plane
+            # shows (``Camera._corner_pixels``). ``shift`` is the screen's
+            # offset from the forward axis, zero for every stock camera.
+            persp, spread = projection
+            centre = origin + 0.5 * (edge_x + edge_y)
+            shift = (centre - camera_location) - screen_depth * normal
+            across = ray - depth * normal - (depth / screen_depth) * shift
+            divisor = effective_depth(depth, screen_depth, persp, spread)
+            offset = (
+                centre - origin + across * ((persp + spread) * screen_depth / divisor)
+            )
         return torch.cat(
             (
                 dot_product(offset, edge_x) / dot_product(edge_x, edge_x),
@@ -459,7 +491,7 @@ class MobLayoutMixin:
         offsets = bbox - source_center
         tiny = torch.finfo(offsets.dtype).eps
         frame = self._resolved_screen_frame()
-        camera_location, normal, origin, edge_x, edge_y = frame
+        camera_location, normal, origin, edge_x, edge_y, projection = frame
         screen_depth = dot_product(origin - camera_location, normal)
 
         def as_scale(log_scale):
@@ -525,6 +557,13 @@ class MobLayoutMixin:
             # screen-parallel plane it already sits on, which leaves its depth
             # (and therefore the scale just solved for) untouched.
             depth_ratio = dot_product(center - camera_location, normal) / screen_depth
+            if projection is not None:
+                # How much bigger the frame is at the center's depth than on
+                # the screen plane: the same at every depth, orthographically.
+                persp, spread = projection
+                depth_ratio = effective_depth(
+                    depth_ratio * screen_depth, screen_depth, persp, spread
+                ) / ((persp + spread) * screen_depth)
             center = center + depth_ratio * (
                 drift[..., :1] * edge_x + drift[..., 1:] * edge_y
             )
@@ -1001,6 +1040,7 @@ class MobLayoutMixin:
         torch.Tensor
             Length along that direction in world units, shape ``(*, 1, 1)``.
         """
+        direction = cast_to_direction("direction", direction)
         # Get the boundary points in the positive and negative directions and calculate their distance
         return (
             self.get_boundary_point(direction) - self.get_boundary_point(-direction)
@@ -1028,6 +1068,7 @@ class MobLayoutMixin:
             ``count`` points, each of shape ``(*, 1, 3)``, ordered from the
             ``direction`` end towards the opposite end.
         """
+        direction = cast_to_direction("direction", direction)
         e, s = (
             self.get_edge_point(direction),
             self.get_edge_point(-direction),

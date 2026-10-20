@@ -52,25 +52,66 @@ from algan.taichi_compat import ti
 _MIN_FRONT_DEPTH = 1e-7
 
 
+def _given(value):
+    """``value is not None`` for ``ti.static``: Taichi scope has no ``is``."""
+    return value is not None
+
+
 @ti.func
-def _screen_pixels(point, cam_origin, screen_point, sx, sy, sz, half_height):
-    """Perspective-project one world point; returns ``[pixel_x, pixel_y, depth]``.
+def _frame_projection(projection: ti.template(), read: ti.template(), t):
+    """Frame ``t``'s ``(persp, spread)`` for the helpers below, or ``None``.
+
+    ``None`` -- a ``proj`` every helper below compiles out -- when the kernel
+    was built for a pinhole batch (``read`` false), so its arithmetic is the
+    pinhole's alone. A runtime ``spread != 0`` branch is not enough: under
+    ``fast_math`` it changes how the arithmetic beside it is fused, and a
+    level search flips borderline patches on the last bit (see the module
+    docstring). It goes straight to a ``proj`` parameter, since a Taichi
+    local cannot hold ``None``.
+    """
+    if ti.static(read):
+        return ti.Vector([projection[t, 0], projection[t, 1]])
+    else:
+        return None
+
+
+@ti.func
+def _effective_depth(depth, screen_distance, proj: ti.template()):
+    """The projection divisor at planar ``depth``: ``depth`` itself for a
+    pinhole camera (``proj`` ``None``, or ``proj[1] == 0``), else ``spread *
+    D + persp * depth`` (``algan.rendering.projection.effective_depth``).
+    """
+    out = depth
+    if ti.static(_given(proj)):
+        if proj[1] != 0.0:
+            out = proj[1] * screen_distance + proj[0] * depth
+    return out
+
+
+@ti.func
+def _screen_pixels(point, cam_origin, screen_point, sx, sy, sz, half_height,
+                   proj: ti.template()):
+    """Project one world point; returns ``[pixel_x, pixel_y, depth, divisor]``.
 
     The same construction as
     ``LogicalPNTrianglePrimitive._project_to_output_pixels``: intersect the view
     ray with the screen plane, take raw dot products with the (generally
     non-orthogonal) screen basis rows, and scale by half the output height.
+    ``proj`` is :func:`_frame_projection`'s; ``depth`` is planar, from the
+    camera plane, and ``divisor`` the one the projection divided by.
     """
     ray = point - cam_origin
     depth = ray.dot(sz)
     screen_distance = (screen_point - cam_origin).dot(sz)
-    projected = cam_origin + (screen_distance / depth) * ray
+    divisor = _effective_depth(depth, screen_distance, proj)
+    projected = cam_origin + (screen_distance / divisor) * ray
     relative = projected - screen_point
     return ti.Vector(
         [
             relative.dot(sx) * half_height,
             relative.dot(sy) * half_height,
             depth,
+            divisor,
         ]
     )
 
@@ -88,6 +129,7 @@ def _guarded_error(
     guard,
     sign,
     slack,
+    proj: ti.template(),
 ):
     """Guarded projected pixel deviation between one pair of matching points.
 
@@ -101,9 +143,10 @@ def _guarded_error(
     the search stops where the reference stops being meaningful. Zero measures
     against the PN patch exactly. Matches ``_guarded_pixel_error``.
     """
-    a = _screen_pixels(approximated, cam_origin, screen_point, sx, sy, sz, half_height)
+    a = _screen_pixels(approximated, cam_origin, screen_point, sx, sy, sz,
+                       half_height, proj)
     # Form the small displacement before projecting. Subtracting two absolute
-    # float32 projections loses precision with a distant near-orthographic eye
+    # float32 projections loses precision with a distant eye
     # and can report curvature even after a patch has been diced to level 8.
     # Same identity and translated guard clamp as _guarded_pixel_error.
     delta = exact - approximated
@@ -112,9 +155,16 @@ def _guarded_error(
     result = 0.0
     if (exact_depth * sign > _MIN_FRONT_DEPTH) and (a[2] * sign > _MIN_FRONT_DEPTH):
         screen_distance = (screen_point - cam_origin).dot(sz)
-        scale = screen_distance / exact_depth
+        scale = screen_distance / _effective_depth(exact_depth, screen_distance,
+                                                   proj)
+        # The divisor's own change: ``persp`` of the depth's, all of it for
+        # a pinhole camera and none for an orthographic one.
+        divisor_delta = delta_depth
+        if ti.static(_given(proj)):
+            if proj[1] != 0.0:
+                divisor_delta = proj[0] * delta_depth
         projected_delta = scale * (
-            delta - (approximated - cam_origin) * (delta_depth / a[2])
+            delta - (approximated - cam_origin) * (divisor_delta / a[3])
         )
         dx = projected_delta.dot(sx) * half_height
         dy = projected_delta.dot(sy) * half_height
@@ -219,6 +269,8 @@ def pn_patch_flatness_error(
     cam_origin: ti.types.ndarray(),  # [T, 3] f32
     screen_point: ti.types.ndarray(),  # [T, 3] f32
     screen_basis: ti.types.ndarray(),  # [T, 3, 3] f32
+    projection: ti.types.ndarray(),  # [T, 2] f32 -- (persp, spread)
+    read_projection: ti.template(),  # False for a pinhole batch: rows unread
     front_sign: ti.types.ndarray(),  # [T] f32
     slack: ti.types.ndarray(),  # [T] f32 -- surface accuracy, 0 = measure exactly
     error: ti.types.ndarray(),  # [R] f32, pre-zeroed
@@ -298,6 +350,7 @@ def pn_patch_flatness_error(
                     guard,
                     sign,
                     allowance,
+                    _frame_projection(projection, read_projection, t),
                 ),
             )
         ti.atomic_max(error[r], worst)
@@ -324,6 +377,8 @@ def bezier_chord_hull_error(
     cam_origin: ti.types.ndarray(),  # [T, 3] f32
     screen_point: ti.types.ndarray(),  # [T, 3] f32
     screen_basis: ti.types.ndarray(),  # [T, 3, 3] f32
+    projection: ti.types.ndarray(),  # [T, 2] f32 -- (persp, spread)
+    read_projection: ti.template(),  # False for a pinhole batch: rows unread
     error_squared: ti.types.ndarray(),  # [A] f32, pre-zeroed
     num_frames: ti.i32,
     num_subdivisions: ti.i32,
@@ -342,7 +397,10 @@ def bezier_chord_hull_error(
     its projected control hull and that distance bounds the curve-to-chord
     error. A subcurve touching or crossing the plane has no such bound: it
     reports ``inf``, which keeps its segment active and falls back to the hard
-    cap, exactly as the torch path does.
+    cap, exactly as the torch path does. Off the pinhole the weights are the
+    projection divisors rather than the depths (``_screen_pixels``), and under
+    an orthographic camera, whose projection is affine, every subcurve is
+    bounded.
     """
     scale = 1.0 / ti.cast(num_subdivisions, ti.f32)
     derivative_scale = scale / 3.0
@@ -394,12 +452,15 @@ def bezier_chord_hull_error(
         for k in ti.static(range(4)):
             source = ti.Vector([hull[k, 0], hull[k, 1], hull[k, 2]])
             projected = _screen_pixels(
-                source, origin, plane, sx, sy, sz, half_height
+                source, origin, plane, sx, sy, sz, half_height,
+                _frame_projection(projection, read_projection, f)
             )
             pixels[k, 0] = projected[0]
             pixels[k, 1] = projected[1]
-            depth_low = ti.min(depth_low, projected[2])
-            depth_high = ti.max(depth_high, projected[2])
+            # The rational weights are the projection divisors: the depths
+            # for a pinhole camera, one constant for an orthographic one.
+            depth_low = ti.min(depth_low, projected[3])
+            depth_high = ti.max(depth_high, projected[3])
             # Comparison-based, so it survives fast_math where an isfinite
             # intrinsic may not: both inf and nan fail it.
             bounded = bounded and (
@@ -437,6 +498,8 @@ def pn_edge_chord_error(
     cam_origin: ti.types.ndarray(),  # [T, 3] f32
     screen_point: ti.types.ndarray(),  # [T, 3] f32
     screen_basis: ti.types.ndarray(),  # [T, 3, 3] f32
+    projection: ti.types.ndarray(),  # [T, 2] f32 -- (persp, spread)
+    read_projection: ti.template(),  # False for a pinhole batch: rows unread
     front_sign: ti.types.ndarray(),  # [T] f32
     slack: ti.types.ndarray(),  # [T] f32 -- surface accuracy, 0 = measure exactly
     error: ti.types.ndarray(),  # [A] f32, pre-zeroed
@@ -511,6 +574,7 @@ def pn_edge_chord_error(
                     guard,
                     sign,
                     allowance,
+                    _frame_projection(projection, read_projection, t),
                 ),
             )
         ti.atomic_max(error[a], worst)

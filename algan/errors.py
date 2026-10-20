@@ -15,6 +15,15 @@ import warnings
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _in_algan(filename: str) -> bool:
+    """Whether code from ``filename`` is part of this package.
+
+    Inside its directory, that is, not merely named like it: a script in an
+    ``algan_scenes`` folder beside an editable checkout is the user's.
+    """
+    return os.path.abspath(filename).startswith(_PACKAGE_DIR + os.sep)
+
+
 def _user_stacklevel(default: int = 2) -> int:
     """Frames from the caller out to the first frame outside algan.
 
@@ -29,7 +38,7 @@ def _user_stacklevel(default: int = 2) -> int:
     frame = sys._getframe(1)
     level = 1
     while frame is not None:
-        if not os.path.abspath(frame.f_code.co_filename).startswith(_PACKAGE_DIR):
+        if not _in_algan(frame.f_code.co_filename):
             return level
         frame = frame.f_back
         level += 1
@@ -44,9 +53,7 @@ def _user_location():
     final -- but should still point at that line. Pass it to :func:`_warn_at`.
     """
     frame = sys._getframe(1)
-    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(
-        _PACKAGE_DIR
-    ):
+    while frame is not None and _in_algan(frame.f_code.co_filename):
         frame = frame.f_back
     if frame is None:
         return None
@@ -217,11 +224,11 @@ class Float32PrecisionWarning(AlganWarning):
 
     It also warns, once and naming both Mobs, when two overlapping flat shapes
     are closer in depth than a distant camera can tell apart: a few float32
-    spacings of the camera's distance from the origin, 0.0076 units at
-    ``set_near_orthographic(10000)``. Near the origin, shapes stacked at one
-    depth are drawn in the order they were made; that far out rounding
-    decides, and they can trade places from frame to frame. Separating them
-    along the view, or bringing the camera closer, avoids it.
+    spacings of the camera's distance from the origin, 0.0076 units for an eye
+    16,000 units out. Near the origin, shapes stacked at one depth are drawn
+    in the order they were made; that far out rounding decides, and they can
+    trade places from frame to frame. Separating them along the view, or
+    bringing the camera closer, avoids it.
     """
 
     code = "ALGAN_FLOAT32_PRECISION"

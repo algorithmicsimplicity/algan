@@ -155,6 +155,27 @@ def test_a_scripts_exit_code_is_the_cli_s(tmp_path):
     assert cli.main(["render", str(script), "-q", "ld"]) == 3
 
 
+def test_a_scripts_exit_message_is_printed(tmp_path, capsys):
+    """As the interpreter prints it, rather than failing without a word."""
+    script = tmp_path / "quits.py"
+    script.write_text('raise SystemExit("could not find data.csv")\n', encoding="utf-8")
+    assert cli.main(["render", str(script), "-q", "ld"]) == 1
+    assert capsys.readouterr().err == "could not find data.csv\n"
+
+
+def test_an_exit_message_that_cannot_be_printed_still_fails_the_run(tmp_path):
+    """Printing it raised instead, from the runner, as the interpreter does not."""
+    script = tmp_path / "quits.py"
+    script.write_text(
+        "class Reason:\n"
+        "    def __str__(self):\n"
+        "        raise ValueError('no words')\n"
+        "raise SystemExit(Reason())\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["render", str(script), "-q", "ld"]) == 1
+
+
 def test_settings_are_not_left_behind_by_a_failed_run(tmp_path):
     """A script that raises must not take the CLI's cleanup down with it."""
     script = tmp_path / "boom.py"
@@ -357,19 +378,27 @@ def test_a_trigger_verb_is_sent_with_the_token(home, capsys, verb):
     assert "4242" in capsys.readouterr().out
 
 
-def test_a_trigger_says_so_when_nothing_is_running(home, capsys):
-    assert cli.main(["daemon", "ping"]) == 0
+@pytest.mark.parametrize(
+    ("verb", "status"),
+    # ``ping`` asks whether a daemon is alive and ``render`` asks it to work,
+    # so with none running they fail, for the script or editor key that sent
+    # them; there is nothing to cancel or stop, so those succeed.
+    [("ping", 1), ("render", 1), ("cancel", 0), ("quit", 0)],
+)
+def test_a_trigger_says_so_when_nothing_is_running(home, capsys, verb, status):
+    assert cli.main(["daemon", verb]) == status
     assert "No Algan daemon is running." in capsys.readouterr().out
 
 
-def test_a_trigger_clears_a_dead_registration(home, capsys):
+@pytest.mark.parametrize(("verb", "status"), [("ping", 1), ("render", 1), ("quit", 0)])
+def test_a_trigger_clears_a_dead_registration(home, capsys, verb, status):
     free = socket.socket()
     free.bind(("127.0.0.1", 0))
     port = free.getsockname()[1]
     free.close()
     _register(home, port)
 
-    assert cli.main(["daemon", "render"]) == 0
+    assert cli.main(["daemon", verb]) == status
     assert not (home / "daemon.json").exists()
 
 
@@ -416,6 +445,12 @@ def test_new_scaffolds_a_runnable_script(tmp_path, capsys):
     target = tmp_path / "my_scene.py"
     assert cli.main(["new", str(target)]) == 0
     compile(target.read_text(encoding="utf-8"), str(target), "exec")
+
+
+def test_new_creates_the_folders_it_names(tmp_path, capsys):
+    target = tmp_path / "scenes" / "chapter_1" / "intro.py"
+    assert cli.main(["new", str(target)]) == 0
+    assert target.is_file()
 
 
 def test_check_reports_the_environment(capsys):

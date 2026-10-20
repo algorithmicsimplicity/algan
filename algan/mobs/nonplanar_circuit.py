@@ -84,7 +84,9 @@ import torch.nn.functional as F
 
 from algan.environment import env_flag
 from algan.rendering.mps_compat import reduction_index_dtype
+from algan.rendering.projection import ray_origins_for_points, view_directions
 from algan.rendering.raytracing.utils import _circuit_scale, _cubics_disconnected
+from algan.utils.python_utils import callable_signature
 
 #: A sub-path counts as planar when ``sqrt(lambda_min / lambda_max)`` of its
 #: control points' covariance -- RMS spread off the best-fit plane as a fraction
@@ -642,12 +644,14 @@ def run_segment_topology(plan, device):
     return segments, next_local - local, segment_run
 
 
-def run_planes(x, plan, eye=None):
+def run_planes(x, plan, eye=None, projection=None):
     """Centre and frame of each stroke run's plane, per frame.
 
-    ``x`` is ``[T, S, 4, 3]``; ``eye`` is the camera position ``[T, 1, 3]``.
-    Returns ``(centre, first, second, normal)``, each ``[T, R, 3]``, rebuilt
-    every batch so an animated path keeps a plane that follows it.
+    ``x`` is ``[T, S, 4, 3]``; ``eye`` is the camera position ``[T, 1, 3]``,
+    and ``projection`` the camera's :func:`camera_projection`, ``None`` for a
+    pinhole camera. Returns ``(centre, first, second, normal)``, each
+    ``[T, R, 3]``, rebuilt every batch so an animated path keeps a plane that
+    follows it.
 
     **The plane is turned to face the camera about the run's own axis.**  A
     circuit's stroke is a band lying *in* its plane, so a plane seen edge-on
@@ -660,6 +664,8 @@ def run_planes(x, plan, eye=None):
     ``cross(normal, axis)`` is then perpendicular to the view, so the stroke is
     at full width however the path is turned.  What it gives up is the run's
     extent *across* itself, which :data:`STRAIGHTNESS_TOLERANCE` is what bounds.
+    The view direction is the camera ray through the run's centre, which an
+    orthographic camera points along its forward axis for every run.
 
     Without a camera -- a primitive built outside a render loop -- each run
     falls back to its own best-fit plane.
@@ -704,7 +710,15 @@ def run_planes(x, plan, eye=None):
     )
 
     if eye is not None:
-        view = F.normalize(centre - eye.to(centre), p=2, dim=-1)
+        if projection is None:
+            view = F.normalize(centre - eye.to(centre), p=2, dim=-1)
+        else:
+            screen, persp, spread = (value.to(centre) for value in projection)
+            view = F.normalize(
+                -view_directions(centre, eye.to(centre), screen, persp, spread),
+                p=2,
+                dim=-1,
+            )
         facing = view - (view * first_unit).sum(-1, keepdim=True) * first_unit
         # A run pointing straight at the camera leaves nothing to face it with,
         # and covers almost no pixels either way; keep its own plane there.
@@ -740,15 +754,56 @@ def camera_eye(circuit):
     ``None`` when there is no scene or no camera -- a primitive built outside a
     render loop, which the callers fall back to plane-fitting for.
     """
-    scene = getattr(circuit, "scene", None)
-    scene = getattr(scene, "_geometry_view", scene)
-    camera = getattr(scene, "camera", None)
+    camera = _batch_camera(circuit)
     if camera is None:
         return None
     location = getattr(camera, "location", None)
     if location is None or location.numel() % 3:
         return None
     return location.reshape(location.shape[0], -1, 3)[:, :1, :]
+
+
+def camera_projection(circuit):
+    """The camera's projection over this render batch, or ``None``.
+
+    ``None`` for a pinhole camera, whose rays all start at :func:`camera_eye`,
+    and without a camera. Otherwise ``(screen, persp, spread)``: the screen
+    centre ``[T, 1, 3]`` and the ``(persp, spread)`` terms ``[T, 1, 1]`` of
+    ``algan.rendering.projection``, read from the same materialized camera as
+    :func:`camera_eye`.
+    """
+    camera = _batch_camera(circuit)
+    if camera is None or not hasattr(camera, "_projection_terms"):
+        return None
+    if camera._is_pinhole():
+        return None
+    location = camera.screen.location
+    screen = location.reshape(location.shape[0], -1, 3)[:, :1, :]
+    persp, spread = (
+        value.reshape(value.shape[0], -1)[:, :1].unsqueeze(-1)
+        for value in camera._projection_terms()
+    )
+    return screen, persp, spread
+
+
+def _batch_camera(circuit):
+    """The camera this render batch is drawn through (see :func:`camera_eye`)."""
+    scene = getattr(circuit, "scene", None)
+    scene = getattr(scene, "_geometry_view", scene)
+    return getattr(scene, "camera", None)
+
+
+def _camera_points(points, eye, projection):
+    """Where the camera rays through ``points`` start: ``eye`` for a pinhole
+    camera, else each point's own origin on the camera plane.
+    """
+    if projection is None:
+        return eye
+    screen, persp, spread = (value.to(points) for value in projection)
+    eye = eye.to(points)
+    return ray_origins_for_points(
+        points, eye, screen, F.normalize(screen - eye, p=2, dim=-1), persp, spread
+    )
 
 
 def member_of_segment(circuit, num_segments, device):
@@ -805,11 +860,12 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
     vertex_colors[..., -1:] *= _per_item(opacity, vertex_member, frames)
     vertex_colors[..., -2:-1] += _per_item(glow, vertex_member, frames)
 
+    # The glow is already in ``vertex_colors``; a ``glow`` argument would add
+    # it a second time (see ``Surface.get_render_primitives``).
     primitive = LogicalPNTrianglePrimitive(
         corners=position[:, tri_index, :],
         colors=vertex_colors.as_subclass(Color),
         normals=normals[:, tri_index, :],
-        glow=vertex_colors[..., -2:-1].as_subclass(torch.Tensor),
         shader=circuit.shader,
         render_tolerance_pixels=PATCH_RENDER_TOLERANCE_PIXELS,
         # The patches ARE the surface here: there is no analytic shape behind
@@ -953,6 +1009,9 @@ def _shaded_border_colors(circuit, x, plan, border, frames):
     albedo = colors[..., :-1]
     scene = getattr(circuit, "scene", None)
     eye = camera_eye(circuit)
+    if eye is not None:
+        # Each run is lit as seen from where its own camera ray starts.
+        eye = _camera_points(point, eye, camera_projection(circuit))
     # The material's extra parameters, in the shader's own signature order --
     # the same rebuild ``RayTracedTrianglePrimitive._ordered_shader_param_values``
     # does, and for the same reason. The signature defaults are NOT a safe
@@ -963,7 +1022,7 @@ def _shaded_border_colors(circuit, x, plan, border, frames):
 
     from algan.rendering.raytracing.primitives import SHADER_FIXED_PARAM_COUNT
 
-    signature = inspect.signature(shader).parameters
+    signature = callable_signature(shader).parameters
     params = []
     for name in list(signature.keys())[SHADER_FIXED_PARAM_COUNT:]:
         if name in material_params:
@@ -1005,6 +1064,7 @@ def build_stroke_primitive(
     depth_bias=0.0,
     eye=None,
     run_colors=None,
+    projection=None,
 ):
     """The analytic circuit primitive a non-planar path's stroke renders as.
 
@@ -1017,13 +1077,14 @@ def build_stroke_primitive(
     ``depth_bias`` moves every run toward the camera by that many depth-tie bins.
     The patch border path spends it to sit in front of the curved patch it
     outlines; along the view axis, so it reorders without moving anything on
-    screen.
+    screen. ``eye`` and ``projection`` are :func:`camera_eye` and
+    :func:`camera_projection`.
     """
     plan = circuit._nonplanar_plan
     device = x.device
     frames = x.shape[0]
     segments, next_offsets, _ = run_segment_topology(plan, device)
-    centre, first, second, normal = run_planes(x, plan, eye)
+    centre, first, second, normal = run_planes(x, plan, eye, projection)
 
     num_runs = plan.num_runs
     members = member_of_segment(circuit, x.shape[1], device)
@@ -1099,6 +1160,7 @@ def build_render_primitives(
     fill = _member_colors(fill_colors, num_members, channels)
     border = _member_colors(border_colors, num_members, channels)
     eye = camera_eye(circuit)
+    projection = camera_projection(circuit)
 
     if plan.mode == "stroke":
         return [
@@ -1115,6 +1177,7 @@ def build_render_primitives(
                 refractive_index,
                 transmission,
                 eye=eye,
+                projection=projection,
             )
         ]
 
@@ -1141,6 +1204,7 @@ def build_render_primitives(
                 transmission,
                 depth_bias=plan.sagitta * BORDER_DEPTH_BIAS_BINS_PER_UNIT,
                 eye=eye,
+                projection=projection,
                 # A patch shades and its border is a circuit, which the
                 # renderer draws unlit -- so the two have to be brought
                 # together on the host. Manim runs a tile's stroke through the

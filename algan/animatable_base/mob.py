@@ -1,4 +1,4 @@
-"""The :class:`Mob` -- anything that can appear on screen.
+"""The :class:`~algan.animatable_base.mob.Mob` -- anything that can appear on screen.
 
 A Mob is an :class:`~algan.animatable_base.animatable.Animatable` with a place in
 3-D space: a ``location``, a ``basis`` (its orientation and scale as three
@@ -58,7 +58,7 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     _reject_context_kwargs,
 )
-from algan.constants.color import to_color
+from algan.constants.color import _channel_count_error, _is_channel, to_color
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
@@ -68,6 +68,7 @@ from algan.geometry.geometry import (
     map_local_to_global_coords,
 )
 from algan.utils.animation_utils import animate_lagged_by_location
+from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import (
     cast_to_direction,
     cast_to_tensor,
@@ -172,10 +173,17 @@ def _coerce_if_color(attr, value):
     Keyed on the attribute name because a non-color attribute must keep
     taking exactly what it takes: a hex int is a color on ``color`` and a
     plain number on ``glow``.
+
+    ``to_color`` hands back what it cannot read as a color, so that a caller
+    such as a palette can decide what else it is. An attribute has no such
+    choice, so numbers handed back -- the wrong count for a color -- are
+    refused here instead of failing later as a timeline shape mismatch.
     """
     if "color" not in attr:
         return value
     value = to_color(value)
+    if isinstance(value, (tuple, list)) and all(_is_channel(v) for v in value):
+        raise _channel_count_error(value)
     if (
         attr not in _FIVE_CHANNEL_COLOR_ATTRS
         and torch.is_tensor(value)
@@ -298,7 +306,7 @@ _MANIM_CONSTRUCTOR_HINTS = {
     "arc_center": "pass `location=`",
     "center": "pass `location=`",
     "point": "pass `location=`",
-    "about_point": "`about=` on the transform methods (rotate, scale, ...)",
+    "about_point": "`about=` on rotate and orbit; scale resizes about the center",
     "buff": "Algan spells the spacing `buffer=`",
     "mobject": "Algan spells it `mob=`",
     "mobjects": "Algan spells it `mobs=`, or pass them positionally",
@@ -307,6 +315,13 @@ _MANIM_CONSTRUCTOR_HINTS = {
     "rate_func": "easing is a context in Algan: `with Seq(easing=...): ...`",
     "lag_ratio": "staggering is a context in Algan: `with Lag(ratio=0.5): ...`",
     "scale_factor": "build it, then call `.scale(2)`",
+    "num_decimal_places": "DecimalNumber spells it `decimal_places`",
+    # Manim's Text names its span maps by abbreviation; Algan's spells them out.
+    "t2c": "Text spells it `color_map=`",
+    "t2f": "Text spells it `font_map=`",
+    "t2g": "Text spells it `gradient_map=`",
+    "t2s": "Text spells it `slant_map=`",
+    "t2w": "Text spells it `weight_map=`",
 }
 
 
@@ -358,7 +373,9 @@ class Mob(
         ignoring scene lights, using the shader of :class:`~.UnlitMaterial`.
         Preserves color, texture, glow and opacity. Defaults to False, keeping
         the geometry's normal material. This configures shading immediately,
-        before spawning; use :meth:`set_material` before spawning to replace it.
+        before spawning; use
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
+        before spawning to replace it.
     **kwargs
         Passed to :class:`~.Animatable` -- notably ``scene`` and
         ``add_to_scene``.
@@ -516,12 +533,14 @@ class Mob(
     #:
     #: Two kinds of Mob ignore it, both because they were never shadowed to
     #: begin with: 2-D geometry (a shape, ``Text``) renders unlit, and so does
-    #: anything with :meth:`~.Mob.set_shader` ``None``. A Mob carrying a custom
-    #: fragment pipeline (:meth:`~.Mob.set_fragment_shader`) also ignores it,
-    #: because the slot this rides in the material block belongs to that
-    #: pipeline's own parameters -- the same reason a custom pipeline is never
-    #: asked about ``two_sided``. ``casts_shadows`` has none of these
-    #: exceptions: all three still cast.
+    #: anything with
+    #: :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`
+    #: ``None``. A Mob carrying a custom fragment pipeline
+    #: (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`)
+    #: also ignores it, because the slot this rides in the material block
+    #: belongs to that pipeline's own parameters -- the same reason a custom
+    #: pipeline is never asked about ``two_sided``. ``casts_shadows`` has none
+    #: of these exceptions: all three still cast.
     receives_shadows = True
 
     # Backing store for :attr:`pass_index`; ``None`` until a value is set.
@@ -867,7 +886,7 @@ class Mob(
             ).contiguous()
         return value
 
-    def _distribute_over_packed_subtree(self, key, value, current_value):
+    def _distribute_over_packed_subtree(self, key, value, current_value, unowned=None):
         """Spread a per-member value across the rows of a packed subtree.
 
         A packed Mob carries one row per logical member, but its components
@@ -890,15 +909,33 @@ class Mob(
         Returns ``value`` unchanged whenever it is already broadcastable or the
         subtree cannot be covered exactly, so an unbatched Mob -- and any shape
         this cannot describe -- behaves exactly as it did before.
+
+        ``unowned``, when given, rescues a value the subtree cannot be covered
+        with exactly: rows no single member owns take their row of ``unowned``
+        instead. A packed circuit's control points keep **one** color row for
+        all of its members, so without it reading a Text's per-glyph colors
+        and writing them back raised. Pass the current value for a value, so
+        those rows keep what they have; a change has no such rescue here (see
+        :meth:`_spread_change_over_packed_rows`).
         """
         members = value.shape[-2]
         total = current_value.shape[-2]
         if members == 1 or members == total:
             return value
         owners = self._member_owner_index(key, members, total)
-        if owners is None:
+        if owners is not None:
+            return value.index_select(-2, owners.to(value.device))
+        if unowned is None:
             return value
-        return value.index_select(-2, owners.to(value.device))
+        owners = self._member_owner_index(key, members, total, partial=True)
+        # No owned row at all means ``value`` is not one row per member of this
+        # Mob, so it is left to fail as the shape error it is.
+        if owners is None or not bool((owners >= 0).any()):
+            return value
+        owners = owners.to(value.device)
+        gathered = value.index_select(-2, owners.clamp(min=0))
+        known = (owners >= 0).reshape((1,) * (gathered.dim() - 2) + (total, 1))
+        return torch.where(known, gathered, unowned)
 
     def _member_owner_index(self, key, members, total, partial=False):
         """Map each buffered row of ``key`` over this Mob's packed subtree to
@@ -1188,6 +1225,11 @@ class Mob(
         --------
         :meth:`~.Mob.wave_color` : Run the same pulse across the Mob as a travelling wave.
         """
+        # Parsed as an assigned color is, and before anything is recorded: the
+        # pulse writes these straight into the color rows, so only a 5-channel
+        # Color used to survive -- a hex int was taken for every channel.
+        color = to_color(color)
+        new_color = to_color(new_color)
         with Sync(animation_manager=self.animation_manager):
             if color is not None:
                 # new_color=None restores each part to its own current color
@@ -1299,8 +1341,11 @@ class Mob(
         :class:`~.Mob`
             This Mob, so calls can be chained.
         """
-        if direction is None:
-            direction = self.get_up_direction()
+        direction = (
+            self.get_up_direction()
+            if direction is None
+            else cast_to_direction("direction", direction)
+        )
         direction = direction * (-1 if reverse else 1)
         # What each part's pulse actually writes, which decides whether a finer
         # sampling can show the wave at all (see pulse_color).
@@ -1652,7 +1697,9 @@ class Mob(
             # device. Only a replayed write can land here with a mismatch.
             value = value.to(current_value.device)
         if recursive:
-            value = self._distribute_over_packed_subtree(attr, value, current_value)
+            value = self._distribute_over_packed_subtree(
+                attr, value, current_value, unowned=current_value
+            )
         if attr == "color":
             value = self._keep_explicit_alpha(value, current_value, recursive)
         change = value - current_value
@@ -1734,9 +1781,10 @@ class Mob(
         same shape -- the target values, in the same order.
 
         Reach for it instead of a Python loop over
-        :meth:`~.Mob.get_descendants`. A loop records one animation per
-        descendant, which on a large group is thousands of separate recorded
-        animations; this records **one**, and renders measurably faster for it.
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.get_descendants`.
+        A loop records one animation per descendant, which on a large group is
+        thousands of separate recorded animations; this records **one**, and
+        renders measurably faster for it.
 
         Animation
         ---------
@@ -1745,8 +1793,9 @@ class Mob(
         all together inside a :class:`~.Sync`. ``func`` is evaluated **once, at
         the moment of the call** -- it computes the destination, it is not
         re-run per frame. For a value that must be recomputed every frame, use
-        :meth:`~.Mob.add_updater` instead. Only spawned Mobs record; a Mob whose
-        subtree is not on screen is changed immediately and silently.
+        :meth:`~algan.animatable_base.animatable.Animatable.add_updater` instead.
+        Only spawned Mobs record; a Mob whose subtree is not on screen is changed
+        immediately and silently.
 
         Parameters
         ----------
@@ -1790,8 +1839,8 @@ class Mob(
         --------
         :meth:`~.Mob.set_animated_attribute` : Animate an attribute to a value
             you supply, rather than to a function of the current one.
-        :meth:`~.Mob.add_updater` : Recompute a value every frame instead of
-            once.
+        :meth:`~algan.animatable_base.animatable.Animatable.add_updater` : Recompute
+            a value every frame instead of once.
 
         Examples
         --------
@@ -2753,6 +2802,7 @@ class Mob(
             )
             data_sub_inds = torch.cat(
                 [torch.arange(starts[d], starts[d] + sizes[d]) for d in selected]
+                or [torch.zeros((0,), dtype=torch.long)]
             )
         else:
             sub_pbs = self.parent_batch_sizes
@@ -2760,6 +2810,13 @@ class Mob(
         self.parent_batch_sizes = sub_pbs
         for c in self.children:
             c._set_data_sub_inds(data_sub_inds)
+        # A pack's members need not all have parts: a leaf packed beside
+        # members that have some selects no rows of the packed parts. That
+        # level of the view would hold nothing, and reading it fails, so the
+        # view leaves it out.
+        if any(_selects_no_rows(c) for c in self.children):
+            self.children[:] = [c for c in self.children if not _selects_no_rows(c)]
+            self._note_hierarchy_change()
 
     def __bool__(self) -> bool:
         """A Mob is always truthy, however many batch members it has.
@@ -2818,8 +2875,14 @@ class Mob(
             add_to_scene=False, clone_data=False, recursive=True, spawn=False
         )
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
-        cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)
+        index = integer_or_none(item)
+        cloned_mob._set_data_sub_inds(item if index is None else [index])
         return cloned_mob
+
+
+def _selects_no_rows(mob: Mob) -> bool:
+    inds = getattr(mob, "data_sub_inds", None)
+    return isinstance(inds, torch.Tensor) and inds.numel() == 0
 
 
 # Verb methods that read like animatable attributes. ``mob.rotate = 90`` is the

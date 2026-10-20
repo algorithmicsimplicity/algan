@@ -16,8 +16,8 @@ geometry's own size:
 * **The ray directions.** ``_generate_ray`` forms each pixel's point on the
   screen plane in world space and subtracts the eye from it; both round at
   their own magnitudes. That error is the same for every scene the camera
-  sees, and with a near-orthographic camera's huge focal length it is the
-  largest of the three.
+  sees, and with a distant camera's long focal length it is the largest of
+  the three.
 
 Only rounding *across* the view direction moves anything on screen, which is
 why an axis-aligned camera a thousand units out is still exact: its large
@@ -38,12 +38,22 @@ worst pixel's error is 0.7-1.1x of it). It is the *spacing* of representable
 positions, not an expected error, so a value of 1 means shapes are drawn from
 a lattice one pixel across.
 
+Off the pinhole (``algan.rendering.projection``) the projection divides by
+``z_eff = spread * D + persp * z`` instead of ``z``, so ``z_eff`` replaces
+``z`` in the first term, and a ray direction rounded by an angle displaces a
+point at depth ``z`` by ``z / z_eff`` of what it does through a pinhole,
+which scales the last term. An orthographic camera's ``z_eff`` is one
+constant: there is no focal length to magnify anything, and only coordinates
+far from the origin, the eye's among them, round visibly.
+
 Calibration (1280x720, camera turned 35 degrees, text brought a unit in front
 of it against the same text left at the origin): estimates of 0.16 and 0.37 px
 render indistinguishably, 0.66 px steps the glyph edges, 1.0-1.6 px makes the
 strokes uneven, 2.6 px and up doubles and dashes them. Text at the origin seen
-through ``set_near_orthographic`` behaves the same way: clean to 0.35 px
-(distance 2e4), uneven from 0.53 (3e4), a doubled stroke at 1.75 (1e5).
+through a distant perspective camera with the same framing -- how
+``set_near_orthographic`` approximated an orthographic view before the camera
+had one -- behaves the same way: clean to 0.35 px (eye-to-screen distance 2e4),
+uneven from 0.53 (3e4), a doubled stroke at 1.75 (1e5).
 
 Each projection (``RayTracedTrianglePrimitive``, its logical-PN subclass and
 ``RayTracedBezierCircuitPrimitive``) reduces its own control points or vertices
@@ -79,6 +89,7 @@ import torch.nn.functional as F
 from algan.errors import Float32PrecisionWarning, _user_stacklevel
 from algan.logging.logger import get_logger
 from algan.rendering.mps_compat import accumulate_dtype, clamp_floor
+from algan.rendering.projection import effective_depth, projection_rows
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
 
 logger = get_logger("raytracing")
@@ -94,8 +105,8 @@ EPS32 = float(torch.finfo(torch.float32).eps)
 #: origin (the two are identical in exact arithmetic).
 VISIBLE_ERROR_PX = 0.5
 #: From here shapes break up: doubled strokes, dashed outlines, gaps. The
-#: calibration saw uneven strokes up to 1.6 px and a doubled one by 1.75 (the
-#: old 1e5 ``set_near_orthographic`` default, turned).
+#: calibration saw uneven strokes up to 1.6 px and a doubled one by 1.75 (a
+#: framing-preserving perspective camera 1e5 units from its screen, turned).
 BROKEN_ERROR_PX = 1.5
 
 #: Points this far outside the frame (as a fraction of its half-size) still
@@ -136,6 +147,12 @@ class CameraRounding(NamedTuple):
     focal_sq: torch.Tensor
     #: [T] the ray-direction terms, ``k0^2 across(s^2) + K^2 across(n^2)``.
     ray_sq: torch.Tensor
+    #: [T] the second of them alone, ``K^2 across(n^2)``: the direction's own
+    #: rounding, which is what a projection other than the pinhole rescales.
+    direction_sq: torch.Tensor
+    #: [T, 2] ``(persp, spread)`` rows (``algan.rendering.projection``), or
+    #: ``None`` for a pinhole camera.
+    projection: torch.Tensor | None
     #: The visible half-extent of the screen in its own coordinates.
     limit_u: float
     limit_v: float
@@ -145,8 +162,9 @@ def camera_rounding(camera, num_frames, device) -> CameraRounding:
     """The camera terms for a projection over ``num_frames`` frames.
 
     Reads the snapshot the projection reads (``ray_origin``, ``screen_point``,
-    ``screen_basis``) and the output resolution, so the estimate is in the
-    pixels of the delivered video whatever the supersampling.
+    ``screen_basis`` and, off the pinhole, ``camera_projection``) and the
+    output resolution, so the estimate is in the pixels of the delivered video
+    whatever the supersampling.
     """
     eye = _expand_frames(_flat_frames(camera.ray_origin, (3,)), num_frames).to(device)
     screen = _expand_frames(_flat_frames(camera.screen_point, (3,)), num_frames).to(
@@ -165,9 +183,13 @@ def camera_rounding(camera, num_frames, device) -> CameraRounding:
     screen_distance = ((screen - eye) * forward).sum(-1)
     pixels_per_unit = 0.5 * height * basis[:, :2].norm(p=2, dim=-1).amax(-1)
     focal_sq = (pixels_per_unit * screen_distance).square()
+    direction_sq = focal_sq * (forward.square() * across).sum(-1)
     ray_sq = pixels_per_unit.square() * (screen.square() * across).sum(-1) + (
-        focal_sq * (forward.square() * across).sum(-1)
+        direction_sq
     )
+    projection = getattr(camera, "camera_projection", None)
+    if projection is not None:
+        projection = projection_rows(projection, num_frames, device)
     reference = eye[0]
     zeros = torch.zeros_like(forward)
     rows = torch.stack(
@@ -205,6 +227,8 @@ def camera_rounding(camera, num_frames, device) -> CameraRounding:
         screen_distance=screen_distance,
         focal_sq=focal_sq,
         ray_sq=ray_sq,
+        direction_sq=direction_sq,
+        projection=projection,
         limit_u=_SCREEN_MARGIN * width / max(height, 1.0),
         limit_v=_SCREEN_MARGIN,
     )
@@ -281,6 +305,8 @@ def _may_reach(points, terms, threshold_px):
     farthest_sq = torch.maximum(lo.square(), hi.square())
     across = terms.rows[:, 3, 3:]
     bound_sq = across @ farthest_sq - terms.offsets[:, 3]
+    if terms.projection is not None:
+        return _may_reach_projected(lo, hi, bound_sq, terms, threshold_px)
     margin_sq = (threshold_px / EPS32) ** 2 - terms.ray_sq
     z_crit_sq = terms.focal_sq * bound_sq / clamp_floor(margin_sq, 1e-30)
     scale = terms.rows[:, 1:3, :3].norm(p=2, dim=-1).amin(-1)
@@ -294,6 +320,32 @@ def _may_reach(points, terms, threshold_px):
     gap = (lo - terms.eye).clamp_min(0) + (terms.eye - hi).clamp_min(0)
     near = gap.square().sum(-1) <= radius_sq
     return bool(((margin_sq <= 0) | near).any())
+
+
+def _may_reach_projected(lo, hi, bound_sq, terms, threshold_px):
+    """:func:`_may_reach` off the pinhole, where the bound needs no distance.
+
+    The divisor ``spread * D + persp * z`` never falls below ``spread * D`` in
+    front of the camera, so the point terms are bounded outright, and the
+    direction term grows with depth, so the box's deepest point bounds it.
+    """
+    persp, spread = terms.projection.unbind(-1)
+    distance = terms.screen_distance
+    floor = clamp_floor(spread * distance, 1e-30)
+    forward = terms.rows[:, 0, :3]
+    deepest = torch.maximum(lo * forward, hi * forward).sum(-1) - (
+        terms.eye * forward
+    ).sum(-1)
+    deepest = deepest.clamp_min(0.0)
+    reach = deepest / clamp_floor(
+        effective_depth(deepest, distance, persp, spread), 1e-30
+    )
+    bound = (
+        terms.focal_sq * bound_sq / floor.square()
+        + (terms.ray_sq - terms.direction_sq)
+        + terms.direction_sq * reach.square()
+    )
+    return bool((bound >= (threshold_px / EPS32) ** 2).any())
 
 
 def _bounding_box(points):
@@ -342,6 +394,10 @@ def _chunk_scores(lifted, terms, start, stop):
     centre = terms.centre[start:stop]
     u = centre[:, None, 0] * depth + distance * gu
     v = centre[:, None, 1] * depth + distance * gv
+    if terms.projection is not None:
+        return _projected_chunk_scores(
+            depth, u, v, across_sq, distance, terms, start, stop
+        )
     visible = (
         (depth > 0)
         & (u.abs() <= terms.limit_u * depth)
@@ -349,6 +405,27 @@ def _chunk_scores(lifted, terms, start, stop):
     )
     score = terms.focal_sq[start:stop, None] * across_sq / depth.square()
     score = score + terms.ray_sq[start:stop, None]
+    return torch.where(visible, score, torch.zeros_like(score))
+
+
+def _projected_chunk_scores(depth, u, v, across_sq, distance, terms, start, stop):
+    """:func:`_chunk_scores` off the pinhole: the divisor replaces the depth.
+
+    ``u`` and ``v`` are screen coordinates times that divisor, as they are
+    times the depth through a pinhole; the front test stays the planar one.
+    """
+    rows = terms.projection[start:stop]
+    divisor = effective_depth(depth, distance, rows[:, None, 0], rows[:, None, 1])
+    visible = (
+        (depth > 0)
+        & (u.abs() <= terms.limit_u * divisor)
+        & (v.abs() <= terms.limit_v * divisor)
+    )
+    safe = torch.where(divisor > 0, divisor, torch.ones_like(divisor))
+    direction_sq = terms.direction_sq[start:stop, None]
+    score = terms.focal_sq[start:stop, None] * across_sq / safe.square()
+    score = score + (terms.ray_sq[start:stop, None] - direction_sq)
+    score = score + direction_sq * (depth / safe).square()
     return torch.where(visible, score, torch.zeros_like(score))
 
 
@@ -615,18 +692,17 @@ def precision_message(finding: Float32Finding) -> str:
         # Something parked close in front of a distant eye: a HUD.
         advice = (
             "Keep the camera, and anything placed just in front of it, within "
-            "a few hundred units of the origin -- for a flat look, a narrow "
-            "view such as camera.set_near_orthographic(distance=80) rather "
-            "than a large distance; place it deeper in front of the camera, "
-            "since the rounding shrinks as 1/depth; or turn the scene instead "
-            "of the camera"
+            "a few hundred units of the origin -- for a flat look, "
+            "camera.set_orthographic() rather than a distant camera; place it "
+            "deeper in front of a perspective camera, since the rounding "
+            "shrinks as 1/depth there; or turn the scene instead of the camera"
         )
     else:
         # A distant camera's own long focal length.
         advice = (
             "Bring the camera closer to the origin -- for a flat look, "
-            "camera.set_near_orthographic() at its default distance rather "
-            "than a larger one -- or turn the scene instead of the camera"
+            "camera.set_orthographic() rather than a distant camera -- or turn "
+            "the scene instead of the camera"
         )
     return (
         f"float32 rounding will make {describe_owner(finding.mob)} {verdict}: "
@@ -959,8 +1035,8 @@ def depth_order_message(finding: DepthOrderFinding, pairs: int) -> str:
         f"render). Shapes that close -- including shapes at one depth, which "
         f"draw order decides near the origin -- can trade places from frame to "
         f"frame, one flickering through the other. Separate them along the "
-        f"view by at least {_units(2 * finding.resolution, 2)} (a "
-        f"near-orthographic camera shows no parallax for it), or bring the "
+        f"view by at least {_units(2 * finding.resolution, 2)} (an "
+        f"orthographic camera shows no parallax for it), or bring the "
         f"camera closer to the origin: the resolution shrinks with its "
         f"distance."
     )

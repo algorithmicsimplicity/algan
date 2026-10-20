@@ -15,7 +15,7 @@ Depth
 =====
 
 The third axis is ``OUT`` (towards the viewer) and ``IN`` (away from it). The
-default camera sits at ``OUT * 7`` looking at the ``ORIGIN``, so moving something
+default camera sits at ``OUT * 20`` looking at the ``ORIGIN``, so moving something
 ``IN`` pushes it away and makes it look smaller:
 
 .. algan:: ThreeDDepth
@@ -62,7 +62,7 @@ turns it to face a point, and :meth:`~.Camera.center_on` frames a given Mob.
 .. seealso::
 
     :doc:`../advanced_user_tutorials/cameras` -- field of view, clipping planes,
-    near-orthographic projection, and how to follow a moving subject.
+    orthographic projection, and how to follow a moving subject.
 
 Lighting
 ========

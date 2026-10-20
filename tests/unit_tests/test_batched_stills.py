@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 from PIL import Image
@@ -128,6 +129,51 @@ def test_invalid_timestamps_fail_before_any_output(monkeypatch, tmp_path, at):
     assert not list(tmp_path.glob("*.png"))
 
 
+@pytest.mark.parametrize(
+    "at", [torch.tensor(0.2), np.array(0.2), "0.2"], ids=["tensor", "ndarray", "str"]
+)
+def test_a_timestamp_with_no_length_of_its_own_is_one_still(monkeypatch, tmp_path, at):
+    # A 0-d tensor or array has __len__ but holds one number, and a string's
+    # length is in characters: none of them asks for several stills.
+    calls, _ = _frame_spy(monkeypatch)
+    with Scene(video_settings=STILLS) as scene:
+        result = scene.save_frame(tmp_path / "one", at=at)
+    assert not isinstance(result, list)
+    assert result.output_path.name == "one.png"
+    assert [call[0] for call in calls] == [(2,)]
+
+
+def test_a_nan_timestamp_is_not_called_an_offset_backwards(monkeypatch, tmp_path):
+    calls, _ = _frame_spy(monkeypatch)
+    with (
+        Scene(video_settings=STILLS) as scene,
+        pytest.raises(
+            AlganConfigurationError, match="finite and non-negative"
+        ) as caught,
+    ):
+        scene.save_frame(tmp_path / "bad", at=float("nan"))
+    assert "counts backwards" not in str(caught.value)
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "at",
+    [torch.tensor(9.0), np.array(9.0), np.float32(9.0)],
+    ids=["0-d tensor", "0-d array", "numpy scalar"],
+)
+def test_a_scalar_tensor_or_array_is_one_timestamp(monkeypatch, tmp_path, at):
+    """REGRESSION. Anything with a ``__len__`` was walked as a sequence of
+    timestamps, and a 0-d tensor or array has one that raises: "iteration over
+    a 0-d tensor".
+    """
+    calls, _ = _frame_spy(monkeypatch)
+    with Scene(video_settings=STILLS) as scene:
+        result = scene.save_frame(tmp_path / "shot", at=at)
+    assert [call[0] for call in calls] == [(90,)]
+    assert result.output_path.name == "shot.png"
+    assert _pixel(result) == 90
+
+
 @pytest.mark.fast
 def test_project_authors_all_checkpoints_before_one_batched_render(
     monkeypatch, tmp_path
@@ -226,7 +272,7 @@ def test_per_call_settings_are_snapshotted_and_separate_incompatible_jobs(
 ):
     observed = []
 
-    def postprocess(frames):
+    def postprocess(frames, memory=None):
         return frames
 
     def intro():
@@ -248,7 +294,9 @@ def test_per_call_settings_are_snapshotted_and_separate_incompatible_jobs(
         before_render=lambda scene: observed.append(SETTINGS.raytracing.shadows),
     )
     results = _project(tmp_path, intro).render_screenshots()
-    assert [call[0] for call in calls] == [(1, 2), (6, 8), (5, 6)]
+    # Every still is a frame of the Scene's own 10 fps video: the per-call
+    # settings' 20 fps sizes nothing in time.
+    assert [call[0] for call in calls] == [(1, 2), (3, 4), (5, 6)]
     assert [call[1].resolution for call in calls] == [(8, 6), (12, 9), (8, 6)]
     assert calls[1][2]["post_processes"] == (postprocess,)
     assert observed == [previous_shadows, False, previous_shadows]

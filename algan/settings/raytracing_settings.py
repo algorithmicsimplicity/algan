@@ -461,6 +461,7 @@ class RayTracingPreset:
 
     @property
     def is_preset(self):
+        """Always ``True``: a captured configuration never changes in place."""
         return True
 
     def __getattr__(self, name):
@@ -476,6 +477,31 @@ class RayTracingPreset:
         )
 
     def set(self, source=None, **kwargs):
+        """Get a copy of this preset with some values changed.
+
+        The preset itself never changes. Names are checked here; values are
+        validated when the copy is applied with :meth:`RayTracingSettings.set`.
+
+        Parameters
+        ----------
+        source
+            A :class:`RayTracingPreset` or :class:`RayTracingSettings` to copy
+            every value from before applying ``kwargs``. Defaults to ``None``,
+            meaning this preset's values.
+        **kwargs
+            Values to change, by setting name, experimental switches included.
+
+        Returns
+        -------
+        :class:`RayTracingPreset`
+            The modified copy.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If a name is not a ray-tracing setting, or ``source`` is not a
+            ray-tracing configuration.
+        """
         values = {}
         if source is not None:
             if not isinstance(source, (RayTracingPreset, RayTracingSettings)):
@@ -484,7 +510,21 @@ class RayTracingPreset:
                     f"RayTracingSettings, got {type(source).__name__}"
                 )
             values.update(source.to_dict())
-        values.update(kwargs)
+
+        # A field named here is checked now, as SETTINGS.raytracing.set checks
+        # it, not when the preset is applied: a preset is made in one place and
+        # applied in another, so a bad value used to surface far from the line
+        # that wrote it. A field fixed at import is refused outright -- applying
+        # a preset restores every field it carries, and that restore does not
+        # (and must not) refuse them, so the write would reach the renderer.
+        _resolve()
+        for name, value in kwargs.items():
+            if name not in self._values:
+                _unknown(name)
+            message = _INERT_FIELDS.get(name) or _IMPORT_FROZEN_FIELDS.get(name)
+            if message is not None:
+                raise AlganConfigurationError(message)
+            values[name] = _check_value(name, value, _module(name))
 
         normalized = {}
         for name, value in values.items():
@@ -496,9 +536,23 @@ class RayTracingPreset:
         return RayTracingPreset(values)
 
     def to_dict(self):
+        """Get every captured value as a plain dict, experimental switches included.
+
+        Returns
+        -------
+        dict
+            Each setting's name mapped to a deep copy of its value.
+        """
         return deepcopy(self._values)
 
     def as_preset(self):
+        """Get an equal copy, as :meth:`RayTracingSettings.as_preset` would.
+
+        Returns
+        -------
+        :class:`RayTracingPreset`
+            A new preset with the same values.
+        """
         return RayTracingPreset(self._values)
 
 
@@ -564,10 +618,19 @@ class RayTracingSettings:
 
     @property
     def is_preset(self):
+        """Always ``False``: this is the live configuration, changed in place."""
         return False
 
     @property
     def experimental(self):
+        """The renderer's experimental performance and capability switches.
+
+        A second view of the same live configuration, with the same ``set``,
+        ``to_dict`` and ``override``, that also accepts the switches this
+        object refuses. Their names, defaults and meaning follow the current
+        kernels and can change between releases: reach for them when profiling
+        or working around a renderer limitation, not in ordinary scenes.
+        """
         view = self.__dict__.get("_experimental")
         if view is None:
             view = _ExperimentalRayTracingSettings(self)
@@ -576,10 +639,24 @@ class RayTracingSettings:
 
     @classmethod
     def field_names(cls):
+        """Get the name of every ray-tracing setting, experimental ones included.
+
+        Returns
+        -------
+        frozenset[str]
+            The names :meth:`to_dict` reports.
+        """
         return _field_names()
 
     @classmethod
     def public_field_names(cls):
+        """Get the names of the settings :meth:`set` accepts directly.
+
+        Returns
+        -------
+        frozenset[str]
+            :meth:`field_names` without the switches on :attr:`experimental`.
+        """
         return _PUBLIC_FIELDS
 
     def __dir__(self):
@@ -614,6 +691,33 @@ class RayTracingSettings:
         self.set(**{name: value})
 
     def set(self, source=None, **kwargs):
+        """Validate and apply ray-tracing settings in place.
+
+        Every value is checked before any is written, and a setting that fails
+        while being applied puts back the ones written before it, so a refused
+        call changes nothing.
+
+        Parameters
+        ----------
+        source
+            A :class:`RayTracingPreset` or :class:`RayTracingSettings` to copy
+            every value from, experimental switches included, before applying
+            ``kwargs``. Defaults to ``None``.
+        **kwargs
+            Settings to change, by name. Experimental switches are refused
+            here: set those through :attr:`experimental`.
+
+        Returns
+        -------
+        :class:`RayTracingSettings`
+            This object, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If a name is unknown or experimental, a value is invalid, or the
+            setting can only be chosen before ``import algan``.
+        """
         return self._set(source, kwargs, allow_experimental=False)
 
     def _set(self, source, kwargs, allow_experimental):
@@ -687,11 +791,27 @@ class RayTracingSettings:
         return self
 
     def to_dict(self):
+        """Get every current value as a plain dict, experimental switches included.
+
+        Returns
+        -------
+        dict
+            Each setting's name mapped to a deep copy of its value.
+        """
         return {
             field: deepcopy(getattr(_module(field), field)) for field in _field_names()
         }
 
     def as_preset(self):
+        """Capture the current configuration as an immutable preset.
+
+        Pass it back to :meth:`set` later to restore every value at once.
+
+        Returns
+        -------
+        :class:`RayTracingPreset`
+            A copy of every value, experimental switches included.
+        """
         return RayTracingPreset(self.to_dict())
 
     def effective_analytic_aa_secondary_samples(self):
@@ -710,6 +830,23 @@ class RayTracingSettings:
 
     @contextmanager
     def override(self, **kwargs):
+        """Change ray-tracing settings for the duration of a ``with`` block.
+
+        Every value is put back on exit, including when the block raises::
+
+            with SETTINGS.raytracing.override(samples_per_pixel=64):
+                Scene.save_video("detailed")
+
+        Parameters
+        ----------
+        **kwargs
+            Settings to change, as for :meth:`set`.
+
+        Yields
+        ------
+        :class:`RayTracingSettings`
+            This object.
+        """
         previous = self.to_dict()
         self.set(**kwargs)
         try:

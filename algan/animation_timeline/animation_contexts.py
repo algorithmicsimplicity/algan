@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import copy
 import math
+import os
+import typing
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -45,6 +47,18 @@ from algan.constants import easings
 from algan.errors import AlganConfigurationError, ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
+from algan.utils.audio_utils import (
+    _FFMPEG_PROTOCOL,
+    _cached_audio_file_clip,
+    _is_ffmpeg_protocol,
+)
+from algan.utils.file_utils import resolve_asset_path
+from algan.utils.python_utils import callable_signature
+
+# Not ``from typing import TYPE_CHECKING``: this module is star-exported, and
+# an upper-case name would land in ``from algan import *``.
+if typing.TYPE_CHECKING:
+    from moviepy import AudioClip
 
 DEFAULT_RUNTIME = 1
 DEFAULT_EASING = easings.smooth
@@ -182,29 +196,77 @@ def _reject_context_kwargs(kwargs):
         )
 
 
+def _reject_invalid_easing(context, easing, parameter="easing"):
+    """Refuse an easing the replay cannot call, at the line that gave it.
+
+    An easing is first called when its animations are replayed for a render,
+    so a name, a number or a function that cannot take the progress failed
+    there, inside the timeline -- ``'str' object is not callable`` -- naming
+    neither the context nor the easing.
+    """
+    if easing is None:
+        return
+    owner = f"{type(context).__name__}'s {parameter}"
+    if not callable(easing):
+        hint = (
+            f" Pass the function itself: easings.{easing}."
+            if isinstance(easing, str) and easing in easings.__all__
+            else ""
+        )
+        raise AlganConfigurationError(
+            f"{owner} is {easing!r} ({type(easing).__name__}), but an easing is "
+            f"a function of the progress t, such as easings.smooth.{hint}"
+        )
+    try:
+        # Not following __wrapped__: the call binds to the outermost signature.
+        signature = callable_signature(easing, follow_wrapped=False)
+    except (TypeError, ValueError):
+        # A builtin may not say what it takes; the call itself will.
+        return
+    try:
+        signature.bind(None)
+    except TypeError as error:
+        name = getattr(easing, "__name__", None) or type(easing).__name__
+        raise AlganConfigurationError(
+            f"{owner}, {name}, cannot be called as easing(t): {error}. Algan "
+            f"calls an easing with the progress t, a tensor of values from 0 to "
+            f"1, and plays the animation at the progress it returns."
+        ) from None
+
+
+def _finite_number(name, value, what="a finite number of seconds"):
+    """``value`` as a Python float, or an error naming ``name``.
+
+    A NaN or an infinity does not rewind the clock so much as destroy it: every
+    later time computed from it is NaN, and the frame window that comes out is
+    nonsense rather than short. It does not raise on its own, which is why it
+    is caught here, at the authoring line that supplied the value.
+
+    The float is the point as much as the check. Times are computed from Mob
+    positions, which are tensors, so a 0-d tensor or a NumPy scalar is an easy
+    thing to hand over -- and either one, written into the timeline's float64
+    buffers, failed several calls down on a dtype mismatch.
+    """
+    try:
+        finite = math.isfinite(value)
+    except (TypeError, ValueError, OverflowError, RuntimeError) as exc:
+        raise AlganConfigurationError(f"{name} must be {what}; got {value!r}") from exc
+    if not finite:
+        raise AlganConfigurationError(f"{name} must be {what}; got {value!r}")
+    return float(value)
+
+
 def _reject_invalid_runtime(name, value):
-    """Reject non-numeric, non-finite or negative seconds before recording.
+    """Return ``value`` as a float, rejecting non-finite or negative seconds.
 
     Time only moves forward. A negative runtime rewinds the scene clock, which
     then silently shortens or empties the render rather than failing -- and
     ``scene.wait(target - now)`` coming out negative is an easy thing to write.
-    A NaN or an infinity does not rewind the clock so much as destroy it: every
-    later time computed from it is NaN, and the frame window that comes out is
-    nonsense rather than short. Neither raises on its own, which is why both are
-    caught here, at the authoring line that supplied the value.
+    See ``_finite_number`` for the rest.
     """
     if value is None:
         return value
-    try:
-        finite = math.isfinite(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise AlganConfigurationError(
-            f"{name} must be a finite number of seconds; got {value!r}"
-        ) from exc
-    if not finite:
-        raise AlganConfigurationError(
-            f"{name} must be a finite number of seconds; got {value!r}"
-        )
+    value = _finite_number(name, value)
     if value < 0:
         raise AlganConfigurationError(
             f"{name}={value!r} is negative, and a runtime is a number of "
@@ -213,6 +275,20 @@ def _reject_invalid_runtime(name, value):
             f"itself rather than its runtime."
         )
     return value
+
+
+def _compose_easings(outer, inner):
+    """``outer(inner(t))``: ``inner`` bends the progress first, then ``outer``.
+
+    Nested :class:`ComposedEasing` blocks build their rate function this way,
+    so the innermost block's function is applied first and every enclosing one
+    still applies on top, before the base easing.
+    """
+
+    def composed(t):
+        return outer(inner(t))
+
+    return composed
 
 
 def _guard_context_init(cls):
@@ -436,8 +512,12 @@ class AnimationContext:
         Easing function to compose *with* the parent's rather than replace it. Defaults
         to ``None``. See :class:`~.ComposedEasing`.
     combine_easing
-        Whether component rate functions are combined into the context's own.
-        Defaults to False.
+        Whether the rate function spans the whole block rather than each animation
+        in it. With True, every animation inside takes its own slice of the curve
+        across this context's runtime, rescaled so it still ends on its target:
+        with the default easing, a :class:`~.Seq` of moves reads as one motion
+        that eases in at the start of the block and out at its end, instead of
+        stopping between moves. Defaults to False.
     record_funcs
         Whether animated functions inside are recorded on the Scene timeline.
         Defaults to ``None``, meaning inherit (True at the top level;
@@ -451,6 +531,23 @@ class AnimationContext:
     spawn_at_end
         Whether Mobs created inside are held back and spawned together when the block
         ends. Defaults to ``None``, meaning inherit (False at the top level).
+    new_animation
+        Whether the enclosing context counts this whole block as one animation of
+        its own, so its next animation starts after the block's runtime times its
+        ``lag_ratio``; when False it carries on from wherever the block stopped.
+        :class:`~.Lag` and its subclasses, and :class:`~.Off`, set it. Defaults to
+        False.
+    finished
+        Internal: set when the block exits. Leave it unset. Defaults to False.
+    new_mobs
+        Internal: the Mobs created inside the block. Leave it unset. Defaults to
+        ``None``, an empty list.
+    child_contexts
+        Internal: the contexts nested directly inside this one. Leave it unset.
+        Defaults to ``None``, an empty list.
+    kwargs
+        Internal: keywords a nested context inherits, merged with its parent's on
+        entry. Leave it unset. Defaults to ``None``, an empty dict.
     animation_manager
         The :class:`~.AnimationManager` to record against. Defaults to ``None``,
         meaning the active Scene's -- pass one explicitly when authoring a Scene that
@@ -462,7 +559,8 @@ class AnimationContext:
         If ``runtime`` or ``runtime_per_part`` is not finite and non-negative,
         or a parameter is
         spelled the way Manim or an older Algan spelled it (``duration``,
-        ``run_time``, ``rate_func``).
+        ``run_time``, ``rate_func``). Also if ``easing`` or ``composed_easing``
+        is not a function that can be called with the progress alone.
     :class:`.ContextReuseError`
         If the same context object is entered by a second ``with`` block.
     """
@@ -487,8 +585,14 @@ class AnimationContext:
     animation_manager: Any = None
 
     def __post_init__(self):
-        _reject_invalid_runtime("runtime", self.runtime)
-        _reject_invalid_runtime("runtime_per_part", self.runtime_per_part)
+        self.runtime = _reject_invalid_runtime("runtime", self.runtime)
+        self.runtime_per_part = _reject_invalid_runtime(
+            "runtime_per_part", self.runtime_per_part
+        )
+        if self.lag_ratio is not None:
+            self.lag_ratio = _finite_number("ratio", self.lag_ratio, "a finite number")
+        _reject_invalid_easing(self, self.easing)
+        _reject_invalid_easing(self, self.composed_easing, "composed_easing")
         if self.new_mobs is None:
             self.new_mobs = []
         if self.child_contexts is None:
@@ -555,6 +659,11 @@ class AnimationContext:
             if self.__getattribute__(attr) is None:
                 self.__setattr__(attr, self.prev_context.__getattribute__(attr))
 
+        # A composed easing layers on top of the one already in effect, and
+        # that includes one an enclosing context composed: inheriting only
+        # when unset made an inner ComposedEasing silently replace an outer.
+        own_composed_easing = self.composed_easing
+        enclosing_composed_easing = self.prev_context.composed_easing
         for attr in [
             "runtime_per_part",
             "lag_ratio",
@@ -566,6 +675,10 @@ class AnimationContext:
             "spawn_at_end",
         ]:
             inherit_missing_value(attr)
+        if own_composed_easing is not None and enclosing_composed_easing is not None:
+            self.composed_easing = _compose_easings(
+                enclosing_composed_easing, own_composed_easing
+            )
 
         self.easing = copy.deepcopy(self.easing)
         self.composed_easing = copy.deepcopy(self.composed_easing)
@@ -582,21 +695,26 @@ class AnimationContext:
         """Where the authoring cursor sits within this context, in seconds.
 
         The time the next animation recorded in this context will start at.
+        Assign any finite number -- a 0-d tensor or NumPy scalar too -- to move
+        it; a NaN or an infinity raises :class:`.AlganConfigurationError`.
         """
         return self.timespan.current_time
 
     @current_time.setter
     def current_time(self, value):
-        self.timespan.current_time = value
+        self.timespan.current_time = _finite_number("current_time", value)
 
     @property
     def end_time(self):
-        """The furthest time anything recorded in this context reaches, in seconds."""
+        """The furthest time anything recorded in this context reaches, in seconds.
+
+        Like :attr:`current_time`, it takes any finite number.
+        """
         return self.timespan.original_end
 
     @end_time.setter
     def end_time(self, value):
-        self.timespan.original_end = value
+        self.timespan.original_end = _finite_number("end_time", value)
 
     def add_exit_callback(self, callback):
         """Register work to run once this block has finished, at its end time.
@@ -809,22 +927,6 @@ class AnimationContext:
                 self.timespan.start = self.timespan.original_start
                 self.timespan.end = self.timespan.original_end
 
-            if self.combine_easing:
-
-                def wrap(easing):
-                    if easing is None:
-                        return easing
-                    easing.set_full_time(
-                        lambda context=self: context.timespan.start,
-                        lambda context=self: context.timespan.end,
-                    )
-                    easing.time_set = True
-                    return easing
-
-                for child in self.get_descendants(include_self=False):
-                    wrap(child.easing)
-                    wrap(child.composed_easing)
-
             self.finished = True
             # Subsequent parent updates and spawn-at-end work must execute in
             # the parent context, just as normal authoring after the with block.
@@ -918,7 +1020,7 @@ class AnimationContext:
         """
         if t is None:
             t = self.runtime_per_part
-        _reject_invalid_runtime("t", t)
+        t = _reject_invalid_runtime("t", t)
         self.timespan.original_end = max(
             self.timespan.original_end, self.timespan.current_time + t
         )
@@ -1148,9 +1250,12 @@ class Lag(AnimationContext):
         ``0`` is fully simultaneous, ``1`` fully sequential, ``0.1`` starts each
         animation when the previous one is a tenth done. Can be larger than 1,
         in which case it introduces a pause (wait) after each animation finishes.
-        Defaults to ``0.5``.
+        Must be finite. Defaults to ``0.5``.
     runtime
-        Passed to :class:`~.AnimationContext` .
+        Duration of the whole block in seconds; the animations inside are
+        rescaled to fit, keeping their relative timing. Must be finite and
+        non-negative. Defaults to ``None``, meaning the runtime follows from the
+        animations themselves.
     **kwargs
         Passed to :class:`~.AnimationContext` .
 
@@ -1239,7 +1344,9 @@ class Seq(Lag):
     Parameters
     ----------
     runtime
-        Passed to :class:`~.AnimationContext` .
+        Duration of the whole block in seconds; the animations inside are
+        rescaled to fit, keeping their relative durations. Must be finite and
+        non-negative. Defaults to ``None``, meaning the sum of their durations.
     **kwargs
         Passed to :class:`~.Lag` with ``lag_ratio=1``.
 
@@ -1258,24 +1365,67 @@ class Seq(Lag):
         super().__init__(ratio=1, runtime=runtime, **kwargs)
 
 
+def _audio_file_path(source) -> str:
+    """``source`` as the string moviepy opens, raising if no file is there.
+
+    moviepy checks only after FFmpeg has failed to read the file, so its
+    ``FileNotFoundError`` arrived chained to an internal ``TypeError``, and the
+    half-built reader then printed an ``AttributeError`` from its ``__del__``.
+    A URL, or another of FFmpeg's protocols such as ``concat:``, is left for
+    FFmpeg to open.
+    """
+    path = os.fsdecode(source)
+    if not os.path.isfile(path) and not _is_ffmpeg_protocol(path):
+        if os.path.isdir(path):
+            raise IsADirectoryError(
+                f"Audio takes an audio file, and {path!r} is a directory."
+            )
+        where = os.path.abspath(path)
+        seen_from = (
+            "" if where == path else f", which is {where!r} from the current directory"
+        )
+        raise FileNotFoundError(f"Audio found no file at {path!r}{seen_from}.")
+    if _FFMPEG_PROTOCOL.match(path) and not _is_ffmpeg_protocol(path):
+        # A file named like take:2.wav, which FFmpeg would take for a protocol;
+        # an absolute path it reads as a file.
+        return os.path.abspath(path)
+    return path
+
+
 class Audio(AnimationContext):
     """Play a sound, and fit the block's animations to its length.
 
     The context's runtime is taken from the audio, so whatever you animate inside
     is stretched or squeezed to finish with the sound. That inversion is the point:
     you describe what should happen while a clip plays, rather than timing the clip
-    against the animation.
+    against the animation. A block that animates nothing holds still for the
+    sound, so the next block starts when it ends.
 
     Parameters
     ----------
     source
-        Path to an audio file, or an already-loaded moviepy audio clip.
+        Path to an audio file, or an already-loaded moviepy audio clip. The
+        path is a ``str`` or a :class:`~pathlib.Path`; a relative one is looked
+        for in the working directory and then beside the running script, as an
+        image's is.
     wait_at_end
         Extra seconds to hold after the audio finishes, before the block ends.
         Defaults to ``0``.
     **kwargs
         Passed to :class:`~.AnimationContext`. Note ``runtime`` is set from the
         audio and should not be passed.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``source`` is a path with no file at it.
+    IsADirectoryError
+        If ``source`` is the path of a directory.
+    OSError
+        If FFmpeg reads no sound from the file: it is damaged, is no audio
+        format FFmpeg knows, or is a video without a sound track.
+    TypeError
+        If ``source`` is neither a path nor an audio clip.
 
     Examples
     --------
@@ -1289,12 +1439,24 @@ class Audio(AnimationContext):
     :class:`~.Speech` : The same, driven by a line of narration transcript.
     """
 
-    def __init__(self, source: str, *, wait_at_end: float = 0.0, **kwargs):
+    def __init__(
+        self,
+        source: str | os.PathLike | AudioClip,
+        *,
+        wait_at_end: float = 0.0,
+        **kwargs,
+    ):
         audio_clip = source
-        if isinstance(source, str):
-            from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
-
-            audio_clip = AudioFileClip(source)
+        if isinstance(source, (str, os.PathLike)):
+            # Lazy: opens no decoder until the mix, which closes it again.
+            audio_clip = _cached_audio_file_clip(
+                _audio_file_path(resolve_asset_path(source))
+            )
+        elif not hasattr(source, "duration"):
+            raise TypeError(
+                "Audio takes the path of an audio file or a moviepy audio clip, "
+                f"got {type(source).__name__}."
+            )
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
         kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
@@ -1311,6 +1473,18 @@ class Audio(AnimationContext):
             self._audio_effect = AudioEffect(self.audio_clip, self.get_current_time())
             self.animation_manager.scene.add_effect(self._audio_effect)
         return context
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # A block that animates nothing takes no time, so its sound played over
+        # whatever came next -- the next line of narration included. Hold still
+        # instead; the block's runtime stretches the hold to the clip's length.
+        if (
+            exc_type is None
+            and self._audio_effect is not None
+            and self.timespan.original_end <= self.timespan.original_start
+        ):
+            self.wait(1)
+        return super().__exit__(exc_type, exc_val, exc_tb)
 
 
 class Speech(Audio):
@@ -1364,8 +1538,8 @@ class SlideShow(Seq):
 
     A :class:`~.Seq` with presentation manners: every Mob spawned inside gets a
     one-second pause after it appears, so the viewer has time to read it, and when
-    the block ends everything spawned inside is despawned together. Good for
-    stepping through a list of points.
+    the block ends everything spawned inside is despawned together, followed by one
+    more pause on the cleared slide. Good for stepping through a list of points.
 
     Examples
     --------
@@ -1401,13 +1575,19 @@ class SlideShow(Seq):
         """Despawn everything spawned inside the block, then pause.
 
         The despawns run together inside a :class:`~.Sync`, so the slide clears in one
-        beat rather than item by item.
+        beat rather than item by item. A block that raised records no clear-up: the
+        error propagates as it was raised.
         """
         super().__exit__(exc_type, exc_val, exc_tb)
+        if exc_type is not None or self.ignored:
+            return False
         with Sync(animation_manager=self.animation_manager):
             for mob in self.new_mobs:
                 mob.despawn()
-        self.wait()
+        # This block has exited, so the pause belongs to the enclosing context:
+        # ``self.wait()`` here only moved this block's own, already-read cursor.
+        self.animation_manager.wait(self.runtime_per_part)
+        return False
 
 
 class OnInit(AnimationContext):
@@ -1453,13 +1633,17 @@ class ComposedEasing(AnimationContext):
     The given function is composed with whatever rate function is already in effect,
     rather than replacing it, so an enclosing ease is kept and this one layers on
     top. Use it to make a run of animations rush, dawdle or bounce without
-    restating the base easing.
+    restating the base easing. Nested ``ComposedEasing`` blocks compose too: the
+    innermost function bends the progress first, then each enclosing one, then the
+    base easing.
 
     Parameters
     ----------
     rfunc
         Rate function mapping progress in ``[0, 1]`` to adjusted progress. Composed
-        with the enclosing context's rate function.
+        with the enclosing context's rate function. It should map ``1`` to ``1``:
+        when an animation ends its Mob holds the animation's target, so a function
+        that finishes elsewhere jumps there on the last frame.
     **kwargs
         Passed to :class:`~.AnimationContext`.
 
@@ -1467,8 +1651,8 @@ class ComposedEasing(AnimationContext):
     --------
     .. code-block:: python
 
-        with ComposedEasing(easings.there_and_back):
-            square.move(RIGHT)  # goes out and comes back
+        with ComposedEasing(easings.ease_out_bounce):
+            square.move(RIGHT)  # arrives with a bounce
     """
 
     def __init__(self, rfunc, **kwargs):

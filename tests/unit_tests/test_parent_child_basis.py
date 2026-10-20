@@ -11,6 +11,7 @@ from algan.geometry.geometry import (
     get_rotation_between_bases,
 )
 from algan.scene_manager import SceneManager
+from tests.unit_tests.distant_camera import pull_back
 
 # In the fast suite: attribute propagation from a parent to its children is the
 # rule the whole mob hierarchy is built on, and every composite Mob relies on it.
@@ -148,7 +149,7 @@ def _camera_rider(scene):
     """
     camera = scene.camera
     with algan.Off():
-        camera.set_near_orthographic(distance=80)
+        pull_back(camera, 80)
     bar = algan.Rectangle(width=4, height=0.4, stroke_width=0, fill_opacity=0.9)
     eye, forward = camera.location.reshape(3), camera.forward.reshape(3)
     k = 1.0 / float(((bar.get_center().reshape(3) - eye) * forward).sum())

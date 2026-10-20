@@ -34,10 +34,21 @@ spelling answers with the same value.
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
 
 from algan.errors import AlganConfigurationError
 from algan.settings.abstract_settings import Settings, settings_aliases
+
+
+def _integer(value):
+    """``value`` as an int if it is one -- a NumPy integer too -- but not a bool."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return operator.index(value)
+    except TypeError:
+        return None
 
 
 @settings_aliases(
@@ -54,8 +65,10 @@ class VideoSettings(Settings):
     ``supersampling`` -- how many samples per axis the frame is
     rendered at before being filtered back down to ``resolution`` -- may also be
     written ``ssaa`` or ``SSAA``. The short spellings are accepted for reading,
-    for assignment, as constructor keywords and by :meth:`set`; the declared
-    names are what :meth:`to_dict` and the settings snapshot answer with.
+    for assignment, as constructor keywords and by
+    :meth:`~algan.settings.abstract_settings.Settings.set`; the declared names
+    are what :meth:`~algan.settings.abstract_settings.Settings.to_dict` and the
+    settings snapshot answer with.
     """
 
     resolution: tuple[int, int]
@@ -71,35 +84,19 @@ class VideoSettings(Settings):
             raise AlganConfigurationError(
                 "resolution must be a pair of positive integers (width, height)"
             ) from exc
-        if not isinstance(width, int) or isinstance(width, bool):
+        width, height = _integer(width), _integer(height)
+        if width is None:
             raise AlganConfigurationError("resolution width must be an integer")
-        if not isinstance(height, int) or isinstance(height, bool):
+        if height is None:
             raise AlganConfigurationError("resolution height must be an integer")
         if width <= 0 or height <= 0:
             raise AlganConfigurationError("resolution dimensions must be positive")
         object.__setattr__(self, "resolution", (width, height))
-        if (
-            not isinstance(self.frames_per_second, int)
-            or isinstance(self.frames_per_second, bool)
-            or self.frames_per_second <= 0
-        ):
-            raise AlganConfigurationError(
-                "frames_per_second must be a positive integer"
-            )
-        if (
-            not isinstance(self.supersampling, int)
-            or isinstance(self.supersampling, bool)
-            or self.supersampling <= 0
-        ):
-            raise AlganConfigurationError("supersampling must be a positive integer")
-        if (
-            not isinstance(self.audio_sample_rate, int)
-            or isinstance(self.audio_sample_rate, bool)
-            or self.audio_sample_rate <= 0
-        ):
-            raise AlganConfigurationError(
-                "audio_sample_rate must be a positive integer"
-            )
+        for name in ("frames_per_second", "supersampling", "audio_sample_rate"):
+            value = _integer(getattr(self, name))
+            if value is None or value <= 0:
+                raise AlganConfigurationError(f"{name} must be a positive integer")
+            object.__setattr__(self, name, value)
         if not isinstance(self.fxaa, bool):
             raise AlganConfigurationError("fxaa must be a boolean")
 

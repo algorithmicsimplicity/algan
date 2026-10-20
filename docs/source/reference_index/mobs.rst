@@ -34,7 +34,7 @@ The Manim Compatibility Layer
 -----------------------------
 
 ``algan.mobs.manim_compat`` and its siblings above are the *implementation*. The public face
-is :mod:`algan.manim`, reached as ``import algan.manim as mn`` and deliberately left out of
+is ``algan.manim``, reached as ``import algan.manim as mn`` and deliberately left out of
 ``from algan import *``: a name in ``mn.`` follows Manim's conventions where the same name at
 the root follows Algan's (degrees vs radians, and Algan's stroke width vs Manim's, which is
 twice it). Where Algan has no native implementation of a Manim class, a curated subset gets a

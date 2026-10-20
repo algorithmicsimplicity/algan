@@ -43,7 +43,7 @@ import numpy as np
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
-from algan.animatable_base.mob import Mob
+from algan.animatable_base.mob import Mob, _coerce_if_color
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import *
 from algan.constants.spatial import OUTWARD, RIGHT, UP
@@ -933,6 +933,18 @@ class BezierCircuitCubic(Mob):
         # of points fail with AttributeError instead.
         control_points = cast_to_tensor(control_points)
         control_points = control_points.reshape(-1, control_points.shape[-1])
+        if (
+            control_points.shape[-1] != 3
+            or not control_points.shape[0]
+            or control_points.shape[0] % 4
+        ):
+            # Otherwise the circuit builds, and the first render fails reshaping
+            # the points into segments ("shape '[1, 1, 4, 3]' is invalid").
+            raise AlganConfigurationError(
+                f"{type(self).__name__} needs its control points as 3-D points "
+                f"in groups of four, P0, P1, P2, P3 per cubic segment; got "
+                f"{control_points.shape[0]} of size {control_points.shape[-1]}"
+            )
 
         # A circuit's ``location`` is DERIVED below, from the control points --
         # it is the centroid of the region they enclose, not a free parameter --
@@ -950,7 +962,7 @@ class BezierCircuitCubic(Mob):
             # Parsed here rather than in Mob.__init__: this runs first, and it
             # indexes the value's shape, so a hex string or an RGB tuple has to
             # already be a color by now.
-            color = to_color(kwargs2["color"])
+            color = _coerce_if_color("color", kwargs2["color"])
             kwargs2["color"] = color.reshape(-1, color.shape[-1]).mean(-2)
         if normals is not None:
             normals = normals.reshape(-1, 3)
@@ -1018,7 +1030,9 @@ class BezierCircuitCubic(Mob):
             self.num_texture_points = texture_triangle_vertices.shape[-2]
 
         self.stroke_width = cast_to_tensor(stroke_width)
-        stroke_color = cast_to_tensor(stroke_color)
+        # Parsed as ``color`` is above: a hex int cast as it stands is one
+        # channel of 16711680, and a string cannot have its alpha set below.
+        stroke_color = cast_to_tensor(to_color(stroke_color))
         if self.empty:
             stroke_color = stroke_color.as_subclass(Color).set_opacity(0)
 
@@ -1216,15 +1230,19 @@ class BezierCircuitCubic(Mob):
 
         return restore
 
-    def _set_texture_grid_resolution(self, width, height):
+    def _set_texture_grid_resolution(self, width, height, resample=None):
         """Internal: rebuild the texture grid at ``width x height`` per circuit.
 
         The grid is laid out exactly as the constructor lays it out, so the
         renderer's texture lookup is unchanged: ``width`` samples along the first
         basis vector, each holding ``height`` samples along the second. Existing
-        per-texel values are resampled onto the new grid. Row counts change, so
+        per-texel values are resampled onto the new grid, by
+        ``resample(value, old_size, new_size)`` when it is given and bilinearly
+        between the texels' positions otherwise. Row counts change, so
         callers must be prepared for the history split this performs.
         """
+        if resample is None:
+            resample = _resample_texture_grid
         old_size = (self.grid_width, self.grid_height)
         old_points = self.num_texture_points
         objects = self.location.shape[-2]
@@ -1269,7 +1287,7 @@ class BezierCircuitCubic(Mob):
                 if attr == "location" or value.shape[-2] != objects * old_points:
                     continue
                 texture_mob._setattr_and_rebatch_without_record(
-                    attr, _resample_texture_grid(value, old_size, (width, height))
+                    attr, resample(value, old_size, (width, height))
                 )
 
             if texture_mob.parent_batch_sizes is not None:
@@ -1281,9 +1299,6 @@ class BezierCircuitCubic(Mob):
             texture_mob.batch_size = objects * self.num_texture_points
         self._memory_per_timestep_cache = None
         return self
-
-    def get_animatable_attrs(self):
-        return {"stroke_width"}.union(super().get_animatable_attrs())
 
     def _stroke_style_key(self):
         style = _stroke_style(self.cap_style, self.joint_type, self.miter_limit)
@@ -1730,6 +1745,7 @@ class BezierCircuitCubic(Mob):
         return result
 
     def get_render_primitives(self):
+        """Internal: build the primitive that draws this shape's fill and stroke."""
         if self.empty:
             return None
         # Derive transport directly from the material shader parameters. A
@@ -1956,6 +1972,32 @@ class BezierCircuitCubic(Mob):
         prim.declare_shadow_flags(*self._resolved_shadow_flags())
         return prim
 
+    def _cubic_layout(self, total_control_points, device, dtype):
+        """Place every cubic of this circuit within the member it belongs to.
+
+        A circuit packed by :meth:`from_batches` -- a Text's glyphs, for one --
+        holds its members' cubics back to back, and members differ in length:
+        an "H" takes more cubics than an "l". A reveal runs along each member
+        separately, so it needs, per cubic, the member's index, the cubic's
+        index within that member, and the member's cubic count. An unpacked
+        circuit is a single member.
+        """
+        num_cubics = total_control_points // 4
+        sizes = self.control_points.parent_batch_sizes
+        counts = (
+            torch.tensor([num_cubics])
+            if sizes is None
+            else sizes.detach().to("cpu", torch.long) // 4
+        )
+        member = torch.repeat_interleave(torch.arange(len(counts)), counts)
+        first = torch.cumsum(counts, 0) - counts
+        index = torch.arange(num_cubics) - first[member]
+        return (
+            member.to(device),
+            index.to(device=device, dtype=dtype),
+            counts[member].to(device=device, dtype=dtype),
+        )
+
     @animated_function(animated_args={"t": 0.0})
     def draw(self, t: float = 1.0) -> BezierCircuitCubic:
         """Draw the circuit on, as though traced by a pen.
@@ -2000,31 +2042,32 @@ class BezierCircuitCubic(Mob):
         num_frames = self.control_points.location.shape[0]
         total_control_points = self._original_control_points.shape[-2]
         points = self._original_control_points.expand(num_frames, -1, -1)
+        member, index, count = self._cubic_layout(
+            total_control_points, points.device, points.dtype
+        )
+        num_mobs = (
+            1
+            if self.control_points.parent_batch_sizes is None
+            else len(self.control_points.parent_batch_sizes)
+        )
+        num_cubics = member.numel()
 
-        if self.control_points.parent_batch_sizes is not None:
-            num_mobs = len(self.control_points.parent_batch_sizes)
-        else:
-            num_mobs = 1
+        # Reshape points to (num_frames, num_cubics, 4, 3)
+        points_reshaped = points.view(num_frames, num_cubics, 4, 3)
 
-        num_control_points_per_mob = total_control_points // num_mobs
-        N_per_mob = num_control_points_per_mob // 4
-
-        # Reshape points to (num_frames, num_mobs, N_per_mob, 4, 3)
-        points_reshaped = points.view(num_frames, num_mobs, N_per_mob, 4, 3)
-
-        # Ensure t is a tensor and has shape (num_frames, num_mobs, 1, 1)
+        # Ensure t is a tensor and has shape (num_frames, num_mobs, 1)
         t = cast_to_tensor(t).to(points.device)
         while t.dim() < 3:
             t = t.unsqueeze(0)
         if t.shape[1] != num_mobs:
             t = t.expand(-1, num_mobs, -1)
-        t = t.unsqueeze(-1)  # (num_frames, num_mobs, 1, 1)
+        # Every cubic follows its own member's t: (num_frames, num_cubics, 1).
+        t = t[:, member]
 
         # Calculate local b parameters
-        inds_local = torch.arange(N_per_mob, device=points.device, dtype=points.dtype)
-        b = (N_per_mob * t - inds_local.view(1, 1, N_per_mob, 1)).clamp(
+        b = (count.view(1, -1, 1) * t - index.view(1, -1, 1)).clamp(
             0.0, 1.0
-        )  # (num_frames, num_mobs, N_per_mob, 1, 1)
+        )  # (num_frames, num_cubics, 1)
 
         # Portion matrix coefficients for each segment
         mb = 1.0 - b
@@ -2033,9 +2076,9 @@ class BezierCircuitCubic(Mob):
         b3 = b2 * b
         mb3 = mb2 * mb
 
-        # Construct portion_matrix of shape (num_frames, num_mobs, N_per_mob, 4, 4)
+        # Construct portion_matrix of shape (num_frames, num_cubics, 4, 4)
         portion_matrix = torch.zeros(
-            (num_frames, num_mobs, N_per_mob, 4, 4),
+            (num_frames, num_cubics, 4, 4),
             device=points.device,
             dtype=points.dtype,
         )
@@ -2097,39 +2140,31 @@ class BezierCircuitCubic(Mob):
             raise AlganConfigurationError("end_t must have one value per frame")
 
         total_control_points = full_control_points.shape[-2]
-
-        if self.control_points.parent_batch_sizes is not None:
-            num_mobs = len(self.control_points.parent_batch_sizes)
-        else:
-            num_mobs = 1
-
-        num_control_points_per_mob = total_control_points // num_mobs
-        N_per_mob = num_control_points_per_mob // 4
-
-        points_reshaped = full_control_points.view(
-            num_frames, num_mobs, N_per_mob, 4, 3
+        _, index, count = self._cubic_layout(
+            total_control_points, full_control_points.device, full_control_points.dtype
         )
 
-        j = torch.arange(
-            N_per_mob,
-            device=full_control_points.device,
-            dtype=full_control_points.dtype,
-        ).view(1, 1, N_per_mob, 1, 1)
-        s_start = j / N_per_mob
-        s_end = (j + 1) / N_per_mob
+        points_reshaped = full_control_points.view(num_frames, -1, 4, 3)
 
-        a = torch.clamp(start_t.view(-1, 1, 1, 1, 1), min=s_start, max=s_end)
-        b = torch.clamp(end_t.view(-1, 1, 1, 1, 1), min=s_start, max=s_end)
+        # Each cubic covers its own slice [j / N, (j + 1) / N] of its member's
+        # path, N being that member's cubic count: (1, num_cubics, 1).
+        j = index.view(1, -1, 1)
+        n = count.view(1, -1, 1)
+        s_start = j / n
+        s_end = (j + 1) / n
 
-        local_a = (a - s_start) * N_per_mob
-        local_b = (b - s_start) * N_per_mob
+        a = torch.clamp(start_t.view(-1, 1, 1), min=s_start, max=s_end)
+        b = torch.clamp(end_t.view(-1, 1, 1), min=s_start, max=s_end)
+
+        local_a = (a - s_start) * n
+        local_b = (b - s_start) * n
 
         P0 = points_reshaped[..., 0, :]
         P1 = points_reshaped[..., 1, :]
         P2 = points_reshaped[..., 2, :]
         P3 = points_reshaped[..., 3, :]
 
-        b_t = local_b.squeeze(-1)
+        b_t = local_b
         mb_t = 1.0 - b_t
 
         Q0 = P0
@@ -2142,7 +2177,7 @@ class BezierCircuitCubic(Mob):
             + b_t**3 * P3
         )
 
-        u = torch.where(b_t > 1e-6, local_a.squeeze(-1) / b_t, torch.zeros_like(b_t))
+        u = torch.where(b_t > 1e-6, local_a / b_t, torch.zeros_like(b_t))
         u = torch.clamp(u, 0.0, 1.0)
         mu = 1.0 - u
 
@@ -2178,11 +2213,22 @@ class BezierCurveCubic(BezierCircuitCubic):
 
     Parameters
     ----------
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`, except ``filled``, which is
-        always ``False``. ``color`` stands in for ``stroke_color`` when that was
-        not given, as it does on a :class:`~algan.mobs.shapes_2d.Line`, since an
-        unfilled path has no fill for it to act on otherwise.
+    *args
+        Passed to :class:`~.BezierCircuitCubic` -- the control points first.
+    filled
+        Accepted only so that a call written for
+        :class:`~.BezierCircuitCubic` still works: the path is never filled.
+        ``None`` and ``False`` are allowed. Defaults to ``None``.
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic`. ``color`` stands in for
+        ``stroke_color`` when that was not given, as it does on a
+        :class:`~algan.mobs.shapes_2d.Line`, since an unfilled path has no fill
+        for it to act on otherwise.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``filled`` is true.
 
     See Also
     --------

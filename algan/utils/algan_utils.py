@@ -78,6 +78,7 @@ def algan_scene(function=None, *, name=None):
 
 
 from algan.utils.memory_utils import release_torch_memory
+from algan.utils.python_utils import callable_signature
 
 
 def get_file_writer(
@@ -94,30 +95,16 @@ def get_file_writer(
         FFMPEG_VideoWriter,  # deferred: ~0.3 s of import algan
     )
 
-    try:
-        file_writer = FFMPEG_VideoWriter(
-            filename=temp_file_path,
-            size=video_settings_resolution,
-            codec=codec,
-            fps=fps,
-            with_mask=with_mask,
-            ffmpeg_params=ffmpeg_params,
-            audiofile=audiofile,
-            audio_codec=audio_codec,
-        )
-    except TypeError:
-        # Older moviepy releases spell the mask parameter "withmask".
-        file_writer = FFMPEG_VideoWriter(
-            filename=temp_file_path,
-            size=video_settings_resolution,
-            codec=codec,
-            fps=fps,
-            withmask=with_mask,
-            ffmpeg_params=ffmpeg_params,
-            audiofile=audiofile,
-            audio_codec=audio_codec,
-        )
-    return file_writer
+    return FFMPEG_VideoWriter(
+        filename=temp_file_path,
+        size=video_settings_resolution,
+        codec=codec,
+        fps=fps,
+        with_mask=with_mask,
+        ffmpeg_params=ffmpeg_params,
+        audiofile=audiofile,
+        audio_codec=audio_codec,
+    )
 
 
 # ‘mpeg4’ > ‘libx264’
@@ -140,7 +127,7 @@ class RenderResult:
         Seconds the render took, ``0.0`` for a skipped or deferred one. A
         batched still render shares its total time evenly among rendered files.
     render_plan
-        The last batch's :class:`~algan.rendering.raytracing.RenderPlan`: which
+        The last batch's :class:`~algan.rendering.raytracing.tracer.RenderPlan`: which
         renderer ran, what it could not honor, and how often each ceiling bound.
     passes
         The auxiliary passes written beside the output, as ``{pass name:
@@ -157,6 +144,7 @@ class RenderResult:
 
     @property
     def rendered(self) -> bool:
+        """Whether this call wrote the file: ``status == "rendered"``."""
         return self.status == "rendered"
 
     def _repr_html_(self) -> str | None:
@@ -237,6 +225,10 @@ _SUPPORTED_VIDEO_CONTAINERS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")
 #: Still-image formats :meth:`~algan.scene.Scene.save_frame` will write.
 _SUPPORTED_IMAGE_FORMATS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
+#: The still formats that keep an alpha channel. JPEG has none, and Pillow's
+#: BMP is read back without one, so a transparent background is lost in both.
+_TRANSPARENT_IMAGE_FORMATS = (".png", ".webp", ".tif", ".tiff")
+
 #: How Algan encodes transparent output, by container. The codec cannot be
 #: chosen blind to the container: ``png`` carries RGBA losslessly in the
 #: QuickTime/Matroska/AVI muxers, but WebM has no PNG track, and asking for one
@@ -316,6 +308,24 @@ def _check_transparent_container_is_supported(destination) -> None:
     )
 
 
+def _check_transparent_still_is_supported(destination) -> None:
+    """Fail before rendering a transparent still into a format with no alpha.
+
+    The video counterpart is :func:`_check_transparent_container_is_supported`.
+    Without this, a JPEG was refused only once its frame had been rendered,
+    by Pillow, as ``OSError: cannot write mode RGBA as JPEG``, and a BMP was
+    written and read back opaque.
+    """
+    suffix = Path(destination).suffix.lower()
+    if suffix in _TRANSPARENT_IMAGE_FORMATS:
+        return
+    raise AlganConfigurationError(
+        f"{suffix.lstrip('.').upper()} does not support Algan's transparent "
+        f"output. Use {', '.join(_TRANSPARENT_IMAGE_FORMATS)}, or choose an "
+        f"opaque background."
+    )
+
+
 def _check_container_is_supported(destination, *, still: bool = False) -> None:
     """Fail before the render on an output extension Algan cannot write.
 
@@ -389,6 +399,37 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
     return requested
 
 
+def _checked_ffmpeg_params(ffmpeg_params) -> list | None:
+    """``ffmpeg_params`` as a list, failing before the render if FFmpeg cannot
+    be given it.
+
+    They are spliced into FFmpeg's command line. A string went in one
+    character at a time, so FFmpeg refused the command once the render was
+    done, and a number kept FFmpeg from starting, with a ``TypeError`` from
+    ``subprocess``. A list, so checking a generator does not use it up; an
+    empty string, which spliced in nothing, is no arguments still.
+    """
+    if ffmpeg_params is None:
+        return None
+    if isinstance(ffmpeg_params, str):
+        if not ffmpeg_params.strip():
+            return []
+        raise AlganConfigurationError(
+            f"ffmpeg_params takes a list of arguments, not one string: write "
+            f"{ffmpeg_params.split()!r} for {ffmpeg_params!r}."
+        )
+    ffmpeg_params = list(ffmpeg_params)
+    for index, argument in enumerate(ffmpeg_params):
+        # What subprocess takes as an argument.
+        if not isinstance(argument, (str, bytes, os.PathLike)):
+            raise AlganConfigurationError(
+                f"ffmpeg_params[{index}] is {argument!r} "
+                f"({type(argument).__name__}); FFmpeg takes every argument as "
+                f"a string, such as {str(argument)!r}."
+            )
+    return ffmpeg_params
+
+
 def _render_scene_to_file(
     scene,
     file_path=None,
@@ -409,10 +450,19 @@ def _render_scene_to_file(
     which carries the user-facing signature and documentation.
     """
     from algan._render_passes import VideoPassJob, normalize_passes
+    from algan.render_loop import _check_post_processes
 
     # Validated before anything else, including an overwrite=False skip: a
     # misspelt pass name should not wait for the file to be deleted to surface.
     passes = normalize_passes(passes)
+    ffmpeg_params = _checked_ffmpeg_params(ffmpeg_params)
+    post_processes = kwargs.get("post_processes")
+    if post_processes is not None and not callable(post_processes):
+        # A tuple, so checking a generator here does not use it up.
+        kwargs["post_processes"] = post_processes = tuple(post_processes)
+    # The render checks these too, but only after the audio is rendered and
+    # FFmpeg started.
+    _check_post_processes(post_processes)
     # The Scene's own settings outrank SETTINGS.video when it was given them:
     # ``Scene(video_settings=...)`` and ``set_video_settings`` used to have no
     # effect here at all, while ``save_frame`` on the same Scene honoured them.
@@ -524,12 +574,18 @@ def _render_scene_to_file(
             animate_fade_out = SETTINGS.style.fade_out_on_scene_end
         render_started = True
         # A scene authored entirely inside Off() otherwise has zero runtime,
-        # which produces an empty video. Keep one frame alive. This is needed
-        # in every mode, because it decides how many frames get rendered.
+        # which produces an empty video, and so does one shorter than half a
+        # frame: the frame count is the duration rounded to whole frames. Keep
+        # one frame alive. This is needed in every mode, because it decides
+        # how many frames get rendered.
         timeline_context = scene.animation_manager.context
         if (
             timeline_context is not None
-            and timeline_context.timespan.original_end <= 0
+            and round(
+                timeline_context.timespan.original_end
+                * video_settings.frames_per_second
+            )
+            < 1
             and any(actor.is_spawned() for actor in scene.actors)
         ):
             timeline_context.wait(1.0 / video_settings.frames_per_second)
@@ -725,7 +781,7 @@ def render_all_funcs(
                 scene_funcs = [
                     (function_name, function)
                     for function_name, function in defined_functions
-                    if len(inspect.signature(function).parameters) == 0
+                    if len(callable_signature(function).parameters) == 0
                 ]
                 if scene_funcs:
                     warnings.warn(

@@ -165,10 +165,10 @@ row links to the section that explains it.
      - Not applicable (noise-free)
      - Yes
      - `Which renderer runs your scene`_
-   * - True orthographic projection
-     - **No**
-     - **No**
-     - **No**
+   * - Orthographic projection (``set_orthographic``)
+     - Yes
+     - Yes
+     - Yes
      - `Camera`_
    * - Depth of field (thin lens)
      - **Refused**
@@ -266,12 +266,13 @@ Five further consequences of the split, not covered there:
   area light and an emissive quad of the same radiance light a surface
   identically. Two consequences worth knowing:
 
-  * :class:`~.MeshPhongMaterial` has **no Blinn-Phong highlight** under the
-    path tracer. Its ``specular`` colour and ``shininess`` are converted to a
-    GGX lobe (``alpha = sqrt(2 / (shininess + 2))``, F0 = ``specular``), so
-    the material still has a highlight -- it is a slightly different shape
-    and it sits in a slightly different place. Nothing is dropped; nothing
-    matches the deterministic renderer pixel for pixel either.
+  * :class:`~algan.rendering.shaders.materials.MeshPhongMaterial` has **no
+    Blinn-Phong highlight** under the path tracer. Its ``specular`` colour and
+    ``shininess`` are converted to a GGX lobe
+    (``alpha = sqrt(2 / (shininess + 2))``, F0 = ``specular``), so the material
+    still has a highlight -- it is a slightly different shape and it sits in a
+    slightly different place. Nothing is dropped; nothing matches the
+    deterministic renderer pixel for pixel either.
   * The ambient and hemisphere fill reaches **diffuse only**. A constant
     radiance arriving from every direction, integrated over the diffuse
     lobe, is exactly what the fill contributes; the specular equivalent is
@@ -438,11 +439,13 @@ the frame is rendered.
    * - Material
      - Shading
      - Consequences
-   * - No material set (Algan's default), :class:`~.MeshLambertMaterial`,
-       :class:`~.MeshPhongMaterial`, :class:`~.MeshStandardMaterial`,
-       :class:`~.MeshPhysicalMaterial`, :class:`~.MeshToonMaterial`,
-       :class:`~.MeshNormalMaterial`, :class:`~.MeshMatcapMaterial`,
-       :class:`~.MeshDepthMaterial`
+   * - No material set (Algan's default),
+       :class:`~algan.rendering.shaders.materials.MeshLambertMaterial`,
+       :class:`~algan.rendering.shaders.materials.MeshPhongMaterial`,
+       :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`,
+       :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`,
+       :class:`~.MeshToonMaterial`, :class:`~.MeshNormalMaterial`,
+       :class:`~.MeshMatcapMaterial`, :class:`~.MeshDepthMaterial`
      - Per fragment
      - Full behaviour: every light type, shadows, environment lighting, normal
        maps, material-property maps.
@@ -450,7 +453,8 @@ the frame is rendered.
        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
      - Per fragment
      - Same, and it can read shadow visibility itself.
-   * - :class:`~.MeshBasicMaterial` / :class:`~.UnlitMaterial`
+   * - :class:`~algan.rendering.shaders.materials.MeshBasicMaterial` /
+       :class:`~.UnlitMaterial`
      - Unlit by design
      - Passes its color through. Not a limitation — it is the point.
    * - A custom **per-vertex** shader from
@@ -509,16 +513,16 @@ effect:
 
 Textures do work — through a different door. See the next section.
 
-:class:`~.MeshPhysicalMaterial`'s ``attenuation_color`` and
-``attenuation_distance`` *are* honoured: light crossing a transmissive solid is
-absorbed along the path it actually travels, following
-``KHR_materials_volume``'s ``attenuation_color ** (d / attenuation_distance)``,
-so a thick piece of colored glass comes out deeper than a thin one. Two limits
-are worth knowing. The path length is measured from the surface the ray last
-crossed, which is exact for a single convex solid and an approximation for
-nested transmissive media. And ``thickness`` is stored for API parity and unused
-— three.js's rasterizer needs it because it has no ray to measure, and Algan
-does not.
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`'s
+``attenuation_color`` and ``attenuation_distance`` *are* honoured: light
+crossing a transmissive solid is absorbed along the path it actually travels,
+following ``KHR_materials_volume``'s
+``attenuation_color ** (d / attenuation_distance)``, so a thick piece of
+colored glass comes out deeper than a thin one. Two limits are worth knowing.
+The path length is measured from the surface the ray last crossed, which is
+exact for a single convex solid and an approximation for nested transmissive
+media. And ``thickness`` is stored for API parity and unused — three.js's
+rasterizer needs it because it has no ray to measure, and Algan does not.
 
 Shadow rays carry color through the same medium. A shadow ray holds an RGB
 payload rather than one scalar per light, so a transmissive surface tints the
@@ -664,7 +668,7 @@ Who casts and who receives
   Texture alpha counts.
 * **Receivers: fragment-shaded triangle geometry only.** Bezier circuits never
   receive shadows (see :ref:`limits-lit`), and neither do the four per-vertex
-  materials or :class:`~.MeshBasicMaterial`.
+  materials or :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`.
 
 Limits and approximations
 -------------------------
@@ -854,7 +858,8 @@ Refraction
   the material's ``attenuation_color`` / ``attenuation_distance`` described
   above, and the shadow ray applies the same coefficient over its own chord.
 * Refraction needs both ``transmission > 0`` and ``ior > 1``. In practice that
-  means a :class:`~.MeshPhysicalMaterial`, a :class:`~algan.mobs.surfaces.surface.Surface` with a
+  means a :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`, a
+  :class:`~algan.mobs.surfaces.surface.Surface` with a
   ``refractive_index_texture``, or an imported model whose material carries
   them. It routes the batch through the splitting ray path, which is the most
   expensive configuration Algan has.
@@ -935,17 +940,12 @@ Other anti-aliasing notes
 Camera
 ======
 
-* **True orthographic projection is not implemented.**
-  :meth:`~.Camera.set_near_orthographic` is the only spelling, and it says what
-  it does: an ordinary perspective camera moved 5000 units back from its screen
-  (by default; 8,000 units from the origin with the default framing).
-  It looks orthographic and is not:
-  geometry spanning a large depth range still converges slightly (a point 5
-  units off the origin plane, at a corner of a 1080p frame, by up to 0.7
-  pixels), and the camera distance puts every world-space epsilon in
-  :ref:`limits-scale` a long way from the geometry it is meant to separate. A
-  larger ``distance`` flattens further but costs float32 precision; see
-  :ref:`limits-float32`.
+* **Orthographic projection is exact, with two consequences.**
+  :meth:`~.Camera.set_orthographic` sends every ray along the forward axis
+  from the plane through the camera, on every route. Only what lies in front
+  of that plane is drawn, and every ray looks the same way, so an environment
+  map seen directly fills the frame with the one colour straight ahead;
+  reflections still show all of it.
 * **Depth of field is the path tracer's alone.** ``camera.aperture`` and
   ``camera.focus_distance`` describe a thin lens (see
   :ref:`camera-depth-of-field`); the path tracer samples it, and the
@@ -1052,16 +1052,17 @@ fractions of the scene's own size:
      - 2e-4
      - When two hits on a shared mesh edge are merged into one.
 
-Algan's default camera sits 7 units back and frames about 7 world units of
-height at the origin, so all three are far below a pixel at ordinary scales. A
+Algan's default camera sits 20 units back and frames 8 world units of height
+at the origin, so all three are far below a pixel at ordinary scales. A
 scene authored a thousand times larger will show z-fighting and merged surfaces;
 one authored a thousand times smaller will merge surfaces that should be
 distinct, and lose contact shadows within the minimum hit distance. The offset
 a bounced or shadow ray starts from is *not* on this list: both renderers scale
 it with the hit point's own coordinates (see the contact-shadow note under
-`Shadows`_). **Scale the scene, not the camera** -- and note that
-:meth:`~.Camera.set_near_orthographic` moves the camera thousands of units out,
-which is the same problem arriving from the other direction.
+`Shadows`_). **Scale the scene, not the camera** -- and note that a camera
+backed thousands of units out for a flat look is the same problem arriving from
+the other direction; :meth:`~.Camera.set_orthographic` gives that look from
+where the camera is.
 
 .. _limits-float32:
 
@@ -1079,18 +1080,18 @@ shrunk by the point's depth in front of it:
 * **Something placed just in front of a distant camera** -- a heads-up display
   brought to a unit in front of an eye a thousand units out -- is drawn from a
   lattice several pixels across: doubled and dashed strokes, gaps.
-* **A very distant near-orthographic camera** has a huge focal length, so even
-  the rounding of its own ray directions shows: at ``set_near_orthographic(1e5)``
-  text at the origin rendered with doubled strokes once the camera turned 35
-  degrees (about 1.8 pixels at 1280x720, 2.6 at 1080p). The default distance,
-  5000, keeps this under 0.15 pixels at 1080p.
+* **A very distant camera** has a huge focal length, so even the rounding of
+  its own ray directions shows: a perspective camera backed 100,000 units out
+  for a flat look, still framing the origin plane, rendered text there with
+  doubled strokes once it turned 35 degrees (about 1.8 pixels at 1280x720, 2.6
+  at 1080p). An orthographic camera has no focal length to magnify its rounding.
 * Only rounding **across** the view moves anything on screen. A camera looking
   straight along an axis keeps its large coordinate along the view, so it loses
   nothing however far out it is; turning it is what exposes the rounding.
 * **Flat shapes stacked in depth under a distant camera.** Every depth is
   rounded at the camera's distance from the origin, so two overlapping shapes
   closer together along the view than a few float32 spacings of it -- 0.0076
-  units at ``set_near_orthographic(10000)``, whose eye is 16,000 units out --
+  units for an eye 16,000 units out --
   can trade places from frame to frame, one flickering through the other. Near
   the origin, shapes stacked at one depth are drawn in the order they were
   made; that far out, rounding decides. This happens whichever way the camera
@@ -1103,16 +1104,14 @@ reaches half a pixel (the level at which stroke edges visibly step). To fix it:
 
 * keep a camera with something placed just in front of it within a few hundred
   units of the origin -- move the scene rather than the camera, and for a flat
-  look narrow the view at a moderate distance
-  (``set_near_orthographic(distance=80)``) rather than backing far away;
-* give a heads-up display more depth in front of the camera, since the rounding
-  shrinks as 1/depth;
-* do not raise ``set_near_orthographic``'s distance far above its default;
+  look use :meth:`~.Camera.set_orthographic` rather than backing far away;
+* give a heads-up display more depth in front of a perspective camera, since
+  the rounding shrinks as 1/depth there;
 * or turn the scene instead of the camera.
 
 It warns the same way, naming both Mobs, when two overlapping flat shapes are
 closer in depth than the camera can tell apart. Separate them along the view by
-the distance the warning gives -- a near-orthographic camera shows no parallax
+the distance the warning gives -- an orthographic camera shows no parallax
 for it -- or bring the camera closer to the origin.
 
 Making a Mob a child of the camera does not help: children are stored in world
@@ -1245,7 +1244,8 @@ Homogeneous volumes and subsurface scattering
 =============================================
 
 The path tracer supports homogeneous participating media and random-walk
-subsurface scattering through :class:`~.MeshPhysicalMaterial`:
+subsurface scattering through
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`:
 
 .. code-block:: python
 
@@ -1325,7 +1325,7 @@ identical passes. The supersampled fallback can differ at the edges of curved
 shapes, which it tessellates for its finer sample grid. What that trace does
 not do:
 
-* **One sample per pixel, at its centre, through a pinhole.** Edges are aliased
+* **One sample per pixel, at its centre, with no lens.** Edges are aliased
   rather than anti-aliased, and neither depth of field nor supersampling
   affects them. There is no coverage-weighted matte (cryptomatte) and no
   motion-vector pass.
@@ -1427,8 +1427,7 @@ See Also
 - :doc:`reflections_and_glass` -- setting up mirrors, metals and glass.
 - :doc:`shaders_and_materials` -- the material classes in full.
 - :doc:`images_and_textures` -- how to get a texture onto a mob.
-- :doc:`cameras` -- the projection model, and the near-orthographic
-  approximation named above.
+- :doc:`cameras` -- the projection model, perspective and orthographic.
 - :doc:`backgrounds_and_post_processing` -- the anti-aliasing settings this page
   bounds.
 - :doc:`settings` -- where the settings named on this page live, and what

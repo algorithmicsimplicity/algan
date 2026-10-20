@@ -16,6 +16,7 @@ longer exists.
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 
 # Raise the CUDA driver's JIT cache ceiling before anything can initialise a
@@ -29,7 +30,7 @@ os.environ.setdefault("CUDA_CACHE_MAXSIZE", "4294967296")
 import torch
 
 from algan.environment import env_int, env_str
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganWarning
 from algan.taichi_compat import BACKEND as _KERNEL_BACKEND
 
 #: Memoized answer of :func:`_cuda_is_usable`. The probe allocates on the
@@ -39,9 +40,16 @@ from algan.taichi_compat import BACKEND as _KERNEL_BACKEND
 #: change within a process, so ask once.
 _CUDA_USABLE = None
 
+#: What the probe raised, as ``"Type: first line"``, when torch sees a CUDA
+#: device that then fails it; ``None`` otherwise. A GPU this torch build has no
+#: kernels for, a driver older than torch's CUDA runtime and a device another
+#: process holds exclusively all fail the probe, and its error is the only
+#: thing that says which.
+_CUDA_PROBE_FAILURE = None
+
 
 def _cuda_is_usable() -> bool:
-    global _CUDA_USABLE
+    global _CUDA_USABLE, _CUDA_PROBE_FAILURE
     if _CUDA_USABLE is not None:
         return _CUDA_USABLE
     if not torch.cuda.is_available():
@@ -50,7 +58,9 @@ def _cuda_is_usable() -> bool:
     try:
         torch.zeros((1,), device="cuda") + 1
         _CUDA_USABLE = True
-    except Exception:
+    except Exception as exc:
+        lines = str(exc).strip().splitlines()
+        _CUDA_PROBE_FAILURE = type(exc).__name__ + (f": {lines[0]}" if lines else "")
         _CUDA_USABLE = False
     return _CUDA_USABLE
 
@@ -88,6 +98,17 @@ def _auto_render_device() -> torch.device:
         return torch.device("cuda")
     if _mps_is_usable():
         return torch.device("mps")
+    if _CUDA_PROBE_FAILURE is not None:
+        # Whoever has a CUDA device expects 'auto' to pick it, and a render on
+        # the CPU instead is the twenty-minute mystery coerce_device describes.
+        warnings.warn(
+            "A CUDA device is present, but Algan could not use it "
+            f"({_CUDA_PROBE_FAILURE}), so it renders on the CPU, which is much "
+            "slower. Set ALGAN_RENDER_DEVICE=cpu to choose the CPU and silence "
+            "this.",
+            AlganWarning,
+            stacklevel=2,
+        )
     return torch.device("cpu")
 
 
@@ -114,6 +135,11 @@ def coerce_device(value: str | torch.device, source: str) -> torch.device:
                 f"{source} must name a valid Torch device or 'auto'"
             ) from exc
     if device.type == "cuda" and not _cuda_is_usable():
+        if _CUDA_PROBE_FAILURE is not None:
+            raise AlganConfigurationError(
+                f"{source} requests CUDA, but the CUDA device failed a test "
+                f"allocation: {_CUDA_PROBE_FAILURE}"
+            )
         raise AlganConfigurationError(
             f"{source} requests CUDA, but no usable CUDA runtime is available"
         )

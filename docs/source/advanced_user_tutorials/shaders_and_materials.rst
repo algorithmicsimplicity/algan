@@ -78,23 +78,23 @@ All of the Three.js mesh materials are provided, with matching default settings:
       - ``color``
     * - :class:`~algan.rendering.shaders.materials.MeshLambertMaterial`
       - Diffuse (Lambert)
-      - ``color``, ``emissive`` (0x000000), ``emissiveIntensity`` (1)
+      - ``color``, ``emissive`` (0x000000), ``emissive_intensity`` (1)
     * - :class:`~algan.rendering.shaders.materials.MeshPhongMaterial`
       - Blinn-Phong specular
       - ``specular`` (0x111111), ``shininess`` (30), ``emissive``
     * - :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`
       - PBR metalness/roughness
-      - ``roughness`` (1), ``metalness`` (0), ``emissive``, ``envMapIntensity`` (1)
+      - ``roughness`` (1), ``metalness`` (0), ``emissive``, ``env_map_intensity`` (1)
     * - :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`
       - PBR + clearcoat/sheen/transmission
-      - adds ``clearcoat`` (0), ``ior`` (1.5), ``specularIntensity`` (1),
+      - adds ``clearcoat`` (0), ``ior`` (1.5), ``specular_intensity`` (1),
         ``sheen`` (0), ``transmission`` (0), ...
     * - :class:`~algan.rendering.shaders.materials.MeshToonMaterial`
       - Cel / banded diffuse
       - ``color``, ``bands`` (3), ``emissive``
     * - :class:`~algan.rendering.shaders.materials.MeshNormalMaterial`
       - Normal-as-color
-      - ``flatShading`` (False)
+      - ``flat_shading`` (False)
     * - :class:`~algan.rendering.shaders.materials.MeshMatcapMaterial`
       - Material capture (approx.)
       - ``color``
@@ -152,10 +152,10 @@ constants (``RED``), or RGB tuples.
 
 .. note::
 
-    The animatable attribute names on the Mob use Python ``snake_case``
-    (``mob.emissive_intensity``, ``mob.metalness``), while the material
-    constructors accept the Three.js ``camelCase`` names
-    (``MeshStandardMaterial(emissiveIntensity=2)``).
+    Property names are Python ``snake_case`` throughout, where Three.js writes
+    ``camelCase``: the constructors take
+    ``MeshStandardMaterial(emissive_intensity=2)``, and the Mob's animatable
+    attributes are ``mob.emissive_intensity``, ``mob.metalness`` and so on.
 
 Vertex shading vs. fragment shading
 -----------------------------------
@@ -243,7 +243,7 @@ could be, and texturing the corners instead would be worse than refusing.
 The remaining image slots (``env_map``, ``matcap``, ``gradient_map``,
 ``ao_map``, ``transmission_map``, ...) have no channel in the renderer. They are
 still accepted so a Three.js material transcribes without edits, then dropped
-with a warning naming them. ``wireframe``, ``vertexColors`` and non-default
+with a warning naming them. ``wireframe``, ``vertex_colors`` and non-default
 ``side`` are likewise unsupported, and the matcap, normal and depth materials use
 documented approximations (matcap has no image; normals are world-space rather
 than view-space).
@@ -290,7 +290,14 @@ To write your own, declare the fixed parameters and append your own:
     mob.set_shader(my_shader)   # before spawning
     mob.banding = 8.0           # now animatable
 
-Every fixed parameter must be declared even if you ignore it.
+Every fixed parameter must be declared even if you ignore it: all nine are
+passed by position, and so are the material parameters after them.
+``set_shader`` refuses a shader that takes fewer than nine parameters, or one
+by keyword only. It warns about a shader that would be given the wrong
+values: one that puts a fixed parameter in another place, or another
+parameter with a default in a fixed one's, as
+``def toon(memory, ..., light_intensity, bands=4)`` does by leaving out
+``ambient_light_intensity``.
 Read the source of ``basic_material_shader`` (in
 ``algan/rendering/shaders/material_shaders.py``) and
 :func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader` for
@@ -363,7 +370,9 @@ Stage                  Lighting model
                        :meth:`~algan.scene.Scene.use_manim_defaults`.
 ``STAGE_UNLIT``        No lighting: the fragment keeps its own color. Resolved
                        from ``null_shader`` and ``basic_material_shader``, and
-                       what :class:`~.MeshBasicMaterial` maps to.
+                       what
+                       :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`
+                       maps to.
 ``STAGE_LAMBERT``      Diffuse only. Resolved from ``lambert_shader``.
 ``STAGE_PHONG``        Blinn-Phong diffuse plus specular. Resolved from
                        ``phong_shader``.
@@ -418,9 +427,9 @@ Stage            What it adds
     Scene.save_video()
 
 Stage parameters are plain numbers and tuples of the width the stage declares --
-``rim_color`` is a width-3 RGB triple. Assigning a five-channel Algan color
-constant such as ``TEAL_A`` to it raises; use ``TEAL_A[..., :3]`` if you want to
-derive one from the palette.
+``rim_color`` is a width-3 RGB triple. A five-channel Algan color constant such
+as ``TEAL_A`` can be assigned to it too: the parameter takes the color's RGB and
+leaves its glow and opacity behind.
 
 A rim light is an authoring control rather than a BSDF term, which is why it
 lives here and not on

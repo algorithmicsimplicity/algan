@@ -236,6 +236,7 @@ def _jitter_tap_probe(
             screen_point,
             pixel_basis_x,
             pixel_basis_y,
+            None,  # a pinhole camera: no projection rows
         )
         # An index-matched transmission continues straight on.
         origin = _offset_transmitted_origin(hp, rd, face_n, nj)

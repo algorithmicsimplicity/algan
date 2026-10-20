@@ -96,3 +96,20 @@ def test_the_forms_that_already_worked_are_unchanged(rgb):
     assert len(channels) == 5
     assert channels[3] == 0.0
     assert channels[4] == 1.0
+
+
+def test_to_color_reads_an_ndarray_as_it_reads_a_tensor():
+    """One row comes back a Color; a per-row buffer keeps its rows, padded.
+
+    An array used to come back untouched, so ``Square(color=np.array([1.0, 0.0,
+    0.0]))`` reached the timeline three channels wide and failed there.
+    """
+    from algan.constants.color import to_color
+
+    one = to_color(np.array([0.1, 0.2, 0.3]))
+    assert isinstance(one, Color)
+    assert _channels(one) == [0.1, 0.2, 0.3, 0.0, 1.0]
+
+    rows = to_color(np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))
+    assert tuple(rows.shape) == (2, 5)
+    assert _channels(rows[1]) == [0.4, 0.5, 0.6, 0.0, 1.0]

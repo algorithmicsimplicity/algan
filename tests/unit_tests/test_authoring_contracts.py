@@ -21,14 +21,16 @@ from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
 from algan.constants.color import BLUE
 from algan.errors import AlganConfigurationError, HierarchyError
 from algan.mobs.group import Group
+from algan.mobs.numeric_display import DecimalNumber
 from algan.mobs.shapes_2d import Square
 from algan.mobs.surfaces.surface import Surface
-from algan.mobs.text import Text
+from algan.mobs.text import MarkupText, Paragraph, Text, TextTriangulated
 from algan.scene import Scene
 from algan.scene_manager import SceneManager
 from algan.settings import SETTINGS
 from algan.utils.algan_utils import (
     _check_container_is_supported,
+    _checked_ffmpeg_params,
     _resolve_output_destination,
 )
 
@@ -317,6 +319,64 @@ def test_an_unknown_keyword_on_scene_wait_is_still_a_plain_type_error():
         Scene.wait(seconds=1)
 
 
+def test_a_manim_keyword_on_a_constructor_names_the_algan_spelling():
+    with pytest.raises(
+        TypeError,
+        match=r"^Square\(\) got unexpected keyword argument: `side_length` -- "
+        r"`side_length`: Square takes `size`",
+    ):
+        Square(side_length=2)
+
+
+def _typst(*args, **kwargs):
+    pytest.importorskip("typst")
+    from algan.mobs.typst import Typst
+
+    return Typst(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("name", "build"),
+    [
+        pytest.param(name, build, id=name)
+        for name, build in [
+            ("Text", lambda: Text("a", bogus=1)),
+            ("MarkupText", lambda: MarkupText("a", bogus=1)),
+            ("TextTriangulated", lambda: TextTriangulated("a", bogus=1)),
+            ("Paragraph", lambda: Paragraph("a", "b", bogus=1)),
+            ("DecimalNumber", lambda: DecimalNumber(1.5, bogus=1)),
+            ("Typst", lambda: _typst("a", bogus=1)),
+        ]
+    ],
+)
+def test_a_composite_names_itself_for_a_keyword_it_does_not_take(name, build):
+    """REGRESSION. A composite hands its keywords to the parts it builds, and
+    the error named whichever part saw one first: ``Text("a", bogus=1)``
+    reported ``BezierCircuitCubic()``, and a ``Typst`` reported ``ManimMob()``.
+    """
+    with pytest.raises(
+        TypeError, match=rf"^{name}\(\) got unexpected keyword argument: `bogus`\.$"
+    ):
+        build()
+
+
+@pytest.mark.parametrize(
+    ("manim", "algan"),
+    [
+        ("t2c", "color_map"),
+        ("t2f", "font_map"),
+        ("t2g", "gradient_map"),
+        ("t2s", "slant_map"),
+        ("t2w", "weight_map"),
+    ],
+)
+def test_manim_text_span_keywords_name_the_algan_spelling(manim, algan):
+    with pytest.raises(
+        TypeError, match=rf"^Text\(\) .* `{manim}`: Text spells it `{algan}=`"
+    ):
+        Text("abc", **{manim: {"b": "#FF0000"}})
+
+
 # --------------------------------------------------------------------------
 # Verbs are methods; hierarchy links are written at both ends
 # --------------------------------------------------------------------------
@@ -459,6 +519,22 @@ def test_a_bare_name_lands_in_the_output_directory(isolated_output):
     assert resolved == isolated_output / "algan_outputs" / "intro.mp4"
 
 
+def test_a_tilde_in_the_output_settings_means_home(isolated_output, monkeypatch):
+    """Joined as written, ``~/renders`` was a directory named ``~`` in the cwd."""
+    home = isolated_output / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(isolated_output)
+    SETTINGS.paths.output_root = "~/renders"
+    assert Path(SETTINGS.paths.output_root) == home / "renders"
+    resolved = _resolve_output_destination("intro", ".mp4")
+    assert resolved == home / "renders" / "algan_outputs" / "intro.mp4"
+    SETTINGS.paths.set(cache_directory="~/cache", ffmpeg_binary="~/bin/ffmpeg")
+    assert Path(SETTINGS.paths.cache_directory) == home / "cache"
+    assert Path(SETTINGS.paths.ffmpeg_binary) == home / "bin" / "ffmpeg"
+    assert not (isolated_output / "~").exists()
+
+
 def test_an_existing_directory_is_a_directory_to_write_into(
     isolated_output, monkeypatch
 ):
@@ -542,6 +618,45 @@ def test_save_video_rejects_a_bad_container_without_rendering(
 
     with pytest.raises(AlganConfigurationError, match=r"video container"):
         scene.save_video("broken.xyz")
+
+
+@pytest.mark.parametrize(
+    ("ffmpeg_params", "match"),
+    [
+        # Spliced into FFmpeg's command line one character at a time.
+        ("-crf 18", r"not one string: write \['-crf', '18'\] for '-crf 18'"),
+        # Kept FFmpeg from starting, with a TypeError from subprocess.
+        (["-crf", 18], r"ffmpeg_params\[1\] is 18 \(int\).* such as '18'"),
+    ],
+)
+def test_save_video_rejects_ffmpeg_params_ffmpeg_cannot_take_without_rendering(
+    isolated_output, monkeypatch, ffmpeg_params, match
+):
+    scene = SceneManager.instance().current_scene
+    Square(scene=scene).spawn()
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("the render started despite unusable ffmpeg_params")
+
+    monkeypatch.setattr(scene, "_render_to_video", fail)
+
+    with pytest.raises(AlganConfigurationError, match=match):
+        scene.save_video("clip.mp4", ffmpeg_params=ffmpeg_params)
+
+
+def test_ffmpeg_params_take_what_a_command_line_takes():
+    arguments = ["-vf", "scale=640:-2", b"-an", Path("overlay.png")]
+    assert _checked_ffmpeg_params(arguments) == arguments
+    assert _checked_ffmpeg_params(("-crf", "18")) == ["-crf", "18"]
+    assert _checked_ffmpeg_params(None) is None
+    # Spliced in as nothing, before the check as now.
+    assert _checked_ffmpeg_params("") == []
+
+
+def test_ffmpeg_params_from_a_generator_are_not_used_up_by_the_check():
+    """Checked by iterating them, which left FFmpeg a spent generator."""
+    params = (argument for argument in ["-metadata", "title=Tour"])
+    assert _checked_ffmpeg_params(params) == ["-metadata", "title=Tour"]
 
 
 def test_audio_is_not_the_only_thing_a_wav_extension_could_mean():

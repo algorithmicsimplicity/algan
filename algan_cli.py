@@ -388,6 +388,9 @@ def construct():
 if __name__ == "__main__":
     construct()
 '''
+    # `algan new scenes/intro.py` in a fresh project names a folder that does
+    # not exist yet; without this the write died as a raw FileNotFoundError.
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(template, encoding="utf-8")
     print(f"Created new scene file: {target.resolve()}")
     print(f"To render: algan render {target}")
@@ -398,6 +401,12 @@ if __name__ == "__main__":
 #: editor keybinding pokes. Each needs the daemon's token, which is why they are
 #: subcommands rather than the raw socket one-liner they replace.
 DAEMON_TRIGGERS = ("render", "ping", "cancel", "quit")
+
+#: The verbs a missing daemon satisfies: with no daemon there is nothing to
+#: cancel and nothing to stop. ``ping`` and ``render`` fail instead, so a script
+#: or editor key that asks whether the daemon is alive, or for a re-render, is
+#: told it did not happen.
+_MET_WITHOUT_A_DAEMON = ("cancel", "quit")
 
 
 def _cmd_daemon(args: argparse.Namespace) -> int:
@@ -435,7 +444,7 @@ def _trigger_daemon(verb: str) -> int:
     state = daemon_client.read_state()
     if state is None:
         print("No Algan daemon is running.")
-        return 0
+        return 0 if verb in _MET_WITHOUT_A_DAEMON else 1
     port = int(state["port"])
     try:
         with socket.create_connection(("127.0.0.1", port), 5) as sock:
@@ -447,7 +456,7 @@ def _trigger_daemon(verb: str) -> int:
         # whichever verb was asked for, nothing is answering.
         daemon_client._clear_stale_state(state)
         print(f"No daemon answered on port {port} ({exc}); cleared its registration.")
-        return 0
+        return 0 if verb in _MET_WITHOUT_A_DAEMON else 1
     pid = state.get("pid", "?")
     if reply.startswith("err:"):
         print(f"Daemon (pid {pid}) refused `{verb}`: {reply[4:].strip()}")
@@ -557,15 +566,18 @@ def _run_here(target: Path, args: argparse.Namespace, quality: str | None) -> in
     old_argv, old_path = sys.argv, list(sys.path)
     sys.argv = [str(target), *(args.extra_args or [])]
     sys.path.insert(0, str(target.parent))  # as `python scene.py` would
-    from algan.scene import renders_requested, warn_if_nothing_rendered
+    from algan.scene import (
+        renders_requested,
+        script_exit_status,
+        warn_if_nothing_rendered,
+    )
 
     before = renders_requested()
     try:
         runpy.run_path(str(target), run_name="__main__")
         warn_if_nothing_rendered(target, before)
     except SystemExit as exiting:
-        code = exiting.code
-        return 0 if code is None else (code if isinstance(code, int) else 1)
+        return script_exit_status(exiting)
     finally:
         sys.argv, sys.path = old_argv, old_path
     return 0

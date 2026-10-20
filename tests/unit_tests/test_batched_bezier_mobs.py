@@ -129,6 +129,30 @@ def test_packed_paths_keep_touching_members_independent(filled, packing):
     torch.testing.assert_close(actual.next_segment_inds, expected_links)
 
 
+@pytest.mark.parametrize("reveal", ["draw", "window"])
+def test_a_ragged_pack_reveals_each_member_as_it_would_alone(reveal):
+    """REGRESSION. Partial curves split a pack into equal-length members, but
+    members are as long as their paths -- every Text's glyphs are -- so
+    ``draw`` and the window behind ``ShowPassingFlash`` and
+    ``AnimatedBoundary`` raised a reshape error on any real text. Each member
+    must now be revealed exactly as the same circuit is on its own.
+    """
+    SceneManager.reset()
+    paths = [_square(0.0), _square(2.0, repeats=3), _square(5.0, repeats=2)]
+    with Off():
+        packed = BezierCircuitCubic.from_batches(paths, add_to_scene=False)
+        alone = [BezierCircuitCubic(path, add_to_scene=False) for path in paths]
+        for mob in [packed, *alone]:
+            if reveal == "draw":
+                mob.draw(0.45)
+            else:
+                full = mob.control_points.location.clone()
+                mob._set_control_points_to_partial(full, 0.3, 0.8)
+
+    expected = torch.cat([mob.control_points.location for mob in alone], -2)
+    assert torch.equal(packed.control_points.location, expected)
+
+
 def test_border_texture_grid_is_independent_from_fill_texture_grid():
     SceneManager.reset()
     mob = BezierCircuitCubic(

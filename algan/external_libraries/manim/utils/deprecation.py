@@ -13,7 +13,7 @@ from typing import Any, TypeVar, overload
 
 from decorator import decorate, decorator
 
-logger = logging.getLogger("manim")
+logger = logging.getLogger("algan.manim")
 
 
 def _get_callable_info(callable_: Callable[..., Any], /) -> tuple[str, str]:

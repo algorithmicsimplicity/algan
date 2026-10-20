@@ -23,8 +23,10 @@ See :doc:`/advanced_user_tutorials/importing_from_manim`.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
+from algan.animatable_base.animatable import _reports_refused_keywords
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
 from algan.constants.color import BLACK, Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
@@ -41,6 +43,51 @@ from algan.utils.tensor_utils import unsquish
 # ``import algan`` does not pay manim's ~2 s dependency chain. The svg-cache
 # module patches manim, so it must ride along on the first load.
 _manim = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
+
+
+def _translucent(opacity) -> bool:
+    if opacity is None:
+        return False
+    opacity = torch.as_tensor(opacity, dtype=torch.float32)
+    return bool(((opacity > 0) & (opacity < 1)).any())
+
+
+def _conversion_signature(manim_mob):
+    """What converting ``manim_mob`` fixes for the life of the Mob it builds.
+
+    Its class, its point count, whether it is filled and whether it is
+    translucent. A Mob converted from one node can be morphed in place into a
+    conversion of another node with the same signature: everything else is a
+    value on its timeline rows.
+    """
+    fill_opacity = getattr(manim_mob, "fill_opacity", None)
+    filled = (
+        not hasattr(manim_mob, "end")
+        and fill_opacity is not None
+        and bool(torch.as_tensor(fill_opacity).max().item() > 1e-5)
+    )
+    return (
+        type(manim_mob),
+        len(manim_mob.points),
+        filled,
+        _translucent(fill_opacity),
+        _translucent(getattr(manim_mob, "stroke_opacity", None)),
+    )
+
+
+def _finite_curves(points):
+    """Manim's points without the cubic curves that hold a NaN or infinity.
+
+    A function Manim samples where it is undefined -- ``ax.plot(np.sqrt)`` over
+    the negative half of an axis, or ``np.log`` at zero -- leaves non-finite
+    points in the path, which Manim's renderer simply does not draw and which
+    crashed the conversion. Dropping each curve that holds one leaves a gap
+    where the function is undefined, as between two of Manim's subpaths.
+    """
+    if len(points) % 4 or np.isfinite(points).all():
+        return points
+    curves = points.reshape(-1, 4, points.shape[-1])
+    return curves[np.isfinite(curves).all(axis=(1, 2))].reshape(-1, points.shape[-1])
 
 
 class ManimMob(BezierCircuitCubic):
@@ -75,7 +122,10 @@ class ManimMob(BezierCircuitCubic):
 
     """
 
-    def __init__(self, manim_mob, batch=False, _add_to_scene=None, **kwargs):
+    @_reports_refused_keywords
+    def __init__(
+        self, manim_mob, batch=False, _add_to_scene=None, _part_factory=None, **kwargs
+    ):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         # Retain the source object so compatibility Mobs can delegate Manim-specific
@@ -95,6 +145,9 @@ class ManimMob(BezierCircuitCubic):
             _add_to_scene = bool(kwargs.get("add_to_scene", True))
         kwargs["add_to_scene"] = _add_to_scene
         child_add_to_scene = _add_to_scene and not batch
+        # Packed, the parts are scaffolding for the one Mob that draws them,
+        # and nothing can hand them out: they stay plain conversions.
+        part_factory = None if batch else _part_factory
         for submob in manim_mob.submobjects:
             if isinstance(submob, _manim.ImageMobject):
                 mob = ImageMob(
@@ -108,27 +161,41 @@ class ManimMob(BezierCircuitCubic):
                 raise NotImplementedError(
                     "ManimMob does not support Mobjects which do not have n_points_per_curve == 4"
                 )
+            # A Manim-compatibility Mob builds its parts as compatibility Mobs
+            # too (``_part_factory``), so the part it hands back for
+            # ``axes.x_axis`` or ``formula[0]`` is the one on screen and still
+            # answers Manim's methods.
             children.append(
                 ManimMob(
                     submob, batch=False, _add_to_scene=child_add_to_scene, **kwargs
+                )
+                if part_factory is None
+                else part_factory(
+                    submob,
+                    batch=False,
+                    _add_to_scene=child_add_to_scene,
+                    _part_factory=part_factory,
+                    **kwargs,
                 )
             )
 
         # No coordinate conversion: Manim's OUT and Algan's OUTWARD are both
         # +z, so imported points keep the numbers they were built with.
         empty = False
-        if len(manim_mob.points) == 0:
+        points = _finite_curves(manim_mob.points)
+        if len(points) == 0:
+            center = manim_mob.get_center() if len(manim_mob.points) == 0 else None
+            if center is None or not np.isfinite(center).all():
+                center = np.zeros(3)
             control_points = (
-                torch.from_numpy(manim_mob.get_center())
+                torch.from_numpy(np.asarray(center))
                 .float()
                 .to(torch.get_default_device())
             )
             control_points = torch.stack([control_points for _ in range(4)], -2)
             empty = True
         else:
-            control_points = torch.from_numpy(manim_mob.points).to(
-                torch.get_default_device()
-            )
+            control_points = torch.from_numpy(points).to(torch.get_default_device())
             if len(control_points) == 1:
                 control_points = control_points.expand(
                     *([-1] * (control_points.dim() - 2)), 4, -1
@@ -194,11 +261,11 @@ class ManimMob(BezierCircuitCubic):
         # Manim's ``set_color`` keeps a Mobject's opacity. A translucent import
         # keeps its alpha through Algan color writes in the same way.
         for opacity, stroke in ((fill_opacity, False), (stroke_opacity, True)):
-            if opacity is not None:
-                opacity = torch.as_tensor(opacity, dtype=torch.float32)
-                if bool(((opacity > 0) & (opacity < 1)).any()):
-                    self._mark_explicit_alpha(stroke=stroke)
+            if _translucent(opacity):
+                self._mark_explicit_alpha(stroke=stroke)
         self.singleton_batch_indexing = True
+        self._converted_from = _conversion_signature(manim_mob)
+        self._parts_group = None
         if len(children) > 0:
             grouped = (
                 batch_mobs(children, add_to_scene=_add_to_scene)
@@ -210,9 +277,25 @@ class ManimMob(BezierCircuitCubic):
                 )
             )
             self.add_children(grouped)
+            if not batch:
+                self._parts_group = grouped
         self.submobjects = children
+        # Packed, the parts above are construction scaffolding the one batched
+        # Mob draws in place of: none of them is on screen.
+        self._parts_packed = batch and bool(children)
         if hasattr(manim_mob, "tex_strings"):
+            # A part that is not LaTeX, such as the underline Manim's Title
+            # adds to its text, matches only another such part.
             self._matching_tex_keys = tuple(
-                part.tex_string for part in manim_mob.submobjects
+                getattr(part, "tex_string", None) for part in manim_mob.submobjects
             )
             self._matching_tex_batch = grouped if batch and children else None
+
+    def _drawn_parts(self):
+        """The Mobs drawing this conversion's Manim submobjects, in order.
+
+        ``submobjects`` as built, except that a part ``become`` has replaced
+        is the replacement: it now draws in that place.
+        """
+        group = getattr(self, "_parts_group", None)
+        return self.submobjects if group is None else list(group.children)

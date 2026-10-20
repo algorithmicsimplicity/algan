@@ -139,3 +139,165 @@ def test_probed_reader_matches_the_probing_constructor(tones):
             assert np.array_equal(probing.get_frame(chunk), probed.get_frame(chunk))
         probing.close()
         probed.close()
+
+
+def _tone_snr(samples, rate, frequency):
+    t = np.arange(len(samples)) / rate
+    basis = np.stack(
+        [np.sin(2 * np.pi * frequency * t), np.cos(2 * np.pi * frequency * t)], 1
+    )
+    fit = basis @ np.linalg.lstsq(basis, samples, rcond=None)[0]
+    return 10 * np.log10(fit.var() / (samples - fit).var())
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_another_output_rate_is_resampled_not_sampled_nearest(tmp_path, lazy):
+    # Files decode at 44.1 kHz. Sampled on a 48 kHz grid by np.round, a 6 kHz
+    # tone came out at 12 dB SNR; resampled by FFmpeg it stays clean.
+    source = str(tmp_path / "tone.wav")
+    wave = 0.3 * np.sin(2 * np.pi * 6000 * np.arange(88200) / 44100)
+    moviepy.AudioArrayClip(wave[:, None].repeat(2, 1), fps=44100).write_audiofile(
+        source, fps=44100, logger=None
+    )
+    out = tmp_path / "out.wav"
+    composite = _composite([source], [0.0], 2.0, lazy=lazy)
+    assert audio_utils.write_composite_audio(
+        composite, str(out), fps=48000, nbytes=4, codec="pcm_s32le"
+    )
+    composite.close()
+    written = moviepy.AudioFileClip(str(out), fps=48000)
+    assert written.reader.infos["audio_fps"] == 48000
+    samples = written.get_frame(np.arange(24000, 72000) / 48000)[:, 0]
+    written.close()
+    assert _tone_snr(samples, 48000, 6000.0) > 50
+
+
+def test_mix_closes_each_decoder_once_past_it_and_files_open_none_early(
+    tmp_path, tones
+):
+    # Every decoder is an ffmpeg process and two pipes. They were opened by
+    # Audio("file") at authoring and kept for good, so ~120 sounds exhausted
+    # macOS's 256 descriptors; now each opens in the mix and closes after it.
+    clips = [audio_utils._cached_audio_file_clip(path) for path in tones * 3]
+    assert all(clip._reader is None for clip in clips), "a miss is lazy too"
+    opened, peak = [], [0]
+    for clip in clips:
+        open_reader = clip.open_reader
+
+        def counted(clip=clip, open_reader=open_reader):
+            opened.append(clip)
+            live = sum(other._reader is not None for other in clips)
+            peak[0] = max(peak[0], live + 1)
+            return open_reader()
+
+        clip.open_reader = counted
+    starts = [1.5 * i for i in range(len(clips))]
+    composite = moviepy.CompositeAudioClip(
+        [clip.with_start(start) for clip, start in zip(clips, starts)]
+    )
+    composite.duration = starts[-1] + 3
+    first, second = tmp_path / "first.wav", tmp_path / "second.wav"
+    for path in (first, second):
+        assert audio_utils.write_composite_audio(
+            composite, str(path), fps=44100, nbytes=4, codec="pcm_s32le"
+        )
+        assert all(clip._reader is None for clip in clips)
+    assert len(opened) == 2 * len(clips)
+    assert peak[0] <= 5  # the three-deep prefetch plus the overlapping members
+    assert _digest(first) == _digest(second)
+
+
+def test_audio_from_a_file_opens_no_decoder_while_authoring(fresh_scene, tones):
+    from algan import Audio, Scene
+
+    with Audio(tones[0]) as block:
+        Scene.wait(0.1)
+    assert block.audio_clip._reader is None
+
+
+def _seconds_written(path):
+    import wave as wave_module
+
+    with wave_module.open(str(path), "rb") as reader:
+        return reader.getnframes() / reader.getframerate()
+
+
+def test_audio_track_is_as_long_as_the_video(fresh_scene, tmp_path):
+    from algan import SMOKE_TEST, Audio, Scene, Seq, Sync
+
+    scene = Scene.current()
+    scene.set_video_settings(SMOKE_TEST.set(frames_per_second=2))
+    sound = moviepy.AudioClip(lambda t: np.full(np.shape(t) + (2,), 0.25), duration=1.2)
+    with Audio(sound):  # ends at 1.2 s; at 2 fps the video stops at 1.0 s
+        Scene.wait(0.1)
+    assert scene.save_audio(tmp_path / "rounded.wav") is not None
+    assert _seconds_written(tmp_path / "rounded.wav") == pytest.approx(1.0, abs=1e-4)
+    # From inside a block, the innermost context's end (3.2 s) is not the
+    # end of what is recorded: the enclosing Sync already runs to 4.2 s.
+    with Sync():
+        with Seq():
+            Scene.wait(3)
+        with Seq():
+            Scene.wait(2)
+            scene.save_audio(tmp_path / "midblock.wav")
+    assert _seconds_written(tmp_path / "midblock.wav") == pytest.approx(4, abs=1e-4)
+
+
+@pytest.mark.parametrize("stereo_bed", [False, True])
+def test_mono_in_memory_clips_mix(tmp_path, tones, stereo_bed):
+    # A 1-D mono AudioClip times the column mask made a len(t)-square array,
+    # and a (n, 1) AudioArrayClip returns two columns while reporting one:
+    # both raised ValueError in the mix.
+    function = moviepy.AudioClip(lambda t: 0.125 + 0 * t, duration=1.0)
+    array = moviepy.AudioArrayClip(np.full((44100, 1), 0.25), fps=44100)
+    clips = [function.with_start(0.0), array.with_start(0.5)]
+    if stereo_bed:
+        clips.append(moviepy.AudioFileClip(tones[0]).with_start(2.0))
+    composite = moviepy.CompositeAudioClip(clips)
+    composite.duration = 2.0
+    out = tmp_path / "mono.wav"
+    assert audio_utils.write_composite_audio(
+        composite, str(out), fps=44100, nbytes=2, codec="pcm_s16le"
+    )
+    composite.close()
+    import wave as wave_module
+
+    with wave_module.open(str(out), "rb") as reader:
+        channels = reader.getnchannels()
+        samples = np.frombuffer(reader.readframes(reader.getnframes()), "<i2")
+    samples = samples.reshape(-1, channels) / 32768
+    assert channels == (2 if stereo_bed else 1)
+    assert samples.shape[0] == 88200
+    np.testing.assert_allclose(samples[100:22000], 0.125, atol=1e-4)
+    np.testing.assert_allclose(samples[22100:44000], 0.375, atol=1e-4)
+    np.testing.assert_allclose(samples[44200:66000], 0.25, atol=1e-4)
+
+
+def _samples(path):
+    import wave
+
+    with wave.open(str(path), "rb") as audio:
+        data = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+        return data.reshape(-1, audio.getnchannels()).astype(int)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_a_clip_shorter_than_two_mixing_chunks_is_mixed(tmp_path, lazy):
+    """A 50 ms click raised ``Accessing time t=1.00-1.00 seconds``.
+
+    moviepy's reader buffers no more samples than the file holds, and splits a
+    wider request by recursing with its in-range mask where the times belong.
+    """
+    click = _tone(tmp_path / "click.wav", 0.05, 1000.0)
+    composite = _composite([click], [0.25], 0.6, lazy=lazy)
+    mixed_path = tmp_path / "mixed.wav"
+    assert audio_utils.write_composite_audio(
+        composite, str(mixed_path), fps=44100, nbytes=2, codec="pcm_s16le"
+    )
+    composite.close()
+
+    mixed, source = _samples(mixed_path), _samples(click)
+    start = round(0.25 * 44100)
+    np.testing.assert_allclose(mixed[start : start + len(source)], source, atol=1)
+    assert not mixed[: start - 1].any()
+    assert not mixed[start + len(source) + 1 :].any()

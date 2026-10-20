@@ -119,6 +119,26 @@ def test_image_mob_textured_false_uses_one_vertex_color_per_pixel():
     assert image.get_render_primitives().texture_map is None
 
 
+def test_an_8_bit_tensor_is_the_same_image_as_an_8_bit_array():
+    """REGRESSION. A ``uint8`` numpy array was read as bytes and divided by
+    255, but a ``uint8`` tensor went through as 0-255, so a grey of 128
+    rendered white -- in an ``ImageMob``, a texture or a material map alike.
+    """
+    import numpy as np
+
+    from algan.utils.file_utils import get_image
+
+    pixels = np.random.default_rng(0).integers(0, 256, (3, 4, 3), dtype=np.uint8)
+
+    from_tensor = get_image(torch.from_numpy(pixels))
+    assert from_tensor.dtype == torch.float32
+    torch.testing.assert_close(from_tensor, get_image(pixels))
+
+    image = ImageMob(torch.from_numpy(pixels), add_to_scene=False)
+    expected = Color.add_defaults(torch.from_numpy(pixels).float() / 255)
+    torch.testing.assert_close(image.color_texture, expected.transpose(-3, -2).flip(-2))
+
+
 def test_image_mob_remains_texture_backed_by_default():
     pixels = torch.zeros((3, 4, 4))
     pixels[..., 3] = 1

@@ -258,8 +258,8 @@ def align_large_audio_torchaudio_robust(
     return all_word_segments
 
 
-def subfinder(mylist, pattern):
-    for i in range(len(mylist)):
+def subfinder(mylist, pattern, start=0):
+    for i in range(start, len(mylist)):
         if mylist[i] == pattern[0] and mylist[i : i + len(pattern)] == pattern:
             return i
     return -1
@@ -347,16 +347,91 @@ def _write_alignment_cache(path, rows):
                 temporary.unlink(missing_ok=True)
 
 
-def get_speech_generator_from_file(audio_file, transcript_file):
-    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+#: A source FFmpeg opens through one of its protocols -- ``https://...``,
+#: ``concat:a.mp3|b.mp3``, ``file:a.mp3`` -- rather than as a path. A scheme is two
+#: characters or more, so a Windows drive (``C:\voice.wav``) is still a path.
+_FFMPEG_PROTOCOL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 
+
+def _is_ffmpeg_protocol(source):
+    """Whether FFmpeg, not the file system, should resolve ``source``.
+
+    A file that exists by that name is a file, colon or not.
+    """
+    return bool(_FFMPEG_PROTOCOL.match(source)) and not os.path.isfile(source)
+
+
+#: The line ``ffmpeg -i`` ends on once it has opened its input, since it was
+#: given no output: that is how moviepy probes a file, not why one failed.
+_FFMPEG_NO_OUTPUT = "At least one output file must be specified"
+
+
+def _open_audio_file_clip(path):
+    """moviepy's ``AudioFileClip`` of ``path``, or an ``OSError`` naming the file.
+
+    moviepy reports a file FFmpeg reads no sound from by what its parser
+    tripped over: a video without a sound track as ``KeyError:
+    'audio_bitrate'``, a damaged file as FFmpeg's whole report chained to an
+    internal ``TypeError``. Either way the half-built reader's ``__del__`` then
+    printed an ``AttributeError`` once the traceback had gone, which in a
+    script is the last thing on the screen.
+    """
+    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+    from moviepy.audio.io.readers import FFMPEG_AudioReader
+
+    if not hasattr(FFMPEG_AudioReader, "proc"):
+        # The reader sets ``proc``, which its ``__del__`` reads, only once its
+        # probe of the file has succeeded. None is what ``close()`` takes for
+        # a reader with no FFmpeg process to stop.
+        FFMPEG_AudioReader.proc = None
+    try:
+        return AudioFileClip(path)
+    except (OSError, KeyError) as error:
+        if _is_ffmpeg_protocol(path) or getattr(error, "errno", None) is not None:
+            # A URL FFmpeg could not fetch, FFmpeg itself not starting, or a
+            # file that could not be opened: the error says which.
+            raise
+        problem = _why_ffmpeg_reads_no_sound(path)
+        if problem is None:
+            raise
+        raise OSError(f"Could not read {path!r} as audio. {problem}") from error
+
+
+def _why_ffmpeg_reads_no_sound(path):
+    """Why FFmpeg reads no sound from the file at ``path``, or None if it does."""
+    from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
+
+    try:
+        infos = ffmpeg_parse_infos(path, check_duration=False)
+    except OSError as error:
+        # moviepy's heading, a blank line, then FFmpeg's report, which ends on
+        # its reason: "Invalid data found when processing input".
+        report = str(error).partition("\n\n")[2].splitlines()
+        reasons = [
+            line.strip()
+            for line in report
+            if line.strip() and line.strip() != _FFMPEG_NO_OUTPUT
+        ]
+        said = f'FFmpeg says "{reasons[-1]}"' if reasons else "FFmpeg cannot open it"
+        return (
+            f"{said}. Check that it plays in another player, and if it does "
+            f"not, export it again."
+        )
+    if infos.get("audio_found"):
+        return None
+    if infos.get("video_found"):
+        return "FFmpeg finds a video stream in it, but no audio stream."
+    return "FFmpeg finds no audio stream in it."
+
+
+def get_speech_generator_from_file(audio_file, transcript_file):
     audio_path = Path(audio_file).resolve(strict=True)
     transcript_path = Path(transcript_file).resolve(strict=True)
     cache_key, words = _alignment_cache_key(audio_path, transcript_path)
     time_stamp_file = (
         Path(SETTINGS.paths.cache_directory) / "audio" / f"{cache_key}.json"
     )
-    full_ac = AudioFileClip(str(audio_path))
+    full_ac = _open_audio_file_clip(str(audio_path))
     try:
         word_time_stamps = None
         try:
@@ -394,16 +469,24 @@ def get_speech_generator_from_file(audio_file, transcript_file):
             full_ac.close()
         raise
 
+    # Speech blocks ask for their lines in narration order, so search after the
+    # previous match first: a phrase the transcript repeats ("Next.") is then
+    # its next occurrence, not always its first. A line found nowhere after it
+    # (narration authored again, or out of order) falls back to its first one.
+    transcript_words = [_[0] for _ in word_time_stamps]
+    next_word = 0
+
     def generator(script):
+        nonlocal next_word
         script = script.replace("-", " ")
         script_words = [strip_nonchars(_) for _ in script.split()]
         script_words = [_ for _ in script_words if len(_) > 0]
 
-        script_start_ind = (
-            subfinder([_[0] for _ in word_time_stamps], script_words)
-            if script_words
-            else -1
-        )
+        script_start_ind = -1
+        if script_words:
+            script_start_ind = subfinder(transcript_words, script_words, next_word)
+            if script_start_ind < 0:
+                script_start_ind = subfinder(transcript_words, script_words)
 
         if (
             script_start_ind < 0
@@ -415,6 +498,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
                 f" audio file, and so this speech will be machine generated:\n\n{script_words}"
             )
             return get_pyttsx_speech_generator(script)
+        next_word = script_start_ind + len(script_words)
 
         audio_start = word_time_stamps[script_start_ind][1]
         audio_end = word_time_stamps[script_start_ind + len(script_words) - 1][2]
@@ -467,19 +551,17 @@ def _cached_audio_file_clip(file):
     in practice when ``Scene.save_video`` mixes the audio track. Validating,
     screenshots and ``Scene.view`` then never decode the narration at all.
     """
-    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
-
     info_path = Path(f"{file}.info.json")
     try:
         stat = os.stat(file)
         key = [stat.st_size, stat.st_mtime_ns]
     except OSError:
-        return AudioFileClip(file)
+        return _open_audio_file_clip(file)
     with suppress(Exception):
         info = json.loads(info_path.read_text(encoding="utf-8"))
         if info.get("version") == _AUDIO_INFO_VERSION and info.get("key") == key:
             return _lazy_audio_file_clip_class()(file, info)
-    clip = AudioFileClip(file)
+    clip = _open_audio_file_clip(file)
     info = {
         "version": _AUDIO_INFO_VERSION,
         "key": key,
@@ -504,7 +586,11 @@ def _cached_audio_file_clip(file):
     if temporary is not None:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
-    return clip
+    # Lazy on a miss as well: a decoder held from authoring on is an ffmpeg
+    # process and two pipes, and a narrated scene's first render authors one
+    # clip per sentence -- enough of them exhaust the descriptor limit.
+    clip.close()
+    return _lazy_audio_file_clip_class()(file, info)
 
 
 _LAZY_AUDIO_FILE_CLIP = None
@@ -591,6 +677,9 @@ def _lazy_audio_file_clip_class():
             # original's, which copies share along with the closure itself.
             # write_composite_audio calls it ahead of the mix, on a worker.
             self.open_reader = lambda: self.reader
+            # And closes it, reopened if read again; write_composite_audio
+            # calls it once the mix is past every member reading through it.
+            self.close_reader = lambda: self.close()
 
         @property
         def reader(self):
@@ -613,6 +702,37 @@ def _lazy_audio_file_clip_class():
     return LazyAudioFileClip
 
 
+def _clip_frames(clip, times, fps):
+    """``clip.get_frame(times)``, in pieces a short file's decoder can serve.
+
+    moviepy's file reader buffers at most ``n_frames + 1`` samples, and when
+    the times asked for span more than half that buffer it splits the request
+    -- recursing with its boolean in-range mask in place of the times, which
+    it then refuses as ``Accessing time t=1.00-1.00 seconds``. A clip shorter
+    than about two mixing chunks (90 ms at 44.1 kHz: a click, a tick) hit that
+    on every render. Asking in pieces no wider than half the buffer never
+    takes moviepy's split; a piece wholly outside the clip is silence, which
+    the caller's mask would have made it anyway.
+    """
+    import numpy as np
+
+    limit = getattr(clip, "buffersize", None)
+    clip_fps = getattr(clip, "fps", None)
+    if not limit or not clip_fps:
+        return clip.get_frame(times)
+    piece = max(1, int((limit // 2) * fps / clip_fps) - 1)
+    if len(times) <= piece:
+        return clip.get_frame(times)
+    frames = []
+    for first in range(0, len(times), piece):
+        span = times[first : first + piece]
+        if ((span >= 0) & (span < clip.duration)).any():
+            frames.append(clip.get_frame(span))
+        else:
+            frames.append(np.zeros((len(span), clip.nchannels)))
+    return np.concatenate(frames)
+
+
 def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=2000):
     """Write a ``CompositeAudioClip`` as its ``write_audiofile`` would, faster.
 
@@ -631,6 +751,13 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     one starts an ffmpeg process and waits for its first buffer, which is most
     of what the mix itself costs).
 
+    One difference: moviepy samples every member on the output grid, which
+    for a file decoded at another rate (moviepy decodes at 44.1 kHz) is
+    unfiltered nearest-neighbour resampling -- a 6 kHz tone written at 48 kHz
+    came out at 12 dB SNR. When the members' decoders share a rate, the mix
+    runs at that rate instead and the writer's FFmpeg resamples it to ``fps``.
+    At ``fps`` equal to that rate (the default 44.1 kHz) nothing changes.
+
     Returns False without writing anything when the composite holds a member
     this cannot vouch for (one that overrides ``is_playing``), or a chunk grid
     moviepy itself would reject; the caller then writes it the moviepy way.
@@ -644,6 +771,12 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     clips = list(composite.clips)
     if any(type(clip).is_playing is not Clip.is_playing for clip in clips):
         return False
+    # File-backed members (those with a ``buffersize``) read samples exactly
+    # only on their decoder's grid. Mix there; FFmpeg resamples properly.
+    output_fps = fps
+    decoder_rates = {clip.fps for clip in clips if hasattr(clip, "buffersize")}
+    if len(decoder_rates) == 1:
+        fps = decoder_rates.pop()
     total_size = int(fps * composite.duration)
     nchunks = total_size // buffersize + 1
     positions = np.linspace(0, total_size, nchunks + 1, endpoint=True, dtype=int)
@@ -671,14 +804,23 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
         key=lambda k: (ranges[k][0], k),
     )
 
-    # One opener per distinct decoder, in order of first use.
+    # One opener per distinct decoder, in order of first use, and the closer
+    # and last chunk of each decoder that can be closed and reopened.
     openers = {}
     opener_of = {}
+    closers = {}
+    last_chunk = {}
     for k in order:
         opener = getattr(clips[k], "open_reader", None)
         if callable(opener):
             openers.setdefault(id(opener), opener)
             opener_of[k] = id(opener)
+            closer = getattr(clips[k], "close_reader", None)
+            if callable(closer):
+                closers[id(opener)] = closer
+                last_chunk[id(opener)] = max(
+                    last_chunk.get(id(opener), 0), ranges[k][1] - 1
+                )
     queue = list(openers)
     futures = {}
     prefetch = 3
@@ -688,7 +830,15 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     nchannels = composite.nchannels
     logger.debug("Mixing %d audio clips into %s", len(clips), filename)
     pool = ThreadPoolExecutor(max_workers=prefetch, thread_name_prefix="algan-audio")
-    writer = FFMPEG_AudioWriter(filename, fps, nbytes, nchannels, codec=codec)
+    writer = FFMPEG_AudioWriter(
+        filename,
+        fps,
+        nbytes,
+        nchannels,
+        codec=codec,
+        # Overrides the writer's output ``-ar``, which follows its input's.
+        ffmpeg_params=None if fps == output_fps else ["-ar", str(int(output_fps))],
+    )
     try:
 
         def top_up():
@@ -727,11 +877,21 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
                 part = 1 * (t >= start)
                 if end is not None:
                     part *= t <= end
-                sounds.append(clip.get_frame(t - start) * np.array([part]).T)
+                # A mono AudioClip returns a 1-D array, which times the column
+                # mask is a len(t)-square one; a mono AudioArrayClip returns
+                # two equal columns while reporting one channel.
+                frames = np.asarray(_clip_frames(clip, t - start, fps))
+                if frames.ndim == 1:
+                    frames = frames[:, None]
+                sounds.append(frames[:, :nchannels] * np.array([part]).T)
             # CompositeAudioClip.frame_function and AudioClip.to_soundarray.
             frame = np.zeros((len(t), nchannels)) + sum(sounds)
             frame = np.maximum(-0.99, np.minimum(0.99, frame))
             pending.append((scale * frame).astype(inttype))
+            # Each decoder is a process and two pipes: release it once the
+            # mix is past it, or a few hundred sounds run out of descriptors.
+            for key in [key for key in opened if last_chunk.get(key) == i]:
+                closers.pop(key)()
             pending_samples += len(t)
             if pending_samples >= 1 << 20:
                 writer.write_frames(np.concatenate(pending))
@@ -743,4 +903,6 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
         # decoder is left half-built behind a clip the caller will close.
         pool.shutdown(wait=True, cancel_futures=True)
         writer.close()
+        for key in [key for key in openers if key in closers]:
+            closers.pop(key)()
     return True

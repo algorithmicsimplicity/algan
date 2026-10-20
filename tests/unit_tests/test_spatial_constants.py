@@ -15,6 +15,8 @@ reads of the constant.
 from __future__ import annotations
 
 import ast
+import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -59,6 +61,14 @@ def _modules():
         yield path
 
 
+#: Any file that can bind or read ``IN``/``OUT`` contains the word: a cheap
+#: text test that skips parsing the ~200 that cannot. Python NFKC-normalizes
+#: identifiers, so the text is normalized the same way first -- ``IN`` spelled
+#: in fullwidth letters is the name ``IN`` -- which keeps the filter exactly as
+#: wide as the AST walk it guards.
+_MENTIONS_IN_OR_OUT = re.compile(r"\b(?:IN|OUT)\b")
+
+
 def test_no_algan_module_reads_in_or_out():
     """A shadowed ``OUT`` in a script must not be able to reach the library.
 
@@ -68,8 +78,11 @@ def test_no_algan_module_reads_in_or_out():
     """
     offenders = []
     for path in _modules():
+        source = path.read_text(encoding="utf-8")
+        if not _MENTIONS_IN_OR_OUT.search(unicodedata.normalize("NFKC", source)):
+            continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            tree = ast.parse(source, filename=str(path))
         except SyntaxError:  # pragma: no cover -- would fail the build anyway
             continue
         for node in ast.walk(tree):

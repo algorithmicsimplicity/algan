@@ -109,13 +109,14 @@ class PathSettings(Settings):
     ffmpeg_binary: str | None = None
 
     def __post_init__(self):
-        for name in (
-            "cache_directory",
-            "output_root",
-            "output_directory",
-            "output_filename",
-        ):
-            object.__setattr__(self, name, os.fspath(getattr(self, name)))
+        # ``~`` is expanded here, once, for every reader: joined as written,
+        # ``output_root="~/renders"`` wrote into a directory named ``~`` under
+        # the working directory. A file name is left alone.
+        for name in ("cache_directory", "output_root", "output_directory"):
+            path = os.path.expanduser(os.fspath(getattr(self, name)))
+            object.__setattr__(self, name, path)
+        object.__setattr__(self, "output_filename", os.fspath(self.output_filename))
         # Optional, so it is normalised only when set -- os.fspath(None) raises.
         if self.ffmpeg_binary is not None:
-            object.__setattr__(self, "ffmpeg_binary", os.fspath(self.ffmpeg_binary))
+            binary = os.path.expanduser(os.fspath(self.ffmpeg_binary))
+            object.__setattr__(self, "ffmpeg_binary", binary)

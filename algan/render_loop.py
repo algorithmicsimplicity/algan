@@ -17,6 +17,7 @@ from __future__ import annotations
 import bisect
 import collections
 import contextlib
+import inspect
 import itertools
 import logging
 import math
@@ -31,6 +32,7 @@ from queue import Empty, Full, Queue
 from types import SimpleNamespace
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
@@ -79,6 +81,7 @@ from algan.utils.memory_utils import (
     release_torch_memory,
     scene_excluded_from_gc,
 )
+from algan.utils.python_utils import callable_signature
 
 logger = get_logger("scene")
 
@@ -639,6 +642,13 @@ def _slice_render_state(render_state, start, end, total_frames):
             if "camera_lens" in render_state
             else {}
         ),
+        # Optional the same way, and as silent if dropped: a retried window
+        # would render an orthographic camera as a pinhole.
+        **(
+            {"camera_projection": sliced(render_state["camera_projection"])}
+            if "camera_projection" in render_state
+            else {}
+        ),
         "lights": [
             (sliced(origin), sliced(color), sliced(aux))
             for origin, color, aux in render_state["lights"]
@@ -752,11 +762,13 @@ def _decode_light_rgb(rgb, frame_local):
 
 
 def _check_post_processes(post_processes):
-    """Reject a non-callable pass before the render rather than after it.
+    """Reject, before the render rather than after it, a pass Algan cannot call.
 
     Each pass is applied to finished frames, so a bad entry used to surface as
     ``TypeError: 'int' object is not callable`` once the whole render had
-    already been paid for.
+    already been paid for -- and a pass written ``def desaturate(frames)``,
+    with no ``memory`` keyword, as ``got an unexpected keyword argument
+    'memory'``.
     """
     if post_processes is None:
         return
@@ -774,6 +786,81 @@ def _check_post_processes(post_processes):
                 f"partial(bloom_filter, glow_spread=0.015). Pass () for no "
                 f"post-processing."
             )
+        try:
+            # Not following __wrapped__: the call binds to the outermost
+            # signature, and a decorator may be what adds the memory keyword.
+            signature = callable_signature(process, follow_wrapped=False)
+        except (TypeError, ValueError):
+            # A builtin may not say what it takes; the call itself will.
+            continue
+        problem = _bind_error(signature.bind, None, memory=None)
+        if problem is None:
+            continue
+        if _bind_error(signature.bind, None) is None:
+            # It takes the frames, so the memory keyword is all it lacks.
+            raise AlganConfigurationError(
+                f"post_processes[{index}] takes no memory keyword, but Algan calls "
+                f"every pass as process(frames, memory=arena). Give it one it may "
+                f"ignore: {_with_memory_keyword(process)}"
+            )
+        # When only arguments are missing, partial can supply them.
+        hint = (
+            ""
+            if _bind_error(signature.bind_partial, None, memory=None)
+            else " Bind its other arguments first with partial, as in "
+            "partial(bloom_filter, glow_spread=0.015)."
+        )
+        raise AlganConfigurationError(
+            f"post_processes[{index}] cannot be called as "
+            f"process(frames, memory=arena), as Algan calls every pass: "
+            f"{problem}.{hint}"
+        )
+
+
+def _bind_error(bind, *args, **kwargs):
+    """The ``TypeError`` binding these arguments raises, or None."""
+    try:
+        bind(*args, **kwargs)
+    except TypeError as error:
+        return error
+    return None
+
+
+def _with_memory_keyword(process):
+    """``process``'s own definition with ``memory=None`` added, to quote."""
+    function = process.func if isinstance(process, partial) else process
+    # A bound method is quoted with its self, as it is written.
+    function = getattr(function, "__func__", function)
+    if not inspect.isfunction(function):
+        # A callable object: the method a call runs.
+        function = type(function).__call__
+    try:
+        signature = callable_signature(function, follow_wrapped=False)
+        parameters = [
+            parameter.replace(annotation=parameter.empty)
+            for parameter in signature.parameters.values()
+        ]
+        keyword_only = any(
+            parameter.kind in (parameter.VAR_POSITIONAL, parameter.KEYWORD_ONLY)
+            for parameter in parameters
+        )
+        parameters.append(
+            inspect.Parameter(
+                "memory",
+                inspect.Parameter.KEYWORD_ONLY
+                if keyword_only
+                else inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=None,
+            )
+        )
+        shown = str(
+            signature.replace(parameters=parameters, return_annotation=signature.empty)
+        )
+    except (TypeError, ValueError):
+        return "def my_pass(frames, memory=None)"
+    if function.__name__ == "<lambda>":
+        return f"lambda {shown[1:-1]}: ..."
+    return f"def {function.__name__}{shown}"
 
 
 def _framewise_post_process(process, batch_native=True):
@@ -1106,14 +1193,17 @@ class RenderLoopMixin:
             frame_signature=bool(getattr(self, "_frame_local_batches", False))
             and not (render_state or {}).get("lone_still", False),
         )
-        env_map = getattr(self, "environment_map", None)
+        from algan.rendering.raytracing.tracer import (
+            _append_env_texture,
+            _environment_radiance,
+        )
+
+        env_map = _environment_radiance(self)
         first._rt_env_meta = None
         if env_map is not None:
             # Environment resampling/packing is source-device scene prep too;
             # cache it so arena preflight and the subsequent upload see the
             # same widened texture storage without doing the work twice.
-            from algan.rendering.raytracing.tracer import _append_env_texture
-
             merged_host = dict(merged_host)
             texture_device = merged_host["textures"].device
             merged_host["textures"], env_meta = _append_env_texture(
@@ -2010,6 +2100,9 @@ class RenderLoopMixin:
             camera.ray_origin = render_state["ray_origin"]
             camera.screen_point = render_state["screen_point"]
             camera.screen_basis = render_state["screen_basis"]
+            # ``[T, 1, 2]`` (persp, spread), or None for a pinhole camera;
+            # host-side projection reads it beside the three above.
+            camera.camera_projection = render_state.get("camera_projection")
             projection_aa, projection_analytic = _projection_anti_alias_level(
                 self, primitive_batch
             )
@@ -2268,6 +2361,7 @@ class RenderLoopMixin:
                     # the live camera: only the path tracer reads it, and
                     # projection never needs it.
                     camera_lens=render_state.get("camera_lens"),
+                    camera_projection=camera.camera_projection,
                     **({"aux_passes": True} if aux_sink is not None else {}),
                 )
                 if aux_sink is not None:
@@ -3344,16 +3438,12 @@ class RenderLoopMixin:
         by ``_render_primitive_batch``; on any failure the un-projected remainder
         (and the merge) simply runs on the render thread as before.
         """
-        try:
-            from algan.rendering.raytracing.primitives import (
-                RayTracedBezierCircuitPrimitive,
-                RayTracedTrianglePrimitive,
-            )
-            from algan.rendering.raytracing.scene_builder import (
-                upload_primitive_source,
-            )
-        except Exception:
-            return
+        from algan.rendering.raytracing.primitives import (
+            RayTracedBezierCircuitPrimitive,
+            RayTracedTrianglePrimitive,
+        )
+        from algan.rendering.raytracing.scene_builder import upload_primitive_source
+
         if not primitives or not isinstance(
             primitives[0], (RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
         ):
@@ -3381,6 +3471,7 @@ class RenderLoopMixin:
         camera.ray_origin = _to_device(render_state["ray_origin"])
         camera.screen_point = _to_device(render_state["screen_point"])
         camera.screen_basis = _to_device(render_state["screen_basis"])
+        camera.camera_projection = _to_device(render_state.get("camera_projection"))
         camera.screen_width = self.num_pixels_screen_width * aa
         camera.screen_height = self.num_pixels_screen_height * aa
         camera.output_screen_width = self.num_pixels_screen_width
@@ -3756,15 +3847,27 @@ class RenderLoopMixin:
                         None,
                     )
                 )
-        # ``[T, 1, 2]`` (aperture diameter, focus distance). getattr: the camera
-        # doubles some tests drive this mixin with have no lens.
+        # ``[T, 1, 2]`` (aperture diameter, focus distance), and ``[T, 1, 2]``
+        # (persp, spread) -- see algan.rendering.projection. getattr: the
+        # camera doubles some tests drive this mixin with have neither. The
+        # projection is left out for a camera that is a pinhole throughout the
+        # window, so every reader of the snapshot keeps the historical pinhole
+        # arithmetic, and knows to without asking the device.
         lens_fn = getattr(camera, "_get_render_lens", None)
+        projection_fn = getattr(camera, "_get_render_projection", None)
+        if projection_fn is not None and camera._is_pinhole():
+            projection_fn = None
         return {
             **({"frame_indices": frame_indices} if frame_indices is not None else {}),
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
             "screen_basis": camera._get_render_screen_basis().to(device),
             **({"camera_lens": lens_fn().to(device)} if lens_fn is not None else {}),
+            **(
+                {"camera_projection": projection_fn().to(device)}
+                if projection_fn is not None
+                else {}
+            ),
             "lights": lights,
             "light_objects": light_objects,
             "light_active": light_active,
@@ -3950,6 +4053,35 @@ class RenderLoopMixin:
                     if completed and rounding_job is not None:
                         rounding_job.report()
 
+    def _background_fitted_to_frame(self, background):
+        """``background`` at the size a render of this Scene reads it.
+
+        An image background, ``[1, height, width, channels]`` with its rows
+        bottom-up, is resampled to the super-sampled frame of the current
+        settings; anything else -- a color, a callable -- is resolution-free
+        and comes back as given.
+
+        Here rather than on the Scene because :meth:`_get_frames_impl` calls it
+        on every render, and a Scene need not have run ``__init__`` -- or be a
+        Scene at all -- to be rendered from: the preflight tests render a stub
+        built from this mixin alone.
+        """
+        if not torch.is_tensor(background) or background.dim() != 4:
+            return background
+        a = max(1, int(self.video_settings.supersampling))
+        size = [int(n) * a for n in self.frame_size]
+        if list(background.shape[1:3]) == size:
+            return background
+        # interpolate wants [1, channels, height, width]. (``transpose(0, -1)``
+        # here swapped the image's rows and columns instead, rendering it
+        # transposed.) Resampled top-down, in the file's own row order, and
+        # flipped back: the filter is symmetric but its rounding is not quite,
+        # and this way a frame of the size the image used to be baked at gets
+        # the bytes it always did.
+        image = background.flip(1).permute(0, 3, 1, 2)
+        image = F.interpolate(image, size, mode="bilinear", antialias=True)
+        return image.permute(0, 2, 3, 1).flip(1)
+
     def _get_frames_impl(
         self,
         start_time_ind,
@@ -3982,6 +4114,13 @@ class RenderLoopMixin:
         self.original_background_frame = self.background_frame
         if background is not None:
             self.background_frame = background
+        # An image background is kept at its own resolution and fitted to this
+        # render's frame here, once; get_frames puts the Scene's back after.
+        fitted = self._background_fitted_to_frame(self.background_frame)
+        if fitted is not self.background_frame:
+            self.background_frame = fitted
+            if background is not None:
+                background = fitted
 
         transparent_background = self.background_is_transparent()
         if self.premultiplied_over and transparent_background:
@@ -4036,6 +4175,11 @@ class RenderLoopMixin:
         _rt_settings = SETTINGS.raytracing
 
         _rt_settings._begin_render_job()
+        # A denoiser that ran out of memory loading in the last job loads again;
+        # until a render has loaded one, there is nothing to forget.
+        denoise_module = sys.modules.get("algan.rendering.denoise.denoise")
+        if denoise_module is not None:
+            denoise_module._begin_render_job()
 
         with self._batch_prep_context():
             current_time_ind = start_time_ind
@@ -4209,7 +4353,7 @@ class RenderLoopMixin:
                     build(batch[0], batch[2])
                 except Exception as e:
                     logger.warning(
-                        f"{what} failed (deferring to the render thread): {e}"
+                        f"{what} failed (deferring to the render thread): {e!r}"
                     )
                 if source is not None:
                     # Anything short of a fully projected copy (declined,

@@ -237,13 +237,15 @@ camera field of view and Euler angles, and light cone angles -- is in degrees.
 Matching Manim's defaults
 =========================
 
-Manim's frame is 14.22 by 8 world units; Algan's default camera shows 12.44 by
-7. So a ported script's geometry is the right shape but the wrong size, and
-anything that positioned itself against Manim's frame lands somewhere Algan did
-not choose.
+Manim's frame is 14.22 by 8 world units, and a new Algan Scene frames the same:
+its default camera is Manim's ``ThreeDCamera`` viewpoint, 20 units out along
+``OUT``, so a ported script's geometry lands at the size and place Manim gave it.
+What differs is the look around it: Algan's own light in its own position, its
+own material on 3-D Mobs, and colour composited in linear light rather than in
+Manim's sRGB.
 
-:meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>` fixes
-that for the whole Scene, rather than making you rescale each object. Call it
+:meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>` matches
+those for the whole Scene, rather than making you restyle each object. Call it
 once, before you build anything:
 
 .. algan:: MigratingManimDefaults
@@ -327,8 +329,9 @@ Text, TeX, and imported Manim mobjects
 Algan provides native :class:`~algan.mobs.text.Text` and
 :class:`~algan.mobs.text.Tex` mobs. ``MathTex`` and ``Title`` are *not* native:
 they are compatibility wrappers around Manim's classes, so they take Manim's
-arguments (``tex_to_color_map``, ``include_underline``) but are single Mobs with
-no per-glyph views -- ``formula[0]`` raises, and ``write()`` and ``get_segment()``
+arguments (``tex_to_color_map``, ``include_underline``) and index the way Manim's
+do: ``formula[0]`` is the first substring, and it is the part on screen, so
+coloring or moving it changes the formula. ``write()`` and ``get_segment()``
 live on :class:`~algan.mobs.text.Tex`. Where a script does not need Manim's own
 arguments, ``Tex`` is the better landing place, and it produces the same
 outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.

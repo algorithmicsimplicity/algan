@@ -23,6 +23,7 @@ See :doc:`/galleries/mob_gallery`.
 from __future__ import annotations
 
 import math
+import numbers
 
 import torch.nn.functional as F
 
@@ -34,7 +35,7 @@ from algan.animation_timeline.animation_contexts import (
 from algan.constants.color import *
 from algan.constants.spatial import INWARD, LEFT, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
-from algan.geometry.geometry import map_local_to_global_coords
+from algan.geometry.geometry import get_orthonormal_vector, map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.stroke_style import _warn_background_stroke
 from algan.settings import SETTINGS
@@ -49,16 +50,18 @@ from algan.utils.tensor_utils import (
     cast_to_direction,
     cast_to_tensor,
     mean,
-    unsquish,
 )
 
 
 def _coerce_algan_color(value, opacity=None):
     """Return an Algan :class:`Color` from a Manim-style color value."""
-    if isinstance(value, str):
-        named = globals().get(value.upper())
-        value = named if isinstance(named, Color) else Color(value)
-    value = cast_to_tensor(value)
+    # Parsed as ``mob.color = ...`` parses it. A name used to be looked up among
+    # the palette constants first, so "red" was Manim's #FC6255 here and CSS red
+    # everywhere else: ``Square(color="red")`` changed hue when given a
+    # ``fill_opacity``, and ``Line(color="red")`` was not the red of a Square.
+    # A hex int or an RGB sequence, which a bare cast took for a tensor of
+    # channels -- 0xFF0000 for every one of them -- goes the same way.
+    value = cast_to_tensor(to_color(value))
     value = Color.add_defaults(value).as_subclass(Color)
     if opacity is not None:
         value = value.set_opacity(opacity)
@@ -236,9 +239,13 @@ class Line(BezierCircuitCubic):
     def __init__(self, start=LEFT, end=RIGHT, buff=0, path_arc=0, *args, **kwargs):
         _warn_if_angle_looks_like_radians("path_arc", path_arc)
         start_center = (
-            start.get_center() if isinstance(start, Mob) else cast_to_tensor(start)
+            start.get_center()
+            if isinstance(start, Mob)
+            else cast_to_direction("start", start)
         )
-        end_center = end.get_center() if isinstance(end, Mob) else cast_to_tensor(end)
+        end_center = (
+            end.get_center() if isinstance(end, Mob) else cast_to_direction("end", end)
+        )
         direction = end_center - start_center
         if isinstance(start, Mob):
             start_center = start.get_boundary_point(direction)
@@ -277,19 +284,83 @@ class Line(BezierCircuitCubic):
             )
         super().__init__(control_points, *args, **kwargs)
 
-    def get_start(self):
-        return unsquish(self.control_points.location, -2, 4)[..., 0, :]
+    def _path_ends(self):
+        """The first and last control point of each line, one row per line.
 
-    def get_end(self):
-        return unsquish(self.control_points.location, -2, 4)[..., -1, :]
+        Not the first point of every cubic: an arc is drawn with several, and a
+        pack of lines (``batch_mobs``) holds each line's cubics end to end.
+        """
+        points = self.control_points.location
+        sizes = self.control_points.parent_batch_sizes
+        if sizes is None or int(sizes.sum()) != points.shape[-2]:
+            return points[..., :1, :], points[..., -1:, :]
+        last = sizes.to(points.device).cumsum(0) - 1
+        first = last - sizes.to(points.device) + 1
+        return points[..., first, :], points[..., last, :]
 
-    def get_vector(self):
+    def get_start(self) -> torch.Tensor:
+        """Get the point the line starts at.
+
+        For an arc this is where the whole arc starts, not where each of the
+        cubic segments it is drawn with does.
+
+        Returns
+        -------
+        torch.Tensor
+            The start point in world units, shape ``(*, 1, 3)``; a pack of lines
+            made with :func:`~algan.utils.mob_utils.batch_mobs` has one row per
+            line.
+        """
+        return self._path_ends()[0]
+
+    def get_end(self) -> torch.Tensor:
+        """Get the point the line ends at.
+
+        For an arc this is where the whole arc ends, not where each of the
+        cubic segments it is drawn with does.
+
+        Returns
+        -------
+        torch.Tensor
+            The end point in world units, shape ``(*, 1, 3)``; a pack of lines
+            made with :func:`~algan.utils.mob_utils.batch_mobs` has one row per
+            line.
+        """
+        return self._path_ends()[1]
+
+    def get_vector(self) -> torch.Tensor:
+        """Get the vector from the line's start to its end.
+
+        For an arc this is its chord.
+
+        Returns
+        -------
+        torch.Tensor
+            :meth:`get_end` minus :meth:`get_start`, shape ``(*, 1, 3)``.
+        """
         return self.get_end() - self.get_start()
 
-    def get_unit_vector(self):
+    def get_unit_vector(self) -> torch.Tensor:
+        """Get the direction from the line's start to its end.
+
+        Returns
+        -------
+        torch.Tensor
+            :meth:`get_vector` normalized to length 1, shape ``(*, 1, 3)``.
+        """
         return F.normalize(self.get_vector(), p=2, dim=-1)
 
-    def get_length(self):
+    def get_length(self) -> torch.Tensor:
+        """Get the distance from the line's start to its end.
+
+        For an arc this is the length of its chord, as in Manim, not of the
+        curve.
+
+        Returns
+        -------
+        torch.Tensor
+            The length in world units, shape ``(*, 1)``.
+        """
         return self.get_vector().norm(p=2, dim=-1)
 
     def set_color_by_function(self, function):
@@ -401,6 +472,10 @@ class Line(BezierCircuitCubic):
         turns it at its full length.
         Stroke color, opacity, width, caps, joins and draw order are preserved.
 
+        Inside an updater it takes effect on every frame without animating, so
+        ``line.add_updater(lambda mob, t: mob.put_start_and_end_on(
+        a.get_center(), b.get_center()))`` keeps a line between two moving Mobs.
+
         Parameters
         ----------
         start
@@ -425,6 +500,10 @@ class Line(BezierCircuitCubic):
             line.put_start_and_end_on(DOWN, UP)
             Scene.save_video()
         """
+        if self.scene.timeline_manager.is_replaying():
+            # An updater, rendering a batch of frames at once: its points hold
+            # one row per frame, and no Line can be built for a batch to become.
+            return self._place_ends_now(start, end)
         target = Line(
             start,
             end,
@@ -444,6 +523,47 @@ class Line(BezierCircuitCubic):
         )
         target.z_index = self.z_index
         return self.become(target, detach_history=False)
+
+    def _place_ends_now(self, start, end):
+        """Turn, scale and move the line so its ends land on ``start`` and ``end``.
+
+        Vectorized over the frames of a batch. A line with no length has no
+        direction to turn from, so its points are laid along the new ends
+        directly.
+        """
+        start, end = cast_to_tensor(start), cast_to_tensor(end)
+        old_start, old_end = self.get_start(), self.get_end()
+        old_vector, new_vector = torch.broadcast_tensors(
+            old_end - old_start, end - start
+        )
+        old_length = old_vector.norm(p=2, dim=-1, keepdim=True)
+        new_length = new_vector.norm(p=2, dim=-1, keepdim=True)
+        pointless = old_length <= 1e-9
+        cross = torch.cross(old_vector, new_vector, dim=-1)
+        sine = cross.norm(p=2, dim=-1, keepdim=True)
+        cosine = (old_vector * new_vector).sum(-1, keepdim=True)
+        # Parallel or opposite ends have no cross product to turn about; any
+        # axis perpendicular to the line turns it the 0 or 180 degrees needed.
+        axis = torch.where(
+            sine > 1e-9 * old_length * new_length,
+            cross,
+            get_orthonormal_vector(old_vector),
+        )
+        angle = torch.where(pointless, 0.0, torch.rad2deg(torch.atan2(sine, cosine)))
+        factor = torch.where(pointless, 1.0, new_length / old_length.clamp_min(1e-9))
+        self.rotate(angle, axis, about=old_start)
+        self.scale(factor)
+        self.move(start - self.get_start())
+        if bool(pointless.any()):
+            points = self.control_points.location
+            cubics = points.shape[-2] // 4
+            along = (
+                torch.arange(cubics, device=points.device, dtype=points.dtype)[:, None]
+                + torch.tensor([0, 1 / 3, 2 / 3, 1], device=points.device)
+            ).reshape(-1, 1) / cubics
+            laid = start + along * (end - start)
+            self.control_points.location = torch.where(pointless, laid, points)
+        return self
 
 
 class Point(BezierCircuitCubic):
@@ -473,12 +593,38 @@ class Point(BezierCircuitCubic):
         super().__init__(torch.cat([location for _ in range(4)], -2), *args, **kwargs)
 
     def get_num_points(self):
+        """Get how many points this is, for Manim compatibility: always ``1``.
+
+        Returns
+        -------
+        int
+            ``1``.
+        """
         return 1
 
     def get_points(self):
+        """Get the point's location as a list of points, as Manim's would be.
+
+        Returns
+        -------
+        torch.Tensor
+            The location in world units, shape ``(1, 3)``.
+        """
         return self.get_center().reshape(1, 3)
 
     def point_from_proportion(self, alpha):
+        """Get the point a proportion of the way along: always its location.
+
+        Parameters
+        ----------
+        alpha
+            The proportion, from ``0`` to ``1``. Ignored: a point has no length.
+
+        Returns
+        -------
+        torch.Tensor
+            The location in world units, shape ``(*, 3)``.
+        """
         return self.get_center()
 
 
@@ -555,7 +701,11 @@ class TriangleVertices(Mob):
             del kwargs2["location"]
         kwargs2["location"] = corner_locations.reshape(-1, 3)
         if "color" in kwargs2:
-            kwargs2["color"] = kwargs2["color"].reshape(-1, kwargs2["color"].shape[-1])
+            # Parsed here, as a circuit's color is: the reshape needs a tensor,
+            # so a hex string or an RGB tuple failed every polyhedron with
+            # "'str' object has no attribute 'reshape'".
+            color = to_color(kwargs2["color"])
+            kwargs2["color"] = color.reshape(-1, color.shape[-1])
         if normals is not None:
             normals = normals.reshape(-1, 3)
         super().__init__(**kwargs2)
@@ -661,30 +811,53 @@ class QuadTriangulated(Mob):
         self.add_children(triangles)
 
 
+def _is_point_sequence(value):
+    """Whether ``value`` is a list or tuple of points rather than one point."""
+    return isinstance(value, (list, tuple)) and not any(
+        isinstance(item, numbers.Number) for item in value
+    )
+
+
 class Polygon(BezierCircuitCubic):
-    """A 2-D planar polygon with N vertices.
+    """A 2-D planar polygon with N vertices, joined by straight edges.
 
     Parameters
     ----------
-    vertex_locations : torch.Tensor[N, 3]
-        3-D coordinates for each of the N vertex points.
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
+    *vertex_locations
+        The vertices in order, in world units: one point per argument,
+        ``Polygon(LEFT, RIGHT, UP)``, one list of them, or a single tensor of
+        shape ``(N, 3)``. Each vertex is joined to the next and the last back
+        to the first. At least three are required.
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``color``, which
+        defaults to ``RED``, and the ``stroke_*`` styling.
 
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If fewer than three vertices are given.
     """
 
     def __init__(self, *vertex_locations: torch.Tensor, **kwargs):
         kwargs = _translate_vector_style_kwargs(
             kwargs, default_color=RED, shape=type(self)
         )
-        if not vertex_locations:
+        if not vertex_locations or (
+            len(vertex_locations) == 1
+            and isinstance(vertex_locations[0], (list, tuple))
+            and not vertex_locations[0]
+        ):
             # ``torch.stack([])`` below would answer "stack expects a
             # non-empty TensorList", which says nothing about polygons.
             raise AlganConfigurationError(
                 f"{type(self).__name__} needs its vertices: pass them as "
-                f"points ({type(self).__name__}(LEFT, RIGHT, UP)) or as one "
-                f"[N, 3] tensor."
+                f"points ({type(self).__name__}(LEFT, RIGHT, UP)), as a list "
+                f"of points or as one [N, 3] tensor."
             )
+        if len(vertex_locations) == 1 and _is_point_sequence(vertex_locations[0]):
+            # One list of points, which may mix tensors and tuples; a bare cast
+            # of the list takes a tensor in it for a number.
+            vertex_locations = tuple(vertex_locations[0])
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])
             while corner_locations.dim() > 2 and corner_locations.shape[0] == 1:
@@ -692,8 +865,8 @@ class Polygon(BezierCircuitCubic):
         else:
             corner_locations = torch.stack(
                 [
-                    cast_to_tensor(vertex).reshape(-1, 3)[0]
-                    for vertex in vertex_locations
+                    cast_to_direction(f"vertex {index}", vertex).reshape(-1, 3)[0]
+                    for index, vertex in enumerate(vertex_locations)
                 ],
                 dim=0,
             )
@@ -716,6 +889,13 @@ class Polygon(BezierCircuitCubic):
         super().__init__(control_points, **kwargs)
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``RED`` for a Polygon and the shapes built on it.
+        """
         return RED
 
 
@@ -1053,15 +1233,41 @@ class Circle(BezierCircuitCubic):
         self.scale(radius)
         self.move_to(mob_location)
 
+    #: How far the unit circle's furthest control point lies from its centre.
+    #: A circuit's ``scale_coefficient`` is that distance (the bezier handles
+    #: sit outside the curve), not the radius the curve is drawn at.
+    _EXTENT_PER_RADIUS = float(
+        torch.tensor([[1.00005519, 0.0], [0.55342686, 0.99873585]]).norm(dim=-1).max()
+    )
+
     @property
     def radius(self):
-        return self.scale_coefficient[..., 0]
+        """The radius the circle is drawn at, in world units, shape ``(*)``.
+
+        Animation
+        ---------
+        Assignment resizes the circle about its centre, recorded as an
+        animation over the current context's runtime (1 second by default);
+        wrap it in ``Off()`` to apply it instantly. Reading is not animated.
+        """
+        return self.scale_coefficient[..., 0] / self._EXTENT_PER_RADIUS
 
     @radius.setter
     def radius(self, radius):
-        self.scale_coefficient = radius
+        radius = cast_to_tensor(radius)
+        if radius.ndim > 0 and radius.shape[-1] == 1:
+            radius = radius[..., 0]
+        factor = radius / self.radius.clamp_min(1e-12)
+        self.scale_coefficient = self.scale_coefficient * factor.unsqueeze(-1)
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``BLUE`` for a Circle.
+        """
         return BLUE
 
 

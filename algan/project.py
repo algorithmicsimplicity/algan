@@ -20,6 +20,7 @@ from algan.errors import AlganConfigurationError
 from algan.logging.logger import get_logger
 from algan.settings import SETTINGS
 from algan.settings.video_settings import _PRESETS_BY_NAME, VideoSettings
+from algan.utils.python_utils import callable_signature
 
 if TYPE_CHECKING:
     from algan.viewer.viewer import ViewerHandle
@@ -325,7 +326,8 @@ class Project:
         Speech generator installed on each Scene's audio manager. Defaults to
         None, using the default speech source.
     post_processes
-        Sequence of frame-processing callables, as for :meth:`Scene.save_video`.
+        Sequence of frame-processing callables, as for
+        :meth:`~algan.scene.Scene.save_video`.
         Used for videos, screenshots and profiling, including :meth:`run_cli`.
         Defaults to None, using the renderer's defaults. An empty sequence
         disables post-processing; explicit export options override this default.
@@ -393,7 +395,7 @@ class Project:
                     f"Project scene entry {scene_id} is not callable"
                 )
             try:
-                signature = inspect.signature(function)
+                signature = callable_signature(function)
             except (TypeError, ValueError) as exc:
                 raise AlganConfigurationError(
                     f"Could not inspect Project scene entry {scene_id}"
@@ -467,7 +469,9 @@ class Project:
     @staticmethod
     def _resolve_directory(directory) -> Path:
         raw_path = os.fspath(directory)
-        requested = Path(raw_path)
+        # Expanded here, as ``_resolve_output_destination`` expands a scene's
+        # own path: an unexpanded ``~`` is a relative directory named ``~``.
+        requested = Path(raw_path).expanduser()
         if not requested.is_absolute() and os.path.dirname(raw_path) == "":
             requested = (
                 Path(SETTINGS.paths.output_root)
@@ -641,7 +645,7 @@ class Project:
 
         See Also
         --------
-        Scene.view : Inspect a single already-authored scene.
+        ~algan.scene.Scene.view : Inspect a single already-authored scene.
         render_video : Export the selected scenes instead of opening a viewer.
 
         Examples
@@ -1665,7 +1669,8 @@ class Project:
                         # Apply the same authored finalization as a video export,
                         # without rendering or mutating any caller-owned Scene.
                         fps = effective_settings.frames_per_second
-                        if active_scene._recorded_end_time_for_render() == 0 and any(
+                        recorded = active_scene._recorded_end_time_for_render()
+                        if round(recorded * fps) < 1 and any(
                             actor.is_spawned() for actor in active_scene.actors
                         ):
                             active_scene.wait(1 / fps)

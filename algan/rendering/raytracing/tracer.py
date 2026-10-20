@@ -43,6 +43,7 @@ from algan.rendering import fragment_capture
 from algan.rendering.mps_compat import clamp_floor, index_copy_rows
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.rendering.projection import is_pinhole, kernel_projection
 from algan.rendering.raytracing.float32_rounding import (
     DEPTH_ORDER_RECORDS,
     attach_depth_order,
@@ -141,6 +142,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     wf_finalize_aa,
     wf_finalize_uncovered,
 )
+from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ensure_render_headroom,
@@ -183,9 +185,24 @@ class RenderPlan:
 
     @property
     def is_supported(self) -> bool:
+        """Whether the chosen route can draw every requested feature.
+
+        ``False`` exactly when ``unsupported_features`` is not empty.
+        """
         return not self.unsupported_features
 
     def as_dict(self) -> dict[str, object]:
+        """Get the plan as plain Python values, for logging or JSON.
+
+        Returns
+        -------
+        dict[str, object]
+            ``backend``, ``samples_per_pixel``, ``requested_features`` and
+            ``unsupported_features`` (as lists), ``truncations`` (as
+            :meth:`TruncationCounts.as_dict
+            <algan.rendering.raytracing.truncation.TruncationCounts.as_dict>`
+            gives it) and ``path_samples_mean``.
+        """
         return {
             "backend": self.backend,
             "samples_per_pixel": self.samples_per_pixel,
@@ -942,6 +959,26 @@ def _append_env_texture(textures, env, intensity, device):
     return textures, (offset, w, h, float(intensity))
 
 
+def _environment_radiance(scene):
+    """The Scene's environment map in the working space: what the renderer samples.
+
+    An 8-bit source -- an image file or an integer tensor -- holds sRGB-encoded
+    color like every other authored color, so the linear working space decodes
+    it here, at the render boundary. Left encoded, it was encoded a second time
+    at the byte write: a grey-128 map showed as a 188 backdrop, and lit and
+    reflected as brightly. A float map is authored radiance and is sampled as
+    given.
+    """
+    env = getattr(scene, "environment_map", None)
+    if (
+        env is None
+        or not getattr(scene, "environment_map_is_srgb", False)
+        or not rt_settings.linear_color_space
+    ):
+        return env
+    return srgb_to_linear(env)
+
+
 def _env_sh_coeffs(env, intensity):
     """Order-1 spherical-harmonics irradiance of an equirect environment map,
     as the linear form ``E(n) / pi = A + Bx*nx + By*ny + Bz*nz`` consumed by
@@ -1150,12 +1187,15 @@ def _build_raster_tables(
     half_screen_w,
     half_screen_h,
     width,
+    projection=None,
 ):
     """Build the batch-wide raster projection / bounds tables, once per batch.
 
     Allocated at the arena's persistent end: they cover the whole prepared
     batch, every chunk of it reads the same rows, and the per-chunk reset only
     rewinds the forward pointer. See the call site for the lifetime contract.
+    ``projection`` is ``None`` for a pinhole batch and its ``cam_proj``
+    otherwise (``raster_pipeline.precompute_triangle_projection``).
     """
     from algan.rendering.raytracing.raster_pipeline import (
         precompute_circuit_screen_bounds,
@@ -1178,6 +1218,7 @@ def _build_raster_tables(
             half_screen_h,
             memory,
             persist=True,
+            projection=projection,
         )
         # Live reads (settings convention): each kill-switch falls back to
         # the per-frame pair emission inside prepare_sparse_raster_coverage.
@@ -1197,6 +1238,7 @@ def _build_raster_tables(
                 width,
                 memory,
                 persist=True,
+                projection=projection,
             )
         if rt_settings.raster_bez_precompute and int(merged.get("num_circuits", 0)) > 0:
             bez_bounds = precompute_circuit_screen_bounds(
@@ -1210,6 +1252,7 @@ def _build_raster_tables(
                 width,
                 memory,
                 persist=True,
+                projection=projection,
             )
     return tri_screen, tri_bounds, bez_bounds
 
@@ -1231,6 +1274,7 @@ def render_batch_raytraced(
     memory=None,
     post_processes=(),
     camera_lens=None,
+    camera_projection=None,
     **kwargs,
 ):
     """Render a primitive batch through the selected hybrid or path tracer.
@@ -1246,6 +1290,10 @@ def render_batch_raytraced(
     focus distance) snapshot, or None for a pinhole. Only the path tracer
     renders it; the deterministic renderer reports an open aperture as an
     unsupported feature.
+
+    ``camera_projection`` is the batch's per-frame ``[T, 1, 2]``
+    ``(persp, spread)`` snapshot (``algan.rendering.projection``), or None for
+    a pinhole. Every route renders it.
 
     ``aux_passes=True`` (keyword, default off) also traces the compositing
     passes of ``aux_passes.trace_aux_passes`` for every rendered frame, per
@@ -1265,7 +1313,7 @@ def render_batch_raytraced(
     fragment_shading = rt_settings.fragment_shading
     max_bounces = rt_settings.max_bounces
     tonemap_exposure = rt_settings.tonemap_exposure
-    scene_env_map = getattr(scene, "environment_map", None)
+    scene_env_map = _environment_radiance(scene)
     env_map = scene_env_map
     env_source = env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
     env_meta = getattr(primitives[0], "_rt_env_meta", None)
@@ -1377,16 +1425,6 @@ def render_batch_raytraced(
     cam_origin_host = _expand_frames(
         _flat_frames(_host_tensor(ray_origin), (3,)), num_frames
     ).contiguous()
-    # The depth-order check (float32_rounding.depth_order_record) for a camera
-    # far enough out that float32 cannot keep overlapping flat shapes in order;
-    # None, and no work at all, for every other render.
-    from algan.rendering.raytracing.raster_pipeline import coplanar_tie_step
-
-    order_eye = (
-        depth_order_eye(cam_origin_host, coplanar_tie_step())
-        if int(merged.get("num_circuits", 0)) > 0
-        else None
-    )
     sp_host = _expand_frames(
         _flat_frames(_host_tensor(screen_point), (3,)), num_frames
     ).contiguous()
@@ -1403,6 +1441,60 @@ def render_batch_raytraced(
     pixel_world_scale_host = (
         2.0 / clamp_floor(screen_height * aa * b1_norm * screen_dist, 1e-12)
     ).contiguous()
+    # The projection (algan.rendering.projection), for a batch with a frame
+    # that is not a pinhole; None, and every kernel compiled without the code
+    # that reads it, for every other batch. One pixel at planar depth z is
+    # pixel_world_scale * (spread * d + persp * z) across, so what the kernels
+    # call pixel_world_scale -- the part that grows with distance -- is
+    # premultiplied by persp, and the constant part travels in cam_proj:
+    # ``[T, 6]`` (persp, spread, footprint base, screen - eye).
+    projection_host = (
+        _expand_frames(_flat_frames(_host_tensor(camera_projection), (2,)), num_frames)
+        .to(torch.float32)
+        .contiguous()
+        if camera_projection is not None
+        else None
+    )
+    cam_proj_host = None
+    spread_host = None
+    if not is_pinhole(projection_host):
+        persp_host = projection_host[:, 0].to(pixel_world_scale_host.dtype)
+        spread_host = projection_host[:, 1].to(pixel_world_scale_host.dtype)
+        footprint_base_host = pixel_world_scale_host * (spread_host * screen_dist)
+        pixel_world_scale_host = (pixel_world_scale_host * persp_host).contiguous()
+        cam_proj_host = (
+            torch.cat(
+                (
+                    torch.stack((persp_host, spread_host, footprint_base_host), -1),
+                    sp_host - cam_origin_host,
+                ),
+                -1,
+            )
+            .to(torch.float32)
+            .contiguous()
+        )
+    # The depth-order check (float32_rounding.depth_order_record) for a camera
+    # far enough out that float32 cannot keep overlapping flat shapes in order;
+    # None, and no work at all, for every other render. Rays leave from the
+    # eye, or for a camera with a parallel part from anywhere on the patch of
+    # its plane the frame corners span; the farthest of those decides.
+    from algan.rendering.raytracing.raster_pipeline import coplanar_tie_step
+
+    order_eye = None
+    if int(merged.get("num_circuits", 0)) > 0:
+        ray_origins = cam_origin_host
+        if spread_host is not None:
+            aspect = float(screen_width) / float(screen_height)
+            ray_origins = torch.cat(
+                [cam_origin_host]
+                + [
+                    cam_origin_host
+                    + spread_host[:, None] * (cu * pbx_host + cv * pby_host)
+                    for cu in (-aspect, aspect)
+                    for cv in (-1.0, 1.0)
+                ]
+            )
+        order_eye = depth_order_eye(ray_origins, coplanar_tie_step())
     # The thin lens, for the path tracer only and only when some frame of the
     # batch opens the aperture: a pinhole batch uploads nothing and takes the
     # kernel's untouched pinhole branch. Radius, not diameter, is what the
@@ -1422,7 +1514,11 @@ def render_batch_raytraced(
         pbx = _arena_copy(memory, pbx_host)
         pby = _arena_copy(memory, pby_host)
         pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
+        cam_proj = (
+            _arena_copy(memory, cam_proj_host) if cam_proj_host is not None else None
+        )
         lens = _arena_copy(memory, lens_host) if lens_host is not None else None
+    cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
 
     # An animated/image background arrives super-sampled at the *requested*
     # anti-alias level (Scene.set_background and
@@ -1808,6 +1904,8 @@ def render_batch_raytraced(
                         sp,
                         pbx,
                         pby,
+                        cam_proj_table,
+                        projected,
                         int(eo),
                         int(ew),
                         int(eh),
@@ -1896,6 +1994,7 @@ def render_batch_raytraced(
                         pixel_basis_x=pbx,
                         pixel_basis_y=pby,
                         pixel_world_scale=pixel_world_scale,
+                        cam_proj=cam_proj,
                         time_start=start,
                         time_end=end,
                         width=width,
@@ -1975,6 +2074,7 @@ def render_batch_raytraced(
                             pbx,
                             pby,
                             pixel_world_scale,
+                            cam_proj,
                             int(start),
                             int(end),
                             int(width),
@@ -2044,6 +2144,7 @@ def render_batch_raytraced(
                     pbx,
                     pby,
                     pixel_world_scale,
+                    cam_proj,
                     start,
                     end,
                     screen_width,
@@ -2139,6 +2240,7 @@ def _run_wavefront_tiles(
     screen_point,
     pixel_basis_x,
     pixel_basis_y,
+    cam_proj,
     half_screen_w,
     half_screen_h,
     max_bounces,
@@ -2166,6 +2268,9 @@ def _run_wavefront_tiles(
     continuation headroom doubles on every retry without increasing arena
     memory, and there is no fixed per-pixel split limit.
     """
+    # The projection rows and their compile-time switch, as every kernel
+    # launched below takes them (projection.kernel_projection).
+    cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
     t_val = _get_tonemap_t_val()
     i32 = torch.int32
     f32 = torch.float32
@@ -2330,6 +2435,8 @@ def _run_wavefront_tiles(
                                 screen_point,
                                 pixel_basis_x,
                                 pixel_basis_y,
+                                cam_proj_table,
+                                projected,
                                 int(time_start),
                                 int(width),
                                 int(height),
@@ -2449,6 +2556,7 @@ def raytrace_render_wavefront(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
+    cam_proj,
     time_start,
     time_end,
     width,
@@ -2489,6 +2597,12 @@ def raytrace_render_wavefront(
     persistent scalar state carries ``base_dist`` for Bezier border widths
     across bounces.
 
+    ``cam_proj`` is the batch's ``[T, 6]`` projection table
+    (``render_batch_raytraced`` builds it: per frame ``(persp, spread,
+    footprint base, screen - eye)``, see ``algan.rendering.projection``), or
+    ``None`` for a pinhole batch, whose kernels and host-side screen tables
+    keep their historical arithmetic (``projection.kernel_projection``).
+
     ``frag_flag``/``shadow_flag`` select the deterministic per-fragment shading
     and opacity-weighted hard-shadow paths (compile-time templates of the shade
     kernel); ``light_pos``/``light_col`` feed both.
@@ -2519,6 +2633,9 @@ def raytrace_render_wavefront(
     vertex-shaded path below is unaffected.
     """
     rt_settings = SETTINGS.raytracing
+    # The projection rows and their compile-time switch, as every kernel
+    # launched below takes them (projection.kernel_projection).
+    cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
     # Opt-in inline stages for this function's loops (the profiler's pipeline
     # hooks cannot reach inside one function). A shared nullcontext unless the
     # profiler is installed; imported here rather than at module level because
@@ -2779,6 +2896,7 @@ def raytrace_render_wavefront(
                 half_screen_w,
                 half_screen_h,
                 width,
+                projection=cam_proj,
             )
             merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
             _retain_persistent(merged, memory)
@@ -3001,6 +3119,8 @@ def raytrace_render_wavefront(
             # soft fans take the bounce budget (light row column 17).
             1,
             _use_light_major(num_events, num_lights, ev_pos.device),
+            cam_proj_table,
+            projected,
         )
         filled = torch.ones(
             (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device
@@ -3108,6 +3228,8 @@ def raytrace_render_wavefront(
                         pixel_basis_x,
                         pixel_basis_y,
                         gen_meta,
+                        cam_proj_table,
+                        projected,
                     )
                 # Deferred shadows (rt_settings.wf_deferred_shadows): the lit
                 # triangle hits in this iteration's K-buffers become shadow
@@ -3202,6 +3324,8 @@ def raytrace_render_wavefront(
                         rs_vis_arg,
                         cam_origin,
                         tri_shell,
+                        cam_proj_table,
+                        projected,
                     )
             active = compactor.select(
                 rs_int,
@@ -3241,6 +3365,7 @@ def raytrace_render_wavefront(
                 pixel_basis_x,
                 pixel_basis_y,
                 pixel_world_scale,
+                cam_proj,
                 col_row_arr,
                 time_start,
                 time_end,
@@ -3474,6 +3599,7 @@ def raytrace_render_wavefront(
                                 pixel_basis_x,
                                 pixel_basis_y,
                                 pixel_world_scale,
+                                cam_proj,
                                 layer_offsets_t,
                                 gen_meta,
                                 light_pos,
@@ -3672,6 +3798,9 @@ def raytrace_render_wavefront(
                                     gl_pyr,
                                     out,
                                     int(a),
+                                    cam_proj_table,
+                                    projected,
+                                    int(time_start) + gl_frame,
                                 )
                                 wf_composite_accum_sparse(
                                     int(time_start),
@@ -3814,6 +3943,8 @@ def raytrace_render_wavefront(
                     pixel_basis_x,
                     pixel_basis_y,
                     gen_meta,
+                    cam_proj_table,
+                    projected,
                 )
                 wavefront_shade(
                     active,
@@ -3893,6 +4024,8 @@ def raytrace_render_wavefront(
                     rs_vis,
                     cam_origin,
                     tri_shell,
+                    cam_proj_table,
+                    projected,
                 )
             active = compactor.select(
                 rs_int,
@@ -3917,6 +4050,7 @@ def raytrace_render_wavefront(
         screen_point=screen_point,
         pixel_basis_x=pixel_basis_x,
         pixel_basis_y=pixel_basis_y,
+        cam_proj=cam_proj,
         half_screen_w=half_screen_w,
         half_screen_h=half_screen_h,
         max_bounces=max_bounces,

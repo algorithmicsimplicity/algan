@@ -35,7 +35,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from algan.animatable_base.mob import Mob
+from algan.animatable_base.mob import Mob, _coerce_if_color
 from algan.animation_timeline.animation_contexts import (
     Off,
     Sync,
@@ -43,12 +43,12 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animation_timeline.timeline import EditRecord, _opt_disabled
 from algan.constants.color import *
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, _user_stacklevel
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
-from algan.mobs.surfaces.procedural_textures import get_checkerboard
+from algan.mobs.surfaces.procedural_textures import _as_texel, get_checkerboard
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
     evaluate_logical_pn_per_patch,
@@ -59,7 +59,9 @@ from algan.rendering.logical_pn import (
 from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.file_utils import get_image
+from algan.utils.memory_utils import is_out_of_memory
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
+from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
     cast_to_tensor,
@@ -75,8 +77,23 @@ def _as_member_colors(colors, count):
 
     Accepts RGB, RGBA or the full five channels, matching what
     :class:`~algan.constants.color.Color` stores, so a point cloud's RGBA array
-    and a list of named colors both work.
+    and a list of named colors both work. So does one color for every member,
+    and a list whose entries are any spelling a Mob's ``color`` takes.
     """
+    if isinstance(colors, (list, tuple)) and not all(
+        isinstance(channel, (int, float)) for channel in colors
+    ):
+        # One color per member. Cast as a whole, a list of Colors failed with
+        # "only one element tensors can be converted to Python scalars", and a
+        # list of strings with "too many dimensions 'str'".
+        colors = torch.stack(
+            [
+                Color.add_defaults(cast_to_tensor(to_color(c)).reshape(-1))
+                for c in colors
+            ]
+        )
+    else:
+        colors = to_color(colors)
     colors = cast_to_tensor(colors).reshape(-1, cast_to_tensor(colors).shape[-1])
     if len(colors) == 1 and count > 1:
         colors = colors.expand(count, -1)
@@ -137,10 +154,26 @@ _RESOLUTION_SHRINK_MARGIN = 0.1
 
 
 def _surface_resolution_pair(resolution):
-    if isinstance(resolution, int):
-        return int(resolution), int(resolution)
+    count = integer_or_none(resolution)
+    if count is not None:
+        return count, count
     u_resolution, v_resolution = resolution
     return int(u_resolution), int(v_resolution)
+
+
+def _grid_could_explain(exc: Exception) -> bool:
+    """Whether a grid-sizing probe's error might be that grid's alone.
+
+    A probe that raises counts its grid as not good enough, and the search
+    moves on to a finer one. An undefined name or a failed import in the
+    surface's function is raised on every grid, and exhausted memory only
+    grows on a finer one, so those are raised instead: they used to drive the
+    search to ``max_grid_resolution``, warn that the tolerance could not be
+    met, and remember that grid for the geometry.
+    """
+    return not isinstance(
+        exc, (NameError, ImportError, RecursionError)
+    ) and not is_out_of_memory(exc)
 
 
 def _resolution_cache_callable_key(function):
@@ -914,7 +947,10 @@ class Surface(Mob):
     ----------
     coord_function
         The function mapping 2-D intrinsic coordinates (ranging from [0,1]), to 3-D world coordinates,
-        which defines the manifold's shape.
+        which defines the manifold's shape. Defaults to ``None``, meaning the
+        class's own :meth:`coord_function` -- a flat plane spanning ``[-1, 1]``
+        on the base class, the shape itself on a subclass such as
+        :class:`~algan.mobs.shapes_3d.Sphere`.
     grid_height
         Number of sampled points along the ``v`` axis. Defaults to ``None``,
         meaning the resolution is chosen automatically to meet
@@ -922,6 +958,37 @@ class Surface(Mob):
     grid_width
         Number of sampled points along the ``u`` axis. Defaults to ``None``, as
         ``grid_height`` does; giving only one of the two uses it for both.
+    color_texture
+        Color texture map ``[W, H, 5]`` -- one image, sampled in-kernel by the ray
+        tracer: bilinearly up close, and trilinearly from a mip chain when minified
+        (``SETTINGS.raytracing.texture_antialiasing``, on by default). It is an ordinary
+        animatable attribute: assign a new map of the same shape to animate it.
+        :mod:`~algan.mobs.surfaces.procedural_textures` generates the common patterns,
+        so a checkerboard is ``color_texture=get_checkerboard((BLUE, WHITE))``. Defaults
+        to ``None``: the surface takes its ``color``.
+    reflectivity_texture, roughness_texture, refractive_index_texture
+        Optional per-texel material property maps, each ``[W, H, 1]`` (or
+        ``[W, H]``). Like ``color_texture`` they are sampled per fragment,
+        with the same mip filtering, inside the ray tracing kernel (only
+        the general wavefront tracer implements this; batches containing such
+        maps are routed to it automatically, for both flat and curved PN
+        triangles). Properties without a map keep the per-vertex system. Maps
+        of different resolutions are resampled to a common resolution. Each
+        defaults to ``None``, no map.
+    normal_texture
+        Optional tangent-space normal map ``[W, H, 3]``, with components in
+        ``[-1, 1]``: x along increasing ``u``, y along
+        increasing ``v``, z along the smooth surface normal (``(0, 0, 1)`` =
+        unperturbed). Perturbs the shading normal per fragment in-kernel.
+        Note: under the default vertex-shaded pipeline lighting is baked at
+        the vertices, so a normal map only affects effects evaluated per
+        fragment (mirror reflections, refraction, ray traced shadows, and
+        fragment shading when enabled). Defaults to ``None``, no map.
+    glow_texture
+        Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
+        These are consumed per-vertex by the glow accumulator, so they are
+        baked to the surface grid resolution (raise ``grid_width``/
+        ``grid_height`` for more detail). Defaults to ``None``, no map.
     ignore_normals
         Whether to draw the surface as flat, faceted triangles instead of
         smoothing it. Defaults to ``False``, meaning smooth vertex normals are
@@ -939,7 +1006,7 @@ class Surface(Mob):
         point.
         The selected grid is cached per concrete Surface subclass and geometry
         configuration, so constructing the same shape again does not repeat
-        the resolution search.
+        the resolution search. Defaults to ``0.0005``.
     render_tolerance_pixels
         Maximum sampled deviation between a PN triangle and the flat render
         triangles it is dynamically diced into, in output pixels. Defaults to
@@ -976,37 +1043,6 @@ class Surface(Mob):
         *patches*, one less than the vertices ``grid_width`` / ``grid_height``
         count, matching Manim. Defaults to ``None``. Ignored if either grid size
         is given.
-    color_texture
-        Optional color texture map ``[W, H, 5]`` -- one image, sampled
-        in-kernel by the ray tracer: bilinearly up close, and trilinearly from
-        a mip chain when minified (``SETTINGS.raytracing.texture_antialiasing``,
-        on by default). It is an ordinary animatable
-        attribute: assign a new map of the same shape to animate it.
-        :mod:`~algan.mobs.surfaces.procedural_textures` generates the common
-        patterns, so a checkerboard is
-        ``color_texture=get_checkerboard((BLUE, WHITE))``.
-    reflectivity_texture, roughness_texture, refractive_index_texture
-        Optional per-texel material property maps, each ``[W, H, 1]`` (or
-        ``[W, H]``). Like ``color_texture`` they are sampled per fragment,
-        with the same mip filtering, inside the ray tracing kernel (only
-        the general wavefront tracer implements this; batches containing such
-        maps are routed to it automatically, for both flat and curved PN
-        triangles). Properties without a map keep the per-vertex system. Maps
-        of different resolutions are resampled to a common resolution.
-    normal_texture
-        Optional tangent-space normal map ``[W, H, 3]``, with components in
-        ``[-1, 1]``: x along increasing ``u``, y along
-        increasing ``v``, z along the smooth surface normal (``(0, 0, 1)`` =
-        unperturbed). Perturbs the shading normal per fragment in-kernel.
-        Note: under the default vertex-shaded pipeline lighting is baked at
-        the vertices, so a normal map only affects effects evaluated per
-        fragment (mirror reflections, refraction, ray traced shadows, and
-        fragment shading when enabled).
-    glow_texture
-        Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
-        These are consumed per-vertex by the glow accumulator, so they are
-        baked to the surface grid resolution (raise ``grid_width``/
-        ``grid_height`` for more detail).
     *args, **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
         ``opacity`` and ``location``.
@@ -1321,8 +1357,8 @@ class Surface(Mob):
         # Parsed here because the vertex grid below indexes and assigns into a
         # color tensor, so a hex string or an RGB tuple has to be a color
         # before it reaches Mob.__init__.
-        color = to_color(
-            kwargs["color"] if "color" in kwargs else self.get_default_color()
+        color = _coerce_if_color(
+            "color", kwargs["color"] if "color" in kwargs else self.get_default_color()
         )
 
         if color_texture is not None:
@@ -1408,6 +1444,13 @@ class Surface(Mob):
         Every member has the same shape, resolution and material -- only its
         centre and color vary. Anything else that differs needs separate Mobs.
 
+        Animation
+        ---------
+        Not animated: this only constructs. Animating the pack moves every
+        member; animating ``pack[i]`` moves just that one. All members share one
+        lifespan, so they spawn and despawn together -- stagger an entrance with
+        opacity rather than with separate spawns.
+
         Parameters
         ----------
         centers
@@ -1427,12 +1470,10 @@ class Surface(Mob):
         :class:`~algan.mobs.surfaces.surface.Surface`
             The packed Mob, of whichever subclass this was called on.
 
-        Animation
-        ---------
-        Not animated: this only constructs. Animating the pack moves every
-        member; animating ``pack[i]`` moves just that one. All members share one
-        lifespan, so they spawn and despawn together -- stagger an entrance with
-        opacity rather than with separate spawns.
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``centers`` is empty.
 
         Examples
         --------
@@ -1828,13 +1869,7 @@ class Surface(Mob):
         """
         if not colors:
             return self
-        converted = [
-            torch.as_tensor(
-                color, device=self.grid.color.device, dtype=self.grid.color.dtype
-            ).reshape(-1, self.grid.color.shape[-1])[0]
-            for color in colors
-        ]
-        palette = torch.stack(converted)
+        palette = self._palette_for_grid(colors)
         u_indices = torch.arange(self.grid_width, device=palette.device).unsqueeze(1)
         v_indices = torch.arange(self.grid_height, device=palette.device).unsqueeze(0)
         color_grid = palette[(u_indices + v_indices) % len(palette)]
@@ -1842,6 +1877,17 @@ class Surface(Mob):
         if opacity is not None:
             self.grid.opacity = opacity
         return self
+
+    def _palette_for_grid(self, colors) -> torch.Tensor:
+        """User-supplied colors as rows matching ``grid.color``.
+
+        Each goes through the same coercion as a mob's ``color``, so a hex
+        string, a CSS name, a hex int or an RGB tuple is as good as a
+        :class:`~algan.constants.color.Color` -- the color helpers used to
+        reshape the raw value instead, which only a 5-channel ``Color``
+        survived.
+        """
+        return torch.stack([_as_texel(color) for color in colors]).to(self.grid.color)
 
     def set_color_by_axis(
         self, axes=None, colorscale=None, axis: int = 2, **kwargs
@@ -1875,6 +1921,9 @@ class Surface(Mob):
         axis
             Which world axis the value is read along: ``0`` for x, ``1`` for y,
             ``2`` for z. Defaults to ``2``, colouring by height.
+        **kwargs
+            Only ``colors``, an older name for ``colorscale``, is accepted; it
+            is used when ``colorscale`` is not given.
 
         Returns
         -------
@@ -1883,8 +1932,8 @@ class Surface(Mob):
 
         Raises
         ------
-        ValueError
-            If an unrecognized keyword argument is passed.
+        :class:`.AlganConfigurationError`
+            If any other keyword argument is passed.
 
         See Also
         --------
@@ -1919,15 +1968,23 @@ class Surface(Mob):
         if colorscale is None:
             return self
 
-        values = self.grid.location.reshape(-1, 3)[..., axis]
+        # searchsorted wants contiguous values; a column of the location rows is
+        # a strided view.
+        values = self.grid.location.reshape(-1, 3)[..., axis].contiguous()
         entries = list(colorscale)
         if not entries:
             return self
         if isinstance(entries[0], tuple) and len(entries[0]) == 2:
             colors, pivots = zip(*entries)
             pivots = torch.as_tensor(pivots, device=values.device, dtype=values.dtype)
+            palette = self._palette_for_grid(colors)
+            # Each pair pins a color to a coordinate, so the order they are
+            # written in carries no meaning; searchsorted needs them ascending.
+            pivots, order = torch.sort(pivots)
+            palette = palette[order]
         else:
             colors = entries
+            palette = self._palette_for_grid(colors)
             axis_range = getattr(axes, ("x_range", "y_range", "z_range")[axis], None)
             if axis_range is None:
                 pivot_min, pivot_max = values.min(), values.max()
@@ -1941,14 +1998,6 @@ class Surface(Mob):
                 dtype=values.dtype,
             )
 
-        palette = torch.stack(
-            [
-                torch.as_tensor(
-                    color, device=self.grid.color.device, dtype=self.grid.color.dtype
-                ).reshape(-1, self.grid.color.shape[-1])[0]
-                for color in colors
-            ]
-        )
         upper = torch.searchsorted(pivots, values).clamp(1, len(pivots) - 1)
         lower = upper - 1
         denominator = (pivots[upper] - pivots[lower]).clamp_min(1e-12)
@@ -2465,7 +2514,9 @@ class Surface(Mob):
                 verdict = bool(
                     torch.isfinite(error).item() and error.item() <= tolerance
                 )
-            except Exception:
+            except Exception as exc:
+                if not _grid_could_explain(exc):
+                    raise
                 verdict = False
             measured[key] = verdict
             return verdict
@@ -2527,7 +2578,7 @@ class Surface(Mob):
                 "Logical PN construction reached max_grid_resolution before "
                 "meeting geometry_tolerance.",
                 RuntimeWarning,
-                stacklevel=3,
+                stacklevel=_user_stacklevel(),
             )
         return result
 
@@ -2617,7 +2668,7 @@ class Surface(Mob):
                         "Logical PN construction reached max_grid_resolution before "
                         "meeting geometry_tolerance.",
                         RuntimeWarning,
-                        stacklevel=3,
+                        stacklevel=_user_stacklevel(),
                     )
                 return cached
 
@@ -2636,7 +2687,9 @@ class Surface(Mob):
         def acceptable(width, height):
             try:
                 error = self._compute_error(surface_function, width, height)
-            except Exception:
+            except Exception as exc:
+                if not _grid_could_explain(exc):
+                    raise
                 return False
             return bool(torch.isfinite(error).item() and error.item() <= tolerance)
 
@@ -3818,11 +3871,13 @@ class Surface(Mob):
             LogicalPNTrianglePrimitive,
         )
 
+        # ``colors`` already carries the glow (``compute_grid_color``), so no
+        # ``glow`` is passed: the primitive adds that to the same lane, and a
+        # Surface used to glow twice as strongly as a 2-D Mob with its glow.
         primitive = LogicalPNTrianglePrimitive(
             corners=corners,
             colors=colors,
             normals=normals,
-            glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             uvs=uvs,
             texture_map=texture_map,

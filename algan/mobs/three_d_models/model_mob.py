@@ -24,6 +24,7 @@ animatable per-corner ``location``.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 
 import torch
@@ -32,7 +33,11 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
 from algan.constants.easings import identity
-from algan.errors import AlganConfigurationError
+from algan.errors import (
+    AlganConfigurationError,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.mesh import (
     TriangleMesh,
@@ -113,19 +118,54 @@ def _transform_normals(normals, matrix):
     return normals @ inv_t.T
 
 
-def _load_image_hwc(path):
-    """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}),
-    or ``None`` on failure.
+def _modulate_colors(colors, base_color):
+    """Per-vertex colors ``[V, C]`` (display sRGB, ``C`` of 3 to 5) times a
+    material's ``base_color`` RGBA, in linear light.
+
+    A channel the material leaves at exactly 1 is not touched, so colors under
+    the default white material pass through bit for bit.
     """
-    try:
-        from PIL import Image
+    from algan.utils.color_space import linear_to_srgb, srgb_to_linear
 
-        from algan.utils.file_utils import _decode_pil_image
+    colors = colors.float().clone()
+    for c in range(3):
+        if base_color[c] != 1.0:
+            factor = srgb_to_linear(torch.tensor(float(base_color[c])))
+            colors[:, c] = linear_to_srgb(srgb_to_linear(colors[:, c]) * factor)
+    if base_color[3] != 1.0:
+        if colors.shape[-1] == 3:
+            colors = torch.cat((colors, torch.ones_like(colors[:, :1])), -1)
+        # Opacity is the last slot of both RGBA and the 5-slot engine color.
+        colors[:, -1] = colors[:, -1] * float(base_color[3])
+    return colors
 
-        with Image.open(path) as pil_image:
-            return torch.from_numpy(_decode_pil_image(pil_image))
-    except Exception:
-        return None
+
+def _load_image_hwc(path, fallback="in its material's flat color instead"):
+    """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}).
+
+    ``None`` when it cannot be read, after a warning that names the file, why
+    it could not be read, and ``fallback``: how the model is drawn instead,
+    by default the way a model whose diffuse texture fails is drawn.
+    """
+    if not os.path.exists(path):
+        reason = "no such file"
+    else:
+        try:
+            from PIL import Image
+
+            from algan.utils.file_utils import _decode_pil_image
+
+            with Image.open(path) as pil_image:
+                return torch.from_numpy(_decode_pil_image(pil_image))
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+    warnings.warn(
+        f"Could not load the texture {path!r} ({reason}), so the model is drawn "
+        f"{fallback}.",
+        UnsupportedFeatureWarning,
+        stacklevel=_user_stacklevel(),
+    )
+    return None
 
 
 class Model3D(Mob):
@@ -133,39 +173,51 @@ class Model3D(Mob):
 
     Parameters
     ----------
-    file_path : str
-        Path to the model file. ``.glb``/``.gltf`` (and ``.obj``/``.ply``/...)
-        load through trimesh (no native dependency); ``.fbx`` loads through
-        pyassimp (needs the native ``assimp`` library installed).
-    scene_data : SceneData, optional
-        Pre-parsed IR to build from instead of reading ``file_path`` (used by
-        tests and alternative importer backends). When given, ``file_path`` may
-        be a label only.
-    load_textures : bool
-        Load and apply diffuse texture maps referenced by materials
-        (default True). When False (or a texture fails to load) meshes fall
-        back to their material's flat base color.
-    fit_to_size : float, optional
+    file_path
+        Path to the model file, as a string or path. ``.glb``/``.gltf`` (and
+        ``.obj``/``.ply``/...) load through trimesh (no native dependency);
+        ``.fbx`` loads through pyassimp (needs the native ``assimp`` library
+        installed). Defaults to ``None``, which requires ``scene_data``.
+    scene_data
+        Pre-parsed :class:`~algan.mobs.three_d_models.scene_data.SceneData` to
+        build from instead of reading ``file_path`` (used by tests and
+        alternative importer backends). When given, ``file_path`` may be a
+        label only. Defaults to ``None``, meaning the file is read.
+    load_textures
+        Load and apply diffuse texture maps referenced by materials. When False
+        (or a texture fails to load) meshes fall back to their material's flat
+        base color. Defaults to True. A texture file that a model read through
+        assimp names, or an image embedded in a glTF, that cannot be read warns
+        with an :class:`~algan.errors.UnsupportedFeatureWarning` naming it and
+        why; a glTF texture *file* that is missing warns with an
+        :class:`~algan.errors.AlganWarning` naming it. A missing OBJ texture
+        file is left out without a warning: trimesh drops it silently.
+    fit_to_size
         Recenter the model and uniformly scale it so its bounding-box diagonal
         is this many world units -- handy, since model files use wildly
         different unit scales. Defaults to ``None``, which leaves the model at
         the size the file gives it.
-    smooth_normals : bool
+    smooth_normals
         Use the mesh's authored / generated per-vertex normals for smooth
-        shading (default True). When False, flat per-face normals are derived
-        at render time.
-    normal_maps : bool
-        Apply tangent-space normal maps from materials (default True), adding
-        per-fragment surface detail. Requires per-vertex UVs; batches carrying a
-        normal map render through the general wavefront tracer.
-    pbr_materials : bool
+        shading. When False, flat per-face normals are derived at render time.
+        Defaults to True.
+    normal_maps
+        Apply tangent-space normal maps from materials, adding per-fragment
+        surface detail. Requires per-vertex UVs; batches carrying a normal map
+        render through the general wavefront tracer. Defaults to True.
+    pbr_materials
         Apply each material's PBR parameters (metalness / roughness / emissive)
-        as a :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`
-        (default True), so imported meshes shade with Cook-Torrance GGX. When
-        False the default lit shader is kept.
-    *args, **kwargs
+        as a :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`,
+        so imported meshes shade with Cook-Torrance GGX. When False the default
+        lit shader is kept. Defaults to True.
+    **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` (e.g. ``location`` to
         place the model).
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If neither ``file_path`` nor ``scene_data`` is given.
     """
 
     def __init__(
@@ -179,6 +231,12 @@ class Model3D(Mob):
         pbr_materials: bool = True,
         **kwargs,
     ):
+        # The parts are built in the file's own coordinates about an
+        # untransformed Model3D, then a placement given here is applied the way
+        # any later transform is, so it carries the parts along with it.
+        placement = {
+            name: kwargs.pop(name) for name in ("basis", "location") if name in kwargs
+        }
         super().__init__(**kwargs)
         device = self.location.device
         self.normal_maps = normal_maps
@@ -245,6 +303,43 @@ class Model3D(Mob):
         if fit_to_size is not None:
             self._normalize(fit_to_size)
 
+        # Turning or scaling the model carries its geometry through its basis
+        # from here on, the placement below included; _placement carries a
+        # baked pose the same way.
+        self._built_basis = self._current_frame()[1].clone()
+        with Off(animation_manager=self.animation_manager):
+            # Basis first, so the parts turn and scale about the model's
+            # origin before the whole is moved to ``location``.
+            for name, value in placement.items():
+                setattr(self, name, value)
+
+    def _current_frame(self):
+        """This Mob's ``location`` ``[3]`` and ``basis`` ``[3, 3]`` as authored
+        so far.
+        """
+        return (
+            self.location.reshape(-1, 3)[0],
+            self.basis.reshape(-1, 9)[0].reshape(3, 3),
+        )
+
+    def _placement(self):
+        """A function taking ``[N, 3]`` points in the model's own coordinates
+        to where they are now: through every turn or scale applied to the
+        model since it was built, then to its location.
+        """
+        location, basis = self._current_frame()
+        linear = None
+        if not torch.equal(basis, self._built_basis):
+            linear = torch.linalg.solve(self._built_basis, basis)
+        moved = bool(location.any())
+
+        def place(points):
+            if linear is not None:
+                points = points @ linear
+            return points + location if moved else points
+
+        return place
+
     def _build_mesh_mob(
         self, scene_data, mesh, matrix, device, load_textures, smooth_normals
     ):
@@ -279,6 +374,14 @@ class Model3D(Mob):
         mesh_kwargs = {}
         if color is not None and texture is None and vertex_colors is None:
             mesh_kwargs["color"] = color
+        # Per-vertex colors are the albedo. The material's color multiplies
+        # them, as a material color does in Three.js, and is then withheld
+        # from the material below, whose color would repaint every vertex.
+        material_color = color
+        if vertex_colors is not None:
+            if material is not None:
+                vertex_colors = _modulate_colors(vertex_colors, material.base_color)
+            material_color = None
 
         # Meshes stay lit: with authored normals (smooth_normals) they shade
         # smooth; otherwise TriangleMesh derives flat per-face normals.
@@ -300,7 +403,7 @@ class Model3D(Mob):
         # the flat fallback.
         if self.pbr_materials and material is not None:
             self._apply_pbr_material(
-                mob, material, color, has_texture=texture is not None
+                mob, material, material_color, has_texture=texture is not None
             )
 
         # Legacy model formats may expose reflectivity / IOR without a full
@@ -314,7 +417,7 @@ class Model3D(Mob):
 
                 mob.set_material(
                     MeshPhysicalMaterial(
-                        color=color,
+                        color=material_color,
                         metalness=legacy_metalness,
                         roughness=float(material.roughness_factor),
                         ior=legacy_ior if legacy_ior > 1.0 else 1.5,
@@ -379,8 +482,8 @@ class Model3D(Mob):
         """
         if material.normal_image is not None:
             return image_to_normal_map(material.normal_image.to(device)).to(device)
-        if material.normal_texture and os.path.exists(material.normal_texture):
-            image = _load_image_hwc(material.normal_texture)
+        if material.normal_texture:
+            image = _load_image_hwc(material.normal_texture, "without that normal map")
             if image is not None:
                 return image_to_normal_map(image).to(device)
         return None
@@ -400,7 +503,7 @@ class Model3D(Mob):
         if path in self._texture_cache:
             return self._texture_cache[path]
         tex_map = None
-        image = _load_image_hwc(path) if os.path.exists(path) else None
+        image = _load_image_hwc(path)
         if image is not None:
             tex_map = image_to_texture_map(image).to(device)
         self._texture_cache[path] = tex_map
@@ -479,24 +582,36 @@ class Model3D(Mob):
         Evaluates every node's animated local transform at each sample time,
         composes them down the hierarchy and transforms each mesh instance's
         local vertices, yielding the exact geometry the ray tracer renders per
-        frame. Pure computation (no scene mutation), so it is unit-testable and
-        also drives :meth:`play_animation`.
+        frame -- placed where the model stands now, so a model moved, turned or
+        scaled since it was loaded poses in place. Pure computation (no scene
+        mutation), so it is unit-testable and also drives
+        :meth:`play_animation`.
 
         Parameters
         ----------
-        name : str, optional
-            Clip name; defaults to the first clip.
-        times : sequence of float, optional
-            Explicit sample times (seconds). Defaults to an ``fps`` grid over
-            the clip runtime unioned with the authored keyframe times.
-        fps : int
-            Sampling rate used when ``times`` is not given.
+        name
+            The clip to bake, by name. Defaults to ``None``, meaning the first
+            clip.
+        times
+            Sample times in seconds. Defaults to ``None``, meaning ``fps``
+            samples per second from ``0`` to the clip's runtime, together with
+            the clip's own keyframe times.
+        fps
+            Samples per second for the default grid; ignored when ``times`` is
+            given. Defaults to ``30``.
 
         Returns
         -------
-        (times, corners) : (list[float], dict[TriangleMesh, torch.Tensor])
-            The sample times and, per mesh mob, a ``[T, 3F, 3]`` stack of
+        tuple[list[float], dict[TriangleMesh, torch.Tensor]]
+            The sample times and, per mesh Mob, a ``[T, 3F, 3]`` stack of
             world-space corner positions (one slice per sample time).
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If the model carries no animation clips.
+        KeyError
+            If no clip is called ``name``.
         """
         clip = self._resolve_clip(name)
         device = self.location.device
@@ -513,6 +628,7 @@ class Model3D(Mob):
 
         center = self._norm_center.to(device)
         scale = self._norm_scale
+        place = self._placement()
         corners = {}
         for mob in self.mesh_mobs:
             local_corners = mob._local_vertices[mob.corner_index]  # [3F, 3] local
@@ -522,8 +638,9 @@ class Model3D(Mob):
                     w[mob._node_idx] if 0 <= mob._node_idx < len(w) else _eye4(device)
                 )
                 world_corners = _transform_points(local_corners, matrix)
-                # Fold in the same recenter/scale normalize() applied.
-                frames.append((world_corners - center) * scale)
+                # Fold in the same recenter/scale normalize() applied, then
+                # follow the model to wherever it has been placed since.
+                frames.append(place((world_corners - center) * scale))
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
@@ -548,7 +665,9 @@ class Model3D(Mob):
         ---------
         Spawn the model first. Playback records the mesh geometry over
         ``runtime`` seconds per loop, preserving the spacing between baked
-        samples. Each loop starts at the clip's first pose. Compose playback
+        samples. Each loop starts at the clip's first pose. The poses are
+        placed wherever the model stands when this is called, so a model
+        moved, turned or scaled beforehand plays in place. Compose playback
         with other recorded motion using ``Sync()`` or ``Seq()``.
 
         Parameters
@@ -627,4 +746,11 @@ class Model3D(Mob):
         return self
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            A light grey, ``#CCCCCC``, for a Model3D.
+        """
         return Color("#CCCCCC")

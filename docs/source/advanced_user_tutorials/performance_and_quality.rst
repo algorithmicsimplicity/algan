@@ -242,7 +242,7 @@ drops a feature a renderer cannot honour.
      - Yes (thin lens)
    * - Auxiliary passes (depth, normal, object ID)
      - Yes
-     - Yes (identical to the analytic route: one pinhole sample per pixel
+     - Yes (identical to the analytic route: one lensless sample per pixel
        centre)
    * - Denoising (``denoise``, default on)
      - Not applicable (noise-free)
@@ -481,9 +481,9 @@ Clear it with the helper rather than by hand:
 
 .. code-block:: python
 
-    from algan import clear_cache
+    from algan import clear_cache, clear_cached_kernels
 
-    clear_cache()                     # content caches; keeps compiled kernels
+    clear_cache()           # content caches; keeps compiled kernels
     clear_cached_kernels()  # everything, including compiled kernels
 
 The kernel cache is spared by default because it is expensive to rebuild and is never

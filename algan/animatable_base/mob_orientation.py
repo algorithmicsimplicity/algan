@@ -406,7 +406,9 @@ class MobOrientationMixin:
             unsquish(self.normalized_basis, -1, 3)[
                 ..., self._resolve_axis(with_axis), :
             ],  # Current orientation of specified axis
-            F.normalize(direction, p=2, dim=-1),  # Normalized target direction
+            F.normalize(
+                cast_to_direction("direction", direction), p=2, dim=-1
+            ),  # Normalized target direction
             dim=-1,
         )
         # Apply the rotation
@@ -447,5 +449,5 @@ class MobOrientationMixin:
             If ``with_axis`` is not one of the three axis names.
         """
         # Calculate the direction vector from the Mob's current location to the target point
-        direction_to_look = point - self.location
+        direction_to_look = cast_to_direction("point", point) - self.location
         return self.look(direction_to_look, with_axis=with_axis)

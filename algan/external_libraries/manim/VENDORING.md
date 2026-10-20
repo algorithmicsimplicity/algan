@@ -86,8 +86,11 @@ Rewritten wholesale:
 
 6. `_config/__init__.py`. Upstream builds a `rich` logger and installs it on
    the **root** logger at import time. This copy hands out a plain
-   `logging.getLogger("manim")` with a `NullHandler`, which is also how `rich`
-   stays out of Algan's dependency set.
+   `logging.getLogger("algan.manim")`, which is also how `rich` stays out of
+   Algan's dependency set. Being a child of Algan's own logger, it prints on
+   Algan's console at Algan's level, where a `manim` logger would print only
+   if the application had configured the root logger.
+   `algan/logging/logger.py` holds its `INFO` back to `DEBUG`.
 7. `__init__.py`, to export the kept subset, with the Pango classes withheld
    unless `manimpango` imports (see `PANGO_AVAILABLE`).
 
@@ -104,6 +107,7 @@ Targeted, asserted, one dropped reference each:
     import (it is re-imported under `TYPE_CHECKING` a few lines below).
 11. `_config/utils.py` -- `ManimConfig.renderer`'s setter rejects `"opengl"`
     outright rather than rebasing the geometry classes onto the stand-ins.
+    It logs on `algan.manim`, as in 6.
 12. `mobject/text/text_mobject.py` -- `manimpango` is reached through the lazy
     proxies in `manim/_pango.py`, so the module imports without the optional
     extra. It has to: `Text` is `Brace`'s default label class and `Paragraph`
@@ -115,14 +119,23 @@ Targeted, asserted, one dropped reference each:
     `M` there, and publish it atomically (`algan.utils.typeset_cache`),
     instead of rendering in place and rewriting the cached file on every
     construction -- `text_dir` is shared by every Algan process.
+    A `font` that is not installed goes to `algan.mobs.text._installed_font`
+    instead of logging every installed family: it returns the installed
+    spelling of a name that differs only in case or spacing, and otherwise,
+    if Pango would draw the text in its fallback font, warns at the script's
+    line, naming the closest installed fonts.
 13. `mobject/svg/svg_mobject.py` -- carry element, group and root opacity into
     imported fill/stroke coverage. Embedded rasters use the authored image
     width and height before the SVG's overall size normalization. Group
     opacity is applied per shape; overlapping shapes do not form an isolated
-    SVG compositing layer. The restyled SVG is parsed from memory rather than
-    from a fixed-name scratch file beside the source, which concurrent
-    processes parsing one cached SVG deleted from under each other; embedded
-    rasters go through a private temporary file.
+    SVG compositing layer. Embedded rasters stay out of the `VGroup`s that
+    index the SVG's groups, which take only vector shapes: adding one raised,
+    and logged an error for every emoji in a `Text`. The restyled SVG is
+    parsed from memory rather than from a fixed-name scratch file beside the
+    source, which concurrent processes parsing one cached SVG deleted from
+    under each other; embedded rasters go through a private temporary file.
+    An SVG `<text>` element, which is not imported, is reported by its text
+    and with how to keep it, where upstream named only its class.
 14. `utils/tex_file_writing.py` -- `tex_to_svg_file` hands the build to
     `algan.utils.typeset_cache.build_tex_svg`. Upstream compiles in `tex_dir`
     and then deletes every non-`.svg`/`.tex` file there; Algan shares that
@@ -130,3 +143,4 @@ Targeted, asserted, one dropped reference each:
     flight. Each formula is now compiled in a private directory and its
     `.svg` published with an atomic rename, under the same content-addressed
     name.
+15. `utils/deprecation.py` -- logs on `algan.manim`, as in 6.

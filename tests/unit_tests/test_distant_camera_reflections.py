@@ -1,9 +1,11 @@
 """A mirror under a distant camera reflects what it faces, in every route.
 
 A primary hit formed as ``ro + t_hit * rd`` is rounded at the eye's magnitude,
-in every direction including off the surface, and ``set_near_orthographic``
-puts the eye thousands of units out, where float32 positions are ~1e-3 apart:
-far more than the lift a reflection or refraction starts with. Spawned from
+in every direction including off the surface, and a camera pulled back for a
+flat look -- what ``set_near_orthographic`` did before Algan had an
+orthographic camera -- puts the eye thousands of units out, where float32
+positions are ~1e-3 apart: far more than the lift a reflection or refraction
+starts with. Spawned from
 there, a continuation began under the mirror and met it again, and a grey
 mirror reflecting a plain background speckled with its own double
 reflection: up to 57 levels off on 45% of the mirror in the classic wavefront
@@ -13,10 +15,11 @@ and the sub-pixel re-samples (``_jittered_surface_sample``) the sheet route
 and the path tracer spawn their circuit reflections from.
 
 Each route renders the mirror at the default camera and at distance 10,000;
-the far mirror's pixels must all show the near one's single reflection. The
-flat-green twin of each scene masks the mirror, less a pixel's antialiased
-border. Unmarked, so outside ``--fast``: only the renderer's spawn points can
-break it.
+the far mirror's pixels must all show the near one's single reflection. So must
+the mirror seen through the orthographic camera, whose rays each start from
+their own point on the camera's plane. The flat-green twin of each scene masks
+the mirror, less a pixel's antialiased border. Unmarked, so outside ``--fast``:
+only the renderer's spawn points can break it.
 """
 
 import pytest
@@ -40,6 +43,7 @@ from algan import (
     Surface,
     VideoSettings,
 )
+from tests.unit_tests.distant_camera import pull_back
 
 VIDEO = VideoSettings(resolution=(160, 90), frames_per_second=10, supersampling=1)
 ROUTES = {
@@ -74,7 +78,12 @@ def _mirror(kind, material):
 
 
 def _frame(kind, distance, material, route="sheet"):
-    """One frame of the tilted mirror against a plain background."""
+    """One frame of the tilted mirror against a plain background.
+
+    ``distance`` 0 keeps the default camera, a number pulls its eye back that
+    far from its screen (``distant_camera.pull_back``), and ``"orthographic"``
+    switches it to the orthographic projection.
+    """
     config = ROUTES[route]
     SETTINGS.raytracing.set(shadows=False, samples_per_pixel=config["samples"])
     for name, value in config["experimental"].items():
@@ -85,8 +94,10 @@ def _frame(kind, distance, material, route="sheet"):
             mirror = _mirror(kind, material)
             mirror.rotate(17, RIGHT + OUT * 0.37, about=ORIGIN)
             mirror.spawn()
-            if distance:
-                scene.camera.set_near_orthographic(distance=distance)
+            if distance == "orthographic":
+                scene.camera.set_orthographic()
+            elif distance:
+                pull_back(scene.camera, distance)
             scene.camera.rotate(-40, RIGHT, about=ORIGIN)
             scene.camera.rotate(30, UP, about=ORIGIN)
         return torch.cat([f.cpu() for f in scene.get_frames(0, 1)]).float()[0, ..., :3]
@@ -106,12 +117,13 @@ def _mask(kind, distance):
     return _MASKS[kind, distance]
 
 
+@pytest.mark.parametrize("view", [10000, "orthographic"])
 @pytest.mark.parametrize("kind", ["mesh", "circuit"])
 @pytest.mark.parametrize("route", list(ROUTES))
-def test_a_mirror_under_a_distant_camera_reflects_once(route, kind):
+def test_a_mirror_under_a_distant_camera_reflects_once(route, kind, view):
     grey_mirror = MeshStandardMaterial(color=GREY, metalness=1, roughness=0)
     near = _frame(kind, 0, grey_mirror, route)[_mask(kind, 0)]
-    far = _frame(kind, 10000, grey_mirror, route)[_mask(kind, 10000)]
+    far = _frame(kind, view, grey_mirror, route)[_mask(kind, view)]
     assert near.shape[0] > 1000
     assert far.shape[0] > 1000
     reflection = near.median(0).values

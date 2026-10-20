@@ -11,6 +11,12 @@ on:
     branches: [master, stable]
   pull_request:
     branches: [master, stable]
+    # A draft pull request runs nothing. CI starts when it is marked ready for
+    # review and runs on every push after that, so work in progress can be
+    # pushed without occupying every arm, the two macOS ones included, for a
+    # result the next push replaces. The default types leave out
+    # ready_for_review, so the list names all four.
+    types: [opened, synchronize, reopened, ready_for_review]
   # Lets a run be started by hand from the Actions tab. Only takes effect once
   # this file is on the default branch: GitHub reads workflow_dispatch from
   # there, not from the ref being dispatched.
@@ -32,6 +38,8 @@ jobs:
     # nothing that was required stops arriving.
     name: ${{ matrix.os }} / Python ${{ matrix.python_version }}${{ matrix.render_device == 'mps' && ' / render=mps' || '' }}
     runs-on: ${{ matrix.os }}
+    # Not on a draft pull request; see `on.pull_request`.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       # One platform or render device failing must not cancel the others. The
       # matrix is the portability/release gate, so every arm should report.

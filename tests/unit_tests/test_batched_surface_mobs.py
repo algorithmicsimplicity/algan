@@ -85,6 +85,48 @@ def test_per_member_colors_match_object_batch():
         _assert_packs_match(actual, expected)
 
 
+def _hex(color):
+    """The palette constants are defined from hex strings, so this round-trips."""
+    return "#" + "".join(f"{round(float(x) * 255):02X}" for x in color[:3])
+
+
+@pytest.mark.parametrize(
+    "spell",
+    [lambda c: c, lambda c: tuple(float(x) for x in c[:3]), _hex],
+    ids=["Color", "rgb tuple", "hex string"],
+)
+def test_a_list_of_colors_matches_object_batch(spell):
+    """REGRESSION. ``colors`` was cast to a tensor whole, so the list of
+    named colors its docstring promised failed with "only one element tensors
+    can be converted to Python scalars", and a list of hex strings with "too
+    many dimensions 'str'". Only a ready-stacked tensor worked.
+    """
+    SceneManager.reset()
+    colors = [RED, GREEN, BLUE, YELLOW]
+    with Scene() as scene, Off(record_funcs=False, record_attr_modifications=False):
+        expected = batch_mobs(_members(scene, colors), add_to_scene=True).spawn()
+        actual = Sphere.from_batches(
+            CENTERS,
+            colors=[spell(c) for c in colors],
+            add_to_scene=True,
+            scene=scene,
+            **KWARGS,
+        ).spawn()
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0]))
+        _assert_packs_match(actual, expected)
+
+
+def test_one_color_spelling_paints_every_member():
+    SceneManager.reset()
+    with Scene() as scene, Off(record_funcs=False, record_attr_modifications=False):
+        expected = batch_mobs(_members(scene, [RED] * 4), add_to_scene=True).spawn()
+        actual = Sphere.from_batches(
+            CENTERS, colors=_hex(RED), add_to_scene=True, scene=scene, **KWARGS
+        ).spawn()
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0]))
+        _assert_packs_match(actual, expected)
+
+
 def test_rgba_colors_match_a_dot3d_batch():
     """Dot3D repositions itself with ``move_to`` after construction, so the pack
     has to survive a constructor that writes its own location -- and a point
@@ -294,3 +336,41 @@ def test_a_packed_text_batch_transforms_too():
             batch.control_points.location - before,
             torch.tensor([0.0, 1.0, 0.0]),
         )
+
+
+@pytest.mark.fast
+def test_a_packed_text_batch_takes_back_the_values_read_from_it():
+    """REGRESSION. A packed circuit's control points keep one color, opacity,
+    glow and stroke-width row for all of the circuit's members, so the exact
+    spread above cannot cover the subtree, and writing back a per-glyph value
+    read from the batch raised a shape error. ``AnimatedBoundary`` does just
+    that to hide the fill of every circuit it outlines, which is why it failed
+    on any Text. Rows no single member owns now keep what they had.
+    """
+    from algan.constants.color import Color
+    from algan.mobs.text import Text
+
+    SceneManager.reset()
+    with Scene() as scene, Off():
+        text = Text("Hi!", scene=scene).spawn()
+        text[1].color = RED
+        batch = text._character_batch
+        before = batch.color.clone()
+
+        batch.color = batch.color.as_subclass(Color).set_opacity(0.0)
+        batch.opacity = batch.opacity * 0.5
+        batch.glow = batch.glow + 0.25
+        batch.stroke_width = batch.stroke_width + 1
+
+        # Each glyph keeps its own rgb -- the red one stays red -- and only
+        # loses its alpha, on the rows the fill is drawn from too.
+        for colors in (batch.color, batch.grid.color):
+            assert torch.allclose(colors[..., :3], before[..., :3])
+            assert bool((colors[..., -1] == 0).all())
+        assert torch.allclose(batch.opacity, torch.full_like(batch.opacity, 0.5))
+        assert torch.allclose(batch.glow, torch.full_like(batch.glow, 0.25))
+        assert torch.allclose(batch.stroke_width, torch.ones_like(batch.stroke_width))
+
+        # A value that is not one row per glyph is still refused.
+        with pytest.raises(Exception, match="shape"):
+            batch.color = torch.zeros(1, 2, 5)
