@@ -741,6 +741,43 @@ def test_curved_mirror_footprint_shrinks_by_its_magnification():
     assert _magnification(pos, flat_n, toward_camera, d_p) == 1.0
 
 
+def test_a_cone_keeps_the_flat_footprint_on_both_halves_of_each_quad():
+    """A surface flat in one direction is blurred as a flat mirror, on every
+    triangle alike.
+
+    A cone's ring nearer the apex is more curved than the ring below it, and
+    each triangle of a quad holds a different ring. Sized by a triangle's most
+    curved edge, the two halves of every quad got different blurs, which drew
+    sawtooth stripes and a seam across the logo's satin gold cone. Along its
+    generators the cone is flat, so its reflection swings no faster than a
+    flat mirror's that way, and the flat footprint is the narrowest blur that
+    stays inside the footprint in every direction.
+    """
+    radius, height, d_p = 1.0, 2.0, 23.0
+    slant = math.hypot(radius, height)
+
+    def ring(y, angle):
+        r = radius * (1.0 - y / height)
+        point = [r * math.sin(angle), y, r * math.cos(angle)]
+        normal = [
+            height / slant * math.sin(angle),
+            radius / slant,
+            height / slant * math.cos(angle),
+        ]
+        return point, normal
+
+    a, b = math.radians(-10.0), math.radians(10.0)
+    lower_left, lower_right = ring(0.0, a), ring(0.0, b)
+    upper_left, upper_right = ring(1.0, a), ring(1.0, b)
+    for corners in (
+        (lower_left, lower_right, upper_left),
+        (lower_right, upper_right, upper_left),
+    ):
+        pos = torch.tensor([c[0] for c in corners]).reshape(1, 1, 9)
+        nrm = torch.tensor([c[1] for c in corners]).reshape(1, 1, 9)
+        assert _magnification(pos, nrm, [0.0, 0.0, -1.0], d_p) == 1.0
+
+
 def test_blur_sigma_divides_a_sky_reflection_by_the_magnification():
     """The host formula agrees with the kernel's: ``k / (1 + (m - 1) k)``.
 

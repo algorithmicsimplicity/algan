@@ -118,14 +118,21 @@ def _reflector_magnification(f, prim, rd, tri_pos: ti.template(),
 
     The curvature comes from the hit triangle's own vertex normals: along each
     edge ``(n_j - n_i) . e / |e|^2`` is the normal curvature in that
-    direction, and the smallest and largest of the three bracket the two
-    principal curvatures. Each gives a magnification and the result is their
-    geometric mean, since one isotropic blur stands for an elliptical
-    footprint. Normals are first turned to the viewer's side of the triangle,
-    so a surface bulging towards the camera is convex whichever way its mesh
-    is wound. A concave direction counts as flat: a concave mirror can
-    magnify without bound near its focus, and the flat footprint is the
-    widest blur this route ever drew, so the change only ever narrows it.
+    direction. The footprint is an ellipse, narrowed most along the most
+    curved direction; the one isotropic blur that stands for it is sized by
+    the LEAST curved edge, so it never undercuts the footprint in any
+    direction. That is exact on a sphere and leaves a surface that is flat
+    one way -- a cylinder, a cone along its generators -- at the flat
+    footprint. It is also what keeps the blur continuous: the estimate is
+    constant over a triangle, and the largest curvature jumps between
+    neighbours wherever the curvature varies -- a cone's ring nearer the apex
+    is twice as curved as the ring below it -- which drew sawtooth stripes
+    and seams across a satin cone. Normals are first turned to the viewer's
+    side of the triangle, so a surface bulging towards the camera is convex
+    whichever way its mesh is wound. A concave direction counts as flat: a
+    concave mirror can magnify without bound near its focus, and the flat
+    footprint is the widest blur this route ever drew, so the change only
+    ever narrows it.
 
     A flat triangle -- every polyhedron face, every Bezier circuit, which
     never comes here -- returns exactly 1.
@@ -161,12 +168,9 @@ def _reflector_magnification(f, prim, rd, tri_pos: ti.template(),
         k01 = _edge_curvature(p0, p1, n0, n1)
         k12 = _edge_curvature(p1, p2, n1, n2)
         k20 = _edge_curvature(p2, p0, n2, n0)
-        k_hi = ti.max(k01, ti.max(k12, k20))
         k_lo = ti.min(k01, ti.min(k12, k20))
-        if k_hi > 0.0:
-            m_hi = 1.0 + 2.0 * d_p * k_hi
-            m_lo = 1.0 + 2.0 * d_p * ti.max(k_lo, 0.0)
-            mag = ti.sqrt(m_hi * m_lo)
+        if k_lo > 0.0:
+            mag = 1.0 + 2.0 * d_p * k_lo
     return mag
 
 

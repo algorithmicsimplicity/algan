@@ -163,9 +163,15 @@ sphere of radius `R`, where `d_p / m` tends).
 
 `m` is measured per hit, from the hit triangle's own vertex normals
 (`_reflector_magnification`): along each edge `(n_j - n_i) . e / |e|^2` is the
-normal curvature in that direction, the least and greatest of the three bracket
-the principal curvatures, and `m` is the geometric mean of their two
-magnifications, since one isotropic blur stands for an elliptical footprint.
+normal curvature in that direction, and `m` comes from the least of the three.
+The footprint is an ellipse narrowed most along the most curved direction; an
+isotropic blur sized by the flattest direction never undercuts it, is exact on a
+sphere, and leaves a surface flat one way (a cylinder, a cone along its
+generators) at the flat footprint. It also keeps the blur continuous: the
+estimate is constant per triangle, and the greatest curvature jumps between
+neighbours wherever curvature varies (a cone's rings nearer the apex are more
+curved), which with a geometric mean of the two drew sawtooth stripes and seams
+across a satin cone.
 Normals are turned to the viewer's side of the triangle first, so winding does
 not matter. A concave direction counts as flat (a concave mirror's magnification
 is unbounded near its focus, and the flat footprint is the widest blur the route
