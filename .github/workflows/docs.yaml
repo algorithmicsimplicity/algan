@@ -8,6 +8,8 @@ on:
   # job exists to check. The build is a few minutes and renders nothing.
   pull_request:
     branches: [master, stable]
+    # A draft runs nothing until it is marked ready for review (see test.yaml).
+    types: [opened, synchronize, reopened, ready_for_review]
   # Only takes effect once this file is on the default branch: GitHub reads
   # workflow_dispatch from there, not from the ref being dispatched.
   workflow_dispatch:
@@ -20,6 +22,8 @@ concurrency:
 jobs:
   build:
     name: Sphinx Build
+    # Not on a draft pull request; see `on.pull_request`.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

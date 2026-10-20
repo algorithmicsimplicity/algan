@@ -4,11 +4,16 @@ on:
     branches: [master, stable]
   pull_request:
     branches: [master, stable]
+    # A draft runs nothing until it is marked ready for review (see test.yaml).
+    types: [opened, synchronize, reopened, ready_for_review]
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 jobs:
   lock_file:
+    # Not on a draft pull request. Every other job needs this one, so they are
+    # skipped with it.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
