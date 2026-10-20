@@ -2,8 +2,9 @@
 
 A HUD that rides a camera is shrunk and slid along the camera's rays until it
 sits a unit in front of the eye, which leaves it looking exactly as it did:
-the backpropagation video does this with a label panel beside a near-
-orthographic view (camera distance 80, so the panel is scaled by about 1/107).
+the backpropagation video does this with a label panel beside a flattened
+perspective view (the camera pulled back to 80 from its screen, so the panel
+is scaled by about 1/107).
 Its glyphs grew one-pixel dashed streaks there. Their outlines are cubics a few
 ten-thousandths of a unit long, below the fixed world-unit size the flattening
 treated as "degenerate", so those cubics were dropped; each gap left the even-
@@ -29,6 +30,7 @@ from algan.constants.spatial import DOWN, UP
 from algan.mobs.text import Tex
 from algan.scene import Scene
 from algan.settings.video_settings import LD
+from tests.unit_tests.distant_camera import pull_back
 
 pytestmark = pytest.mark.skipif(
     not shutil.which("latex") or not shutil.which("dvisvgm"),
@@ -61,7 +63,7 @@ def test_text_brought_forward_to_a_distant_camera_renders_unchanged(tmp_path):
     with Scene() as scene:
         camera = scene.get_camera()
         with Off():
-            camera.set_near_orthographic(distance=80)
+            pull_back(camera, 80)
             far = Tex(LABEL, color=WHITE).scale(3).move_to(UP * 2)
             near = Tex(LABEL, color=WHITE).scale(3).move_to(DOWN * 2)
             _bring_forward(camera, near, DEPTH)

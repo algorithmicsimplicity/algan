@@ -6,13 +6,20 @@ same animation contexts -- there is no separate camera-animation API. Camera
 moves usually want ``easing=easings.identity``, since easing in and out of a
 pan reads as a wobble.
 
-It carries perspective projection, a field of view in degrees, and near/far
-clipping distances. ``set_near_orthographic`` approximates orthographic projection
-with a distant perspective camera; it is not a separate orthographic ray model. :meth:`Camera.center_on` frames a
-given Mob, and :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
+It carries a perspective projection with a field of view in degrees, or a true
+orthographic one -- parallel rays from a frame of fixed size, selected with
+:meth:`Camera.set_orthographic` and undone with :meth:`Camera.set_perspective`,
+either of which can be animated -- and near/far clipping distances.
+:meth:`Camera.center_on` frames a given Mob, and
+:meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
 aims at a point. Its animatable ``aperture`` and ``focus_distance`` describe a
 thin lens, which the path tracer (``samples_per_pixel > 1``) renders as depth of
 field; :meth:`Camera.focus_at` racks the focus onto a Mob.
+
+The projection is one family (``algan.rendering.projection``): a pinhole, a
+true orthographic camera, and every blend between the two that an animated
+switch passes through, carried to the renderer as a per-frame
+``(persp, spread)`` pair beside the camera's position and screen.
 
 Each Scene owns its own camera. The renderer consumes an immutable camera and
 light snapshot per frame batch, which is what lets batch preparation for the next
@@ -34,6 +41,7 @@ from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # CAMERA_ORIGIN
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import intersect_line_with_plane_colinear
+from algan.rendering.projection import effective_depth
 from algan.utils.tensor_utils import (
     broadcast_gather,
     cast_to_direction,
@@ -54,6 +62,17 @@ _CAMERA_BASIS = torch.stack((RIGHT, UP, INWARD))
 #: The thin-lens attributes, in the order the render snapshot packs them.
 _LENS_ATTRS = ("aperture", "focus_distance")
 
+#: The projection's animatable state, in the order the render snapshot packs
+#: it (``algan.rendering.projection``): how much of a pinhole's perspective is
+#: left -- 1 for a pinhole, 0 for orthographic -- and half the height, in world
+#: units, of the patch of the camera plane the rays start from -- 0 for a
+#: pinhole, whose rays all start at the eye, and the frame's half-height for an
+#: orthographic camera. A linear tween between any two such states is itself a
+#: camera, which is what lets the switch animate. Private because the public
+#: spelling is :meth:`Camera.set_orthographic` / :meth:`Camera.set_perspective`,
+#: which keep the pair consistent.
+_PROJECTION_ATTRS = ("_perspective_weight", "_parallel_half_height")
+
 #: Default distance of the plane in focus: the default Scene camera's distance
 #: from ``ORIGIN`` (``algan.manim_defaults.MANIM_FOCAL_DISTANCE``), so opening
 #: the aperture of a camera that has not been moved keeps ``ORIGIN`` sharp.
@@ -62,19 +81,6 @@ DEFAULT_FOCUS_DISTANCE = 20.0
 #: Smallest focus distance the renderer is handed. ``focus_at`` a target at or
 #: behind the camera plane clamps here rather than inverting the lens.
 _MIN_FOCUS_DISTANCE = 1e-4
-
-#: :meth:`Camera.set_near_orthographic`'s default eye-to-screen distance. A
-#: distant pinhole trades two errors against each other: perspective left over
-#: shrinks as 1/distance, and float32 rounding of the ray directions grows in
-#: proportion to it, because the focal length does (see
-#: ``algan.rendering.raytracing.float32_rounding``). Measured on the default
-#: framing (eye 1.6x this far from the origin), a point 5 units off the origin
-#: plane at a frame corner sits 0.46 / 0.69 px (720p / 1080p) from where
-#: parallel projection puts it, and a camera turned 35-45 degrees rounds its rays
-#: by 0.09 / 0.13 / 0.28 px (720p / 1080p / 2160p). The old 1e5 left 0.03 px of
-#: perspective and rounded by 1.8 / 2.6 / 5.6 px, which doubled glyph strokes;
-#: 1e4 already reaches the 0.5 px warning level at 2160p.
-DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE = 5e3
 
 
 def _validated_lens_value(name, value):
@@ -129,17 +135,28 @@ class Camera(Mob):
     3.4:1 banner -- wide enough that an off-axis sphere is visibly projected as an
     ellipse (stretched by ``1 / cos(angle off axis)``, so ~1.9x at that frame's
     edge). That is correct perspective, not a bug, but it is rarely what a wide
-    still is after: for the near-orthographic look of a long lens, narrow the fov
-    and pull back by the same factor, keeping ``distance * tan(fov / 2)``
-    constant::
+    still is after: for the flatter look of a long lens, narrow the fov and pull
+    back by the same factor, keeping ``distance * tan(fov / 2)`` constant::
 
         camera = Scene.get_camera()
         camera.set_fov(math.degrees(2 * math.atan(3.5 / 70)))
         camera.move_to(OUT * 70)  # was OUT * 7, so 10x the distance
 
-    Alternatively :meth:`set_near_orthographic` flattens it almost completely --
-    it is an approximation, not true parallel projection; see
-    :doc:`/advanced_user_tutorials/renderer_limitations`.
+    Or remove perspective altogether with :meth:`set_orthographic`.
+
+    Orthographic projection
+    -----------------------
+    :meth:`set_orthographic` makes the camera truly orthographic: every ray runs
+    along the forward axis, starting from the plane through the camera
+    perpendicular to it, so a Mob's size on screen does not depend on its
+    distance and parallel lines stay parallel. The frame is a rectangle of fixed
+    world size -- by default the one the perspective view had on the plane
+    through ``ORIGIN``, which from the default camera is Manim's 8 units tall.
+    Only what lies in front of the camera's plane is seen, so moving the camera
+    along its forward axis changes nothing else; :meth:`center_on` frames a Mob
+    by resizing the frame rather than by moving. :meth:`set_perspective`
+    switches back, and either switch animates as a dolly zoom: the frame on one
+    plane holds still while the perspective drains away or returns.
 
     Depth of field
     --------------
@@ -155,8 +172,9 @@ class Camera(Mob):
     Parameters
     ----------
     orthographic
-        Whether to start in the near-orthographic approximation of
-        :meth:`set_near_orthographic`. Defaults to False.
+        Whether to start with the orthographic projection of
+        :meth:`set_orthographic`, at its default frame. Defaults to False, a
+        perspective camera.
     screen_distance
         Distance from the camera to its screen plane, in world units. Defaults
         to ``5``. Ignored when ``fov`` is given.
@@ -188,8 +206,10 @@ class Camera(Mob):
         ``0.0``. A point at distance ``d`` along the forward axis is blurred
         into a disk whose diameter, measured on the plane in focus, is
         ``aperture * |d - focus_distance| / d`` -- so an object at infinity blurs
-        by exactly the aperture's own size seen at the focus plane. ``0`` is a
-        pinhole. Only the path tracer renders it.
+        by exactly the aperture's own size seen at the focus plane. An
+        orthographic camera's lens magnifies nothing, so there the disk is
+        ``aperture * |d - focus_distance| / focus_distance`` across, at every
+        depth. ``0`` is a pinhole. Only the path tracer renders it.
     focus_distance
         Distance from the camera to the plane in sharp focus, measured along
         the forward axis (a plane parallel to the screen, not a sphere), in
@@ -204,7 +224,8 @@ class Camera(Mob):
     (1 second by default), which is how a rack focus is animated. Wrap setup in
     ``with Off():`` to apply it instantly. :meth:`focus_at` animates the focus
     onto a Mob or point, following it while the camera or target moves.
-    ``near`` and ``far`` are configuration, not animation.
+    :meth:`set_orthographic` and :meth:`set_perspective` are recorded the same
+    way. ``near`` and ``far`` are configuration, not animation.
     """
 
     #: Width over height of the :class:`~.CameraView` capture this camera
@@ -247,7 +268,7 @@ class Camera(Mob):
         focus_distance = _validated_lens_value("focus_distance", focus_distance)
         # Registered before super().__init__() so Animatable's accessor
         # generation installs set_aperture / get_focus_distance and friends.
-        self.register_attrs_as_animatable(list(_LENS_ATTRS), Camera)
+        self.register_attrs_as_animatable(list(_LENS_ATTRS + _PROJECTION_ATTRS), Camera)
         # Camera ownership is managed by Scene; tolerate the common generic
         # Mob kwargs without passing duplicates into the base constructor.
         kwargs.pop("add_to_scene", None)
@@ -259,8 +280,10 @@ class Camera(Mob):
         # recursive setter, which would give the screen a lens as well.
         self._init_default_attr("aperture", cast_to_tensor(aperture))
         self._init_default_attr("focus_distance", cast_to_tensor(focus_distance))
+        # A pinhole: all of the perspective, every ray from the eye.
+        self._init_default_attr("_perspective_weight", cast_to_tensor(1.0))
+        self._init_default_attr("_parallel_half_height", cast_to_tensor(0.0))
         with Off(animation_manager=self.animation_manager):
-            self.orthographic = orthographic
             self.screen = Mob(
                 scene=self.scene,
                 location=self.location + screen_distance * self.get_forward_direction(),
@@ -271,8 +294,11 @@ class Camera(Mob):
                 add_to_scene=False,
             )
             # The screen is a projection proxy, not an optical element: a lens
-            # write on the camera must not allocate (or tween) rows on it.
-            self.screen._excluded_from_parent_attrs = frozenset(_LENS_ATTRS)
+            # or projection write on the camera must not allocate (or tween)
+            # rows on it.
+            self.screen._excluded_from_parent_attrs = frozenset(
+                _LENS_ATTRS + _PROJECTION_ATTRS
+            )
             self.screen.scale(
                 torch.tensor((1 / screen_half_height, 1 / screen_half_height, 1))
             )
@@ -286,7 +312,7 @@ class Camera(Mob):
             self.spawn(animate=False)
         if orthographic:
             with Off(animation_manager=self.animation_manager):
-                self.set_near_orthographic()
+                self.set_orthographic()
 
     def set_animated_attribute(self, attr, value, recursive=True):
         """Animate one animatable attribute to a new value, by name.
@@ -357,104 +383,301 @@ class Camera(Mob):
                 "near clip distance must be less than far clip distance"
             )
 
-    def set_near_orthographic(
-        self, distance: float = DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE
-    ) -> Camera:
-        """Flatten perspective while preserving the visible frame at the origin.
+    @property
+    def orthographic(self) -> bool:
+        """Whether the camera projects orthographically: parallel rays, no perspective.
 
-        Move the eye and screen along the viewing axis together, keeping the
-        same framing on the plane parallel to the screen through ``ORIGIN``.
-        Objects on that plane retain their screen positions and apparent sizes.
-        This is a distant perspective camera, so other depths retain a small
-        amount of perspective. If the origin plane is at or behind the eye,
-        preserve the frame at the current screen plane instead.
+        True once :meth:`set_orthographic` has been called and False for a
+        perspective camera. Like every recorded change, a switch is read as
+        its end state as soon as it is recorded, and during an animated switch
+        an updater sees False until the switch completes. Assigning ``True``
+        calls :meth:`set_orthographic`, at its default frame, and ``False``
+        calls :meth:`set_perspective`, so an assignment animates like them.
+        """
+        return bool((self._projection_state()[0] <= 0).all())
+
+    @orthographic.setter
+    def orthographic(self, value: bool):
+        if value:
+            self.set_orthographic()
+        else:
+            self.set_perspective()
+
+    def set_orthographic(self, frame_height: float | None = None) -> Camera:
+        """Switch to true orthographic projection: parallel rays, no perspective.
+
+        Every camera ray runs along the forward axis, starting from the plane
+        through the camera perpendicular to it, so a Mob's size on screen does
+        not depend on its distance from the camera and parallel lines stay
+        parallel. The visible frame is a rectangle of fixed world size,
+        ``frame_height`` tall and as wide as the output's aspect ratio makes
+        it, at every depth. Only what lies in front of the camera's plane is
+        seen: moving the camera along its forward axis changes nothing else,
+        and moving it sideways pans.
 
         Animation
         ---------
-        Recorded as an animation: the eye and screen move together from their
-        current positions over the current context's runtime (1 second by
-        default), preserving the reference frame throughout. Use
-        ``with Seq(runtime=3): ...`` to change the duration, or ``with Off():``
-        for an immediate change. Only the camera and its screen move; the
-        camera's ``focus_distance`` grows with the move, so the plane in focus
-        stays where it was. May be called before or after spawning scene
-        objects.
+        Recorded as an animation over the current context's runtime (1 second
+        by default), as a dolly zoom: the perspective drains away while the
+        frame on one plane holds still -- for the default frame, the plane
+        through ``ORIGIN``. On a camera that is already orthographic the frame
+        zooms to its new size instead. Use ``with Seq(runtime=3): ...`` to
+        change the duration, or ``with Off(): ...`` to switch immediately. Only
+        this camera's projection changes; its position, screen and focus stay
+        where they are. May be called before or after spawning scene objects.
 
         Parameters
         ----------
-        distance
-            Positive, finite distance from the eye to its screen, in world
-            units. Larger values flatten perspective further, but positions
-            are float32, and the rounding of each pixel's ray grows in
-            proportion to ``distance``. Defaults to ``5000``, which balances
-            the two: from the default camera the eye lands 8,000 units out, a
-            point 5 units in front of or behind the origin plane at a corner of
-            a 1920x1080 frame is drawn within 0.7 pixels of where true parallel
-            projection would put it, and the rays round by under 0.15 pixels
-            however the camera is turned (0.3 at 3840x2160). A much larger
-            distance makes text and edges grainy once the camera turns off its
-            axes, and Algan warns with
-            :class:`~algan.errors.Float32PrecisionWarning` when that shows.
+        frame_height
+            Height of the visible frame, in world units; positive and finite.
+            The width follows from the output's aspect ratio (a
+            :class:`~.CameraView`'s capture resolution, for its camera).
+            Defaults to ``None``, meaning the height the camera sees on the
+            plane through ``ORIGIN`` parallel to its screen -- 8 units from the
+            default camera, Manim's frame -- or, when ``ORIGIN`` is not in front
+            of the camera, on its screen plane. So an orthographic camera keeps
+            its current frame.
 
         Returns
         -------
         :class:`~.Camera`
-            This Mob, so calls can be chained.
+            This camera, so calls can be chained.
 
         Raises
         ------
         :class:`~.AlganConfigurationError`
-            If ``distance`` is non-finite or not positive.
+            If ``frame_height`` is non-finite or not positive.
+
+        See Also
+        --------
+        :meth:`~.Camera.set_perspective` : Switch back to a perspective projection.
 
         Examples
         --------
-        Preserve a square's framing while flattening perspective:
+        Flatten the view of a cube while keeping its framing:
 
-        .. algan:: Example1CameraSetNearOrthographic
+        .. algan:: Example1CameraSetOrthographic
 
             from algan import *
 
-            Square().spawn()
+            Cube().rotate(30, UP).rotate(20, RIGHT).spawn()
             with Seq(runtime=2):
-                Scene.get_camera().set_near_orthographic()
+                Scene.get_camera().set_orthographic()
             Scene.save_video()
         """
-        distance = self._validated_positive("distance", distance)
+        if frame_height is None:
+            half_height = self._default_orthographic_half_height()
+        else:
+            half_height = 0.5 * self._validated_positive("frame_height", frame_height)
+        self.set_non_recursive(
+            _perspective_weight=torch.zeros_like(cast_to_tensor(half_height)),
+            _parallel_half_height=cast_to_tensor(half_height),
+        )
+        return self
+
+    def set_perspective(self) -> Camera:
+        """Switch back to a perspective projection, undoing :meth:`set_orthographic`.
+
+        The camera becomes a pinhole at its own location again, with the field
+        of view its screen gives it (:meth:`get_fov`, unchanged by
+        :meth:`set_orthographic`). A perspective camera stays as it is.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default): the reverse dolly zoom, the perspective returning while
+        the frame holds still on the plane where the orthographic and the
+        perspective frames agree -- the plane through ``ORIGIN``, for the
+        default frame of a camera that has not moved along its axis since.
+        Use ``with Seq(runtime=3): ...`` to change the duration, or
+        ``with Off(): ...`` to switch immediately. Only this camera's
+        projection changes.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+
+        See Also
+        --------
+        :meth:`~.Camera.set_orthographic` : Switch to an orthographic projection.
+
+        Examples
+        --------
+        Bring perspective back into an orthographic view:
+
+        .. algan:: Example1CameraSetPerspective
+
+            from algan import *
+
+            Cube().rotate(30, UP).rotate(20, RIGHT).spawn()
+            camera = Scene.get_camera()
+            with Off():
+                camera.set_orthographic()
+            with Seq(runtime=2):
+                camera.set_perspective()
+            Scene.save_video()
+        """
+        self.set_non_recursive(
+            _perspective_weight=cast_to_tensor(1.0),
+            _parallel_half_height=cast_to_tensor(0.0),
+        )
+        return self
+
+    def set_near_orthographic(self, distance: float | None = None) -> Camera:
+        """Switch to true orthographic projection, by the name it had before.
+
+        Before Algan had an orthographic camera, this approximated one with a
+        distant perspective camera. It now switches to the real thing with the
+        same framing, exactly as ``set_orthographic()`` does.
+
+        Animation
+        ---------
+        As :meth:`set_orthographic`: recorded over the current context's
+        runtime (1 second by default), as a dolly zoom that keeps the frame on
+        the plane through ``ORIGIN``. Use ``with Off(): ...`` to switch
+        immediately.
+
+        Parameters
+        ----------
+        distance
+            No longer accepted: it set how far out the approximation's eye
+            went, and an orthographic camera has no eye to move. Defaults to
+            ``None``; any other value raises.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If ``distance`` is given. :meth:`set_orthographic`'s
+            ``frame_height`` chooses the frame instead.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            Scene.get_camera().set_near_orthographic()  # set_orthographic()
+        """
+        if distance is not None:
+            raise AlganConfigurationError(
+                "set_near_orthographic no longer takes a distance: the camera "
+                "is truly orthographic now, with no eye to move back. Call "
+                "set_orthographic(), or set_orthographic(frame_height=...) to "
+                "choose the frame."
+            )
+        return self.set_orthographic()
+
+    def _default_orthographic_half_height(self):
+        """Half the frame :meth:`set_orthographic` keeps when given no height.
+
+        The half-height of what the camera sees now on the plane through
+        ``ORIGIN`` parallel to its screen, or on the screen plane when
+        ``ORIGIN`` is not in front of it -- a camera constructed at ``ORIGIN``
+        has not been positioned yet. ``[*, 1, 1]``, in world units.
+        """
         forward = self.get_forward_direction()
         screen_distance = (self.screen.location - self.location).norm(
             dim=-1, keepdim=True
         )
         depth = (-self.location * forward).sum(-1, keepdim=True)
-        # A camera constructed at ORIGIN has no visible origin plane yet.
-        # Retain its screen-plane framing until it has been positioned.
         depth = torch.where(depth > 0, depth, screen_distance)
-        scale_change = 1 - distance / screen_distance
-        location = self.location + forward * depth * scale_change
-        screen_location = (
-            self.screen.location + forward * (depth - screen_distance) * scale_change
+        persp, parallel_half_height = self._projection_state()
+        return (
+            parallel_half_height
+            + persp * self.screen_half_height * depth / screen_distance
         )
-        self.orthographic = True
-        with Sync(animation_manager=self.animation_manager):
-            self.set_non_recursive(location=location)
-            self.screen.set_non_recursive(location=screen_location)
-            # The plane in focus stays where it was in the world: the eye
-            # backs away along the forward axis, so the focus distance grows
-            # by the same amount (and, both tweened linearly together, the
-            # plane holds still during the move). Left at a perspective-scale
-            # value, any open aperture would blur the whole frame away.
-            # (Clamped for a move TOWARD the scene past the focus plane,
-            # which cannot keep it in front of the eye.)
-            self.set_non_recursive(
-                focus_distance=(self.focus_distance - depth * scale_change).clamp_min(
-                    _MIN_FOCUS_DISTANCE
-                )
-            )
-        return self
+
+    def _projection_state(self):
+        """The stored ``(perspective weight, parallel half-height)``, ``[*, 1, 1]`` each."""
+        return (
+            cast_to_tensor(self._perspective_weight),
+            cast_to_tensor(self._parallel_half_height),
+        )
+
+    def _projection_terms(self):
+        """The ``(persp, spread)`` the renderer sees, ``[*, 1, 1]`` each.
+
+        See ``algan.rendering.projection``. Writes are only ever endpoints,
+        but a recorded tween is interpolated by the timeline: an overshooting
+        easing can carry either value past its range between two valid
+        endpoints, so both are clamped here, where every reader gets them.
+        """
+        persp, parallel_half_height = self._projection_state()
+        persp = persp.clamp(0.0, 1.0)
+        spread = (parallel_half_height / self.screen_half_height).clamp_min(0.0)
+        # With no parallel part the camera is the pinhole, whatever the
+        # weight says: no tween between valid endpoints arrives anywhere
+        # else, and the renderer tells the two cases apart by spread alone.
+        persp = torch.where(spread <= 0, torch.ones_like(persp), persp)
+        return persp, spread
+
+    def _is_pinhole(self) -> bool:
+        """Whether the camera is a plain pinhole at every frame it describes.
+
+        The pinhole keeps the historical arithmetic everywhere, so a
+        perspective camera's framing and renders do not change by a bit.
+        """
+        persp, spread = self._projection_terms()
+        return bool(((persp == 1.0) & (spread == 0.0)).all())
+
+    def _get_render_projection(self):
+        """Per-frame ``(persp, spread)`` for the render snapshot.
+
+        Shape ``[T, 1, 2]`` after materialization (``[1, 1, 2]`` before), read
+        by the render loop beside :meth:`_get_render_lens`;
+        ``algan.rendering.projection`` describes how every renderer path uses
+        it.
+        """
+        persp, spread = torch.broadcast_tensors(*self._projection_terms())
+        return torch.cat((persp, spread), dim=-1)
+
+    def _frame_rays(self, frame_points):
+        """The camera rays through points of the visible frame on the screen plane.
+
+        ``frame_points`` are world points on the screen plane, like the
+        corners :meth:`get_corner_pixels` returns. Returns ``(origins,
+        directions)`` broadcast against them, the directions unit length.
+        A pinhole's rays all start at the camera.
+        """
+        persp, spread = self._projection_terms()
+        screen = self.screen.location
+        offset = (frame_points - screen) / (persp + spread)
+        origins = self.location + spread * offset
+        directions = F.normalize((screen - self.location) + persp * offset, dim=-1, p=2)
+        return torch.broadcast_tensors(origins, directions)
+
+    def _frame_edge_planes(self, corners):
+        """The four planes the visible frame's edges sweep out, one per edge.
+
+        ``corners`` as :meth:`get_corner_pixels` orders them; edge ``i`` runs
+        from corner ``i`` to corner ``i + 1``. Returns ``(points, spans_a,
+        spans_b)``, each ``(4, *, 3)``: edge ``i``'s plane passes through
+        ``points[i]`` and contains both span directions, which is what
+        :func:`~algan.geometry.geometry.intersect_line_with_plane_colinear`
+        takes. For a pinhole these are the frustum's sides through the camera,
+        spanned by the two corner rays; otherwise each passes through the
+        corner ray's origin, spanned by that ray and the edge.
+        """
+        if self._is_pinhole():
+            corner_rays = F.normalize(corners - self.location, dim=-1, p=2)
+            next_rays = torch.cat((corner_rays[1:], corner_rays[:1]))
+            points = self.location.expand_as(corner_rays)
+            return points, corner_rays, next_rays
+        origins, directions = self._frame_rays(corners)
+        edges = F.normalize(
+            torch.cat((corners[1:], corners[:1])) - corners, dim=-1, p=2
+        )
+        return origins, directions, torch.broadcast_to(edges, directions.shape)
 
     def get_fov(self):
         """The camera's vertical field of view in degrees (like Three.js's
         ``PerspectiveCamera.fov``), derived from the screen size and the
-        camera-to-screen distance.
+        camera-to-screen distance. For an orthographic camera, the field of
+        view it has again after :meth:`set_perspective`.
         """
         d = (self.screen.location - self.location).norm(p=2, dim=-1).flatten()[0].item()
         return math.degrees(2.0 * math.atan(self.screen_half_height / max(d, 1e-9)))
@@ -463,6 +686,8 @@ class Camera(Mob):
         """Set the vertical field of view (degrees). The camera stays where it
         is; its screen moves along the forward axis so that the given angle is
         spanned (small fov = telephoto, large fov = wide angle). Animatable.
+        An orthographic camera switches back to perspective
+        (:meth:`set_perspective`) at the same time.
 
         The horizontal field of view follows from this and the output aspect
         ratio, so a wide frame sees much wider than this angle -- see the
@@ -475,8 +700,13 @@ class Camera(Mob):
         """
         fov = self._validated_fov(fov)
         d = self.screen_half_height / math.tan(math.radians(fov) * 0.5)
-        self.orthographic = False
-        self.screen.move_to(self.location + self.get_forward_direction() * d)
+        location = self.location + self.get_forward_direction() * d
+        if self._is_pinhole():
+            self.screen.move_to(location)
+            return self
+        with Sync(animation_manager=self.animation_manager):
+            self.screen.move_to(location)
+            self.set_perspective()
         return self
 
     fov = property(get_fov, set_fov)
@@ -512,23 +742,45 @@ class Camera(Mob):
 
     far = property(get_far, set_far)
 
-    def set_distance_to_screen(self, distance):
-        """Moves the camera focus to be the given distance away from its screen, thereby changing the perspective.
+    def set_distance_to_screen(self, distance: float) -> Camera:
+        """Move the camera along its axis to a given distance from its screen.
+
+        Moving the camera towards or away from a screen that stays put changes
+        how strongly the perspective converges: the frame on the screen plane
+        holds still while nearer and farther depths grow or shrink. An
+        orthographic camera switches back to perspective
+        (:meth:`set_perspective`) as it moves.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default); ``with Off(): ...`` applies it immediately. Only the
+        camera moves; its screen stays where it is.
 
         Parameters
         ----------
         distance
-            The camera focus will be set to be this distance away from the screen.
-        """
-        return self._set_distance_to_screen(distance, preserve_mode=False)
+            The new distance from the camera to its screen plane, in world
+            units; positive and finite.
 
-    def _set_distance_to_screen(self, distance, *, preserve_mode):
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If ``distance`` is non-finite or not positive.
+        """
         distance = self._validated_positive("distance", distance)
-        if not preserve_mode:
-            self.orthographic = False
-        self.set_non_recursive(
-            location=self.screen.location - self.get_forward_direction() * distance
-        )
+        location = self.screen.location - self.get_forward_direction() * distance
+        if self._is_pinhole():
+            self.set_non_recursive(location=location)
+            return self
+        with Sync(animation_manager=self.animation_manager):
+            self.set_non_recursive(location=location)
+            self.set_perspective()
         return self
 
     def set_euler_angles(
@@ -733,8 +985,8 @@ class Camera(Mob):
         """Measure the visible width and height at a point's camera depth.
 
         Measures a plane parallel to the screen through ``point``. Off-axis
-        points use forward depth, not distance along their viewing ray. This
-        also describes the camera's near-orthographic perspective approximation.
+        points use forward depth, not distance along their viewing ray. An
+        orthographic camera sees the same frame at every depth.
 
         Animation
         ---------
@@ -777,7 +1029,10 @@ class Camera(Mob):
                 "point must be finite and in front of the camera"
             )
         distance = (self.screen.location - self.location).norm(dim=-1, keepdim=True)
-        height = 2 * self.screen_half_height * depth / distance
+        persp, spread = self._projection_terms()
+        # A pinhole's z_eff is the depth itself, bit for bit.
+        z_eff = effective_depth(depth, distance, persp, spread)
+        height = 2 * self.screen_half_height * z_eff / distance
         aspect = self._view_aspect_ratio or (
             self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height
         )
@@ -978,28 +1233,32 @@ class Camera(Mob):
         mobl = 0.5 * ((mob_boundary_points).amax(0) + (mob_boundary_points).amin(0))
         mob_boundary_points = (mob_boundary_points - mobl) * (1 + buffer_portion) + mobl
         selfl = self.location
+        orthographic = self.orthographic
 
         with Sync(animation_manager=self.animation_manager):
             self.move_to(mobl - f * dot_product(mobl - selfl, f))
-            selfl = self.location
+            if orthographic:
+                # Moving along the axis changes nothing an orthographic camera
+                # sees, so it frames by resizing.
+                return self._fit_orthographic_frame(
+                    mob, mobl, mob_boundary_points, aspect_ratio
+                )
 
             corners = (
                 self.get_corner_pixels()
                 if aspect_ratio is None
                 else self._corner_pixels(aspect_ratio)
             )
-            corner_rays = F.normalize(corners - selfl, dim=-1, p=2)
-            edge_plane_rays = torch.stack(
-                (corner_rays, torch.cat((corner_rays[1:], corner_rays[:1]))), 1
-            )
-            up_plane = edge_plane_rays[1]
-            right_plane = edge_plane_rays[0]
-
+            # The top edge's plane (corners 1 -> 2) and the left edge's
+            # (corners 0 -> 1); they move rigidly with the camera, so sliding
+            # it back along the axis until a boundary point lies on one makes
+            # that side of the Mob touch that side of the frame.
+            points, spans_a, spans_b = self._frame_edge_planes(corners)
             vertical_move, vertical_dist = intersect_line_with_plane_colinear(
-                -f, selfl, up_plane[0], up_plane[1], mob_boundary_points[1]
+                -f, points[1], spans_a[1], spans_b[1], mob_boundary_points[1]
             )
             horizontal_move, horizontal_dist = intersect_line_with_plane_colinear(
-                -f, selfl, right_plane[0], right_plane[1], mob_boundary_points[0]
+                -f, points[0], spans_a[0], spans_b[0], mob_boundary_points[0]
             )
 
             return self.move(
@@ -1008,14 +1267,43 @@ class Camera(Mob):
                 else (mob_boundary_points[0] - horizontal_move)
             )
 
+    def _fit_orthographic_frame(self, mob, center, boundary, aspect_ratio):
+        """Size an orthographic frame to the buffered ``boundary`` of a Mob.
+
+        ``boundary`` holds the Mob's extreme points towards ``-right``,
+        ``up``, ``right`` and ``-up`` (in that order) and ``center`` the point
+        the camera is now centred on. The frame's half-height becomes the
+        larger of the vertical reach and the horizontal reach over the aspect
+        ratio. A Mob that is not wholly in front of the camera's plane, which
+        an orthographic camera cannot see past, also backs the camera off
+        until its nearest point is that half-height in front.
+        """
+        forward = self.get_forward_direction()
+        if aspect_ratio is None:
+            aspect_ratio = self._view_aspect_ratio or (
+                self.scene.video_settings.resolution[0]
+                / self.scene.video_settings.resolution[1]
+            )
+        half_height = torch.maximum(
+            dot_product(boundary[1] - center, self.get_up_direction()).abs(),
+            dot_product(center - boundary[0], self.get_right_direction()).abs()
+            / aspect_ratio,
+        ).clamp_min(1e-6)
+        nearest = dot_product(mob.get_boundary_point(-forward) - self.location, forward)
+        if bool((nearest <= 0).any()):
+            self.move(forward * (nearest - half_height))
+        self.set_non_recursive(_parallel_half_height=half_height)
+        return self
+
     def project_point_onto_screen_border(
         self, point: torch.Tensor, direction: torch.Tensor
     ) -> torch.Tensor:
         """Find where a point would leave the frame travelling in a direction.
 
         Casts from ``point`` along ``direction`` and returns the intersection with the
-        edge of the visible frustum. This is what the screen-edge placement methods use
-        to know where "against the edge" is.
+        edge of the visible volume -- a frustum for a perspective camera, a box for an
+        orthographic one. This is what the screen-edge placement methods use to know
+        where "against the edge" is.
 
         Parameters
         ----------
@@ -1029,24 +1317,15 @@ class Camera(Mob):
         torch.Tensor
             The point on the frame border, shape ``(*, 3)``.
         """
-        corner_rays = F.normalize(
-            (self.get_corner_pixels()) - self.location, dim=-1, p=2
-        )
-        edge_plane_rays = torch.stack(
-            (corner_rays, torch.cat((corner_rays[1:], corner_rays[:1])))
-        )
+        points, spans_a, spans_b = self._frame_edge_planes(self.get_corner_pixels())
         intersection_points, intersection_distances = (
             torch.stack(_)
             for _ in zip(
                 *[
                     intersect_line_with_plane_colinear(
-                        direction,
-                        self.location,
-                        edge_plane_rays[0, i],
-                        edge_plane_rays[1, i],
-                        point,
+                        direction, points[i], spans_a[i], spans_b[i], point
                     )
-                    for i in range(edge_plane_rays.shape[1])
+                    for i in range(points.shape[0])
                 ]
             )
         )
@@ -1074,8 +1353,9 @@ class Camera(Mob):
     def get_corner_pixels(self) -> torch.Tensor:
         """Get the four corners of the visible frame, in world space.
 
-        The corners of the camera's screen plane, accounting for the current aspect
-        ratio, ordered around the frame. Screen-relative layout is built on these.
+        Where the visible frame crosses the camera's screen plane, accounting for the
+        current aspect ratio, ordered around the frame: bottom-left, top-left,
+        top-right, bottom-right. Screen-relative layout is built on these.
 
         Returns
         -------
@@ -1092,8 +1372,17 @@ class Camera(Mob):
                 self.scene.video_settings.resolution[0]
                 / self.scene.video_settings.resolution[1]
             )
-        return (
-            self.screen.location
-            + b[..., 0, :] * self.corner_x_coords * aspect_ratio
+        if self._is_pinhole():
+            return (
+                self.screen.location
+                + b[..., 0, :] * self.corner_x_coords * aspect_ratio
+                + b[..., 1, :] * self.corner_y_coords
+            )
+        # The ray through screen offset L crosses the screen plane at
+        # (persp + spread) * L (``algan.rendering.projection``), so that is
+        # where the visible frame meets it.
+        persp, spread = self._projection_terms()
+        return self.screen.location + (
+            b[..., 0, :] * self.corner_x_coords * aspect_ratio
             + b[..., 1, :] * self.corner_y_coords
-        )
+        ) * (persp + spread)

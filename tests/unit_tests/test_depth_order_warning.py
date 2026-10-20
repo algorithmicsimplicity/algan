@@ -1,7 +1,9 @@
 """Overlapping flat shapes a distant camera cannot keep in order are reported.
 
 Every depth a camera computes is rounded at the eye's distance from the
-origin, and ``set_near_orthographic`` puts the eye 1.6 times its distance out.
+origin, and a camera pulled back for a flat look (``distant_camera.pull_back``,
+what ``set_near_orthographic`` did before Algan had an orthographic camera)
+puts the eye 1.6 times its distance out.
 Two flat shapes that overlap on screen therefore trade places when their
 depths differ by less than a few float32 spacings of that: with the eye
 16,000 units out, two squares riding the camera swapped across their whole
@@ -19,7 +21,8 @@ scans its sorted fragment stream for them
 :class:`~algan.errors.Float32PrecisionWarning`, naming both Mobs, once. The
 scan is checked against a brute-force one, then real renders: the stacked
 squares warn and say when; the same squares far enough apart, fixed in the
-world, under the default camera, or drawn by one Mob do not.
+world, under the default camera, under the orthographic camera that gives the
+same flat look from nearby, or drawn by one Mob do not.
 
 Unmarked, so outside ``--fast``: only the check itself can break it.
 """
@@ -52,10 +55,11 @@ from algan.errors import Float32PrecisionWarning
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.rendering.raytracing import float32_rounding as fr
 from algan.rendering.raytracing import raster_pipeline
+from tests.unit_tests.distant_camera import pull_back
 
 VIDEO = VideoSettings(resolution=(160, 90), frames_per_second=10, supersampling=1)
-#: ``set_near_orthographic(10000)``: the eye 16,000 units out, where depths
-#: are told apart from 0.0076 units.
+#: ``pull_back(camera, 10000)``: the eye 16,000 units out, where depths are
+#: told apart from 0.0076 units.
 FAR = 10000.0
 
 
@@ -310,9 +314,9 @@ def _orbit(camera, t):
 def _render(build, distance=FAR, seconds=0.4):
     """Render ``build(scene)``'s scene and return its float32 warnings' text.
 
-    The camera is near-orthographic at ``distance`` (0 keeps the default
-    camera), tipped 25 degrees and turning; ``build`` runs after that, inside
-    ``Off``.
+    The camera is pulled back to ``distance`` (0 keeps the default camera,
+    and ``"orthographic"`` switches it to the orthographic projection), tipped
+    25 degrees and turning; ``build`` runs after that, inside ``Off``.
     """
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -320,8 +324,10 @@ def _render(build, distance=FAR, seconds=0.4):
             scene.set_background(BLACK)
             camera = scene.camera
             with Off():
-                if distance:
-                    camera.set_near_orthographic(distance=distance)
+                if distance == "orthographic":
+                    camera.set_orthographic()
+                elif distance:
+                    pull_back(camera, distance)
                 camera.rotate(-25, RIGHT, about=ORIGIN)
                 build(scene)
             camera.add_updater(_orbit)
@@ -402,6 +408,16 @@ def test_the_default_camera_never_runs_the_check(scans):
     assert scans == []
 
 
+def test_the_orthographic_camera_never_runs_the_check(scans):
+    """The flat look with its rays leaving from near the origin.
+
+    The layers that flicker under the distant camera above tie here, and draw
+    order decides.
+    """
+    assert _render(_stacked_squares(0.001), distance="orthographic") == []
+    assert scans == []
+
+
 def test_one_mob_crossing_itself_does_not_warn(scans):
     """A pack of strokes (a network's synapses) crosses itself everywhere, coplanar."""
 
@@ -435,7 +451,7 @@ def test_the_warning_says_when_in_a_later_batch():
         with Scene(video_settings=VIDEO) as scene:
             scene.set_background(BLACK)
             with Off():
-                scene.camera.set_near_orthographic(distance=FAR)
+                pull_back(scene.camera, FAR)
                 scene.camera.rotate(-25, RIGHT, about=ORIGIN)
                 Square(size=3, color=RED, fill_opacity=1, stroke_width=0).spawn()
             Scene.wait(0.5)

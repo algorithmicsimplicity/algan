@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.rendering.mps_compat import clamp_floor
+from algan.rendering.projection import effective_depth, projection_rows
 from algan.settings import SETTINGS
 
 
@@ -139,13 +140,19 @@ def _expand_stroke(primitive, camera):
     # Match the renderer's pixel_world_scale: perpendicular depth, not slant
     # range. Otherwise strokes get wider as they move towards a screen edge.
     depth = ((centers - eye) * F.normalize(screen - eye, dim=-1)).sum(-1).abs()
+    distance = (screen - eye).norm(dim=-1)
+    projection = getattr(camera, "camera_projection", None)
+    if projection is not None:
+        # Off the pinhole a pixel grows with the projection divisor instead
+        # (algan.rendering.projection), which an orthographic camera holds
+        # constant: its strokes keep their width at every distance.
+        rows = projection_rows(projection, frames, "cpu")
+        depth = effective_depth(depth, distance, rows[:, :1], rows[:, 1:])
     pixel_size = (
         2
         * depth
         / clamp_floor(
-            height
-            * screen_basis[:, 1].norm(dim=-1)[:, None]
-            * (screen - eye).norm(dim=-1),
+            height * screen_basis[:, 1].norm(dim=-1)[:, None] * distance,
             1e-12,
         )
     )

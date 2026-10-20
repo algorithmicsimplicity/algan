@@ -628,9 +628,11 @@ class Scene(RenderLoopMixin):
 
         The map is also the backdrop: rays that hit no geometry sample it, so it
         **replaces** ``background`` rather than sitting behind it. Only the
-        camera's share of the map is visible (the frustum's solid angle), and the
-        map is downsampled above 2048 texels wide, so bake the backdrop into it at
-        a resolution that accounts for that if the backdrop carries detail.
+        camera's share of the map is visible (the frustum's solid angle; an
+        orthographic camera, whose rays all look the same way, sees the one
+        colour straight ahead), and the map is downsampled above 2048 texels
+        wide, so bake the backdrop into it at a resolution that accounts for that
+        if the backdrop carries detail.
 
         Animation
         ---------

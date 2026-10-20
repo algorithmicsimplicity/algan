@@ -84,10 +84,11 @@ def _child(code, scratch):
     )
     if result.returncode != 0:
         raise SystemExit(f"child failed:\n{result.stderr[-4000:]}")
-    line = next(
+    reports = [
         line for line in result.stdout.splitlines() if line.startswith("REPORT ")
-    )
-    return json.loads(line[len("REPORT ") :])
+    ]
+    # The last: ``run_variant`` prints a REPORT line of its own before ours.
+    return json.loads(reports[-1][len("REPORT ") :])
 
 
 def _record_variant(name, echo):

@@ -62,7 +62,7 @@ turns it to face a point, and :meth:`~.Camera.center_on` frames a given Mob.
 .. seealso::
 
     :doc:`../advanced_user_tutorials/cameras` -- field of view, clipping planes,
-    near-orthographic projection, and how to follow a moving subject.
+    orthographic projection, and how to follow a moving subject.
 
 Lighting
 ========

@@ -217,11 +217,11 @@ class Float32PrecisionWarning(AlganWarning):
 
     It also warns, once and naming both Mobs, when two overlapping flat shapes
     are closer in depth than a distant camera can tell apart: a few float32
-    spacings of the camera's distance from the origin, 0.0076 units at
-    ``set_near_orthographic(10000)``. Near the origin, shapes stacked at one
-    depth are drawn in the order they were made; that far out rounding
-    decides, and they can trade places from frame to frame. Separating them
-    along the view, or bringing the camera closer, avoids it.
+    spacings of the camera's distance from the origin, 0.0076 units for an eye
+    16,000 units out. Near the origin, shapes stacked at one depth are drawn
+    in the order they were made; that far out rounding decides, and they can
+    trade places from frame to frame. Separating them along the view, or
+    bringing the camera closer, avoids it.
     """
 
     code = "ALGAN_FLOAT32_PRECISION"

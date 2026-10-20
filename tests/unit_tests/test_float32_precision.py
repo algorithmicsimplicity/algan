@@ -4,8 +4,10 @@ Algan stores and renders positions as float32 in world space, so a point is
 only as exact as its largest coordinate allows, and a camera magnifies that by
 its focal length over the point's depth. Text brought a unit in front of a
 camera a thousand units out, turned 35 degrees, rendered with doubled and
-dashed strokes; so did text at the origin seen through the old
-``set_near_orthographic`` default (1e5), turned the same way.
+dashed strokes; so did text at the origin seen through a framing-preserving
+perspective camera 1e5 units from its screen -- how ``set_near_orthographic``
+stood in for an orthographic camera before there was one -- turned the same
+way. Such cameras are built here with ``distant_camera.pull_back``.
 
 The render estimates, after projecting each batch, how far rounding can move
 every visible point on screen (``algan.rendering.raytracing.float32_rounding``)
@@ -51,9 +53,10 @@ from algan import (
     Text,
 )
 from algan.errors import Float32PrecisionWarning
-from algan.rendering.camera import DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE
+from algan.rendering.projection import effective_depth
 from algan.rendering.raytracing import float32_rounding as fr
 from algan.settings.video_settings import LD
+from tests.unit_tests.distant_camera import pull_back
 
 
 class _Snapshot:
@@ -63,21 +66,26 @@ class _Snapshot:
         self.ray_origin = state["ray_origin"]
         self.screen_point = state["screen_point"]
         self.screen_basis = state["screen_basis"]
+        self.camera_projection = state.get("camera_projection")
         self.screen_width = self.output_screen_width = resolution[0]
         self.screen_height = self.output_screen_height = resolution[1]
 
 
 def _camera(distance=None, turn=0.0, pitch=0.0, resolution=(1280, 720)):
-    """A camera snapshot, near-orthographic at ``distance`` and turned.
+    """A camera snapshot, pulled back to ``distance`` and turned.
 
-    ``distance`` None keeps the default perspective camera; ``turn`` and
-    ``pitch`` rotate it about the origin, in degrees.
+    ``distance`` None keeps the default perspective camera, ``"orthographic"``
+    switches it to the orthographic projection, and a number pulls its eye
+    back to that distance from its screen (``distant_camera.pull_back``);
+    ``turn`` and ``pitch`` rotate it about the origin, in degrees.
     """
     with Scene(LD.set(resolution=resolution)) as scene:
         camera = scene.get_camera()
         with Off():
-            if distance is not None:
-                camera.set_near_orthographic(distance)
+            if distance == "orthographic":
+                camera.set_orthographic()
+            elif distance is not None:
+                pull_back(camera, distance)
             camera.rotate(turn, UP, about=ORIGIN)
             camera.rotate(pitch, RIGHT, about=ORIGIN)
         state = scene._materialize_render_state(0, 1)
@@ -183,37 +191,55 @@ def _brute_force(points, terms):
         eye = terms.eye[t].double()
         forward = terms.rows[t, 0, :3].double()
         screen_rows = terms.rows[t, 1:3, :3].double()
+        distance = float(terms.screen_distance[t])
+        persp, spread = (
+            (1.0, 0.0)
+            if terms.projection is None
+            else (float(terms.projection[t, 0]), float(terms.projection[t, 1]))
+        )
         for m in range(points.shape[1]):
             p = points[0 if points.shape[0] == 1 else t, m].double()
             depth = float((p - eye) @ forward)
             if depth <= 0:
                 continue
-            u, v = terms.centre[t].double() * depth + terms.screen_distance[
-                t
-            ].double() * (screen_rows @ (p - eye))
+            divisor = effective_depth(depth, distance, persp, spread)
+            u, v = terms.centre[t].double() * depth + distance * (
+                screen_rows @ (p - eye)
+            )
             if (
-                abs(float(u)) > terms.limit_u * depth
-                or abs(float(v)) > terms.limit_v * depth
+                abs(float(u)) > terms.limit_u * divisor
+                or abs(float(v)) > terms.limit_v * divisor
             ):
                 continue
             across = float(((p.square() + eye.square()) * (1 - forward.square())).sum())
-            score = float(terms.focal_sq[t]) * across / depth**2 + float(
-                terms.ray_sq[t]
+            direction = float(terms.direction_sq[t])
+            score = (
+                float(terms.focal_sq[t]) * across / divisor**2
+                + float(terms.ray_sq[t])
+                - direction
+                + direction * (depth / divisor) ** 2
             )
             if score > best:
                 best, at = score, (t, m)
     return fr.EPS32 * math.sqrt(best), at
 
 
+@pytest.mark.parametrize("projection", ["perspective", "orthographic", "switching"])
 @pytest.mark.parametrize("static", [True, False])
-def test_the_chunked_reduction_finds_the_brute_force_worst(static, monkeypatch):
+def test_the_chunked_reduction_finds_the_brute_force_worst(
+    static, projection, monkeypatch
+):
     frames = 5
     with Scene(LD.set(resolution=(640, 360), frames_per_second=frames)) as scene:
         camera = scene.get_camera()
         with Off():
-            camera.set_near_orthographic(300)
+            pull_back(camera, 300)
+            if projection == "orthographic":
+                camera.set_orthographic()
         with Seq(runtime=1):
             camera.rotate(40, UP, about=ORIGIN)
+            if projection == "switching":
+                camera.set_orthographic()
         scene.timeline_manager.set_state_to_times(torch.arange(frames) / frames + 0.01)
         snapshot = _Snapshot(scene._materialize_render_state(0, frames), (640, 360))
         scene.timeline_manager.clear_buffers()
@@ -237,7 +263,7 @@ def test_the_cpu_early_out_never_skips_points_that_reach_the_threshold():
     reached = skipped = 0
     for _ in range(80):
         snapshot = _camera(
-            rng.choice([None, 50, 300, 1000, 5000, 3e4, 1e5]),
+            rng.choice([None, 50, 300, 1000, 5000, 3e4, 1e5, "orthographic"]),
             rng.uniform(-60, 60),
             rng.uniform(-40, 40),
         )
@@ -260,32 +286,23 @@ def test_the_cpu_early_out_never_skips_points_that_reach_the_threshold():
     assert skipped > 20
 
 
-def test_the_default_near_orthographic_distance_keeps_both_errors_below_a_pixel():
-    """The trade ``DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE`` documents."""
-    assert DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE == 5e3
-    worst = 0.0
+def test_an_orthographic_camera_rounds_finely_however_it_is_turned():
+    """What the distant camera ``set_near_orthographic`` used to build could not do.
+
+    Its eye had to be thousands of units out, and turned, it rounded its rays
+    by up to 0.28 px at 2160p. The orthographic camera stays where it is and
+    magnifies nothing, so text and edges near the origin keep well below the
+    warning at any turn and resolution.
+    """
+    generator = torch.Generator().manual_seed(2)
+    scene_points = torch.randn(1, 400, 3, generator=generator) * 4
     for turn in (20, 35, 45):
         for resolution in ((1920, 1080), (3840, 2160)):
-            snapshot = _camera(DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE, turn, 10, resolution)
+            snapshot = _camera("orthographic", turn, 10, resolution)
             terms = fr.camera_rounding(snapshot, 1, torch.device("cpu"))
-            worst = max(worst, fr.EPS32 * math.sqrt(float(terms.ray_sq[0])))
-    assert worst < 0.5 * fr.VISIBLE_ERROR_PX
-    # Residual perspective: a point 5 units in front of the origin plane, at
-    # a corner of a 1080p frame, against where parallel projection puts it.
-    snapshot = _camera(DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE, resolution=(1920, 1080))
-    eye = snapshot.ray_origin.reshape(3).double()
-    screen = snapshot.screen_point.reshape(3).double()
-    basis = snapshot.screen_basis.reshape(3, 3).double()
-    forward = basis[2] / basis[2].norm()
-
-    def pixel(p):
-        p = torch.tensor(p, dtype=torch.float64)
-        projected = eye + ((screen - eye) @ forward) / ((p - eye) @ forward) * (p - eye)
-        return (basis[:2] @ (projected - screen)) * 540
-
-    corner = (4.0 * 16 / 9, 4.0)
-    shift = (pixel((*corner, 5.0)) - pixel((*corner, 0.0))).norm()
-    assert 0.3 < float(shift) < 1.0
+            values, _ = fr.worst_point_rounding(scene_points, terms, skip_below=0)
+            assert 0.0 < float(values[0]) < 0.1 * fr.VISIBLE_ERROR_PX
+            assert not fr._may_reach(scene_points, terms, fr.VISIBLE_ERROR_PX)
 
 
 def test_the_message_gives_advice_that_works_in_float32():
@@ -300,11 +317,12 @@ def test_the_message_gives_advice_that_works_in_float32():
         assert "parent" not in lowered
         assert "turn the scene instead of the camera" in message
     assert "look broken" in fr.precision_message(hud)
-    assert "deeper in front of the camera" in fr.precision_message(hud)
+    assert "deeper in front of a perspective camera" in fr.precision_message(hud)
     assert "look grainy" in fr.precision_message(far_camera)
-    assert "set_near_orthographic() at its default distance" in fr.precision_message(
-        far_camera
-    )
+    for finding in (hud, far_camera):
+        # The flat look without a distant eye; the old spelling took a distance.
+        assert "camera.set_orthographic()" in fr.precision_message(finding)
+        assert "set_near_orthographic" not in fr.precision_message(finding)
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +398,7 @@ def test_a_hud_in_front_of_a_turned_distant_camera_warns_once_and_names_it(tmp_p
     def body(scene):
         camera = scene.get_camera()
         with Off():
-            camera.set_near_orthographic(distance=625)  # the eye 1000 units out
+            pull_back(camera, 625)  # the eye 1000 units out
             camera.rotate(35, UP, about=ORIGIN)
             # Squares merge into one collection: the HUD is its third member.
             squares = [Square(color=BLUE).move_to(x * RIGHT + UP) for x in (-3.0, 3.0)]
@@ -408,11 +426,11 @@ def test_a_hud_in_front_of_a_turned_distant_camera_warns_once_and_names_it(tmp_p
     assert caught[0].filename == __file__
 
 
-def test_a_very_distant_near_orthographic_camera_turned_warns(tmp_path):
+def test_a_very_distant_camera_turned_warns(tmp_path):
     def body(scene):
         camera = scene.get_camera()
         with Off():
-            camera.set_near_orthographic(distance=1e5)
+            pull_back(camera, 1e5)
             camera.rotate(35, UP, about=ORIGIN)
             Square(color=BLUE, name="plain").spawn(animate=False)
 
@@ -421,7 +439,20 @@ def test_a_very_distant_near_orthographic_camera_turned_warns(tmp_path):
     message = str(caught[0].message)
     assert "Square 'plain'" in message
     assert "look grainy" in message
-    assert "set_near_orthographic() at its default distance" in message
+    assert "camera.set_orthographic()" in message
+
+
+def test_the_same_view_through_an_orthographic_camera_does_not_warn(tmp_path):
+    """The flat look the warning above recommends, rendered: no warning."""
+
+    def body(scene):
+        camera = scene.get_camera()
+        with Off():
+            camera.set_orthographic()
+            camera.rotate(35, UP, about=ORIGIN)
+            Square(color=BLUE, name="plain").spawn(animate=False)
+
+    assert _render_warnings(body, tmp_path, resolution=(640, 360)) == []
 
 
 def test_scenes_that_round_finely_do_not_warn(tmp_path):
@@ -460,7 +491,7 @@ def test_scenes_that_round_finely_do_not_warn(tmp_path):
     def hud_body(scene):
         camera = scene.get_camera()
         with Off():
-            camera.set_near_orthographic(distance=80)
+            pull_back(camera, 80)
             camera.rotate(35, UP, about=ORIGIN)
             hud = Square(color=WHITE).rotate(35, UP, about=ORIGIN)
             _bring_forward(camera, hud, 1.0)

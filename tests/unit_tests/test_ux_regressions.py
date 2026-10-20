@@ -882,8 +882,13 @@ def test_camera_validates_projection_and_clip_parameters():
     camera = Camera(add_to_scene=False)
     with pytest.raises(AlganConfigurationError, match="positive"):
         camera.set_distance_to_screen(0)
-    assert camera.set_near_orthographic(1000) is camera
+    assert camera.set_orthographic() is camera
     assert camera.orthographic is True
+    with pytest.raises(AlganConfigurationError, match="frame_height"):
+        camera.set_orthographic(frame_height=0)
+    # The old spelling still switches, but its distance has nothing to set.
+    with pytest.raises(AlganConfigurationError, match="set_orthographic"):
+        camera.set_near_orthographic(1000)
     assert camera.set_fov(45) is camera
     assert camera.orthographic is False
     scene.set_video_settings(VideoSettings((20, 10), 1, supersampling=1))
@@ -2058,6 +2063,8 @@ def test_the_scene_camera_light_and_group_surface_answers_to_its_public_names():
         assert camera.center_on(Square().spawn()) is camera
         assert camera.set_euler_angles(5, 0, 0) is camera
         assert camera.set_euler_angles(PI / 36, 0, 0, degrees=False) is camera
+        assert camera.set_orthographic() is camera
+        assert camera.set_perspective() is camera
         assert camera.set_near_orthographic() is camera
         for gone in (
             "move_to_make_mob_center_of_view",

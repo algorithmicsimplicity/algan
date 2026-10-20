@@ -64,6 +64,7 @@ from __future__ import annotations
 import warnings
 
 import torch
+import torch.nn.functional as F
 
 from algan.environment import env_flag, env_float
 from algan.errors import AlganWarning
@@ -80,6 +81,7 @@ from algan.rendering.mps_compat import (
     taichi_accumulate_dtype,
     unique_consecutive_exact,
 )
+from algan.rendering.projection import ray_origins_for_points
 from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
@@ -1174,6 +1176,7 @@ def _prim_split_after(
     order,
     band_c,
     num_frames=None,
+    cam_proj=None,
 ):
     """The ``prim`` band rule: ``True`` where a sorted fragment's depth gap to
     its predecessor exceeds the pair's own per-pixel scale (``compact_sheets``
@@ -1187,6 +1190,11 @@ def _prim_split_after(
     triangle's three world vertices and screen bounds (the compaction's
     largest transients, and 0.19 s per compaction on a 4K nn frame). Only
     the ``pixel_world_scale * t`` term is per fragment.
+
+    Off the pinhole (``cam_proj`` given) a fragment's depth is measured from
+    its ray's own start on the camera plane, so a vertex's is too, and a
+    pixel is ``pixel_world_scale * t`` plus the constant footprint
+    ``cam_proj[:, 2]`` across (``algan.rendering.projection``).
     """
     tri_pos = merged["tri_pos"]
     device = safe_ref.device
@@ -1210,12 +1218,29 @@ def _prim_split_after(
         ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(
             f1 - f0, 1, 3
         )
+        row = None
+        if cam_proj is not None:
+            row = cam_proj.index_select(0, frames % cam_proj.shape[0]).view(
+                f1 - f0, 1, -1
+            )
         dmin = dmax = None
         for k in range(3):
-            dk = torch.linalg.norm(pos[..., 3 * k : 3 * k + 3] - ro, dim=-1)
+            vertex = pos[..., 3 * k : 3 * k + 3]
+            origin = ro
+            if row is not None:
+                screen_offset = row[..., 3:6]
+                origin = ray_origins_for_points(
+                    vertex,
+                    ro,
+                    ro + screen_offset,
+                    F.normalize(screen_offset, p=2, dim=-1),
+                    row[..., 0:1],
+                    row[..., 1:2],
+                )
+            dk = torch.linalg.norm(vertex - origin, dim=-1)
             dmin = dk if dmin is None else torch.minimum(dmin, dk)
             dmax = dk if dmax is None else torch.maximum(dmax, dk)
-        del ro, dk, pos
+        del ro, dk, pos, vertex, origin, row
         ext = dmax - dmin
         del dmin, dmax
         # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
@@ -1240,8 +1265,11 @@ def _prim_split_after(
     slope_f = slope[frame_rel, safe_ref]
     del slope
     pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
-    scale = torch.where(is_tri, slope_f + pws * t, torch.zeros_like(t))
-    del pws, slope_f
+    footprint = pws * t
+    if cam_proj is not None:
+        footprint = footprint + cam_proj[_rows(cam_proj, frame_rel, time_start), 2]
+    scale = torch.where(is_tri, slope_f + footprint, torch.zeros_like(t))
+    del pws, slope_f, footprint
     scale_o = scale.index_select(0, order)
     del scale
     thr = float(band_c) * (scale_o[1:] + scale_o[:-1])
@@ -1992,6 +2020,7 @@ def compact_sheets(
     memory=None,
     persist_output=False,
     resolve_only=False,
+    cam_proj=None,
     _split=True,
 ):
     """Compact one emission's fragment stream into its sheet stream.
@@ -2000,7 +2029,9 @@ def compact_sheets(
     ``coverage`` is its returned dict (the compact ``frag_*`` arrays and the
     per-pixel CSR), ``merged`` the batch's merged scene, ``cam_origin`` /
     ``pixel_world_scale`` the per-frame camera rows the band rule's relative
-    scale reads.
+    scale reads, and ``cam_proj`` the batch's projection table for a camera
+    that is not a pinhole (``None`` for one; see
+    ``algan.rendering.projection``).
 
     ``shade_split`` (``sheet_shade_split``) adds a SHADING CLASS to the
     triangle group key, so a sheet never spans a hard shading discontinuity.
@@ -2159,6 +2190,7 @@ def compact_sheets(
                 "sample_depth": sample_depth,
                 "memory": memory,
                 "persist_output": persist_output,
+                "cam_proj": cam_proj,
             },
             resolve_only,
         )
@@ -2283,6 +2315,7 @@ def compact_sheets(
             order,
             band_c,
             num_frames,
+            cam_proj,
         )
         band_start[1:] |= (~new_group[1:]) & split_after
         del split_after
