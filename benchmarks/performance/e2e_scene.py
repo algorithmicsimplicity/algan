@@ -38,7 +38,9 @@ and prints the slowest first launches, where a kernel's compiled code is loaded
 from the offline cache (or compiled) and handed to the driver;
 ``--torch-compile off`` renders with ``SETTINGS.computing.torch_compile`` off;
 ``--rt NAME=VALUE`` flips a raytracing knob through ``set_NAME`` (or the module
-attribute) before the first run. Both settings are part of the Taichi kernel
+attribute) before the first run; ``--exec CODE`` runs Python statements after
+``import algan`` and before the first run, for an experiment's patch that has
+no switch. Both settings are part of the Taichi kernel
 cache key, so such an arm's first run compiles or loads its own kernels:
 compare its later runs.
 """
@@ -73,6 +75,12 @@ import algan  # noqa: E402
 IMPORT_SECONDS = time.perf_counter() - PROCESS_START
 
 from algan import SETTINGS, Scene  # noqa: E402, F401
+
+#: The encoder choice as the process was started. The scene modules import
+#: ``_profile_cli``, which pins software x264 for the profilers' byte-stable
+#: output; a user's render instead takes the automatic choice (NVENC on a T4),
+#: so the import's default is undone unless ``--encoder`` names one.
+_ENCODER_AT_START = os.environ.get("ALGAN_VIDEO_ENCODER")
 from algan.scene_manager import SceneManager  # noqa: E402
 
 
@@ -101,30 +109,51 @@ def _checkout():
     return str(root), commit
 
 
-def _compare(reference, candidate):
+def _compare(reference, candidate, worst_frames=12):
     import imageio.v2 as imageio
     import numpy as np
 
     a = imageio.get_reader(str(reference), format="ffmpeg")
     b = imageio.get_reader(str(candidate), format="ffmpeg")
     worst = changed = frames = 0
+    per_frame = []
     try:
-        for left, right in zip(a, b, strict=False):
+        for index, (left, right) in enumerate(zip(a, b, strict=False)):
             delta = np.abs(left.astype(np.int16) - right.astype(np.int16))
-            worst = max(worst, int(delta.max()))
-            changed += int(np.count_nonzero(delta))
+            frame_worst = int(delta.max())
+            frame_changed = int(np.count_nonzero(delta))
+            worst = max(worst, frame_worst)
+            changed += frame_changed
             frames += 1
+            if frame_changed:
+                rows, cols = np.nonzero(delta.max(axis=-1))
+                per_frame.append(
+                    {
+                        "frame": index,
+                        "max": frame_worst,
+                        "channels": frame_changed,
+                        "box_yx": [
+                            int(rows.min()),
+                            int(cols.min()),
+                            int(rows.max()),
+                            int(cols.max()),
+                        ],
+                    }
+                )
         a_count = a.count_frames()
         b_count = b.count_frames()
     finally:
         a.close()
         b.close()
+    per_frame.sort(key=lambda item: (-item["max"], -item["channels"]))
     return {
         "frames": frames,
         "frames_reference": a_count,
         "frames_candidate": b_count,
         "max_channel_difference": worst,
         "differing_channels": changed,
+        "differing_frames": len(per_frame),
+        "worst_frames": per_frame[:worst_frames],
     }
 
 
@@ -425,6 +454,13 @@ def main(argv=None):
     parser.add_argument("--torch-profile", default="", metavar="RUNS")
     parser.add_argument("--trace-stages", action="store_true")
     parser.add_argument("--first-launches", default="", metavar="RUNS")
+    parser.add_argument(
+        "--encoder",
+        choices=("auto", "nvenc", "software"),
+        default=None,
+        help="ALGAN_VIDEO_ENCODER for the renders (default: as started)",
+    )
+    parser.add_argument("--exec", dest="exec_code", default=None, metavar="CODE")
     parser.add_argument("--torch-compile", choices=("auto", "on", "off"), default=None)
     parser.add_argument("--rt", action="append", default=[], metavar="NAME=VALUE")
     args = parser.parse_args(argv)
@@ -443,6 +479,13 @@ def main(argv=None):
     else:
         seconds = 2.0 if args.seconds is None else args.seconds
     record = importlib.import_module(f"{args.scene}_scene").scene
+    encoder = args.encoder or _ENCODER_AT_START
+    if encoder is None:
+        os.environ.pop("ALGAN_VIDEO_ENCODER", None)
+    else:
+        os.environ["ALGAN_VIDEO_ENCODER"] = encoder
+    if args.exec_code:
+        exec(compile(args.exec_code, "<--exec>", "exec"), {"__name__": "e2e_exec"})  # noqa: S102
     out_dir = Path(args.out_dir or (HERE / "algan_outputs" / "e2e")).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -465,7 +508,8 @@ def main(argv=None):
         "gpu": torch.cuda.get_device_name(0) if device.type == "cuda" else None,
         "torch": torch.__version__,
         "cache_dir": os.environ.get("ALGAN_CACHE_DIR"),
-        "encoder": os.environ.get("ALGAN_VIDEO_ENCODER", "(default)"),
+        "encoder": os.environ.get("ALGAN_VIDEO_ENCODER", "(default: auto)"),
+        "exec": args.exec_code,
         "lossless": args.lossless,
         "import_seconds": round(IMPORT_SECONDS, 3),
         "torch_compile": str(SETTINGS.computing.torch_compile),
