@@ -23,6 +23,15 @@ can decode both and report the largest channel difference; the repository's
 render tolerance is 2. ``--cprofile N`` profiles run ``N`` and prints its top
 functions by own and cumulative time
 (authoring included; comma-separate several runs).
+
+Diagnostics, all off by default: ``--compile-stats`` prints what Dynamo and
+Inductor compiled or loaded during each run, and the Taichi source-key
+counters; ``--torch-profile N`` records run ``N`` with ``torch.profiler`` and
+prints how much of it the GPU was busy, its largest idle gaps and its top
+kernels; ``--torch-compile off`` renders with ``SETTINGS.computing.torch_compile``
+off (a setting, so the Taichi kernel cache key is unchanged); ``--rt NAME=VALUE``
+flips a raytracing knob through ``set_NAME`` (or the module attribute) before
+the first run, which keeps the arm on the same kernel cache.
 """
 
 from __future__ import annotations
@@ -109,6 +118,156 @@ def _compare(reference, candidate):
     }
 
 
+def _parse_value(text):
+    lowered = text.strip().lower()
+    if lowered in ("true", "on", "yes"):
+        return True
+    if lowered in ("false", "off", "no"):
+        return False
+    for cast in (int, float):
+        try:
+            return cast(text)
+        except ValueError:
+            pass
+    return text
+
+
+def _apply_raytracing_knobs(assignments):
+    from algan.rendering.raytracing import settings as rt
+
+    applied = {}
+    for assignment in assignments:
+        name, _, raw = assignment.partition("=")
+        name = name.strip()
+        value = _parse_value(raw)
+        setter = getattr(rt, f"set_{name}", None)
+        if callable(setter):
+            setter(value)
+        elif hasattr(rt, name):
+            setattr(rt, name, value)
+        else:
+            raise SystemExit(f"--rt {name}: no set_{name} or attribute in settings")
+        applied[name] = getattr(rt, name, value)
+    return applied
+
+
+def _compile_stats():
+    """What Dynamo/Inductor and the Taichi source key did since the last call."""
+    out = {}
+    try:
+        from torch._dynamo.utils import compile_times, counters
+
+        out["counters"] = {
+            group: {k: v for k, v in values.items() if v}
+            for group, values in counters.items()
+            if group in ("stats", "inductor", "aot_autograd", "frames", "recompiles")
+        }
+        out["compile_times"] = compile_times(repr="str", aggregate=True)
+        counters.clear()
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic
+        out["dynamo"] = f"unavailable: {exc!r}"
+    try:
+        from algan.utils import taichi_source_key
+
+        out["taichi_source_key"] = dict(taichi_source_key.STATS)
+        taichi_source_key.reset_stats()
+    except Exception as exc:  # noqa: BLE001
+        out["taichi_source_key"] = f"unavailable: {exc!r}"
+    try:
+        from algan.utils.torch_compile import compiled_functions
+
+        out["compiled_functions"] = dict(compiled_functions())
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _summarize_trace(path, wall_seconds, top=30):
+    """GPU busy time, idle gaps and top kernels from a chrome trace."""
+    with open(path, encoding="utf-8") as handle:
+        events = json.load(handle).get("traceEvents", [])
+    device = [
+        e
+        for e in events
+        if e.get("ph") == "X" and e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset")
+    ]
+    if not device:
+        return {"device_events": 0}
+    intervals = sorted(
+        (float(e["ts"]), float(e["ts"]) + float(e["dur"])) for e in device
+    )
+    busy = 0.0
+    gaps = []
+    start, end = intervals[0]
+    for lo, hi in intervals[1:]:
+        if lo > end:
+            busy += end - start
+            gaps.append((lo - end, end))
+            start, end = lo, hi
+        else:
+            end = max(end, hi)
+    busy += end - start
+    span = intervals[-1][1] - intervals[0][0]
+    by_name = {}
+    for e in device:
+        name = e.get("name", "?")[:90]
+        total, count = by_name.get(name, (0.0, 0))
+        by_name[name] = (total + float(e["dur"]), count + 1)
+    ranked = sorted(by_name.items(), key=lambda kv: -kv[1][0])[:top]
+    gaps.sort(reverse=True)
+    buckets = {
+        "<0.1ms": 0.0,
+        "0.1-1ms": 0.0,
+        "1-10ms": 0.0,
+        "10-100ms": 0.0,
+        ">=100ms": 0.0,
+    }
+    for gap, _ in gaps:
+        if gap < 100:
+            buckets["<0.1ms"] += gap
+        elif gap < 1000:
+            buckets["0.1-1ms"] += gap
+        elif gap < 10000:
+            buckets["1-10ms"] += gap
+        elif gap < 100000:
+            buckets["10-100ms"] += gap
+        else:
+            buckets[">=100ms"] += gap
+    # The host ops alive during the largest gaps say what the GPU waited on.
+    host = [
+        e
+        for e in events
+        if e.get("ph") == "X" and e.get("cat") in ("cpu_op", "user_annotation")
+    ]
+    largest = []
+    for gap, at in gaps[:12]:
+        names = sorted(
+            {
+                e.get("name", "?")[:60]
+                for e in host
+                if float(e["ts"]) < at + gap and float(e["ts"]) + float(e["dur"]) > at
+            }
+        )[:8]
+        largest.append(
+            {
+                "ms": round(gap / 1000, 2),
+                "at_s": round((at - intervals[0][0]) / 1e6, 3),
+                "host_ops": names,
+            }
+        )
+    return {
+        "wall_s": round(wall_seconds, 3),
+        "device_span_s": round(span / 1e6, 3),
+        "device_busy_s": round(busy / 1e6, 3),
+        "device_idle_s": round((span - busy) / 1e6, 3),
+        "idle_by_gap_size_s": {k: round(v / 1e6, 3) for k, v in buckets.items()},
+        "largest_gaps": largest,
+        "top_device_work": [
+            {"name": n, "s": round(t / 1e6, 3), "count": c} for n, (t, c) in ranked
+        ],
+    }
+
+
 def _print_profile(profiler, limit):
     for key in ("tottime", "cumulative"):
         stream = io.StringIO()
@@ -137,8 +296,18 @@ def main(argv=None):
     )
     parser.add_argument("--cprofile-limit", type=int, default=70)
     parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--compile-stats", action="store_true")
+    parser.add_argument("--torch-profile", default="", metavar="RUNS")
+    parser.add_argument("--torch-compile", choices=("auto", "on", "off"), default=None)
+    parser.add_argument("--rt", action="append", default=[], metavar="NAME=VALUE")
     args = parser.parse_args(argv)
     profiled_runs = {int(r) for r in args.cprofile.split(",") if r.strip()}
+    traced_runs = {int(r) for r in args.torch_profile.split(",") if r.strip()}
+    if args.torch_compile is not None:
+        SETTINGS.computing.torch_compile = {"auto": "auto", "on": True, "off": False}[
+            args.torch_compile
+        ]
+    knobs = _apply_raytracing_knobs(args.rt)
 
     preset = getattr(algan, args.quality)
     if args.frames is not None:
@@ -171,6 +340,8 @@ def main(argv=None):
         "encoder": os.environ.get("ALGAN_VIDEO_ENCODER", "(default)"),
         "lossless": args.lossless,
         "import_seconds": round(IMPORT_SECONDS, 3),
+        "torch_compile": str(SETTINGS.computing.torch_compile),
+        "raytracing": knobs,
     }
     print("E2E_HEADER " + json.dumps(header), flush=True)
 
@@ -184,6 +355,7 @@ def main(argv=None):
         scene = Scene()
         scene.set_video_settings(preset)
         profiler = cProfile.Profile() if index in profiled_runs else None
+        tracer = None
         started = time.perf_counter()
         if profiler is not None:
             profiler.enable()
@@ -191,11 +363,23 @@ def main(argv=None):
         authored = time.perf_counter()
         duration = float(scene._recorded_end_time_for_render())
         output = out_dir / f"{args.label}_{args.scene}_{args.quality}.mp4"
+        if index in traced_runs:
+            # The render only: authoring is host work the trace would bloat.
+            from torch.profiler import ProfilerActivity, profile
+
+            tracer = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
+            tracer.__enter__()
         result = scene.save_video(str(output), preset, **kwargs)
         _sync()
         if profiler is not None:
             profiler.disable()
         finished = time.perf_counter()
+        if tracer is not None:
+            tracer.__exit__(None, None, None)
+            trace_path = out_dir / f"{args.label}_run{index}_trace.json"
+            tracer.export_chrome_trace(str(trace_path))
+            summary = _summarize_trace(trace_path, finished - authored)
+            print("E2E_TRACE " + json.dumps(summary), flush=True)
         if result.status != "rendered":
             raise RuntimeError(f"expected a rendered video, got {result.status}")
         frames = round(duration * preset.frames_per_second)
@@ -217,6 +401,10 @@ def main(argv=None):
         print("E2E " + json.dumps(item), flush=True)
         if profiler is not None:
             _print_profile(profiler, args.cprofile_limit)
+        if args.compile_stats:
+            print(
+                f"E2E_COMPILE run {index} " + json.dumps(_compile_stats()), flush=True
+            )
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats()
 
