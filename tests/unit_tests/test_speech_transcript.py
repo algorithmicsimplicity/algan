@@ -230,3 +230,50 @@ def test_recorded_generator_retains_padded_subclip_relative_word_times(
     assert clip.algan_word_timestamps[0][1:] == pytest.approx((0.05, 0.45))
     assert clip.algan_word_timestamps[1][1:] == pytest.approx((0.85, 1.15))
     assert _SpeechBlock.from_clip("Hello,\nworld!", clip).timing == "aligned"
+
+
+def test_recorded_generator_plays_a_repeated_phrase_where_the_narration_is(
+    monkeypatch, tmp_path
+):
+    import moviepy
+
+    from algan.utils import audio_utils
+
+    starts = []
+
+    def subclipped(start, end):
+        starts.append(start)
+        return SimpleNamespace(duration=end - start)
+
+    monkeypatch.setattr(
+        moviepy,
+        "AudioFileClip",
+        lambda path: SimpleNamespace(duration=20, subclipped=subclipped),
+    )
+    monkeypatch.setattr(
+        audio_utils,
+        "SETTINGS",
+        SimpleNamespace(paths=SimpleNamespace(cache_directory=tmp_path)),
+    )
+    words = ["HELLO", "WORLD", "NEXT", "GOODBYE", "WORLD", "NEXT"]
+    monkeypatch.setattr(
+        audio_utils,
+        "align_large_audio_torchaudio_robust",
+        lambda *args, **kwargs: [(w, 2 * i, 2 * i + 1) for i, w in enumerate(words)],
+    )
+    audio_file = tmp_path / "voice.wav"
+    audio_file.write_bytes(b"recorded voice")
+    transcript_file = tmp_path / "script.txt"
+    transcript_file.write_text(
+        "Hello world. Next. Goodbye world. Next.", encoding="utf-8"
+    )
+    generator = audio_utils.get_speech_generator_from_file(audio_file, transcript_file)
+    for line in ("Hello world.", "Next.", "Goodbye world.", "Next."):
+        generator(line)
+    # Each clip starts 50 ms before its first word; the second "Next." is the
+    # one spoken at 10 s, not a replay of the first at 4 s.
+    assert starts == pytest.approx([0, 3.95, 5.95, 9.95])
+    # Authoring the narration again starts over from its first occurrence.
+    generator("Hello world.")
+    generator("Next.")
+    assert starts[4:] == pytest.approx([0, 3.95])

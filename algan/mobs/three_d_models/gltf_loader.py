@@ -18,11 +18,16 @@ from __future__ import annotations
 import io
 import os
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
 
-from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
+from algan.errors import (
+    AlganWarning,
+    UnsupportedFeatureError,
+    UnsupportedFeatureWarning,
+)
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.scene_data import (
     AnimationData,
@@ -99,18 +104,99 @@ def _normalize_color(color):
     return tuple(c)
 
 
-def _convert_material(visual):
+def _linear_to_display(values):
+    """glTF's linear color factors as the display-referred sRGB values Algan
+    colors are authored in.
+
+    Computed in float64 and rounded to float32, Algan's color precision, so a
+    factor of exactly 0 or 1 comes back exactly 0 or 1 (in float32 the sRGB
+    curve maps 1.0 to 0.99999994).
+    """
+    from algan.utils.color_space import linear_to_srgb
+
+    return linear_to_srgb(torch.as_tensor(values, dtype=torch.float64)).float()
+
+
+def _gltf_alpha(material):
+    """A glTF material's linear ``baseColorFactor`` (``[1, 1, 1, 1]`` when
+    omitted), ``alphaMode`` (``OPAQUE`` when omitted) and ``alphaCutoff``
+    (``0.5`` when omitted).
+    """
+    factor = _normalize_color(getattr(material, "baseColorFactor", None))
+    mode = getattr(material, "alphaMode", None) or "OPAQUE"
+    cutoff = getattr(material, "alphaCutoff", None)
+    return factor, mode, 0.5 if cutoff is None else float(cutoff)
+
+
+def _resolve_alpha(alpha, mode, cutoff):
+    """Apply a glTF ``alphaMode`` to alpha values: ``OPAQUE`` ignores alpha,
+    ``MASK`` makes each value fully opaque or fully transparent at ``cutoff``,
+    and ``BLEND`` keeps it.
+    """
+    alpha = torch.as_tensor(alpha, dtype=torch.float32)
+    if mode == "OPAQUE":
+        return torch.ones_like(alpha)
+    if mode == "MASK":
+        return (alpha >= cutoff).float()
+    return alpha
+
+
+def _tint_base_color_image(image, factor, mode, cutoff):
+    """``baseColorFactor * baseColorTexture`` as glTF defines it.
+
+    The texture is sRGB-encoded and the factor linear, so the product is
+    taken in linear light; alpha is linear in both and multiplies directly
+    before ``alphaMode`` is applied. A channel whose factor is exactly 1 is
+    left untouched, so an untinted texture keeps its exact texel values.
+    """
+    from algan.utils.color_space import linear_to_srgb, srgb_to_linear
+
+    if image.shape[-1] >= 3:
+        rgb = image[..., :3]
+        alpha = image[..., 3] if image.shape[-1] > 3 else None
+    else:  # greyscale, possibly with alpha
+        rgb = image[..., :1].expand(*image.shape[:-1], 3)
+        alpha = image[..., 1] if image.shape[-1] > 1 else None
+    channels = []
+    for c in range(3):
+        channel = rgb[..., c]
+        if factor[c] != 1.0:
+            channel = linear_to_srgb(srgb_to_linear(channel) * factor[c])
+        channels.append(channel)
+    if alpha is None:
+        alpha = torch.ones_like(channels[0])
+    if factor[3] != 1.0:
+        alpha = alpha * factor[3]
+    channels.append(_resolve_alpha(alpha, mode, cutoff))
+    return torch.stack(channels, -1)
+
+
+def _convert_material(visual, gltf=False):
     """trimesh visual -> :class:`MaterialData` (PBR base color + embedded
     diffuse texture where present).
+
+    With ``gltf`` the material is read with glTF 2.0's semantics: an omitted
+    factor takes the specification's default, the color factors are linear
+    (Algan's colors are display sRGB), ``baseColorFactor`` multiplies the
+    base-color texture, and ``alphaMode`` decides what alpha means.
     """
     material = getattr(visual, "material", None)
     if material is None:
         return MaterialData()
-    base = _normalize_color(
-        getattr(material, "baseColorFactor", None)
-        if getattr(material, "baseColorFactor", None) is not None
-        else getattr(material, "main_color", None)
-    )
+    if gltf:
+        # Omitted factors are the specification's defaults, never trimesh's
+        # placeholder grey: base color [1, 1, 1, 1], metallic and roughness 1.
+        factor, alpha_mode, alpha_cutoff = _gltf_alpha(material)
+        base = (
+            *_linear_to_display(factor[:3]).tolist(),
+            float(_resolve_alpha(factor[3], alpha_mode, alpha_cutoff)),
+        )
+    else:
+        base = _normalize_color(
+            getattr(material, "baseColorFactor", None)
+            if getattr(material, "baseColorFactor", None) is not None
+            else getattr(material, "main_color", None)
+        )
 
     def _img(attr):
         tex = getattr(material, attr, None)
@@ -127,6 +213,15 @@ def _convert_material(visual):
     metallic = getattr(material, "metallicFactor", None)
     roughness = getattr(material, "roughnessFactor", None)
     emissive = getattr(material, "emissiveFactor", None)
+    if emissive is not None:
+        emissive = tuple(float(x) for x in np.asarray(emissive).reshape(-1)[:3])
+    if gltf:
+        if diffuse_image is not None:
+            diffuse_image = _tint_base_color_image(
+                diffuse_image, factor, alpha_mode, alpha_cutoff
+            )
+        if emissive is not None:
+            emissive = tuple(_linear_to_display(emissive).tolist())
     return MaterialData(
         name=getattr(material, "name", "") or "",
         base_color=base,
@@ -134,18 +229,37 @@ def _convert_material(visual):
         normal_image=_img("normalTexture"),
         metallic_roughness_image=_img("metallicRoughnessTexture"),
         emissive_image=_img("emissiveTexture"),
-        metallic_factor=float(metallic) if metallic is not None else 0.0,
-        roughness_factor=float(roughness) if roughness is not None else 1.0,
-        emissive=(
-            tuple(float(x) for x in np.asarray(emissive).reshape(-1)[:3])
-            if emissive is not None
-            else (0.0, 0.0, 0.0)
+        metallic_factor=(
+            float(metallic) if metallic is not None else (1.0 if gltf else 0.0)
         ),
+        roughness_factor=float(roughness) if roughness is not None else 1.0,
+        emissive=emissive if emissive is not None else (0.0, 0.0, 0.0),
         opacity=base[3],
     )
 
 
-def _convert_mesh(geom, material_index, name):
+def _gltf_vertex_colors(colors, material):
+    """glTF ``COLOR_0`` ``[V, 3 or 4]`` as display sRGB, its alpha resolved by
+    the primitive's ``alphaMode``.
+
+    ``COLOR_0`` is linear, like the factors. Its alpha multiplies the base
+    color factor's, which the model builder multiplies back in, so a ``MASK``
+    cutoff is applied to the product here and the factor's own (already
+    thresholded) alpha leaves the result unchanged.
+    """
+    rgb = _linear_to_display(colors[:, :3])
+    if material is None or colors.shape[-1] < 4:
+        return torch.cat((rgb, colors[:, 3:]), -1)
+    factor, mode, cutoff = _gltf_alpha(material)
+    alpha = colors[:, 3:4]
+    if mode == "MASK":
+        alpha = _resolve_alpha(alpha * factor[3], mode, cutoff)
+    else:
+        alpha = _resolve_alpha(alpha, mode, cutoff)
+    return torch.cat((rgb, alpha), -1)
+
+
+def _convert_mesh(geom, material_index, name, gltf=False):
     vertices = _to_tensor(geom.vertices)
     faces = _to_tensor(getattr(geom, "faces", None), dtype=torch.int64)
     if vertices is None or faces is None:
@@ -167,9 +281,19 @@ def _convert_mesh(geom, material_index, name):
         uvs = _to_tensor(uv)[..., :2].contiguous()
 
     vertex_colors = None
-    vc = getattr(visual, "vertex_colors", None) if visual is not None else None
-    if uvs is None and vc is not None and len(vc) == vertices.shape[0]:
+    # A glTF primitive with a material keeps its COLOR_0 beside the material
+    # (TextureVisuals.vertex_attributes), textured or not; trimesh only makes
+    # it the visual's own vertex_colors when there is no material.
+    vc = getattr(visual, "vertex_attributes", {}).get("color")
+    authored = vc is not None or getattr(visual, "kind", None) == "vertex"
+    if vc is None and uvs is None and visual is not None:
+        vc = getattr(visual, "vertex_colors", None)
+    if vc is not None and len(vc) == vertices.shape[0]:
         vertex_colors = _image_to_float_hwc(np.asarray(vc)[None])[0]
+        if gltf and authored:
+            vertex_colors = _gltf_vertex_colors(
+                vertex_colors, getattr(visual, "material", None)
+            )
 
     return MeshData(
         vertices=vertices,
@@ -361,6 +485,25 @@ def _parse_animations(gltf, blob):
     return clips
 
 
+def _read_gltf(gltf_class, file_path):
+    """``gltf_class().load(file_path)``, except that a ``.gltf`` is read as
+    UTF-8, which the format requires.
+
+    pygltflib opens a ``.gltf`` in text mode, so it decodes with the locale's
+    encoding and a valid file with a non-ASCII name in it fails to load
+    wherever that is not UTF-8 (cp1252 or cp932 on Windows, ``C`` in a
+    container).
+    """
+    if os.path.splitext(file_path)[1].lower() != ".gltf":
+        return gltf_class().load(file_path)
+    with open(file_path, "rb") as file:
+        gltf = gltf_class.gltf_from_json(file.read().decode("utf-8-sig"))
+    # What pygltflib's own loader records, for URIs relative to the file.
+    gltf._path = Path(file_path).parent
+    gltf._name = Path(file_path).name
+    return gltf
+
+
 def _augment_with_animations(file_path, meshes, static_nodes):
     """When ``file_path`` carries glTF animations, return ``(nodes, animations)``
     with the real hierarchy and parsed clips; otherwise return the static nodes
@@ -385,7 +528,7 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         return static_nodes, []
 
     try:
-        gltf = GLTF2().load(file_path)
+        gltf = _read_gltf(GLTF2, file_path)
         if not gltf.animations:
             return static_nodes, []
         blob = gltf.binary_blob()
@@ -411,6 +554,41 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         return static_nodes, []
 
 
+def _uri_resolver(file_path):
+    """A trimesh resolver that reads a glTF's external URIs as the format
+    defines them.
+
+    glTF requires a URI to be RFC 3986 encoded, so a texture named
+    ``my tex.png`` is referenced as ``my%20tex.png``, and a relative URI may
+    climb out of the model's folder (``../textures/wood.png``). trimesh's
+    default resolver neither decodes nor (since trimesh 5) leaves the folder,
+    and it reports a miss only at debug level. A name is tried as written
+    first, so every file that resolved before still resolves the same way.
+    Names that cannot be read at all are kept on ``missing``.
+    """
+    import urllib.parse
+
+    import trimesh
+
+    class _Resolver(trimesh.resolvers.FilePathResolver):
+        def get(self, name):
+            try:
+                return super().get(name)
+            except Exception:
+                decoded = urllib.parse.unquote(name)
+                if decoded != name:
+                    try:
+                        return super().get(decoded)
+                    except Exception:
+                        pass
+                self.missing.append(name)
+                raise
+
+    resolver = _Resolver(file_path, allow_anywhere=True)
+    resolver.missing = []
+    return resolver
+
+
 def load_scene(file_path):
     """Parse ``file_path`` (glTF/glB/OBJ/PLY/... anything trimesh reads) into a
     :class:`SceneData`. Node-instance world transforms from the scene graph are
@@ -424,11 +602,15 @@ def load_scene(file_path):
     # process=False keeps the authored vertex/UV/normal arrays aligned (no
     # vertex merging), which matters for textured meshes.
     source, load_options = file_path, {}
+    resolver = None
     suffix = os.path.splitext(file_path)[1].lower()
-    if suffix in (".glb", ".gltf"):
+    is_gltf = suffix in (".glb", ".gltf")
+    if is_gltf:
         from pygltflib import GLTF2
 
-        gltf = GLTF2().load(file_path)
+        resolver = _uri_resolver(file_path)
+        load_options = {"resolver": resolver}
+        gltf = _read_gltf(GLTF2, file_path)
         if gltf.animations:
             # trimesh preserves mesh extras on every primitive. Carry identity
             # through that boundary instead of guessing from vertex/face counts
@@ -443,10 +625,22 @@ def load_scene(file_path):
             source = io.BytesIO(payload)
             load_options = {
                 "file_type": suffix[1:],
-                "resolver": trimesh.resolvers.FilePathResolver(file_path),
+                "resolver": resolver,
                 "merge_primitives": False,
             }
     loaded = trimesh.load(source, process=False, force="scene", **load_options)
+    # trimesh drops an image it cannot read and carries on, so without this
+    # the model would render in its flat fallback color with no word why.
+    for uri in dict.fromkeys(resolver.missing if resolver is not None else ()):
+        warnings.warn(
+            f"Could not read {uri!r}, which {os.path.basename(file_path)!r} "
+            f"references (looked beside the model, in "
+            f"{os.path.dirname(os.path.abspath(file_path))!r}); a texture "
+            "that uses it is left out and its material falls back to a flat "
+            "color.",
+            AlganWarning,
+            stacklevel=2,
+        )
 
     meshes: list[MeshData] = []
     materials: list[MaterialData] = []
@@ -457,8 +651,8 @@ def load_scene(file_path):
         if not hasattr(geom, "vertices") or not hasattr(geom, "faces"):
             continue
         material_index = len(materials)
-        materials.append(_convert_material(getattr(geom, "visual", None)))
-        md = _convert_mesh(geom, material_index, name)
+        materials.append(_convert_material(getattr(geom, "visual", None), gltf=is_gltf))
+        md = _convert_mesh(geom, material_index, name, gltf=is_gltf)
         if md is None:
             materials.pop()
             continue

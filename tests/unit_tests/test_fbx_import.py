@@ -174,6 +174,43 @@ def test_model_builds_mesh_tree():
     assert quad_x < -1.0 < 1.0 < octa_x
 
 
+def test_location_and_basis_place_the_imported_geometry():
+    """``location``/``basis`` given to Model3D carry its parts along, exactly as
+    the same transform applied after construction would.
+    """
+    from algan import ORIGIN, OUT, RIGHT, UP, Off, Scene
+
+    v = torch.tensor([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0]])
+    data = SceneData(
+        meshes=[
+            MeshData(
+                vertices=v,
+                faces=torch.tensor([[0, 1, 2]]),
+                normals=torch.tensor([[1.0, 0, 0]] * 3),
+                material_index=0,
+            )
+        ],
+        materials=[MaterialData()],
+        nodes=[NodeData(name="root", mesh_indices=[0])],
+    )
+    with Scene():
+        model = Model3D(scene_data=data, location=RIGHT * 5)
+        corners = model.mesh_mobs[0].grid.location.reshape(-1, 3)
+        torch.testing.assert_close(corners, v + RIGHT * 5)
+        with Off():
+            model.move_to(ORIGIN)
+        torch.testing.assert_close(model.mesh_mobs[0].grid.location.reshape(-1, 3), v)
+
+        # A quarter turn about OUT, scaled by 2, then moved.
+        basis = torch.stack([UP * 2, -RIGHT * 2, OUT * 2]).reshape(-1)
+        mesh = Model3D(scene_data=data, location=RIGHT * 5, basis=basis).mesh_mobs[0]
+        corners = mesh.grid.location.reshape(-1, 3)
+        expected = torch.tensor([[5.0, 0, 0], [5.0, 2, 0], [3.0, 0, 0]])
+        torch.testing.assert_close(corners, expected)
+        normals = mesh._compute_corner_normals(mesh.grid.location)
+        torch.testing.assert_close(normals.reshape(-1, 3), UP.expand(3, 3))
+
+
 def test_triangle_mesh_requires_uvs_for_texture():
     SceneManager.reset()
     v, f, n, uv = _quad()
@@ -187,6 +224,106 @@ def test_assimp_loader_missing_file():
 
     with pytest.raises(FileNotFoundError):
         load_scene("does_not_exist.fbx")
+
+
+class _PyassimpPropertyGetter(dict):
+    """pyassimp 5.2.5's ``core.PropertyGetter``, verbatim: material properties
+    keyed by ``(name, semantic)``, where only ``[]`` accepts a bare name.
+    """
+
+    def __getitem__(self, key):
+        semantic = 0
+        if isinstance(key, tuple):
+            key, semantic = key
+        return dict.__getitem__(self, (key, semantic))
+
+    def keys(self):
+        for k in dict.keys(self):
+            yield k[0]
+
+    def __iter__(self):
+        return self.keys()
+
+    def items(self):
+        for k, v in dict.items(self):
+            yield k[0], v
+
+
+def test_assimp_loader_reads_pyassimp_materials_and_node_meshes(tmp_path, monkeypatch):
+    """Materials and node->mesh bindings survive the shapes ``pyassimp.load``
+    actually hands back (the native library is not needed to check that).
+    """
+    import contextlib
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    from algan.mobs.three_d_models import assimp_loader
+
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(tmp_path / "wood.png")
+    path = tmp_path / "model.fbx"
+    path.write_bytes(b"")
+
+    def mesh(vertices):
+        return SimpleNamespace(
+            name="part",
+            vertices=vertices,
+            faces=[[0, 1, 2]],
+            normals=None,
+            texturecoords=[],
+            colors=[],
+            materialindex=0,
+            bones=[],
+        )
+
+    empty, part = mesh([]), mesh([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0]])
+    translate = np.eye(4, dtype=np.float32)
+    translate[0, 3] = 10.0
+    # recur_pythonize puts the Mesh objects of scene.meshes on each node.
+    root = SimpleNamespace(
+        name="RootNode",
+        transformation=np.eye(4, dtype=np.float32),
+        meshes=[],
+        children=[
+            SimpleNamespace(
+                name="Part", transformation=translate, meshes=[part], children=[]
+            )
+        ],
+    )
+    properties = _PyassimpPropertyGetter(
+        {
+            ("name", 0): "Wood",
+            ("diffuse", 0): [0.8, 0.2, 0.1, 1.0],
+            ("opacity", 0): 0.5,
+            ("file", 1): "wood.png",
+        }
+    )
+    scene = SimpleNamespace(
+        materials=[SimpleNamespace(properties=properties)],
+        meshes=[empty, part],
+        rootnode=root,
+        animations=[],
+    )
+    fake = SimpleNamespace(load=lambda *args, **kwargs: contextlib.nullcontext(scene))
+    flags = type("Flags", (), {"__getattr__": lambda self, name: 0})()
+    monkeypatch.setattr(assimp_loader, "_require_pyassimp", lambda: (fake, flags))
+
+    data = assimp_loader.load_scene(str(path))
+    material = data.materials[0]
+    assert material.name == "Wood"
+    assert material.base_color == pytest.approx((0.8, 0.2, 0.1, 1.0))
+    assert material.opacity == 0.5
+    assert material.diffuse_texture == str(tmp_path / "wood.png")
+    assert len(data.meshes) == 1  # the empty mesh is dropped
+    assert [(n.name, n.mesh_indices) for n in data.nodes] == [
+        ("RootNode", []),
+        ("Part", [0]),
+    ]
+
+    SceneManager.reset()
+    model = Model3D(scene_data=data)
+    xs = model.mesh_mobs[0].grid.location.reshape(-1, 3)[:, 0]
+    assert (float(xs.min()), float(xs.max())) == (10.0, 11.0)
 
 
 # --- Phase 2: PBR materials + normal maps + node access ---------------------

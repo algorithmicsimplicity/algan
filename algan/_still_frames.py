@@ -8,6 +8,7 @@ cycle (RenderResult is imported only when a request is rendered).
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections import defaultdict, deque
 from contextlib import closing
@@ -38,6 +39,19 @@ def _background_key(value):
 
 def _snapshot(value):
     return value.detach().clone() if torch.is_tensor(value) else value
+
+
+def _save_image(image, path):
+    """Write ``image`` to ``path`` whole, or leave what was there alone."""
+    # Hidden, and named for this process, so it cannot be another still of
+    # the same call or of a render running beside this one. The suffix is
+    # kept: Pillow picks the format from it.
+    temporary = path.with_name(f".{path.stem}.{os.getpid()}.tmp{path.suffix}")
+    try:
+        image.save(str(temporary))
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -94,7 +108,12 @@ class _StillBatch:
                 "video_settings must be a VideoSettings instance or preset "
                 f"(for example HD or PREVIEW), got {type(settings).__name__}"
             )
-        settings = settings.as_preset()
+        # The preset sizes the picture; the moment it shows is the Scene's. A
+        # timestamp becomes a frame index at this rate, so THUMBNAIL's 1 fps
+        # took at=2.4 to the frame at 2.0 s -- and the default, 1.5 frames
+        # past the cursor, to 1.5 s past it.
+        scene_rate = scene._resolve_video_settings(None).frames_per_second
+        settings = settings.as_preset().set(frames_per_second=scene_rate)
         if post_processes is not None and not callable(post_processes):
             post_processes = tuple(post_processes)
         _check_post_processes(post_processes)
@@ -318,7 +337,7 @@ class _StillBatch:
                             # Sorting times must not reverse last-write-wins when
                             # different requests intentionally share a destination.
                             if position > last_write.get(target.path, -1):
-                                image.save(str(target.path))
+                                _save_image(image, target.path)
                                 last_write[target.path] = position
                             if aux is not None and position > last_pass_write.get(
                                 target.path, -1

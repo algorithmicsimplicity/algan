@@ -244,3 +244,55 @@ def test_scene_view_without_audio_stays_silent(fresh_scene, monkeypatch):
     with Scene.view(PREVIEW, block=False, open_browser=False) as handle:
         assert handle.session.state()["has_audio"] is False
         assert handle.session.audio() is None
+
+
+def test_short_sound_files_mix_whole(tmp_path):
+    # moviepy's reader failed on any request wider than half its buffer, and a
+    # short file's buffer is barely longer than the file: under ~0.74 s at
+    # the viewer's chunk size, the whole mix raised OSError.
+    from moviepy import AudioArrayClip, AudioFileClip
+
+    path = str(tmp_path / "blip.wav")
+    tone = np.full((22050, 2), 0.25)
+    AudioArrayClip(tone, fps=44100).write_audiofile(path, fps=44100, logger=None)
+    sound = AudioFileClip(path)
+    try:
+        track = SceneAudio([effect(sound, 0.5)], 1.5, 44100)
+        _, samples = pcm(track.wav())
+    finally:
+        sound.close()
+    assert samples.shape == (66150, 2)
+    np.testing.assert_array_equal(samples[:22050], 0)
+    np.testing.assert_allclose(samples[22060:44090], 0.25, atol=1e-3)
+    np.testing.assert_array_equal(samples[44110:], 0)
+
+
+def test_sound_files_are_not_resampled_nearest_neighbour(tmp_path):
+    # Sampled on another rate's grid, a decoded file was nearest-neighbour
+    # resampled; the WAV is written at the decoder's rate instead.
+    from moviepy import AudioArrayClip, AudioFileClip
+
+    path = str(tmp_path / "tone.wav")
+    t = np.arange(44100) / 44100
+    tone = np.sin(2 * np.pi * 6000 * t)[:, None].repeat(2, 1) * 0.5
+    AudioArrayClip(tone, fps=44100).write_audiofile(path, fps=44100, logger=None)
+    sound = AudioFileClip(path)
+    try:
+        rate, samples = pcm(SceneAudio([effect(sound)], 1, 48000).wav())
+    finally:
+        sound.close()
+    assert rate == 44100
+    np.testing.assert_allclose(samples[:44000], tone[:44000], atol=1e-3)
+
+
+def test_mono_array_clips_mix():
+    # A (n, 1) AudioArrayClip -- moviepy's mono form -- returns two equal
+    # columns while reporting one channel; the viewer answered HTTP 400.
+    from moviepy import AudioArrayClip
+
+    mono = AudioArrayClip(np.full((8000, 1), 0.25), fps=8000)
+    _, samples = pcm(SceneAudio([effect(mono, 0.5)], 2, 8000).wav())
+    assert samples.shape == (16000, 1)
+    np.testing.assert_array_equal(samples[:4000], 0)
+    np.testing.assert_array_equal(samples[4000:12000], 0.25)
+    np.testing.assert_array_equal(samples[12000:], 0)

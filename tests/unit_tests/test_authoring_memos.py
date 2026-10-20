@@ -183,6 +183,7 @@ def test_speech_clip_reads_its_duration_from_the_sidecar(tmp_path):
     write(4.0)
     os.utime(path, ns=(os.stat(path).st_atime_ns, os.stat(path).st_mtime_ns + 10**9))
     reprobed = audio_utils._cached_audio_file_clip(str(path))
-    assert type(reprobed).__name__ != "LazyAudioFileClip"
+    # A probe hands back a lazy clip too (it holds no decoder past authoring),
+    # so the old sidecar's 3 s is what would show it was trusted.
     assert reprobed.duration > probed.duration
     reprobed.close()

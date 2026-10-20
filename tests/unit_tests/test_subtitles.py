@@ -38,8 +38,17 @@ def _source(scene, *, duration, timestamps=None):
     return calls
 
 
-@pytest.mark.parametrize("suffix", ["srt", "vtt"])
-def test_manual_captions_serialize_as_literal_unicode(tmp_path, fresh_scene, suffix):
+@pytest.mark.parametrize(
+    ("suffix", "payload"),
+    [
+        # SubRip has no escapes: its decoders would show "&lt;" as written.
+        pytest.param("srt", "x < y & z --> α", id="srt"),
+        pytest.param("vtt", "x &lt; y &amp; z --&gt; α", id="vtt"),
+    ],
+)
+def test_manual_captions_serialize_as_literal_unicode(
+    tmp_path, fresh_scene, suffix, payload
+):
     Scene.add_subcaption("  x < y & z --> α\r\n\r\nSecond line  ", duration=2)
     Scene.wait(3)
     path = Scene.save_subtitles(tmp_path / f"caption.{suffix}")
@@ -48,7 +57,7 @@ def test_manual_captions_serialize_as_literal_unicode(tmp_path, fresh_scene, suf
     assert path.read_bytes() == (
         header
         + f"1\n00:00:00{decimal}000 --> 00:00:02{decimal}000\n"
-        + "x &lt; y &amp; z --&gt; α\nSecond line\n\n"
+        + f"{payload}\nSecond line\n\n"
     ).encode("utf-8")
     assert path.is_absolute()
 

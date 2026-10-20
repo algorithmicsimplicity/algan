@@ -113,6 +113,28 @@ def _transform_normals(normals, matrix):
     return normals @ inv_t.T
 
 
+def _modulate_colors(colors, base_color):
+    """Per-vertex colors ``[V, C]`` (display sRGB, ``C`` of 3 to 5) times a
+    material's ``base_color`` RGBA, in linear light.
+
+    A channel the material leaves at exactly 1 is not touched, so colors under
+    the default white material pass through bit for bit.
+    """
+    from algan.utils.color_space import linear_to_srgb, srgb_to_linear
+
+    colors = colors.float().clone()
+    for c in range(3):
+        if base_color[c] != 1.0:
+            factor = srgb_to_linear(torch.tensor(float(base_color[c])))
+            colors[:, c] = linear_to_srgb(srgb_to_linear(colors[:, c]) * factor)
+    if base_color[3] != 1.0:
+        if colors.shape[-1] == 3:
+            colors = torch.cat((colors, torch.ones_like(colors[:, :1])), -1)
+        # Opacity is the last slot of both RGBA and the 5-slot engine color.
+        colors[:, -1] = colors[:, -1] * float(base_color[3])
+    return colors
+
+
 def _load_image_hwc(path):
     """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}),
     or ``None`` on failure.
@@ -179,6 +201,12 @@ class Model3D(Mob):
         pbr_materials: bool = True,
         **kwargs,
     ):
+        # The parts are built in the file's own coordinates about an
+        # untransformed Model3D, then a placement given here is applied the way
+        # any later transform is, so it carries the parts along with it.
+        placement = {
+            name: kwargs.pop(name) for name in ("basis", "location") if name in kwargs
+        }
         super().__init__(**kwargs)
         device = self.location.device
         self.normal_maps = normal_maps
@@ -245,6 +273,12 @@ class Model3D(Mob):
         if fit_to_size is not None:
             self._normalize(fit_to_size)
 
+        with Off(animation_manager=self.animation_manager):
+            # Basis first, so the parts turn and scale about the model's
+            # origin before the whole is moved to ``location``.
+            for name, value in placement.items():
+                setattr(self, name, value)
+
     def _build_mesh_mob(
         self, scene_data, mesh, matrix, device, load_textures, smooth_normals
     ):
@@ -279,6 +313,14 @@ class Model3D(Mob):
         mesh_kwargs = {}
         if color is not None and texture is None and vertex_colors is None:
             mesh_kwargs["color"] = color
+        # Per-vertex colors are the albedo. The material's color multiplies
+        # them, as a material color does in Three.js, and is then withheld
+        # from the material below, whose color would repaint every vertex.
+        material_color = color
+        if vertex_colors is not None:
+            if material is not None:
+                vertex_colors = _modulate_colors(vertex_colors, material.base_color)
+            material_color = None
 
         # Meshes stay lit: with authored normals (smooth_normals) they shade
         # smooth; otherwise TriangleMesh derives flat per-face normals.
@@ -300,7 +342,7 @@ class Model3D(Mob):
         # the flat fallback.
         if self.pbr_materials and material is not None:
             self._apply_pbr_material(
-                mob, material, color, has_texture=texture is not None
+                mob, material, material_color, has_texture=texture is not None
             )
 
         # Legacy model formats may expose reflectivity / IOR without a full
@@ -314,7 +356,7 @@ class Model3D(Mob):
 
                 mob.set_material(
                     MeshPhysicalMaterial(
-                        color=color,
+                        color=material_color,
                         metalness=legacy_metalness,
                         roughness=float(material.roughness_factor),
                         ior=legacy_ior if legacy_ior > 1.0 else 1.5,

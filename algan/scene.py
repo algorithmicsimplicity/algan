@@ -957,7 +957,11 @@ class Scene(RenderLoopMixin):
 
         audio_clip = CompositeAudioClip(clips_to_compose)
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
-        audio_clip.duration = self.animation_manager.context.timespan.original_end
+        # As long as the video: whole frames up to the end of everything
+        # recorded (the render loop's frame count), not the innermost open
+        # context's unrounded end.
+        fps = self.video_settings.frames_per_second
+        audio_clip.duration = round(self._recorded_end_time_for_render() * fps) / fps
         # The same samples either way (write_composite_audio says why it is
         # faster); ALGAN_OPT_DISABLE=audiomix writes through moviepy for A/B.
         if _opt_disabled("audiomix") or not write_composite_audio(
@@ -1541,8 +1545,9 @@ class Scene(RenderLoopMixin):
             written is reported, absolute, as ``result.output_path``.
         video_settings
             Resolution and anti-aliasing for this still only, normally a
-            preset such as ``HD``. Defaults to ``None``, meaning the Scene's
-            current settings.
+            preset such as ``HD``. Its frame rate is not used: the still shows
+            the frame the Scene's own video shows at ``at``. Defaults to
+            ``None``, meaning the Scene's current settings.
         at
             Timestamp in seconds to capture, or a sequence of timestamps to
             capture several stills in one call. A negative timestamp is an

@@ -258,8 +258,8 @@ def align_large_audio_torchaudio_robust(
     return all_word_segments
 
 
-def subfinder(mylist, pattern):
-    for i in range(len(mylist)):
+def subfinder(mylist, pattern, start=0):
+    for i in range(start, len(mylist)):
         if mylist[i] == pattern[0] and mylist[i : i + len(pattern)] == pattern:
             return i
     return -1
@@ -394,16 +394,24 @@ def get_speech_generator_from_file(audio_file, transcript_file):
             full_ac.close()
         raise
 
+    # Speech blocks ask for their lines in narration order, so search after the
+    # previous match first: a phrase the transcript repeats ("Next.") is then
+    # its next occurrence, not always its first. A line found nowhere after it
+    # (narration authored again, or out of order) falls back to its first one.
+    transcript_words = [_[0] for _ in word_time_stamps]
+    next_word = 0
+
     def generator(script):
+        nonlocal next_word
         script = script.replace("-", " ")
         script_words = [strip_nonchars(_) for _ in script.split()]
         script_words = [_ for _ in script_words if len(_) > 0]
 
-        script_start_ind = (
-            subfinder([_[0] for _ in word_time_stamps], script_words)
-            if script_words
-            else -1
-        )
+        script_start_ind = -1
+        if script_words:
+            script_start_ind = subfinder(transcript_words, script_words, next_word)
+            if script_start_ind < 0:
+                script_start_ind = subfinder(transcript_words, script_words)
 
         if (
             script_start_ind < 0
@@ -415,6 +423,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
                 f" audio file, and so this speech will be machine generated:\n\n{script_words}"
             )
             return get_pyttsx_speech_generator(script)
+        next_word = script_start_ind + len(script_words)
 
         audio_start = word_time_stamps[script_start_ind][1]
         audio_end = word_time_stamps[script_start_ind + len(script_words) - 1][2]
@@ -504,7 +513,11 @@ def _cached_audio_file_clip(file):
     if temporary is not None:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
-    return clip
+    # Lazy on a miss as well: a decoder held from authoring on is an ffmpeg
+    # process and two pipes, and a narrated scene's first render authors one
+    # clip per sentence -- enough of them exhaust the descriptor limit.
+    clip.close()
+    return _lazy_audio_file_clip_class()(file, info)
 
 
 _LAZY_AUDIO_FILE_CLIP = None
@@ -591,6 +604,9 @@ def _lazy_audio_file_clip_class():
             # original's, which copies share along with the closure itself.
             # write_composite_audio calls it ahead of the mix, on a worker.
             self.open_reader = lambda: self.reader
+            # And closes it, reopened if read again; write_composite_audio
+            # calls it once the mix is past every member reading through it.
+            self.close_reader = lambda: self.close()
 
         @property
         def reader(self):
@@ -631,6 +647,13 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     one starts an ffmpeg process and waits for its first buffer, which is most
     of what the mix itself costs).
 
+    One difference: moviepy samples every member on the output grid, which
+    for a file decoded at another rate (moviepy decodes at 44.1 kHz) is
+    unfiltered nearest-neighbour resampling -- a 6 kHz tone written at 48 kHz
+    came out at 12 dB SNR. When the members' decoders share a rate, the mix
+    runs at that rate instead and the writer's FFmpeg resamples it to ``fps``.
+    At ``fps`` equal to that rate (the default 44.1 kHz) nothing changes.
+
     Returns False without writing anything when the composite holds a member
     this cannot vouch for (one that overrides ``is_playing``), or a chunk grid
     moviepy itself would reject; the caller then writes it the moviepy way.
@@ -644,6 +667,12 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     clips = list(composite.clips)
     if any(type(clip).is_playing is not Clip.is_playing for clip in clips):
         return False
+    # File-backed members (those with a ``buffersize``) read samples exactly
+    # only on their decoder's grid. Mix there; FFmpeg resamples properly.
+    output_fps = fps
+    decoder_rates = {clip.fps for clip in clips if hasattr(clip, "buffersize")}
+    if len(decoder_rates) == 1:
+        fps = decoder_rates.pop()
     total_size = int(fps * composite.duration)
     nchunks = total_size // buffersize + 1
     positions = np.linspace(0, total_size, nchunks + 1, endpoint=True, dtype=int)
@@ -671,14 +700,23 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
         key=lambda k: (ranges[k][0], k),
     )
 
-    # One opener per distinct decoder, in order of first use.
+    # One opener per distinct decoder, in order of first use, and the closer
+    # and last chunk of each decoder that can be closed and reopened.
     openers = {}
     opener_of = {}
+    closers = {}
+    last_chunk = {}
     for k in order:
         opener = getattr(clips[k], "open_reader", None)
         if callable(opener):
             openers.setdefault(id(opener), opener)
             opener_of[k] = id(opener)
+            closer = getattr(clips[k], "close_reader", None)
+            if callable(closer):
+                closers[id(opener)] = closer
+                last_chunk[id(opener)] = max(
+                    last_chunk.get(id(opener), 0), ranges[k][1] - 1
+                )
     queue = list(openers)
     futures = {}
     prefetch = 3
@@ -688,7 +726,15 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
     nchannels = composite.nchannels
     logger.debug("Mixing %d audio clips into %s", len(clips), filename)
     pool = ThreadPoolExecutor(max_workers=prefetch, thread_name_prefix="algan-audio")
-    writer = FFMPEG_AudioWriter(filename, fps, nbytes, nchannels, codec=codec)
+    writer = FFMPEG_AudioWriter(
+        filename,
+        fps,
+        nbytes,
+        nchannels,
+        codec=codec,
+        # Overrides the writer's output ``-ar``, which follows its input's.
+        ffmpeg_params=None if fps == output_fps else ["-ar", str(int(output_fps))],
+    )
     try:
 
         def top_up():
@@ -727,11 +773,21 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
                 part = 1 * (t >= start)
                 if end is not None:
                     part *= t <= end
-                sounds.append(clip.get_frame(t - start) * np.array([part]).T)
+                # A mono AudioClip returns a 1-D array, which times the column
+                # mask is a len(t)-square one; a mono AudioArrayClip returns
+                # two equal columns while reporting one channel.
+                frames = np.asarray(clip.get_frame(t - start))
+                if frames.ndim == 1:
+                    frames = frames[:, None]
+                sounds.append(frames[:, :nchannels] * np.array([part]).T)
             # CompositeAudioClip.frame_function and AudioClip.to_soundarray.
             frame = np.zeros((len(t), nchannels)) + sum(sounds)
             frame = np.maximum(-0.99, np.minimum(0.99, frame))
             pending.append((scale * frame).astype(inttype))
+            # Each decoder is a process and two pipes: release it once the
+            # mix is past it, or a few hundred sounds run out of descriptors.
+            for key in [key for key in opened if last_chunk.get(key) == i]:
+                closers.pop(key)()
             pending_samples += len(t)
             if pending_samples >= 1 << 20:
                 writer.write_frames(np.concatenate(pending))
@@ -743,4 +799,6 @@ def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=20
         # decoder is left half-built behind a clip the caller will close.
         pool.shutdown(wait=True, cancel_futures=True)
         writer.close()
+        for key in [key for key in openers if key in closers]:
+            closers.pop(key)()
     return True
