@@ -1,7 +1,7 @@
 """The Algan demo video: "Algorithmic animation" turns to chrome, keeps its acronym, and becomes
 the logo.
 
-Usage:  python branding/demo_video.py STILLS [outdir]     # key-moment stills at preview size
+Usage:  python branding/demo_video.py STILLS [outdir] [t1,t2,...]  # stills at preview size
         python branding/demo_video.py HD [outdir]         # the video (PREVIEW / LD / MD / HD / PRODUCTION)
 
 Beats, with the camera moving throughout:
@@ -131,6 +131,13 @@ with Off():
             },
             axis_config={"stroke_color": "#7d9cf0", "stroke_width": 5},
         ).move(at(0.0, brand.FLOOR_TOP + 10.0, 52.0)),
+        # A wall behind it all. Without it the letters reflect the studio's bright band behind
+        # the camera wherever the gallery does not reach -- the whole top line -- and read as
+        # plain white; fading the wall out with the gallery brings that band back gradually.
+        Square(color=Color("#34415e"))
+        .set_material(MeshBasicMaterial(color=Color("#34415e")))
+        .scale(40.0)
+        .move(at(0.0, brand.FLOOR_TOP + 15.0, 58.0)),
     ]
     for mob in gallery:
         mob.spawn()
@@ -199,10 +206,25 @@ with Sync():
                 mob.opacity = 0.0
     with Seq():
         Scene.wait(0.3)
-        with Sync(runtime=1.9, easing=easings.ease_in_out_sine):
-            for k, mob in enumerate(survivors):
-                mob.scale(grow)
-                mob.move_to(targets[k])
+        with Sync():
+            with Sync(runtime=1.9, easing=easings.ease_in_out_sine):
+                for k in range(3):
+                    survivors[k].scale(grow)
+                    survivors[k].move_to(targets[k])
+            # The a and n cross the g on their way up; they pass in front of it, not through it.
+            for k in (3, 4):
+                mob = survivors[k]
+                mid = (
+                    0.5 * (mob.get_center().flatten() + targets[k].flatten())
+                    + OUT * 0.6
+                )
+                with Seq():
+                    with Sync(runtime=0.95, easing=easings.ease_in_sine):
+                        mob.scale(grow**0.5)
+                        mob.move_to(mid)
+                    with Sync(runtime=0.95, easing=easings.ease_out_sine):
+                        mob.scale(grow**0.5)
+                        mob.move_to(targets[k])
     # The gallery fades out of the reflections as the word forms, so the mirror settles into
     # the logo's chrome, which reflects only the studio.
     with Seq():
@@ -319,6 +341,8 @@ Scene.wait(0.1)
 os.makedirs(OUTDIR, exist_ok=True)
 if MODE == "STILLS":
     times = [1.2, 4.0, 5.7, 6.1, 6.5, 6.9, 7.3, 7.7, 9.3, 10.9, 11.8, 13.2, 14.5, 15.3]
+    if len(sys.argv) > 3:
+        times = [float(t) for t in sys.argv[3].split(",")]
     for t in times:
         Scene.save_frame(
             os.path.join(OUTDIR, f"demo_still_{t:04.1f}.png"), PREVIEW, at=t
