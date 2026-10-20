@@ -2609,12 +2609,12 @@ class Mob(
         # attr_to_timeline is Scene-wide, so it also accepts an attribute owned
         # by some other Mob in the Scene (where setting it does nothing). It
         # gates the check as it always has, but is not advertised in the message.
-        accepted = {
-            *settable,
-            *self.scene.timeline_manager.attr_to_timeline.keys(),
-        }
+        timelines = self.scene.timeline_manager.attr_to_timeline
         for p in property_names:
-            if hasattr(self, p) or p in accepted:
+            # The membership tests first: ``hasattr`` on an animatable
+            # attribute runs its getter, a timeline read per name, which every
+            # ``set`` paid only to learn what the registry already said.
+            if p in settable or p in timelines or hasattr(self, p):
                 continue
             suggestion = difflib.get_close_matches(p, sorted(settable), n=1)
             hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
