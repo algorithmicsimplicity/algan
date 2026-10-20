@@ -702,9 +702,14 @@ def test_every_env_backed_renderer_global_is_a_setting():
     Torch and Taichi initialise and so have no runtime object to own them.
     """
     import ast
+    import re
+    import unicodedata
     from pathlib import Path
 
     accessors = {"env_flag", "env_int", "env_float", "env_str", "env_is_set"}
+    # A call to an accessor names it, so a file whose text never does cannot
+    # hold one and is not parsed. NFKC first, as Python does to identifiers.
+    names_an_accessor = re.compile(r"\b(?:" + "|".join(sorted(accessors)) + r")\b")
     fields = set(SETTINGS.raytracing.field_names())
     root = Path(__file__).parents[2] / "algan"
     stray = []
@@ -713,7 +718,10 @@ def test_every_env_backed_renderer_global_is_a_setting():
             continue
         if path.match("settings/_startup.py"):
             continue
-        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        source = path.read_text(encoding="utf-8")
+        if not names_an_accessor.search(unicodedata.normalize("NFKC", source)):
+            continue
+        for node in ast.parse(source).body:
             if isinstance(node, ast.Assign) and len(node.targets) == 1:
                 target = node.targets[0]
                 name = target.id if isinstance(target, ast.Name) else None
