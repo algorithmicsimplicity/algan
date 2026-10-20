@@ -26,13 +26,13 @@ The demo video, beat by beat, with the camera moving from the first frame: "Algo
 animation" writes itself on two lines while the camera drifts sideways; one blue wave sweeps
 through and leaves the letters a mirror (a `wave_color` that fades a plain copy of the text to
 reveal a chrome copy underneath), and as the camera orbits they reflect three large solids and a
-grid standing behind it; the letters outside A-L-G and A-N fade out in a wave, left to right,
-while the survivors slide into "Algan" and the gallery fades out of their reflections, so the
-mirror settles into the logo's chrome; the A's crossbar lifts off as a straight
-bar, bends into y = sin x on faint axes and settles back as the wave, leaving a lambda; the
-sphere rolls in and the cube and cone drop onto the mirror while the camera cranes up to the
-banner framing; a tagline fades in, and the video fades to black so its loop on the docs page
-has a clean seam.
+grid standing behind it; the second line slides right while the letters outside A-L-G and A-N
+fade out in a wave, right to left, then "Alg" and "an" close on their places from either side
+without crossing, and the gallery fades out of their reflections, so the mirror settles into
+the logo's chrome; the A's crossbar dissolves into a straight blue bar, which lifts off, bends
+into y = sin x on faint axes and settles back as the wave, leaving a lambda; the sphere rolls
+in and the cube and cone drop onto the mirror while the camera cranes up to the banner
+framing, and the video holds on the logo.
 
 Design notes that are easy to lose:
 - Typeface: Libre Franklin Black (SIL OFL 1.1), the open revival of Franklin Gothic, which the

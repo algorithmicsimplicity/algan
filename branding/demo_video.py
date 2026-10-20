@@ -8,14 +8,14 @@ Beats, with the camera moving throughout:
   0.0  "Algorithmic animation" writes itself on two lines while the camera drifts sideways.
   2.5  One blue wave sweeps through and leaves the letters a mirror; they reflect three large
        solids and a grid standing behind the camera, which slide across them as it orbits.
-  5.5  The letters outside A-L-G and A-N fade out in a wave, left to right, while the five
-       survivors slide into "Algan"; the gallery fades out of their reflections as they go,
-       so the mirror settles into the logo's chrome.
-  7.7  The A's crossbar lifts off as a straight bar, bends into y = sin x on faint axes, and
-       settles back into the A, now a lambda, as the wave.
- 10.5  The sphere rolls in and the cube and cone drop onto the mirror while the camera cranes
-       up to the banner framing (branding/logo_scene.py), which is the logo.
- 12.9  A tagline fades in above the logo, then everything fades to black.
+  5.5  The second line slides right while the letters outside A-L-G and A-N fade out in a
+       wave, right to left; then "Alg" and "an" glide into "Algan" without crossing. The
+       gallery fades out of their reflections as they go, so the mirror settles into the
+       logo's chrome.
+  8.5  The A's crossbar dissolves into a blue bar, which lifts off, bends into y = sin x on
+       faint axes, and settles back into the A, now a lambda, as the wave.
+ 12.1  The sphere rolls in and the cube and cone drop onto the mirror while the camera cranes
+       up to the banner framing (branding/logo_scene.py), which is the logo, and holds there.
 
 The logo itself -- typeface, materials, studio, layout -- comes from branding/brand.py.
 The y = sin x label is typeset with LaTeX, so a TeX installation is needed.
@@ -40,8 +40,8 @@ TITLE_WIDTH = 12.8
 KEEP = [0, 1, 2, 11, 12]  # A l g . . . . . . . . a n  ->  "Algan"
 WORD_HEIGHT = 3.1
 ASPECT = 16 / 9
-TAGLINE = "Programmatic animation for explanatory mathematics"
-FADE = 0.7
+# Seconds the last frame, the logo, holds.
+HOLD = 1.5
 # The title is a sharper mirror than the logo's chrome, so the gallery reads in it; it settles
 # to the chrome's roughness as "Algan" forms, and the swap to the wordmark is then invisible.
 MIRROR_ROUGHNESS = 0.02
@@ -164,17 +164,6 @@ with Off():
     # ---- the pieces that arrive later -----------------------------------------------------
     sphere, cube, cone = brand.make_solids(WORD_HEIGHT)
     layout = brand.solid_layout(word_right, WORD_HEIGHT)
-    tagline = Text(
-        TAGLINE,
-        font=brand.FONT,
-        weight=brand.WEIGHT,
-        font_size=60,
-        color=Color("#9aaccc"),
-    )
-    tagline.scale_to_width(0.55 * (right - left))
-    # Above the logo, high enough that its reflection in the floor falls below the frame.
-    tagline.move_to(at(0.0, brand.FLOOR_TOP + WORD_HEIGHT + 2.4, 0.0))
-    tagline.set_material(MeshBasicMaterial(color=Color("#9aaccc")))
 
 # ---- 0.0: the title writes itself while the camera drifts --------------------------------
 with Sync():
@@ -201,59 +190,77 @@ with Sync():
 with Off():
     top.despawn()
 
-# ---- 5.5: the rest fade out in a wave, the survivors slide into "Algan" --------------------
+# ---- 5.5: the second line slides right as the rest fade out; then "Algan" forms ----------
 survivors = [mirror.character_mobs[i] for i in KEEP]
 leavers = [mob for i, mob in enumerate(mirror.character_mobs) if i not in KEEP]
+second_line = mirror.character_mobs[KEEP[3] :]
 xs = [mob.get_center().flatten()[0].item() for mob in leavers]
 x_lo, x_hi = min(xs), max(xs)
-SWEEP = 1.3  # seconds for the fade to cross the title, left to right
+SWEEP = 1.0  # seconds for the fade to cross the title, right to left
+LETTER_FADE = 0.4
 grow = (
     wordmark.character_mobs[1].get_height() / mirror.character_mobs[1].get_height()
 ).item()
+
+
+def box_min(mob):
+    return mob.get_bounding_box_min()[0, 0]
+
+
+# The second line slides right until its "an" stands clear of where the g will land, so the
+# two groups then close in on their places from either side instead of crossing.
+slide = (
+    wordmark.character_mobs[2].get_bounding_box_max()[0, 0][0]
+    + 0.25
+    - box_min(survivors[3])[0]
+).item()
+
+
+def landing(k, offset):
+    """The move that, with ``scale(grow)``, puts survivor ``k`` exactly on the wordmark's
+    letter. Scaling pivots on the mob's location, so the box it ends with is known; matching
+    boxes rather than centres matters for the A, whose crossbar pulls its centre below the
+    lambda's, so "Algan" jumped when the wordmark took over.
+    """
+    mob = survivors[k]
+    pivot = mob.location.flatten() + offset
+    lo = box_min(mob) + offset
+    return box_min(wordmark.character_mobs[k]) - (pivot + grow * (lo - pivot))
+
+
+landings = [landing(k, RIGHT * slide if k >= 3 else ORIGIN) for k in range(5)]
 with Sync():
-    for mob, x in zip(leavers, xs):
-        with Seq():
-            Scene.wait(SWEEP * (x - x_lo) / (x_hi - x_lo) + 0.01)
-            with Sync(runtime=0.5):
-                mob.opacity = 0.0
     with Seq():
-        Scene.wait(0.3)
         with Sync():
-            with Sync(runtime=1.9, easing=easings.ease_in_out_sine):
-                for k in range(3):
-                    survivors[k].scale(grow)
-                    survivors[k].move_to(targets[k])
-            # The a and n cross the g on their way up; they pass in front of it, not through it.
-            for k in (3, 4):
-                mob = survivors[k]
-                mid = (
-                    0.5 * (mob.get_center().flatten() + targets[k].flatten())
-                    + OUT * 0.6
-                )
+            with Sync(runtime=1.2, easing=easings.ease_in_out_sine):
+                for mob in second_line:
+                    mob.move(RIGHT * slide)
+            for mob, x in zip(leavers, xs):
                 with Seq():
-                    with Sync(runtime=0.95, easing=easings.ease_in_sine):
-                        mob.scale(grow**0.5)
-                        mob.move_to(mid)
-                    with Sync(runtime=0.95, easing=easings.ease_out_sine):
-                        mob.scale(grow**0.5)
-                        mob.move_to(targets[k])
+                    Scene.wait(SWEEP * (x_hi - x) / (x_hi - x_lo) + 0.01)
+                    with Sync(runtime=LETTER_FADE):
+                        mob.opacity = 0.0
+        with Sync(runtime=1.6, easing=easings.ease_in_out_sine):
+            for mob, shift in zip(survivors, landings):
+                mob.scale(grow)
+                mob.move(shift)
     # The gallery fades out of the reflections as the word forms, so the mirror settles into
     # the logo's chrome, which reflects only the studio.
     with Seq():
-        Scene.wait(0.5)
-        with Sync(runtime=1.7):
+        Scene.wait(0.6)
+        with Sync(runtime=2.4):
             for mob in gallery:
                 mob.opacity = 0.0
             for mob in survivors:
                 mob.roughness = brand.chrome().roughness
-    with Sync(runtime=2.2, easing=easings.ease_in_out_sine):
+    with Sync(runtime=3.0, easing=easings.ease_in_out_sine):
         cam.move_to(cam_mid)
         cam.look_at(look_mid)
 with Off():
     for mob in gallery:
         mob.despawn()
 
-# ---- 7.7: the crossbar lifts off, becomes y = sin x, and comes back as the wave ------------
+# ---- 8.5: the crossbar turns blue, becomes y = sin x, and comes back as the wave -----------
 axes_centre = at(word_centre, brand.FLOOR_TOP + WORD_HEIGHT + 2.3, 0.0)
 half = 3.3
 radius = 0.07
@@ -269,10 +276,19 @@ axes.move_to(axes_centre)
 label = Tex(r"y = \sin x", font_size=40, color=Color("#c8d6f0"))
 label.move_to(axes_centre + at(half + 0.9, 0.55, 0.0))
 
+# The wordmark takes over from the title's letters, which it matches exactly except for the
+# A's crossbar: the lambda has none. "lgan" swap in one frame, one copy for another; two
+# overlapping copies would double the coverage of their antialiased edges and outline every
+# letter. The lambda fades in over the A, then the A, and with it its crossbar, fades out
+# under the blue bar.
+lam = wordmark.character_mobs[0]
 with Off():
-    mirror.despawn()
     wordmark.spawn(False)
+    lam.opacity = 0.0
+    for mob in survivors[1:]:
+        mob.opacity = 0.0
     bar = crossbar.build(amplitude=0.0).spawn()
+    bar.opacity = 0.0
     start = crossbar.center
     axes.spawn(False)
     axes.opacity = 0.0
@@ -286,6 +302,16 @@ def bar_shape(centre, **shape):
     return lambda uv: tube(uv) + (centre - start)
 
 
+with Sync():
+    with Sync(runtime=0.8):
+        bar.opacity = 1.0
+    with Seq():
+        with Sync(runtime=0.3):
+            lam.opacity = 1.0
+        with Sync(runtime=0.5):
+            survivors[0].opacity = 0.0
+with Off():
+    mirror.despawn()
 with Sync(runtime=0.7):
     bar.set_location_by_function(
         bar_shape(axes_centre, amplitude=0.0, half=half, radius=radius)
@@ -307,7 +333,7 @@ with Off():
     axes.despawn()
     label.despawn()
 
-# ---- 10.5: the solids arrive and the camera cranes to the logo ---------------------------
+# ---- 12.1: the solids arrive and the camera cranes to the logo ---------------------------
 sphere_end, _ = layout["sphere"]
 cube_end, _ = layout["cube"]
 cone_end, _ = layout["cone"]
@@ -332,29 +358,11 @@ with Sync():
         cam.move_to(cam_end)
         cam.look_at(look_end)
 
-# ---- 12.9: a tagline, then fade to black --------------------------------------------------
-with Off():
-    tagline.spawn(False)
-    tagline.opacity = 0.0
-with Sync(runtime=0.7):
-    tagline.opacity = 1.0
-Scene.wait(1.0)
-# A black card in front of the lens: the studio's backdrop is the environment map, which no
-# Mob's opacity reaches.
-with Off():
-    forward = (look_end - cam_end) / torch.linalg.norm(look_end - cam_end)
-    card = Square(color=BLACK).scale(6.0)
-    card.set_material(MeshBasicMaterial(color=BLACK))
-    card.move_to(cam_end + forward * 1.0)
-    card.spawn(False)
-    card.opacity = 0.0
-with Sync(runtime=FADE):
-    card.opacity = 1.0
-Scene.wait(0.1)
+Scene.wait(HOLD)
 
 os.makedirs(OUTDIR, exist_ok=True)
 if MODE == "STILLS":
-    times = [1.2, 4.0, 5.7, 6.1, 6.5, 6.9, 7.3, 7.7, 9.3, 10.9, 11.8, 13.2, 14.5, 15.3]
+    times = [1.2, 4.0, 5.9, 6.5, 7.1, 7.5, 7.9, 8.3, 8.7, 10.9, 12.5, 13.4, 14.8, 15.9]
     if len(sys.argv) > 3:
         times = [float(t) for t in sys.argv[3].split(",")]
     for t in times:

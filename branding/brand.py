@@ -207,7 +207,7 @@ class Crossbar:
         )
         self.half = BAR_HALF * unit
         self.amplitude = 0.075 * CAP * unit
-        self.radius = 0.062 * CAP * unit
+        self.radius = 0.045 * CAP * unit
 
     def shape(self, amplitude=None, half=None, radius=None):
         return tube(
@@ -263,15 +263,16 @@ CUBE_TURN = 46.0
 def solid_layout(word_right, word_height):
     """Where the three solids stand, from the word's right edge: the logo's original grouping.
 
-    The sphere stands in front, just clear of the n; the cube behind it and to the right; the
-    cone in front of the cube, overlapping it from the camera's view. Offsets are the original
-    logo's, in world units for a 3.1-unit wordmark, scaled with ``word_height``; the solids
+    The sphere stands in front, touching the n from the camera's view; the cube behind it and
+    to the right; the cone in front of the cube, overlapping it from the camera's view.
+    Offsets are the original logo's, in world units for a 3.1-unit wordmark, scaled with
+    ``word_height``, with the group moved 0.28 left so no gap opens after the n; the solids
     clear one another in 3-D at the sizes ``solid_sizes`` gives them. Returns
     ``{name: (centre, size)}`` and the group's right edge.
     """
     s = solid_sizes(word_height)
     k = word_height / 3.1
-    x = word_right + 1.05 * k
+    x = word_right + 0.77 * k
     sphere = (RIGHT * x + UP * (FLOOR_TOP + s["sphere"]) + OUT * 1.6 * k, s["sphere"])
     cube = (
         RIGHT * (x + 1.9 * k) + UP * (FLOOR_TOP + 0.5 * s["cube"]) + IN * 0.5 * k,
