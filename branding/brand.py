@@ -254,7 +254,10 @@ def solid_sizes(word_height):
     }
 
 
-CUBE_TURN = 38.0
+# Degrees the cube is turned about the vertical. At 38 the cone's dark back, reflected in the
+# lacquer, drew a straight edge from corner to corner of the cube's right face and read as a
+# seam between its two triangles; at 46 that reflection falls off the face.
+CUBE_TURN = 46.0
 
 
 def solid_layout(word_right, word_height):
