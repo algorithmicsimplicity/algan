@@ -361,10 +361,7 @@ def _scale_factor_to_manim(scale_factor):
     multiplier, not a coordinate: ``to_manim`` is the converter for values that
     *mean* something in Algan's coordinate system (points, directions, edges),
     and coupling a per-axis multiplier to that conversion would be wrong by
-    category -- Algan's ``OUTWARD`` is ``-z`` where Manim's ``OUT`` is ``+z``
-    (see
-    "The z mirror" in AGENTS.md), so any coordinate-style treatment of the
-    forward component would negate the one stretch the user asked for.
+    category, even though the two systems now share their axes.
 
     The result is also flattened to a bare ``(3,)`` array (or a scalar): Algan
     tensors carry leading batch dimensions Manim's geometry does not, and a
@@ -593,6 +590,41 @@ class ManimCompatMob(ManimMob):
         aligned_edge=_manim.ORIGIN,
         coor_mask=np.array([1, 1, 1]),
     ):
+        """Move the Mob onto a point or onto another Mob, as Manim's ``move_to`` does.
+
+        This keeps Manim's signature rather than that of Algan's
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`: the
+        Mob's center, or the edge named by ``aligned_edge``, is placed on the
+        target, and there is no ``arc_angle``. For a curved path, use
+        :meth:`move` with its ``arc_angle``.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob morphs into its new place over the
+        current context's runtime (1 second by default). Use
+        ``with Off(): mob.move_to(...)`` to place it instantly. Applies to this
+        Mob and its descendants.
+
+        Parameters
+        ----------
+        point_or_mobject
+            Where to go: a 3-D point in world units, or a Mob, in which case
+            the matching point of that Mob (its center, or the same edge as
+            ``aligned_edge``) is the target.
+        aligned_edge
+            Which part of this Mob lands on the target, as a direction: ``UP``
+            puts its top edge there, ``UP + LEFT`` its top-left corner. Defaults
+            to ``ORIGIN``, meaning the Mob's center.
+        coor_mask
+            Which axes to move along, as three 0-or-1 entries: an axis whose
+            entry is 0 keeps the Mob's current coordinate. Defaults to
+            ``[1, 1, 1]``, moving along all three.
+
+        Returns
+        -------
+        :class:`~algan.mobs.manim_compat.ManimCompatMob`
+            This Mob, so calls can be chained.
+        """
         before, source = self._prepare_manim_edit()
         source.move_to(
             to_manim(point_or_mobject),
@@ -670,6 +702,30 @@ class ManimCompatMob(ManimMob):
         return self._move_along_arc(target, arc_angle, recursive=recursive, **kwargs)
 
     def scale(self, scale_factor, **kwargs):
+        """Resize the Mob by a factor, as Manim's ``scale`` does.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob morphs to its new size over the
+        current context's runtime (1 second by default). Use
+        ``with Off(): mob.scale(2)`` to resize it instantly. Applies to this Mob
+        and its descendants.
+
+        Parameters
+        ----------
+        scale_factor
+            How much to multiply the Mob's size by: a number, or three numbers,
+            one per axis, to stretch it unevenly.
+        **kwargs
+            Passed to Manim's ``Mobject.scale``: ``about_point``, a 3-D point to
+            scale about, or ``about_edge``, a direction naming the edge that
+            stays put. With neither, the Mob scales about its center.
+
+        Returns
+        -------
+        :class:`~algan.mobs.manim_compat.ManimCompatMob`
+            This Mob, so calls can be chained.
+        """
         before, source = self._prepare_manim_edit()
         source.scale(
             _scale_factor_to_manim(scale_factor),
@@ -689,16 +745,13 @@ class ManimCompatMob(ManimMob):
 
         ``rotate`` is one of the names this class shares with :class:`~.Mob`,
         and the two libraries mean different things by it: Algan measures
-        ``angle`` in degrees where Manim's angle is in radians, and an
-        explicit ``axis`` turns the opposite way in each (their default z axis
-        are opposite vectors, which is exactly what makes the *default*
-        rotation agree).  A compatibility Mob is animated as an Algan Mob, so
-        this follows :meth:`~.MobOrientationMixin.rotate` exactly -- degrees,
-        Algan's direction constants, and a real rotation of the Mob's basis
-        that sweeps from 0 rather than a linear morph between the two poses
-        (which cannot express a turn of 180 degrees, let alone a full one).
-        The backing Manim object picks the new pose up through the usual lazy
-        synchronization.
+        ``angle`` in degrees where Manim's angle is in radians.  A
+        compatibility Mob is animated as an Algan Mob, so this follows
+        :meth:`~.MobOrientationMixin.rotate` exactly -- degrees, and a real
+        rotation of the Mob's basis that sweeps from 0 rather than a linear
+        morph between the two poses (which cannot express a turn of 180
+        degrees, let alone a full one).  The backing Manim object picks the new
+        pose up through the usual lazy synchronization.
 
         Only the pivot is taken from Manim: it rotates about the composite's
         center, whereas Algan's generic implementation uses ``location``, the
@@ -707,12 +760,63 @@ class ManimCompatMob(ManimMob):
         about its shaft rather than in place -- so ``about`` defaults to
         :meth:`~.MobLayoutMixin.get_center`, which agrees with Manim's
         ``get_center`` for these objects.
+
+        Animation
+        ---------
+        Recorded as an animation: the rotation sweeps from 0 to ``angle`` over
+        the current context's runtime (1 second by default). Retime it with
+        ``with Seq(runtime=3): mob.rotate(90)``, or apply it instantly with
+        ``with Off(): mob.rotate(90)``. Applies to this Mob and its descendants.
+
+        Parameters
+        ----------
+        angle
+            How far to rotate, counter-clockwise when looking down ``axis``, in
+            degrees unless ``degrees`` is False.
+        axis
+            Axis to rotate around; need not be normalized. Defaults to
+            ``OUTWARD`` (the +z axis, pointing out of the screen), which spins a
+            flat shape in the screen plane.
+        about
+            Point to rotate around, shape ``(*, 3)``. Defaults to ``None``,
+            meaning the center of the whole composite, as Manim uses.
+        degrees
+            Whether ``angle`` is in degrees. Defaults to True; pass False to give
+            it in radians.
+
+        Returns
+        -------
+        :class:`~algan.mobs.manim_compat.ManimCompatMob`
+            This Mob, so calls can be chained.
         """
         if about is None:
             about = self.get_center()
         return Mob.rotate(self, angle, axis, about, degrees=degrees)
 
     def set(self, **kwargs):
+        """Set attributes on the Mob, as either Algan's ``set`` or Manim's.
+
+        Keywords that all name Algan animatable attributes (``color``,
+        ``opacity``, ``location``, ...) are handled by
+        :meth:`~algan.animatable_base.mob.Mob.set`. Anything else, such as
+        ``set(width=2)``, goes to Manim's ``Mobject.set`` on the backing object,
+        and the Mob morphs to the result.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default); wrap the call in ``with Off():`` to apply it instantly.
+
+        Parameters
+        ----------
+        **kwargs
+            Attribute names and the values to give them.
+
+        Returns
+        -------
+        :class:`~algan.mobs.manim_compat.ManimCompatMob`
+            This Mob, so calls can be chained.
+        """
         # Algan's internal morphing path calls ``set`` with animatable state
         # attributes. Preserve that path; delegate user-facing Manim property
         # updates such as ``set(width=...)`` to the backing object.
@@ -723,6 +827,17 @@ class ManimCompatMob(ManimMob):
         return self._animate_to_manim(source, before_source=before)
 
     def copy(self):
+        """Return an unspawned copy of this Mob, built from a copy of its Manim object.
+
+        Takes effect immediately and records nothing. The copy is the same class
+        and belongs to the same Scene, but is not spawned: call ``spawn()`` on it
+        to show it.
+
+        Returns
+        -------
+        :class:`~algan.mobs.manim_compat.ManimCompatMob`
+            The new Mob.
+        """
         # Matches :meth:`~.Animatable.clone`, which registers the copy: a copy
         # you cannot render is of no use to the caller.
         source = self.get_manim_mobject()

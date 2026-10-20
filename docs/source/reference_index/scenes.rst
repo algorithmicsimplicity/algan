@@ -10,6 +10,7 @@ Scenes
    ~scene_manager
    ~render_loop
    ~project
+   ~manim_defaults
    ~daemon
    ~viewer.viewer
    ~viewer.session

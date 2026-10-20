@@ -87,6 +87,17 @@ class AlganSettings:
         return f"SETTINGS(\n{sections}\n)"
 
     def snapshot(self) -> SettingsSnapshot:
+        """Capture every section's current values, to put back with :meth:`restore`.
+
+        For a change confined to one block, :meth:`override` does the same
+        save-and-restore for you.
+
+        Returns
+        -------
+        :class:`SettingsSnapshot`
+            An immutable copy of all five sections; later changes to
+            ``SETTINGS`` do not reach it.
+        """
         return SettingsSnapshot(
             computing=self.computing.as_preset(),
             paths=self.paths.as_preset(),
@@ -96,6 +107,26 @@ class AlganSettings:
         )
 
     def restore(self, snapshot: SettingsSnapshot):
+        """Put every section back to the values a :meth:`snapshot` captured.
+
+        The sections are updated in place, so references already taken to
+        ``SETTINGS.video`` and the others keep working.
+
+        Parameters
+        ----------
+        snapshot
+            What :meth:`snapshot` returned.
+
+        Returns
+        -------
+        :class:`AlganSettings`
+            ``SETTINGS`` itself, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``snapshot`` is not a :class:`SettingsSnapshot`.
+        """
         if not isinstance(snapshot, SettingsSnapshot):
             raise AlganConfigurationError(
                 "SETTINGS.restore requires a SettingsSnapshot"
@@ -109,9 +140,33 @@ class AlganSettings:
 
     @contextmanager
     def override(self, **sections):
-        """Temporarily override one or more sections and restore on exit.
+        """Change fields in one or more sections for the duration of a ``with`` block.
 
-        Example: ``with SETTINGS.override(raytracing={"samples_per_pixel": 4}):``
+        Every section is put back on exit, including when the block raises::
+
+            with SETTINGS.override(
+                video={"frames_per_second": 60},
+                raytracing={"samples_per_pixel": 4},
+            ):
+                Scene.save_video("smooth")
+
+        Parameters
+        ----------
+        **sections
+            Each section's name (``computing``, ``paths``, ``style``, ``video``
+            or ``raytracing``) mapped to a dict of the fields to change in it,
+            as that section's ``set`` takes them.
+
+        Yields
+        ------
+        :class:`AlganSettings`
+            ``SETTINGS`` itself.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If a section name is unknown, a section is given something other
+            than a dict, or a section refuses the values.
         """
         unknown = [name for name in sections if name not in self._SECTIONS]
         if unknown:

@@ -28,7 +28,7 @@ conventions, or a class with no native counterpart at all.
 The three Manim-defaults names live here too, for the same reason: ``manim_fov``
 (Manim's camera projection), ``manim_shader`` (its default 3-D lighting, ported
 in-kernel) and ``ManimMaterial`` (the material carrying that shader) each mean
-"Manim's version of this". :func:`~algan.manim_defaults.use_manim_defaults`
+"Manim's version of this". :meth:`~algan.scene.Scene.use_manim_defaults`
 installs all three on a Scene at once.
 
 Nothing here is exported by ``from algan import *``; it is reached by import,

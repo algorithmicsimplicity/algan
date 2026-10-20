@@ -241,7 +241,7 @@ fields are the ones you set once at the top of a script:
     :meth:`~algan.scene.Scene.use_manim_defaults` selects ``"centered"``,
     since an inward stroke puts an imported Manim shape's silhouette half a
     stroke width in from where Manim draws it. Unfilled shapes -- a
-    :class:`~algan.mobs.shapes.Line`, an open ``Circle`` -- are centred under
+    :class:`~algan.mobs.shapes_2d.Line`, an open ``Circle`` -- are centred under
     both: an open path has no interior to lay a stroke inside of.
 
 .. code-block:: python

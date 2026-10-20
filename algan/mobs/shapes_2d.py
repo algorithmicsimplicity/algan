@@ -49,7 +49,6 @@ from algan.utils.tensor_utils import (
     cast_to_direction,
     cast_to_tensor,
     mean,
-    unsquish,
 )
 
 
@@ -278,18 +277,65 @@ class Line(BezierCircuitCubic):
         super().__init__(control_points, *args, **kwargs)
 
     def get_start(self):
-        return unsquish(self.control_points.location, -2, 4)[..., 0, :]
+        """Get the point the line starts at, where it is now.
+
+        Follows the line when it is moved, rotated or scaled, and reflects
+        animations recorded so far. On an arc built with ``path_arc`` it is
+        where the arc starts.
+
+        Returns
+        -------
+        torch.Tensor
+            The start, in world units, shape ``(*, 3)``.
+        """
+        return self.control_points.location[..., :1, :]
 
     def get_end(self):
-        return unsquish(self.control_points.location, -2, 4)[..., -1, :]
+        """Get the point the line ends at, where it is now.
+
+        As :meth:`get_start`, for the other end.
+
+        Returns
+        -------
+        torch.Tensor
+            The end, in world units, shape ``(*, 3)``.
+        """
+        return self.control_points.location[..., -1:, :]
 
     def get_vector(self):
+        """Get the vector from the line's start to its end.
+
+        On an arc, the chord from where it starts to where it ends.
+
+        Returns
+        -------
+        torch.Tensor
+            ``get_end() - get_start()``, in world units, shape ``(*, 3)``.
+        """
         return self.get_end() - self.get_start()
 
     def get_unit_vector(self):
+        """Get the direction the line runs in, from its start to its end.
+
+        Returns
+        -------
+        torch.Tensor
+            :meth:`get_vector` normalized to length 1, shape ``(*, 3)``.
+        """
         return F.normalize(self.get_vector(), p=2, dim=-1)
 
     def get_length(self):
+        """Get the distance from the line's start to its end.
+
+        On an arc, the length of the chord between its ends, not the length
+        along the arc.
+
+        Returns
+        -------
+        torch.Tensor
+            The length in world units, shape ``(*)``: :meth:`get_vector`'s
+            shape without its last axis.
+        """
         return self.get_vector().norm(p=2, dim=-1)
 
     def set_color_by_function(self, function):
@@ -473,12 +519,38 @@ class Point(BezierCircuitCubic):
         super().__init__(torch.cat([location for _ in range(4)], -2), *args, **kwargs)
 
     def get_num_points(self):
+        """Get how many points this is, for Manim compatibility: always ``1``.
+
+        Returns
+        -------
+        int
+            ``1``.
+        """
         return 1
 
     def get_points(self):
+        """Get the point's location as a list of points, as Manim's would be.
+
+        Returns
+        -------
+        torch.Tensor
+            The location in world units, shape ``(1, 3)``.
+        """
         return self.get_center().reshape(1, 3)
 
     def point_from_proportion(self, alpha):
+        """Get the point a proportion of the way along: always its location.
+
+        Parameters
+        ----------
+        alpha
+            The proportion, from ``0`` to ``1``. Ignored: a point has no length.
+
+        Returns
+        -------
+        torch.Tensor
+            The location in world units, shape ``(*, 3)``.
+        """
         return self.get_center()
 
 
@@ -662,15 +734,23 @@ class QuadTriangulated(Mob):
 
 
 class Polygon(BezierCircuitCubic):
-    """A 2-D planar polygon with N vertices.
+    """A 2-D planar polygon with N vertices, joined by straight edges.
 
     Parameters
     ----------
-    vertex_locations : torch.Tensor[N, 3]
-        3-D coordinates for each of the N vertex points.
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
+    *vertex_locations
+        The vertices in order, in world units: either one point per argument,
+        ``Polygon(LEFT, RIGHT, UP)``, or a single tensor of shape ``(N, 3)``.
+        Each vertex is joined to the next and the last back to the first. At
+        least three are required.
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``color``, which
+        defaults to ``RED``, and the ``stroke_*`` styling.
 
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If fewer than three vertices are given.
     """
 
     def __init__(self, *vertex_locations: torch.Tensor, **kwargs):
@@ -716,6 +796,13 @@ class Polygon(BezierCircuitCubic):
         super().__init__(control_points, **kwargs)
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``RED`` for a Polygon and the shapes built on it.
+        """
         return RED
 
 
@@ -1053,15 +1140,41 @@ class Circle(BezierCircuitCubic):
         self.scale(radius)
         self.move_to(mob_location)
 
+    #: How far the unit circle's furthest control point lies from its centre.
+    #: A circuit's ``scale_coefficient`` is that distance (the bezier handles
+    #: sit outside the curve), not the radius the curve is drawn at.
+    _EXTENT_PER_RADIUS = float(
+        torch.tensor([[1.00005519, 0.0], [0.55342686, 0.99873585]]).norm(dim=-1).max()
+    )
+
     @property
     def radius(self):
-        return self.scale_coefficient[..., 0]
+        """The radius the circle is drawn at, in world units, shape ``(*)``.
+
+        Animation
+        ---------
+        Assignment resizes the circle about its centre, recorded as an
+        animation over the current context's runtime (1 second by default);
+        wrap it in ``Off()`` to apply it instantly. Reading is not animated.
+        """
+        return self.scale_coefficient[..., 0] / self._EXTENT_PER_RADIUS
 
     @radius.setter
     def radius(self, radius):
-        self.scale_coefficient = radius
+        radius = cast_to_tensor(radius)
+        if radius.ndim > 0 and radius.shape[-1] == 1:
+            radius = radius[..., 0]
+        factor = radius / self.radius.clamp_min(1e-12)
+        self.scale_coefficient = self.scale_coefficient * factor.unsqueeze(-1)
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``BLUE`` for a Circle.
+        """
         return BLUE
 
 

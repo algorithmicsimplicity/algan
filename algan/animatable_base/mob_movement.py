@@ -106,7 +106,7 @@ class MobMovementMixin:
         ---------
         Recorded as an animation: the Mob sweeps along the arc over the current
         context's runtime (1 second by default). Wrap the call to retime it --
-        ``with Seq(runtime=3): mob.move_to_point_along_arc(RIGHT, 90)``.
+        ``with Seq(runtime=3): mob.move_to(RIGHT, arc_angle=90)``.
 
         Parameters
         ----------
@@ -288,15 +288,24 @@ class MobMovementMixin:
             ``None``, meaning travel in a straight line.
         **kwargs
             Passed to :meth:`~algan.animatable_base.mob.Mob.set_location` (notably
-            ``recursive``), or to
-            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_point_along_arc`
-            when ``arc_angle`` is
-            given (notably ``arc_normal``).
+            ``recursive``). When ``arc_angle`` is given, the accepted keywords are
+            ``recursive`` and ``arc_normal``: the normal of the plane the arc lies
+            in, which must be perpendicular to the path from the Mob's current
+            location to ``location``. ``arc_normal`` defaults to ``OUTWARD`` (the
+            +z axis, out of the screen), which arcs in the screen plane.
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``arc_angle`` is given and the arc cannot be drawn: a value is
+            not finite, ``arc_normal`` is zero, the path is not perpendicular to
+            ``arc_normal``, or the endpoints differ and the sweep is a non-zero
+            whole number of turns.
 
         See Also
         --------

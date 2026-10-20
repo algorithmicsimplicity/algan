@@ -7,8 +7,8 @@
 > a hash-verified manifest (§13); the stale conda recipe and placeholder badges
 > have been removed (§15); and `test.yaml` includes an MPS leg (§17). This does
 > not verify live Pages/PyPI state, branch protection or a Git history rewrite.
-> Use [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) for current release procedure and
-> [TODO.md](TODO.md) for remaining work. Original rankings are retained as history,
+> Use [RELEASE_RUNBOOK.md](../../RELEASE_RUNBOOK.md) for current release procedure and
+> [TODO.md](../../TODO.md) for remaining work. Original rankings are retained as history,
 > not a fresh priority order.
 
 **What this is.** A pre-release audit of Algan `0.2.2` at `3c03536` (branch

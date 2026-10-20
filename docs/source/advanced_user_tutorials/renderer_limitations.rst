@@ -266,12 +266,13 @@ Five further consequences of the split, not covered there:
   area light and an emissive quad of the same radiance light a surface
   identically. Two consequences worth knowing:
 
-  * :class:`~.MeshPhongMaterial` has **no Blinn-Phong highlight** under the
-    path tracer. Its ``specular`` colour and ``shininess`` are converted to a
-    GGX lobe (``alpha = sqrt(2 / (shininess + 2))``, F0 = ``specular``), so
-    the material still has a highlight -- it is a slightly different shape
-    and it sits in a slightly different place. Nothing is dropped; nothing
-    matches the deterministic renderer pixel for pixel either.
+  * :class:`~algan.rendering.shaders.materials.MeshPhongMaterial` has **no
+    Blinn-Phong highlight** under the path tracer. Its ``specular`` colour and
+    ``shininess`` are converted to a GGX lobe
+    (``alpha = sqrt(2 / (shininess + 2))``, F0 = ``specular``), so the material
+    still has a highlight -- it is a slightly different shape and it sits in a
+    slightly different place. Nothing is dropped; nothing matches the
+    deterministic renderer pixel for pixel either.
   * The ambient and hemisphere fill reaches **diffuse only**. A constant
     radiance arriving from every direction, integrated over the diffuse
     lobe, is exactly what the fill contributes; the specular equivalent is
@@ -438,11 +439,13 @@ the frame is rendered.
    * - Material
      - Shading
      - Consequences
-   * - No material set (Algan's default), :class:`~.MeshLambertMaterial`,
-       :class:`~.MeshPhongMaterial`, :class:`~.MeshStandardMaterial`,
-       :class:`~.MeshPhysicalMaterial`, :class:`~.MeshToonMaterial`,
-       :class:`~.MeshNormalMaterial`, :class:`~.MeshMatcapMaterial`,
-       :class:`~.MeshDepthMaterial`
+   * - No material set (Algan's default),
+       :class:`~algan.rendering.shaders.materials.MeshLambertMaterial`,
+       :class:`~algan.rendering.shaders.materials.MeshPhongMaterial`,
+       :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`,
+       :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`,
+       :class:`~.MeshToonMaterial`, :class:`~.MeshNormalMaterial`,
+       :class:`~.MeshMatcapMaterial`, :class:`~.MeshDepthMaterial`
      - Per fragment
      - Full behaviour: every light type, shadows, environment lighting, normal
        maps, material-property maps.
@@ -450,7 +453,8 @@ the frame is rendered.
        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
      - Per fragment
      - Same, and it can read shadow visibility itself.
-   * - :class:`~.MeshBasicMaterial` / :class:`~.UnlitMaterial`
+   * - :class:`~algan.rendering.shaders.materials.MeshBasicMaterial` /
+       :class:`~.UnlitMaterial`
      - Unlit by design
      - Passes its color through. Not a limitation — it is the point.
    * - A custom **per-vertex** shader from
@@ -509,16 +513,16 @@ effect:
 
 Textures do work — through a different door. See the next section.
 
-:class:`~.MeshPhysicalMaterial`'s ``attenuation_color`` and
-``attenuation_distance`` *are* honoured: light crossing a transmissive solid is
-absorbed along the path it actually travels, following
-``KHR_materials_volume``'s ``attenuation_color ** (d / attenuation_distance)``,
-so a thick piece of colored glass comes out deeper than a thin one. Two limits
-are worth knowing. The path length is measured from the surface the ray last
-crossed, which is exact for a single convex solid and an approximation for
-nested transmissive media. And ``thickness`` is stored for API parity and unused
-— three.js's rasterizer needs it because it has no ray to measure, and Algan
-does not.
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`'s
+``attenuation_color`` and ``attenuation_distance`` *are* honoured: light
+crossing a transmissive solid is absorbed along the path it actually travels,
+following ``KHR_materials_volume``'s
+``attenuation_color ** (d / attenuation_distance)``, so a thick piece of
+colored glass comes out deeper than a thin one. Two limits are worth knowing.
+The path length is measured from the surface the ray last crossed, which is
+exact for a single convex solid and an approximation for nested transmissive
+media. And ``thickness`` is stored for API parity and unused — three.js's
+rasterizer needs it because it has no ray to measure, and Algan does not.
 
 Shadow rays carry color through the same medium. A shadow ray holds an RGB
 payload rather than one scalar per light, so a transmissive surface tints the
@@ -664,7 +668,7 @@ Who casts and who receives
   Texture alpha counts.
 * **Receivers: fragment-shaded triangle geometry only.** Bezier circuits never
   receive shadows (see :ref:`limits-lit`), and neither do the four per-vertex
-  materials or :class:`~.MeshBasicMaterial`.
+  materials or :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`.
 
 Limits and approximations
 -------------------------
@@ -854,7 +858,8 @@ Refraction
   the material's ``attenuation_color`` / ``attenuation_distance`` described
   above, and the shadow ray applies the same coefficient over its own chord.
 * Refraction needs both ``transmission > 0`` and ``ior > 1``. In practice that
-  means a :class:`~.MeshPhysicalMaterial`, a :class:`~algan.mobs.surfaces.surface.Surface` with a
+  means a :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`, a
+  :class:`~algan.mobs.surfaces.surface.Surface` with a
   ``refractive_index_texture``, or an imported model whose material carries
   them. It routes the batch through the splitting ray path, which is the most
   expensive configuration Algan has.
@@ -1245,7 +1250,8 @@ Homogeneous volumes and subsurface scattering
 =============================================
 
 The path tracer supports homogeneous participating media and random-walk
-subsurface scattering through :class:`~.MeshPhysicalMaterial`:
+subsurface scattering through
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`:
 
 .. code-block:: python
 

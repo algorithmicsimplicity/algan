@@ -1,4 +1,4 @@
-"""The :class:`Mob` -- anything that can appear on screen.
+"""The :class:`~algan.animatable_base.mob.Mob` -- anything that can appear on screen.
 
 A Mob is an :class:`~algan.animatable_base.animatable.Animatable` with a place in
 3-D space: a ``location``, a ``basis`` (its orientation and scale as three
@@ -358,7 +358,9 @@ class Mob(
         ignoring scene lights, using the shader of :class:`~.UnlitMaterial`.
         Preserves color, texture, glow and opacity. Defaults to False, keeping
         the geometry's normal material. This configures shading immediately,
-        before spawning; use :meth:`set_material` before spawning to replace it.
+        before spawning; use
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
+        before spawning to replace it.
     **kwargs
         Passed to :class:`~.Animatable` -- notably ``scene`` and
         ``add_to_scene``.
@@ -516,12 +518,14 @@ class Mob(
     #:
     #: Two kinds of Mob ignore it, both because they were never shadowed to
     #: begin with: 2-D geometry (a shape, ``Text``) renders unlit, and so does
-    #: anything with :meth:`~.Mob.set_shader` ``None``. A Mob carrying a custom
-    #: fragment pipeline (:meth:`~.Mob.set_fragment_shader`) also ignores it,
-    #: because the slot this rides in the material block belongs to that
-    #: pipeline's own parameters -- the same reason a custom pipeline is never
-    #: asked about ``two_sided``. ``casts_shadows`` has none of these
-    #: exceptions: all three still cast.
+    #: anything with
+    #: :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`
+    #: ``None``. A Mob carrying a custom fragment pipeline
+    #: (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`)
+    #: also ignores it, because the slot this rides in the material block
+    #: belongs to that pipeline's own parameters -- the same reason a custom
+    #: pipeline is never asked about ``two_sided``. ``casts_shadows`` has none
+    #: of these exceptions: all three still cast.
     receives_shadows = True
 
     # Backing store for :attr:`pass_index`; ``None`` until a value is set.
@@ -1734,9 +1738,10 @@ class Mob(
         same shape -- the target values, in the same order.
 
         Reach for it instead of a Python loop over
-        :meth:`~.Mob.get_descendants`. A loop records one animation per
-        descendant, which on a large group is thousands of separate recorded
-        animations; this records **one**, and renders measurably faster for it.
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.get_descendants`.
+        A loop records one animation per descendant, which on a large group is
+        thousands of separate recorded animations; this records **one**, and
+        renders measurably faster for it.
 
         Animation
         ---------
@@ -1745,8 +1750,9 @@ class Mob(
         all together inside a :class:`~.Sync`. ``func`` is evaluated **once, at
         the moment of the call** -- it computes the destination, it is not
         re-run per frame. For a value that must be recomputed every frame, use
-        :meth:`~.Mob.add_updater` instead. Only spawned Mobs record; a Mob whose
-        subtree is not on screen is changed immediately and silently.
+        :meth:`~algan.animatable_base.animatable.Animatable.add_updater` instead.
+        Only spawned Mobs record; a Mob whose subtree is not on screen is changed
+        immediately and silently.
 
         Parameters
         ----------
@@ -1790,8 +1796,8 @@ class Mob(
         --------
         :meth:`~.Mob.set_animated_attribute` : Animate an attribute to a value
             you supply, rather than to a function of the current one.
-        :meth:`~.Mob.add_updater` : Recompute a value every frame instead of
-            once.
+        :meth:`~algan.animatable_base.animatable.Animatable.add_updater` : Recompute
+            a value every frame instead of once.
 
         Examples
         --------

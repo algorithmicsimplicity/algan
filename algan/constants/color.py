@@ -273,7 +273,7 @@ class Color(torch.Tensor):
 
     @opacity.setter
     def opacity(self, value):
-        self.data[..., -1:] = value
+        self.data[..., -1:] = self._channel_value(value)
 
     @property
     def glow(self):
@@ -281,11 +281,19 @@ class Color(torch.Tensor):
         return glow
 
     def is_transparent(self):
+        """Get whether this color is at all see-through.
+
+        Returns
+        -------
+        torch.Tensor
+            ``opacity < 1``, as a boolean tensor of shape ``(*, 1)``: one
+            answer per row of a batched color.
+        """
         return self.opacity < 1
 
     @glow.setter
     def glow(self, value):
-        self.data[..., -2:-1] = value
+        self.data[..., -2:-1] = self._channel_value(value)
 
     @property
     def rgb(self):
@@ -293,14 +301,54 @@ class Color(torch.Tensor):
 
     @rgb.setter
     def rgb(self, value):
-        self.data[..., :3] = value
+        self.data[..., :3] = self._channel_value(value)
+
+    def _channel_value(self, value):
+        """Internal: ``value`` as a tensor matching this color's dtype and device.
+
+        Lets the channel setters take plain Python tuples and lists, which a
+        tensor slice assignment refuses.
+        """
+        return torch.as_tensor(value, dtype=self.dtype, device=self.device)
 
     def set_rgb(self, rgb):
+        """Return a copy of this color with its red, green and blue replaced.
+
+        Glow and opacity are kept.
+
+        Parameters
+        ----------
+        rgb
+            The new red, green and blue, each in ``[0, 1]``: a tuple, list or
+            tensor of shape ``(3,)``, or ``(*, 3)`` for one per row -- per
+            vertex or per texel.
+
+        Returns
+        -------
+        :class:`Color`
+            A new color. The color it was called on is left unchanged.
+        """
         out = self.prep_set(rgb)
         out.rgb = rgb
         return out
 
     def mult_rgb(self, other):
+        """Return a copy of this color with its red, green and blue multiplied.
+
+        Glow and opacity are kept, unlike ordinary multiplication, which scales
+        all five channels.
+
+        Parameters
+        ----------
+        other
+            A :class:`Color`, whose red, green and blue are the factors, or a
+            number or tensor that broadcasts against shape ``(*, 3)``.
+
+        Returns
+        -------
+        :class:`Color`
+            A new color. The color it was called on is left unchanged.
+        """
         orgb = other.rgb if isinstance(other, Color) else other
         out = self.new_empty()
         out.data = self.data.clone()
@@ -308,6 +356,7 @@ class Color(torch.Tensor):
         return out
 
     def prep_set(self, value):
+        """Internal: copy this color, broadcast to ``value``'s rows, for a setter."""
         value = cast_to_tensor(value)
         out = self.new_empty()
         out.data = self.data.clone()
@@ -400,11 +449,37 @@ class Color(torch.Tensor):
         return self._set_opacity_unchecked(self.opacity * opacity)
 
     def set_glow(self, glow):
+        """Return a copy of this color with its glow replaced.
+
+        Red, green, blue and opacity are kept.
+
+        Parameters
+        ----------
+        glow
+            The new additive emissive brightness: ``0`` for none, unbounded
+            above. A tensor gives one per row -- per vertex or per texel.
+
+        Returns
+        -------
+        :class:`Color`
+            A new color. The color it was called on is left unchanged.
+        """
         out = self.prep_set(glow)
         out.glow = glow
         return out
 
     def convert_to_uint8(self):
+        """Get the channels scaled from ``[0, 1]`` to 8-bit integers.
+
+        All five channels are scaled, glow and opacity included, and fractions
+        are truncated rather than rounded. A channel outside ``[0, 1]`` -- a
+        glow above 1, say -- does not fit in 8 bits.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(self * 255)`` as ``torch.uint8``, shape ``(*, 5)``.
+        """
         return (self * 255).to(torch.uint8)
 
     def new_empty(self, *args, **kwargs):

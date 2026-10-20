@@ -577,8 +577,8 @@ class Material:
             ``{slot_name: is_animatable}`` (the union over the Mobs it was
             applied to). A slot that reached a geometry is sampled, so it is
             reported as *static* rather than ignored -- or not reported at all
-            when the geometry it landed on made it animatable. ``None`` means
-            nothing was forwarded, which is what a bare
+            when the geometry it landed on made it animatable. Defaults to
+            ``None``, meaning nothing was forwarded, which is what a bare
             ``Material(...).emit_warnings()`` describes.
         """
         forwarded = {} if forwarded is None else forwarded
@@ -663,6 +663,14 @@ class DiffuseMaterial(Material):
         self.env_map_intensity = env_map_intensity
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``emissive``, ``emissive_intensity``, ``flat_shading`` and
+            ``env_map_intensity``.
+        """
         return {
             "emissive": _to_rgb(self.emissive),
             "emissive_intensity": self.emissive_intensity,
@@ -702,6 +710,13 @@ class ManimMaterial(Material):
     shader = staticmethod(ms.manim_shader)
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``flat_shading`` alone.
+        """
         return {"flat_shading": self._flat()}
 
 
@@ -729,6 +744,14 @@ class SpecularMaterial(Material):
         self.env_map_intensity = env_map_intensity
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``emissive``, ``emissive_intensity``, ``specular``, ``shininess``,
+            ``flat_shading`` and ``env_map_intensity``.
+        """
         return {
             "emissive": _to_rgb(self.emissive),
             "emissive_intensity": self.emissive_intensity,
@@ -766,6 +789,14 @@ class PBRMaterial(Material):
         self.env_map_intensity = env_map_intensity
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``roughness``, ``metalness``, ``emissive``, ``emissive_intensity``,
+            ``env_map_intensity`` and ``flat_shading``.
+        """
         return {
             "roughness": self.roughness,
             "metalness": self.metalness,
@@ -937,6 +968,16 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         self.iridescence_ior = iridescence_ior
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            The :class:`PBRMaterial` parameters, plus ``ior``, ``specular_intensity``,
+            ``specular_color``, ``clearcoat``, ``clearcoat_roughness``, ``sheen``,
+            ``sheen_roughness``, ``sheen_color``, ``transmission``, ``iridescence``,
+            ``sigma_s``, ``g`` and ``attenuation_sigma``.
+        """
         return {
             "roughness": self.roughness,
             "metalness": self.metalness,
@@ -992,6 +1033,13 @@ class MeshToonMaterial(Material):
         self.bands = bands
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``emissive``, ``emissive_intensity``, ``num_bands`` and ``flat_shading``.
+        """
         return {
             "emissive": _to_rgb(self.emissive),
             "emissive_intensity": self.emissive_intensity,
@@ -1007,6 +1055,13 @@ class MeshNormalMaterial(Material):
     applies_color = False
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``flat_shading`` alone.
+        """
         return {"flat_shading": self._flat()}
 
 
@@ -1018,6 +1073,13 @@ class MeshMatcapMaterial(Material):
     shader = staticmethod(ms.matcap_shader)
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``flat_shading`` alone.
+        """
         return {"flat_shading": self._flat()}
 
 
@@ -1033,4 +1095,11 @@ class MeshDepthMaterial(Material):
         self.far = far
 
     def get_shader_param_values(self):
+        """Get the values this material passes to its shader, by parameter name.
+
+        Returns
+        -------
+        dict[str, object]
+            ``near`` and ``far``.
+        """
         return {"near": self.near, "far": self.far}

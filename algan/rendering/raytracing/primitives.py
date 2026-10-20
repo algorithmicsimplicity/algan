@@ -1053,11 +1053,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     def _pack_frag_pipeline(self, shader, N, device, per_triangle):
         """Per-primitive pipeline id ``[1, N]`` and the custom-pipeline parameter
         block ``[Tm, N, W]`` for a mob with a fragment pipeline
-        (:meth:`~algan.mobs.mob.Mob.set_fragment_shader`). Each stage's
-        parameters occupy a contiguous slot range (the marker shader's
-        ``_frag_param_layout`` maps attr name -> absolute slot); values are the
-        materialised animated ``shader_param_values``, with defaults filling any
-        slot whose attr is absent.
+        (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`).
+        Each stage's parameters occupy a contiguous slot range (the marker
+        shader's ``_frag_param_layout`` maps attr name -> absolute slot); values
+        are the materialised animated ``shader_param_values``, with defaults
+        filling any slot whose attr is absent.
         """
         pid = int(shader._frag_pipeline_id)
         W = int(shader._frag_total_width)

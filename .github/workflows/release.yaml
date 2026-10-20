@@ -109,10 +109,10 @@ jobs:
             exit 1
           fi
 
-      # §17 of RELEASE_AUDIT.md: the four pushes before the audit's HEAD were
-      # red on every matrix leg and were fixed by two "Fixed failing tests"
-      # commits. Cut the release from a commit that has its *own* green run --
-      # not from one that merely sits after a green one.
+      # §17 of docs/reports/RELEASE_AUDIT.md: the four pushes before the
+      # audit's HEAD were red on every matrix leg and were fixed by two "Fixed
+      # failing tests" commits. Cut the release from a commit that has its
+      # *own* green run -- not from one that merely sits after a green one.
       - name: This exact commit has a green Test run
         if: ${{ !inputs.docs_only }}
         env:
@@ -170,10 +170,10 @@ jobs:
       - name: Metadata is well formed
         run: uvx twine check dist/*
 
-      # §3 of RELEASE_AUDIT.md. The same gate runs per-push in code_quality.yaml,
-      # which is where a narrowed glob gets caught in the PR that narrows it;
-      # this run is the backstop on the artifacts actually being uploaded, and
-      # a PyPI upload cannot be edited afterwards.
+      # §3 of docs/reports/RELEASE_AUDIT.md. The same gate runs per-push in
+      # code_quality.yaml, which is where a narrowed glob gets caught in the PR
+      # that narrows it; this run is the backstop on the artifacts actually
+      # being uploaded, and a PyPI upload cannot be edited afterwards.
       - name: Every vendored license notice is shipped
         run: python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
 
@@ -321,8 +321,8 @@ jobs:
   # Algan is both. The second half matters more than it sounds: a docs build
   # with examples is tens of MB of mp4, and a branch accumulates every release's
   # copy for ever -- the same mechanism that put 149 MiB of renders into this
-  # repository's history (RELEASE_AUDIT.md §13). Deploying an artifact stores
-  # nothing in git.
+  # repository's history (docs/reports/RELEASE_AUDIT.md §13). Deploying an
+  # artifact stores nothing in git.
   publish_docs:
     name: Publish docs
     needs: [gate, docs, promote]

@@ -155,39 +155,46 @@ class Model3D(Mob):
 
     Parameters
     ----------
-    file_path : str
-        Path to the model file. ``.glb``/``.gltf`` (and ``.obj``/``.ply``/...)
-        load through trimesh (no native dependency); ``.fbx`` loads through
-        pyassimp (needs the native ``assimp`` library installed).
-    scene_data : SceneData, optional
-        Pre-parsed IR to build from instead of reading ``file_path`` (used by
-        tests and alternative importer backends). When given, ``file_path`` may
-        be a label only.
-    load_textures : bool
-        Load and apply diffuse texture maps referenced by materials
-        (default True). When False (or a texture fails to load) meshes fall
-        back to their material's flat base color.
-    fit_to_size : float, optional
+    file_path
+        Path to the model file, as a string or path. ``.glb``/``.gltf`` (and
+        ``.obj``/``.ply``/...) load through trimesh (no native dependency);
+        ``.fbx`` loads through pyassimp (needs the native ``assimp`` library
+        installed). Defaults to ``None``, which requires ``scene_data``.
+    scene_data
+        Pre-parsed :class:`~algan.mobs.three_d_models.scene_data.SceneData` to
+        build from instead of reading ``file_path`` (used by tests and
+        alternative importer backends). When given, ``file_path`` may be a
+        label only. Defaults to ``None``, meaning the file is read.
+    load_textures
+        Load and apply diffuse texture maps referenced by materials. When False
+        (or a texture fails to load) meshes fall back to their material's flat
+        base color. Defaults to True.
+    fit_to_size
         Recenter the model and uniformly scale it so its bounding-box diagonal
         is this many world units -- handy, since model files use wildly
         different unit scales. Defaults to ``None``, which leaves the model at
         the size the file gives it.
-    smooth_normals : bool
+    smooth_normals
         Use the mesh's authored / generated per-vertex normals for smooth
-        shading (default True). When False, flat per-face normals are derived
-        at render time.
-    normal_maps : bool
-        Apply tangent-space normal maps from materials (default True), adding
-        per-fragment surface detail. Requires per-vertex UVs; batches carrying a
-        normal map render through the general wavefront tracer.
-    pbr_materials : bool
+        shading. When False, flat per-face normals are derived at render time.
+        Defaults to True.
+    normal_maps
+        Apply tangent-space normal maps from materials, adding per-fragment
+        surface detail. Requires per-vertex UVs; batches carrying a normal map
+        render through the general wavefront tracer. Defaults to True.
+    pbr_materials
         Apply each material's PBR parameters (metalness / roughness / emissive)
-        as a :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`
-        (default True), so imported meshes shade with Cook-Torrance GGX. When
-        False the default lit shader is kept.
-    *args, **kwargs
+        as a :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`,
+        so imported meshes shade with Cook-Torrance GGX. When False the default
+        lit shader is kept. Defaults to True.
+    **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` (e.g. ``location`` to
         place the model).
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If neither ``file_path`` nor ``scene_data`` is given.
     """
 
     def __init__(
@@ -526,19 +533,29 @@ class Model3D(Mob):
 
         Parameters
         ----------
-        name : str, optional
-            Clip name; defaults to the first clip.
-        times : sequence of float, optional
-            Explicit sample times (seconds). Defaults to an ``fps`` grid over
-            the clip runtime unioned with the authored keyframe times.
-        fps : int
-            Sampling rate used when ``times`` is not given.
+        name
+            The clip to bake, by name. Defaults to ``None``, meaning the first
+            clip.
+        times
+            Sample times in seconds. Defaults to ``None``, meaning ``fps``
+            samples per second from ``0`` to the clip's runtime, together with
+            the clip's own keyframe times.
+        fps
+            Samples per second for the default grid; ignored when ``times`` is
+            given. Defaults to ``30``.
 
         Returns
         -------
-        (times, corners) : (list[float], dict[TriangleMesh, torch.Tensor])
-            The sample times and, per mesh mob, a ``[T, 3F, 3]`` stack of
+        tuple[list[float], dict[TriangleMesh, torch.Tensor]]
+            The sample times and, per mesh Mob, a ``[T, 3F, 3]`` stack of
             world-space corner positions (one slice per sample time).
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If the model carries no animation clips.
+        KeyError
+            If no clip is called ``name``.
         """
         clip = self._resolve_clip(name)
         device = self.location.device
@@ -669,4 +686,11 @@ class Model3D(Mob):
         return self
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            A light grey, ``#CCCCCC``, for a Model3D.
+        """
         return Color("#CCCCCC")

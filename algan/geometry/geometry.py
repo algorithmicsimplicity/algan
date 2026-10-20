@@ -119,7 +119,7 @@ def get_rotation_around_axis(num_degrees, axis, dim=0):
     clockwise seen from the tip of ``axis``.
 
     That transpose is the whole of Algan's rotation handedness, and it is tied
-    to :data:`~algan.constants.spatial.OUTWARD` being ``+z``: with a
+    to ``OUTWARD`` being ``+z`` (:mod:`algan.constants.spatial`): with a
     right-handed world basis, ``rotate(90, OUTWARD)`` has to take ``RIGHT`` to
     ``UP``, and a row-vector product against an untransposed Rodrigues matrix
     takes it to ``DOWN`` instead. :func:`get_rotation_between_3d_vectors` pairs

@@ -1,4 +1,4 @@
-"""The :class:`Scene` -- the unit of authoring and rendering.
+"""The :class:`~algan.scene.Scene` -- the unit of authoring and rendering.
 
 A Scene owns everything an animation needs: its actors, its camera and lights,
 **its own** timeline, animation and audio managers, its video settings, and the
@@ -197,7 +197,10 @@ class Scene(RenderLoopMixin):
     ----------
     video_settings
         Resolution / fps / quality settings (see
-        :mod:`algan.settings.video_settings`).
+        :mod:`algan.settings.video_settings`). Defaults to ``None``, meaning
+        ``SETTINGS.video`` as it is when each render starts, so a later
+        ``SETTINGS.video.set(...)`` still applies; settings given here are kept
+        instead.
     background
         What the Scene is drawn on: a color, an image tensor, or a procedural
         callable. A Taichi ``@ti.func`` uses the scalar ``(x, y, time) ->
@@ -208,11 +211,10 @@ class Scene(RenderLoopMixin):
         ``SETTINGS.style.background``. It is the same background
         :meth:`~.Scene.set_background` sets and ``save_video(background=...)``
         overrides for one render.
-    memory
-        Optional :class:`~algan.utils.memory_utils.ManualMemory` render arena.
     scene_initializer
-        Callable run on (re)creation; the default spawns the camera and a
-        point light.
+        Callable run with the Scene on (re)creation. Defaults to ``None``,
+        meaning the one :meth:`~algan.scene_manager.SceneManager.set_scene_class`
+        set: by default, spawning the camera and a point light.
     premultiplied_over
         Export transparent frames for linear-light over compositing, keeping
         glow additive. Defaults to False. See :meth:`~.Scene.set_premultiplied_over`
@@ -223,7 +225,6 @@ class Scene(RenderLoopMixin):
         self,
         video_settings: VideoSettings | None = None,
         background: Color | str | torch.Tensor | Callable | None = None,
-        memory=None,
         scene_initializer=None,
         *,
         premultiplied_over: bool = False,
@@ -293,7 +294,10 @@ class Scene(RenderLoopMixin):
         self.id_count = 0
         self.allow_new_actors = True
         self.animate_scene_clear = False
-        self.memory = memory
+        # Each render builds its own arena, sized by
+        # SETTINGS.computing.rendering_memory_fraction, and clears this again
+        # when it finishes.
+        self.memory = None
         self._project_run = None
         self._suppress_automatic_transcript = False
 
@@ -1702,8 +1706,8 @@ class Scene(RenderLoopMixin):
         (``block=False``), open a new viewer to see the additions rather than
         expecting this one to grow.
 
-        There is no module-level ``view``: use a Scene or :meth:`Project.view`
-        for a tabbed project viewer. The bare name is too general to spend on a
+        There is no module-level ``view``: use a Scene or
+        :meth:`~algan.project.Project.view` for a tabbed project viewer. The bare name is too general to spend on a
         namespace that ``from algan import *`` empties into a user's own.
 
         Parameters

@@ -451,6 +451,23 @@ class AnimationContext:
     spawn_at_end
         Whether Mobs created inside are held back and spawned together when the block
         ends. Defaults to ``None``, meaning inherit (False at the top level).
+    new_animation
+        Whether the enclosing context counts this whole block as one animation of
+        its own, so its next animation starts after the block's runtime times its
+        ``lag_ratio``; when False it carries on from wherever the block stopped.
+        :class:`~.Lag` and its subclasses, and :class:`~.Off`, set it. Defaults to
+        False.
+    finished
+        Internal: set when the block exits. Leave it unset. Defaults to False.
+    new_mobs
+        Internal: the Mobs created inside the block. Leave it unset. Defaults to
+        ``None``, an empty list.
+    child_contexts
+        Internal: the contexts nested directly inside this one. Leave it unset.
+        Defaults to ``None``, an empty list.
+    kwargs
+        Internal: keywords a nested context inherits, merged with its parent's on
+        entry. Leave it unset. Defaults to ``None``, an empty dict.
     animation_manager
         The :class:`~.AnimationManager` to record against. Defaults to ``None``,
         meaning the active Scene's -- pass one explicitly when authoring a Scene that
@@ -1150,7 +1167,10 @@ class Lag(AnimationContext):
         in which case it introduces a pause (wait) after each animation finishes.
         Defaults to ``0.5``.
     runtime
-        Passed to :class:`~.AnimationContext` .
+        Duration of the whole block in seconds; the animations inside are
+        rescaled to fit, keeping their relative timing. Must be finite and
+        non-negative. Defaults to ``None``, meaning the runtime follows from the
+        animations themselves.
     **kwargs
         Passed to :class:`~.AnimationContext` .
 
@@ -1239,7 +1259,9 @@ class Seq(Lag):
     Parameters
     ----------
     runtime
-        Passed to :class:`~.AnimationContext` .
+        Duration of the whole block in seconds; the animations inside are
+        rescaled to fit, keeping their relative durations. Must be finite and
+        non-negative. Defaults to ``None``, meaning the sum of their durations.
     **kwargs
         Passed to :class:`~.Lag` with ``lag_ratio=1``.
 

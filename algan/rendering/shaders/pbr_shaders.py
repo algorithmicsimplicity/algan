@@ -43,37 +43,48 @@ def basic_pbr_shader(
     smoothness: float = 0.5,
     metallicness: float = 0.5,
 ):
-    """Implements a simplified physics-based rendering shader, using smoothness and metallicness
-    to define diffuse and specular lighting.
+    """Shade vertices with a simplified physically based (PBR) lighting model.
+
+    Pass it to
+    :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`
+    rather than calling it: the renderer supplies the nine leading arguments,
+    and ``smoothness`` and ``metallicness`` become animatable attributes of the
+    Mob. Diffuse light is Lambertian; the highlight is a GGX lobe with a
+    Schlick Fresnel term, and there is no distance falloff.
 
     Parameters
     ----------
-    vertex_location : (np.ndarray)
-        The 3D location of the vertex to be shaded.
-    vertex_normal : (np.ndarray)
-        The surface normal vector at the vertex point (need not be normalized).
-    albedo_color : (np.ndarray)
-        The albedo/base RGBG color of the material.
-    camera_location : (np.ndarray)
-        The 3D location of the camera/viewer.
-    light_origin : (np.ndarray)
-        The 3D location of the point light source.
-    light_color : (np.ndarray)
-        The RGB color of the light.
-    light_intensity : float
-        The intensity/brightness of the light source.
-    ambient_light_intensity : float
-        The intensity of ambient scene lighting, ranges from 0 (no light) to 1.
-    smoothness : (float)
-        The smoothness of the material [0, 1]. 0=rough, 1=smooth.
-    metallicness : (float)
-        The metallicness property of the material [0, 1]. 0=dielectric, 1=metal.
+    memory
+        Scratch-tensor provider supplied by the renderer. Unused here.
+    vertex_location
+        Location of the vertex to shade, shape ``(*, 3)``.
+    vertex_normal
+        Surface normal at the vertex; need not be normalized. Shape ``(*, 3)``.
+    albedo_color
+        Base color with its trailing glow channel, shape ``(*, 4)``, which is
+        also the shape of the return value.
+    camera_location
+        Camera position, shape ``(*, 3)``.
+    light_origin
+        Position of the light source, shape ``(*, 3)``.
+    light_color
+        Color of the light, shape ``(*, 4)``.
+    light_intensity
+        Multiplier on the light's contribution.
+    ambient_light_intensity
+        Strength of the ambient term, from 0 (none) to 1.
+    smoothness
+        How smooth the material is, from 0 (rough, a broad dim highlight) to 1
+        (smooth, a tight bright one). Defaults to ``0.5``.
+    metallicness
+        How metallic the material is, from 0 (dielectric: a white highlight
+        over a diffuse base) to 1 (metal: no diffuse, a highlight tinted by the
+        base color). Defaults to ``0.5``.
 
     Returns
     -------
-    np.ndarray
-        The final computed RGB color for the vertex.
-
+    torch.Tensor
+        The shaded color, shape ``(*, 4)``, clamped to ``[0, 1]``.
     """
     # 1. Normalize inputs and calculate core direction vectors
     # Ensure all vectors are numpy arrays for vector operations
