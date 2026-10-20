@@ -253,6 +253,7 @@ _PUBLIC_FIELDS = frozenset(
         "tonemapping",
         "tonemap_method",
         "tonemap_exposure",
+        "dither",
         "unsupported_feature_policy",
     }
 )

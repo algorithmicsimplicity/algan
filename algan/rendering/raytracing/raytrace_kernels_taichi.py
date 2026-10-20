@@ -212,7 +212,8 @@ TRIANGLE_EDGE_EPSILON = 2e-4
 # This comment used to say a runtime toggle "would silently reuse a cached
 # kernel". The offline half of that is not true on Taichi 1.7.4 -- a folded
 # gate reaches the IR the cache key is computed from, so each arm gets its own
-# entry (see the corrected note at ``raster_taichi._GLOSSY_MIN_ROUGHNESS``).
+# entry (see the corrected note at
+# ``wavefront_kernels_taichi._GLOSSY_MIN_ROUGHNESS``).
 # The in-process half is true and is what the setter documents: the branch is
 # resolved when the kernel COMPILES, so a flip takes effect only for kernels
 # compiled after it, and an A/B needs one process per arm.

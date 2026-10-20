@@ -214,6 +214,21 @@ highlights:
     SETTINGS.raytracing.set(tonemap_method="agx")     # "neutral" or "agx"
     SETTINGS.raytracing.set(tonemap_exposure=1.2)
 
+Dithering
+---------
+
+A slow, dark gradient, such as light falling off across a floor, spans only a
+few byte values, so rounding each pixel to the nearest one would draw it as
+flat bands. Algan dithers that rounding by default: each pixel adds a fixed
+offset of under half a byte first, so the gradient comes out as a fine mix of
+neighbouring values. No pixel moves by more than one byte, and a colour that is
+already a whole byte, such as an authored colour with tonemapping off, stays
+exact. Turn it off for byte-exact rounding of everything else:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.set(dither=False)
+
 Custom Post-Processing Passes
 -----------------------------
 

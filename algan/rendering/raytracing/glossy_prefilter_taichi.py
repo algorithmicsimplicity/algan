@@ -60,12 +60,15 @@ _LOBE_CORE_WEIGHT = 0.6
 ACC_GEO = 7
 
 # Columns of a glossy accumulator row (``pix_accum[r + gloss_base]``). The
-# drain owns 0..7, the resolve owns 8..12; see DESIGN_glossy_prefilter.md §4.2.
+# drain owns 0..7 and the resolve 8..13, except that a rough reflector met in
+# the drain adds to ``W`` and claims a pixel the resolve left unclaimed; see
+# DESIGN_glossy_prefilter.md §4.2-§4.3.
 GL_ROW_DIST = 7
 GL_ROW_W = 8
 GL_ROW_SIGMA_SCALE = 11
 GL_ROW_DP = 12
-GL_ROW_WIDTH = 13
+GL_ROW_MAG = 13
+GL_ROW_WIDTH = 14
 
 # Columns of ``gl_main``: the pixel's linear pre-finalize color (with the
 # background already folded in exactly as ``wf_composite_accum_sparse`` folds
@@ -82,6 +85,95 @@ GL_MAIN_WIDTH = 8
 # which is bloom coverage rather than alpha, and it has to be prefiltered
 # alongside the color or a blurred reflection would carry a sharp bloom mask.
 GL_PYR_WIDTH = 5
+
+
+@ti.func
+def _edge_curvature(pa, pb, na, nb):
+    """Normal curvature along the edge ``pa -> pb`` of a surface with unit
+    normals ``na``, ``nb`` at its ends: ``1/R`` along any edge of a sphere of
+    radius ``R`` with outward normals, 0 on a plane.
+    """
+    e = pb - pa
+    ee = e.dot(e)
+    k = 0.0
+    if ee > 1e-20:
+        k = (nb - na).dot(e) / ee
+    return k
+
+
+@ti.func
+def _reflector_magnification(f, prim, rd, tri_pos: ti.template(),
+                             tri_norm: ti.template(), d_p):
+    """How much faster than the view ray a curved mirror swings its reflection.
+
+    The screen footprint in ``DESIGN_glossy_prefilter.md`` §3 is a FLAT
+    mirror's: turning the view ray by ``delta`` turns the reflected ray by
+    ``delta``, so a lobe of angular width ``sigma`` covers ``sigma / theta_px``
+    pixels. A convex mirror also tilts its normal under the moving hit point,
+    by ``kappa * d_p * delta`` at curvature ``kappa`` and camera distance
+    ``d_p``, and the reflection swings twice that on top -- so the same lobe
+    covers ``1 + 2 * kappa * d_p`` times fewer pixels. On the logo's chrome
+    sphere that factor is about 47, and leaving it out blurred a roughness-0.04
+    mirror into a grey haze whose coarse pyramid texels showed along its rim,
+    while the same sphere seen in the floor (a deeper bounce, never
+    prefiltered) stayed sharp.
+
+    The curvature comes from the hit triangle's own vertex normals: along each
+    edge ``(n_j - n_i) . e / |e|^2`` is the normal curvature in that
+    direction. The footprint is an ellipse, narrowed most along the most
+    curved direction; the one isotropic blur that stands for it is sized by
+    the LEAST curved edge, so it never undercuts the footprint in any
+    direction. That is exact on a sphere and leaves a surface that is flat
+    one way -- a cylinder, a cone along its generators -- at the flat
+    footprint. It is also what keeps the blur continuous: the estimate is
+    constant over a triangle, and the largest curvature jumps between
+    neighbours wherever the curvature varies -- a cone's ring nearer the apex
+    is twice as curved as the ring below it -- which drew sawtooth stripes
+    and seams across a satin cone. Normals are first turned to the viewer's
+    side of the triangle, so a surface bulging towards the camera is convex
+    whichever way its mesh is wound. A concave direction counts as flat: a
+    concave mirror can magnify without bound near its focus, and the flat
+    footprint is the widest blur this route ever drew, so the change only
+    ever narrows it.
+
+    A flat triangle -- every polyhedron face, every Bezier circuit, which
+    never comes here -- returns exactly 1.
+    """
+    tp = f % tri_pos.shape[0]
+    tn = f % tri_norm.shape[0]
+    p0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                      tri_pos[tp, prim, 2])
+    p1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                      tri_pos[tp, prim, 5])
+    p2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                      tri_pos[tp, prim, 8])
+    n0 = ti.math.vec3(tri_norm[tn, prim, 0], tri_norm[tn, prim, 1],
+                      tri_norm[tn, prim, 2])
+    n1 = ti.math.vec3(tri_norm[tn, prim, 3], tri_norm[tn, prim, 4],
+                      tri_norm[tn, prim, 5])
+    n2 = ti.math.vec3(tri_norm[tn, prim, 6], tri_norm[tn, prim, 7],
+                      tri_norm[tn, prim, 8])
+    mag = 1.0
+    if n0.norm() > 1e-12 and n1.norm() > 1e-12 and n2.norm() > 1e-12:
+        facing = (p1 - p0).cross(p2 - p0)
+        if facing.dot(rd) > 0.0:
+            facing = -facing
+        n0 = n0.normalized()
+        n1 = n1.normalized()
+        n2 = n2.normalized()
+        if n0.dot(facing) < 0.0:
+            n0 = -n0
+        if n1.dot(facing) < 0.0:
+            n1 = -n1
+        if n2.dot(facing) < 0.0:
+            n2 = -n2
+        k01 = _edge_curvature(p0, p1, n0, n1)
+        k12 = _edge_curvature(p1, p2, n1, n2)
+        k20 = _edge_curvature(p2, p0, n2, n0)
+        k_lo = ti.min(k01, ti.min(k12, k20))
+        if k_lo > 0.0:
+            mag = 1.0 + 2.0 * d_p * k_lo
+    return mag
 
 
 @ti.func
@@ -240,14 +332,28 @@ def gloss_scatter(
 
         # Contact hardening (DESIGN_glossy_prefilter.md §3): the lobe's screen
         # footprint scales with how far past the reflector the reflected
-        # content sits. d_tot is the total camera path length to the nearest
-        # thing the glossy ray found; a ray that found nothing left it at the
-        # host's +inf, which is k = 1 -- a reflection of the sky, fully blurred.
-        d_tot = pix_accum[gr, GL_ROW_DIST]
+        # content sits. The drain sums each surface the glossy ray met as its
+        # coverage over its total camera path length, so d_tot is their
+        # coverage-weighted harmonic distance and ``1 - d_p / d_tot`` the
+        # coverage-weighted mean cone factor, a miss counting as 1. A ray that
+        # found nothing left the sum at zero, which is k = 1 -- a reflection
+        # of the sky, fully blurred.
+        d_inv = pix_accum[gr, GL_ROW_DIST]
+        d_tot = 1e30
+        if d_inv > 1e-30:
+            d_tot = 1.0 / d_inv
         d_p = pix_accum[gr, GL_ROW_DP]
         k_cone = 1.0
         if d_tot < 1e29:
             k_cone = ti.math.clamp(1.0 - d_p / ti.max(d_tot, 1e-6), 0.0, 1.0)
+        # A curved reflector (``_reflector_magnification``) sees its reflected
+        # content ``d_r`` away through a reflection that swings ``mag`` times
+        # faster than the view, so the lobe's view angle is
+        # ``sigma * d_r / (d_p + mag * d_r)``: ``k / (1 + (mag - 1) k)`` in
+        # terms of the flat cone factor. A flat mirror's ``mag`` is exactly 1,
+        # and the expression is then exactly ``k``.
+        mag = ti.max(pix_accum[gr, GL_ROW_MAG], 1.0)
+        k_cone = k_cone / (1.0 + (mag - 1.0) * k_cone)
         gl_main[p, GL_MAIN_SIGMA] = ti.min(k_cone * sigma_scale,
                                            sigma_max)
         if ti.static(_projected(cam_proj)):

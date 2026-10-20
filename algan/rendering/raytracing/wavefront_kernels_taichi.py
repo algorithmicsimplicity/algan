@@ -32,6 +32,21 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import ACC_GEO as _ACC_G
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_ROW_DIST as _GL_ROW_DIST,
 )
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    GL_ROW_DP as _GL_ROW_DP,
+)
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    GL_ROW_MAG as _GL_ROW_MAG,
+)
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    GL_ROW_SIGMA_SCALE as _GL_ROW_SIGMA_SCALE,
+)
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    GL_ROW_W as _GL_ROW_W,
+)
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    _reflector_magnification,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_REFLECTIVITY,
@@ -1195,6 +1210,38 @@ def _reserve_continuation_slot(rs_alloc: ti.template(), capacity):
 # values must run one process per arm.
 _MIRROR_SHARE_ALPHA = 0.15 * 0.15
 _MIRROR_SHARE_A2 = _MIRROR_SHARE_ALPHA * _MIRROR_SHARE_ALPHA
+
+# Roughness below this leaves the reflection specular-perfect, so a mirror is
+# BYTE-IDENTICAL to the pre-glossy build (the test baselines depend on it) and
+# so does anything a user authored as a mirror. At this value the GGX width is
+# alpha = 1e-8, i.e. a deflection of ~1e-8 radians -- far below a pixel at any
+# resolution -- so nothing visible is being gated away.
+#
+# Deliberately a module constant rather than a setting, because there is
+# nothing here to configure: the threshold is derived from what it protects
+# (byte-identical mirrors) and sits eight orders of magnitude below a visible
+# deflection, so every value that is not this one is either indistinguishable
+# from it or breaks the guarantee.
+#
+# Not, as this comment used to say, because the offline cache would serve a
+# kernel built for another threshold. That is measurably untrue on Taichi
+# 1.7.4: a constant folded into a ``@ti.func`` reaches the compiled IR the
+# cache key is computed from, so each value gets its own entry and two
+# processes sharing a cache dir each get their own arithmetic back. The real
+# hazard is in-process and applies to every ``ti.static`` gate here: the branch
+# is resolved when the kernel COMPILES, so a value changed afterwards does
+# nothing for kernels already compiled and an A/B needs one process per arm.
+#
+# Defined here rather than in ``raster_taichi`` (where it started) because the
+# drain below gates the split-sum substitution on it as well, and
+# ``raster_taichi`` imports this module.
+_GLOSSY_MIN_ROUGHNESS = 1e-4
+
+# What a pool ray claiming its pixel's prefiltered glossy event puts in the
+# glossy row's radius column first (``wavefront_shade_arena``): any positive
+# value marks the event taken, and it is far below any radius the claim then
+# stores, so a racing claimant's ``atomic_max`` of it never lowers that radius.
+_GL_CLAIM_MARK = 1e-30
 
 
 @ti.func
@@ -2727,18 +2774,6 @@ def wavefront_shade_arena(
                         kb_prim[q] = -1
                 drained += 1
                 processed += 1
-                if is_gloss_ray:
-                    # SPLIT-SUM PREFILTER (DESIGN_glossy_prefilter.md §4.3):
-                    # how far past its reflector this reflection turned out to
-                    # be, which is what sets its blur radius. The TOTAL camera
-                    # path length, not the segment: a descendant's is always
-                    # larger than its parent's, so the minimum over the whole
-                    # sub-tree is exactly the first hit of the reflection ray
-                    # itself. A short segment three bounces in would win a
-                    # ``t_hit`` minimum and report a distant reflection as
-                    # being in contact.
-                    ti.atomic_min(pix_accum[accum_pix, _GL_ROW_DIST],
-                                  base_dist + t_hit)
                 htype = flags & 3
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
@@ -2787,6 +2822,32 @@ def wavefront_shade_arena(
                     cm = f % circuit_meta.shape[0]
                     reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, prim, _M_ROUGHNESS]
+                if is_gloss_ray:
+                    # SPLIT-SUM PREFILTER (DESIGN_glossy_prefilter.md §3,
+                    # §4.3): how far past its reflector this reflection turned
+                    # out to be, which is what sets its blur radius. Each
+                    # surface the reflection ray ITSELF meets adds the share of
+                    # the ray it covers over its TOTAL camera path length, so
+                    # the composite reads the coverage-weighted mean of the
+                    # cone factor ``1 - d_p / d``, a miss counting as 1. An
+                    # opaque first hit covers all of it, which is the first
+                    # hit's distance exactly. A faint or fully transparent
+                    # layer covers almost none, where a nearest-hit record let
+                    # it pull the whole reflection into contact: a fading veil
+                    # in front of a rough mirror kept its reflection sharp
+                    # until the veil was gone, and then it blurred in a frame.
+                    #
+                    # The ray itself is the one still on the segment it was
+                    # spawned on, whose start is the claim's ``d_p`` to the
+                    # bit (both are stored from one value). Its descendants
+                    # are what the covering surfaces show, already counted at
+                    # their surface.
+                    if base_dist == pix_accum[accum_pix, _GL_ROW_DP]:
+                        ti.atomic_add(
+                            pix_accum[accum_pix, _GL_ROW_DIST],
+                            ti.max(weight[0], ti.max(weight[1], weight[2]))
+                            * ti.math.clamp(alpha, 0.0, 1.0)
+                            / ti.max(base_dist + t_hit, 1e-6))
                 # Where a continuation starts: on the surface hit, never
                 # ``ro + t_hit * rd``, which a distant camera's primary ray (an
                 # eye thousands of units out) rounds
@@ -3297,13 +3358,55 @@ def wavefront_shade_arena(
                         interface_n = _transmission_normal(rd, normal, geo_normal)
                     R, diel_pass = _material_reflectance(
                         rd, interface_n, reflectivity, ior, albedo3, T, rel)
-                    # This route never spreads a continuation over the GGX
-                    # lobe (the glossy fan lives in the raster resolve), so
-                    # the mirror ray keeps only the share of the lobe it can
-                    # stand for and the rest falls back to local shading --
-                    # see ``_mirror_share``. Keeping the two routes agreed
-                    # matters: a batch the raster front-end rejects lands here.
-                    R *= _mirror_share(rough)
+                    # THE PIXEL'S PREFILTERED GLOSSY EVENT, MET IN THE DRAIN
+                    # (DESIGN_glossy_prefilter.md §2.2). The resolve can only
+                    # claim the pixel's one prefiltered event at a primary
+                    # hit, so a rough reflector the pixel sees in a mirror or
+                    # through glass is met here -- and the throttle below
+                    # hands a metal's withheld lobe to local shading with no
+                    # environment term to carry it (a metal's ambient is 1%
+                    # of F0): a satin gold cone on a mirror floor reflected at
+                    # ~1/18 of its own brightness, and olive where it is gold.
+                    # So a hit here makes the resolve's substitution -- the
+                    # lobe's directional albedo ``E`` on the reflection,
+                    # ``1 - E`` on the local term -- and its energy joins the
+                    # pixel's prefiltered event.
+                    #
+                    # Every ray of the pixel that qualifies JOINS the event
+                    # rather than only the first: a mirror pixel's secondary
+                    # taps are one reflection seen from sub-pixel offsets, as
+                    # a §4.4 band is one surface subdivided, and a silhouette
+                    # pixel's primary claim and the mirror image beside it
+                    # are the same surface twice -- throttled, the image's
+                    # share drew a dark line along every contact with the
+                    # floor. Their energies sum in the row and one ray, the
+                    # first claimant's (below, or the resolve's), carries the
+                    # radiance. A non-zero radius column is what says the
+                    # resolve ran on this route (it leaves
+                    # ``-pixels_per_radian`` at a pixel it did not claim). A
+                    # glossy ray never joins: its hits are the radiance the
+                    # event is prefiltering.
+                    gl_take = False
+                    gl_row = accum_pix + gloss_base
+                    if ti.static(compact):
+                        if (gloss_base > 0) and (not is_gloss_ray) \
+                                and (reflectivity >= 0.0) and (T <= 1e-4) \
+                                and (rough > _GLOSSY_MIN_ROUGHNESS) \
+                                and (bounces_left > 0):
+                            if pix_accum[gl_row, _GL_ROW_SIGMA_SCALE] != 0.0:
+                                gl_take = True
+                    if gl_take:
+                        R = _material_env_brdf(rd, normal, reflectivity, ior,
+                                               albedo3, rough)
+                    else:
+                        # This route never spreads a continuation over the GGX
+                        # lobe (the glossy fan lives in the raster resolve), so
+                        # the mirror ray keeps only the share of the lobe it
+                        # can stand for and the rest falls back to local
+                        # shading -- see ``_mirror_share``. Keeping the two
+                        # routes agreed matters: a batch the raster front-end
+                        # rejects lands here.
+                        R *= _mirror_share(rough)
                     if bounces_left <= 0:
                         # Out of bounces: no reflected ray. Transmission stays
                         # gated by ``diel_pass`` -- see ``_scatter_impl``.
@@ -3536,6 +3639,74 @@ def wavefront_shade_arena(
                             weight *= cover_pass
                             t_prev = t_hit
                             layer_prev = hit_layer
+                    elif gl_take:
+                        # The resolve's ``prefilter_take`` branch, from a pool
+                        # ray: ONE reflection ray per pixel, mirror direction,
+                        # throughput 1, retiring into the pixel's glossy row;
+                        # its energy ``W`` parked in the row for the composite;
+                        # and this ray carries on as the pass-through rather
+                        # than becoming the reflection.
+                        wt = weight * refl_energy
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        if wt_max > min_weight:
+                            for k in ti.static(range(3)):
+                                ti.atomic_add(pix_accum[gl_row, _GL_ROW_W + k],
+                                              wt[k])
+                            # One claimant: the ray that turns the resolve's
+                            # negative scale positive, if the resolve did not
+                            # claim the pixel itself. The mark only has to be
+                            # positive; the claimant overwrites it with the
+                            # real radius, and a later ``atomic_max`` of the
+                            # mark cannot lower that.
+                            gl_old = ti.atomic_max(
+                                pix_accum[gl_row, _GL_ROW_SIGMA_SCALE],
+                                _GL_CLAIM_MARK)
+                            if gl_old < 0.0:
+                                pix_accum[gl_row, _GL_ROW_SIGMA_SCALE] = (
+                                    2.0 * rough * rough * (-gl_old))
+                                pix_accum[gl_row, _GL_ROW_DP] = (
+                                    base_dist + t_hit)
+                                # A curved reflector seen in the mirror
+                                # narrows its footprint as it does at a
+                                # primary hit; ``base_dist + t_hit`` is the
+                                # unfolded camera distance it needs.
+                                gl_mag = 1.0
+                                if htype == 1:
+                                    gl_mag = _reflector_magnification(
+                                        f, prim, rd, tri_pos, tri_norm,
+                                        base_dist + t_hit)
+                                pix_accum[gl_row, _GL_ROW_MAG] = gl_mag
+                                c, have_slot = _reserve_continuation_slot(
+                                    rs_alloc, rs_ro.shape[0])
+                                if have_slot:
+                                    rdr, nref = _reflect_frame(rd, normal,
+                                                               geo_normal)
+                                    rorig = _offset_ray_origin(surf_p, nref)
+                                    for k in ti.static(range(3)):
+                                        rs_ro[c, k] = rorig[k]
+                                        rs_rd[c, k] = rdr[k]
+                                    for k in ti.static(range(4)):
+                                        rs_acc[c, k] = 0.0
+                                    rs_sca[c, 0] = 1.0
+                                    rs_sca[c, 1] = 0.0
+                                    rs_sca[c, 2] = 1e30
+                                    rs_sca[c, 3] = -1e30
+                                    rs_sca[c, 4] = base_dist + t_hit
+                                    rs_sca[c, 5] = 1.0
+                                    rs_sca[c, 6] = 1.0
+                                    rs_int[c, 0] = bounces_left - 1
+                                    rs_int[c, 1] = processed
+                                    rs_int[c, 2] = _ACTIVE
+                                    rs_int[c, 3] = 0
+                                    rs_pix[c] = pix
+                                    if ti.static(compact):
+                                        rs_int[c, 4] = gl_row
+                                    _write_ior_stack(rs_sca, r, c, ior, False,
+                                                     False, ior_stack)
+                                    _reset_shell_segment(rs_sca, c)
+                        weight *= cover3 + trans_energy * tint
+                        t_prev = t_hit
+                        layer_prev = hit_layer
                     elif is_pane:
                         # Thin pane: unbent transmission merges into the
                         # pass-through along with the coverage-miss, so only the

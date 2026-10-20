@@ -19,15 +19,20 @@ from PIL import Image
 
 import algan.external_libraries.manim as manim
 from algan import (
+    OUT,
     RED,
     SMOKE_TEST,
+    Color,
     ManimMob,
     MeshBasicMaterial,
+    MeshStandardMaterial,
     Off,
     Scene,
     Sphere,
     Square,
     Surface,
+    Text,
+    VideoSettings,
 )
 from algan.animatable_base.morph_conversions import convert_to_pn_soup
 from algan.mobs.shapes_2d import TriangleVertices
@@ -159,3 +164,59 @@ def test_a_glowing_surface_draws_what_flat_triangles_of_its_shape_draw(tmp_path)
     # The halo is most of what is drawn, so a doubled glow cannot hide in it.
     assert triangles.sum() > 3 * _frame(tmp_path, _triangles, 0.0).sum()
     assert int(np.abs(_frame(tmp_path, surface, 0.5) - triangles).max()) <= 2
+
+
+def _studio_band(height=128, width=256):
+    """A bright horizon band behind the camera: what chrome text reflects."""
+    lat = torch.linspace(90, -90, height).view(height, 1).expand(height, width)
+    lon = torch.linspace(0, 360, width).view(1, width).expand(height, width)
+    behind = (lon - 270 + 180) % 360 - 180
+    band = (
+        torch.sigmoid((lat + 5) / 1.2)
+        * torch.sigmoid((5.5 - lat) / 1.2)
+        * torch.exp(-((behind / 80) ** 2))
+        * 1.3
+    )
+    return band.unsqueeze(-1).expand(height, width, 3).contiguous()
+
+
+def _chrome_behind_a_faded_title(tmp_path, with_title):
+    """Chrome text under a studio band, seen from above, with or without a
+    glowing two-line title in front of it that has faded to zero opacity.
+    """
+    with Scene() as scene:
+        scene.set_video_settings(VideoSettings(resolution=(192, 108), supersampling=1))
+        scene.set_environment_map(_studio_band(), intensity=1.0, ambient=True)
+        chrome = Text("Algan", font_size=200)
+        chrome.set_material(
+            MeshStandardMaterial(color=Color("#eef1f5"), metalness=1.0, roughness=0.08)
+        )
+        with Off():
+            chrome.scale_to_height(3.0).spawn()
+            if with_title:
+                title = Text(
+                    "Algorithmic\nAnimation",
+                    font_size=110,
+                    color=Color("#4da3ff").set_glow(0.15).set_opacity(0.0),
+                )
+                title.scale_to_width(12.8).move(OUT * 0.03).spawn()
+            camera = scene.get_camera()
+            camera.move_to(torch.tensor([-0.3, 2.3, 24.5]))
+            camera.look_at(torch.tensor([-0.3, -0.45, 0.0]))
+        path = tmp_path / f"{int(with_title)}.png"
+        scene.save_frame(path, overwrite=True)
+    return np.asarray(Image.open(path)).astype(np.int16)[..., :3]
+
+
+def test_a_faded_out_glowing_title_leaves_the_chrome_behind_it_alone(tmp_path):
+    """REGRESSION. A circuit kept its sheet while it had glow, whatever its
+    opacity, and an invisible sheet in front of a glossy reflector still
+    changed how the reflector shaded. The demo video's faded title left ghost
+    letters in the chrome wordmark behind it, up to 36 levels deep. Glow is
+    weighted by alpha on every route, so a circuit at zero opacity is absent.
+    """
+    alone = _chrome_behind_a_faded_title(tmp_path, with_title=False)
+    # The scene has to show the chrome, or the comparison proves nothing.
+    assert alone.max() > 120
+    faded = _chrome_behind_a_faded_title(tmp_path, with_title=True)
+    assert int(np.abs(faded - alone).max()) <= 2

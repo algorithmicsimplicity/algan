@@ -35,6 +35,9 @@ import torch
 
 # Importing algan is what initialises Taichi and Torch for this process.
 import algan  # noqa: F401  (import for its side effects: ti.init lives there)
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    _reflector_magnification,
+)
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _env_brdf_approx,
     _material_env_brdf,
@@ -531,9 +534,9 @@ def _interior_local_maxima(png_path, margin):
 def test_a_creases_siblings_share_the_pixels_prefiltered_claim(tmp_path):
     """No bright seam down the interior edges of a rough metal solid.
 
-    The prefiltered glossy event is a per-pixel resource, so the first
-    qualifying sheet claims it and later ones fall back to the
-    ``_mirror_share`` throttle (§2.2). A §4.4 band's siblings are not "later
+    The prefiltered glossy event is a per-pixel resource, so one sheet claims
+    it and the pixel's other reflective sheets fall back to the
+    ``_mirror_share`` throttle (§2.2). A §4.4 band's siblings are not "other
     sheets": they are one surface's coverage of the pixel, subdivided so each
     shades with its own normal, and §4.4's contract is that the subdivision
     changes nothing the band commits.
@@ -577,6 +580,227 @@ def test_a_creases_siblings_share_the_pixels_prefiltered_claim(tmp_path):
     assert _interior_local_maxima(frame, margin=2) <= 2, (
         "a bright seam is back on the interior edges: "
         f"{_interior_local_maxima(frame, margin=2)} interior local maxima"
+    )
+
+
+# A rough gold panel standing above a perfect mirror floor, lit by nothing but
+# a UNIFORM environment: a white metal mirror reflects everything, and every
+# direction the panel's lobe can reach carries the same radiance, so the
+# panel's mirror image must come out exactly as the panel does.
+_MIRROR_SCENE = """
+import sys
+import torch
+from algan import (
+    UP, WHITE, Color, MeshStandardMaterial, Off, Prism, SETTINGS, Scene,
+    VideoSettings,
+)
+
+SETTINGS.paths.set(output_root=sys.argv[1], output_directory=".")
+with Scene() as scene:
+    scene.clear_lights()
+    scene.set_environment_map(torch.full((8, 16, 3), 0.5), ambient=False)
+    with Off():
+        floor = Prism(width=40, height=0.02, depth=40, color=WHITE)
+        floor.set_material(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.0)
+        )
+        floor.move(UP * -1.01)
+        floor.spawn()
+        panel = Prism(width=1.6, height=1.2, depth=0.05, color=WHITE)
+        panel.set_material(MeshStandardMaterial(
+            color=Color("#f2c85a"), metalness=1.0, roughness=0.35))
+        panel.move(UP * -0.1)
+        panel.spawn()
+    scene.save_frame(
+        "mirror",
+        VideoSettings(resolution=(192, 144), supersampling=1),
+        overwrite=True,
+    )
+"""
+
+
+def _panel_and_reflection_means(png_path):
+    """Linear mean color of the gold panel and of its image in the floor.
+
+    The gold is found by its hue (red well above blue: the floor and the
+    environment are neutral), eroded by a pixel so neither silhouette's blend
+    with the grey counts, and split into the frame's two separate runs of gold
+    rows -- the panel above, its reflection below.
+    """
+    import numpy as np
+    from PIL import Image
+
+    im = np.asarray(Image.open(png_path).convert("RGB")).astype(np.int32)
+    gold = (im[..., 0] - im[..., 2]) > 12
+    core = gold.copy()
+    core[1:] &= gold[:-1]
+    core[:-1] &= gold[1:]
+    core[:, 1:] &= gold[:, :-1]
+    core[:, :-1] &= gold[:, 1:]
+    rows = np.nonzero(core.any(axis=1))[0]
+    runs = np.split(rows, np.nonzero(np.diff(rows) > 1)[0] + 1)
+    assert len(runs) == 2, f"expected the panel and its reflection, got {len(runs)}"
+    real = core.copy()
+    real[runs[0][-1] + 1 :] = False
+    refl = core.copy()
+    refl[: runs[1][0]] = False
+    c = im / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return lin[real].mean(axis=0), lin[refl].mean(axis=0), int(refl.sum())
+
+
+def test_a_rough_metal_seen_in_a_mirror_reflects_as_itself(tmp_path):
+    """A rough metal's mirror image is shaded by the same model as the metal.
+
+    The resolve claims each pixel's one prefiltered glossy event at its
+    primary hit (§2.2), so a rough reflector the pixel only sees in a mirror
+    -- or through glass -- is met in the drain instead, and the drain gave it
+    the ``_mirror_share`` throttle: ~4% of the lobe on the reflection ray and
+    the rest to local shading, which for a metal has no environment term (its
+    ambient is 1% of F0). A satin gold cone on a mirror floor reflected as a
+    dim olive shape, ~1/18 of its own brightness in the scene it was reported
+    from. The drain now makes the resolve's substitution and joins the pixel's
+    prefiltered event, so the image matches the object.
+
+    In this scene the answer is exact: the floor is a white metal mirror and
+    the environment is uniform, so the reflection must equal the panel.
+    Measured as reflection / panel in linear light, per channel: **0.064
+    before, 1.000 after**. The bounds sit far from both.
+
+    Its own process for the reason the module docstring gives.
+    """
+    env = dict(os.environ)
+    for name in (
+        "ALGAN_GLOSSY_REFLECTION",
+        "ALGAN_GLOSSY_PREFILTER",
+        "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
+    ):
+        env.pop(name, None)
+    env["ALGAN_AUTO_DAEMON"] = "0"
+    proc = subprocess.run(
+        [sys.executable, "-c", _MIRROR_SCENE, str(tmp_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1200,
+        cwd=str(_REPO_ROOT),
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+    frame = tmp_path / "mirror.png"
+    assert frame.exists(), proc.stdout[-2000:]
+    real, refl, refl_px = _panel_and_reflection_means(frame)
+    assert refl_px > 300, f"only {refl_px} pixels of reflection found"
+    ratio = refl / real
+    assert ((ratio > 0.9) & (ratio < 1.1)).all(), (
+        "the panel's mirror image is not shaded like the panel: "
+        f"reflection / panel = {ratio.round(3).tolist()} (linear, RGB)"
+    )
+
+
+# A rough white-metal mirror reflecting a striped environment, rendered bare and
+# then behind a nearly invisible veil: a smaller rough-metal panel at 2% opacity
+# floating 0.4 in front of it. The stripes give the mirror's blur something to
+# show, so a reflection that turns sharp under the veil cannot hide.
+_VEIL_SCENE = """
+import sys
+import torch
+from algan import (
+    OUT, WHITE, MeshStandardMaterial, Off, Prism, SETTINGS, Scene, VideoSettings,
+)
+
+SETTINGS.paths.set(output_root=sys.argv[1], output_directory=".")
+stripes = torch.full((32, 64, 3), 0.05)
+for c in range(0, 64, 8):
+    stripes[:, c : c + 4] = 1.0
+for name, veil_opacity in (("bare", None), ("veiled", 0.02)):
+    with Scene() as scene:
+        scene.clear_lights()
+        scene.set_environment_map(stripes, ambient=False)
+        with Off():
+            mirror = Prism(width=3.2, height=2.4, depth=0.05, color=WHITE)
+            mirror.set_material(
+                MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.15))
+            mirror.spawn()
+            if veil_opacity is not None:
+                veil = Prism(width=2.0, height=1.6, depth=0.02, color=WHITE)
+                veil.set_material(
+                    MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.5))
+                veil.move(OUT * 0.4)
+                veil.opacity = veil_opacity
+                veil.spawn()
+        scene.save_frame(
+            name,
+            VideoSettings(resolution=(192, 144), supersampling=1),
+            overwrite=True,
+        )
+"""
+
+
+def test_a_faint_veil_does_not_change_the_mirror_behind_it(tmp_path):
+    """A 2%-opaque layer in front of a rough mirror changes it by about 2%.
+
+    Two rules made the mirror snap instead, both about the pixel's one
+    prefiltered glossy event (§2.2):
+
+    * The event went to the first qualifying sheet, so the veil, reflecting
+      2% of the light, took the blur, and the mirror behind it fell back to the
+      throttle's sharp, half-strength reflection.
+    * The blur radius came from the reflection ray's NEAREST hit, whatever its
+      opacity, so once the mirror did claim, the veil 0.4 in front of it put
+      the reflection in contact with it and the blur all but vanished.
+
+    Either way the mirror under the veil changed at once, at any opacity, and
+    a fading veil made it snap back in the frame it disappeared. The event now
+    goes to the sheet reflecting the most light, and each surface the
+    reflection meets counts toward its distance by the share of the ray it
+    covers.
+
+    Largest change between the bare and the veiled frame, in sRGB levels:
+    **30 with the first-come claim, 79 with the strongest-reflector claim
+    alone, 3 with both fixes**. The bound sits far from all three.
+
+    Its own process for the reason the module docstring gives; both frames
+    are one kernel variant, so they share it.
+    """
+    import numpy as np
+    from PIL import Image
+
+    env = dict(os.environ)
+    for name in (
+        "ALGAN_GLOSSY_REFLECTION",
+        "ALGAN_GLOSSY_PREFILTER",
+        "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
+    ):
+        env.pop(name, None)
+    env["ALGAN_AUTO_DAEMON"] = "0"
+    proc = subprocess.run(
+        [sys.executable, "-c", _VEIL_SCENE, str(tmp_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1200,
+        cwd=str(_REPO_ROOT),
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+    frames = []
+    for name in ("bare", "veiled"):
+        frame = tmp_path / f"{name}.png"
+        assert frame.exists(), proc.stdout[-2000:]
+        frames.append(np.asarray(Image.open(frame).convert("RGB")).astype(np.int32))
+    bare, veiled = frames
+    # The mirror must actually show its stripes blurred where the veil covers
+    # it, or the comparison below has nothing to see: a gradient across the
+    # middle of the frame (measured 64 levels), not a flat.
+    h, w = bare.shape[:2]
+    middle = bare[h // 2, int(w * 0.4) : int(w * 0.6), 0]
+    assert middle.max() - middle.min() > 30, middle.tolist()
+    change = np.abs(veiled - bare).max()
+    assert change <= 10, (
+        f"a 2%-opaque veil changed the mirror behind it by {change} sRGB levels"
     )
 
 
@@ -670,3 +894,130 @@ def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):
     # own brightness on half a pixel of motion (measured 0.052%; both fans
     # are above 3%).
     assert prefiltered < 0.0025, rows
+
+
+@ti.kernel
+def _probe_magnification(
+    pos: ti.types.ndarray(),
+    nrm: ti.types.ndarray(),
+    rd: ti.types.ndarray(),
+    d_p: ti.f32,
+    out: ti.types.ndarray(),
+):
+    for i in range(out.shape[0]):
+        out[i] = _reflector_magnification(
+            i, 0, ti.math.vec3(rd[i, 0], rd[i, 1], rd[i, 2]), pos, nrm, d_p
+        )
+
+
+def _sphere_patch(radius, inward_normals=False, flip_winding=False):
+    """One small triangle on a sphere of ``radius`` about the origin, facing +z,
+    as ``tri_pos`` / ``tri_norm`` rows of shape ``[1, 1, 9]``.
+    """
+    dirs = torch.tensor(
+        [[0.0, 0.0, 1.0], [0.05, 0.0, 1.0], [0.0, 0.05, 1.0]], dtype=torch.float32
+    )
+    dirs = dirs / dirs.norm(dim=1, keepdim=True)
+    if flip_winding:
+        dirs = dirs[[0, 2, 1]]
+    pos = (dirs * radius).reshape(1, 1, 9)
+    nrm = (-dirs if inward_normals else dirs).reshape(1, 1, 9)
+    return pos.contiguous(), nrm.contiguous()
+
+
+def _magnification(pos, nrm, rd, d_p):
+    out = torch.zeros(1, dtype=torch.float32)
+    _probe_magnification(
+        pos, nrm, torch.tensor([rd], dtype=torch.float32), float(d_p), out
+    )
+    return out[0].item()
+
+
+def test_curved_mirror_footprint_shrinks_by_its_magnification():
+    """A convex mirror swings its reflection ``1 + 2 d_p / R`` times faster than
+    the view ray, so its glossy footprint is that many times narrower.
+
+    Left out, a roughness-0.04 chrome sphere 23 units from the camera was
+    blurred 47 times too wide: a grey haze with blocky pyramid texels along
+    its rim, beside a sharp copy of itself in a mirror floor (a deeper bounce,
+    which is never prefiltered). The magnification comes from the hit
+    triangle's vertex normals, so it must hold whichever way the mesh is
+    wound or its normals point, and be exactly 1 on a flat triangle so a flat
+    mirror's footprint stays what it was.
+    """
+    toward_camera = [0.0, 0.0, -1.0]
+    d_p, radius = 23.0, 1.0
+    expected = 1.0 + 2.0 * d_p / radius
+    for inward in (False, True):
+        for flip in (False, True):
+            pos, nrm = _sphere_patch(radius, inward, flip)
+            got = _magnification(pos, nrm, toward_camera, d_p)
+            assert math.isclose(got, expected, rel_tol=0.02), (inward, flip, got)
+    # Seen from inside, the same patch is a concave mirror, which keeps the
+    # flat footprint rather than an unbounded one near its focus.
+    pos, nrm = _sphere_patch(radius)
+    assert _magnification(pos, nrm, [0.0, 0.0, 1.0], d_p) == 1.0
+    # A flat triangle -- equal vertex normals -- is exactly the old footprint.
+    flat_n = torch.tensor([0.0, 0.0, 1.0] * 3).reshape(1, 1, 9)
+    assert _magnification(pos, flat_n, toward_camera, d_p) == 1.0
+
+
+def test_a_cone_keeps_the_flat_footprint_on_both_halves_of_each_quad():
+    """A surface flat in one direction is blurred as a flat mirror, on every
+    triangle alike.
+
+    A cone's ring nearer the apex is more curved than the ring below it, and
+    each triangle of a quad holds a different ring. Sized by a triangle's most
+    curved edge, the two halves of every quad got different blurs, which drew
+    sawtooth stripes and a seam across the logo's satin gold cone. Along its
+    generators the cone is flat, so its reflection swings no faster than a
+    flat mirror's that way, and the flat footprint is the narrowest blur that
+    stays inside the footprint in every direction.
+    """
+    radius, height, d_p = 1.0, 2.0, 23.0
+    slant = math.hypot(radius, height)
+
+    def ring(y, angle):
+        r = radius * (1.0 - y / height)
+        point = [r * math.sin(angle), y, r * math.cos(angle)]
+        normal = [
+            height / slant * math.sin(angle),
+            radius / slant,
+            height / slant * math.cos(angle),
+        ]
+        return point, normal
+
+    a, b = math.radians(-10.0), math.radians(10.0)
+    lower_left, lower_right = ring(0.0, a), ring(0.0, b)
+    upper_left, upper_right = ring(1.0, a), ring(1.0, b)
+    for corners in (
+        (lower_left, lower_right, upper_left),
+        (lower_right, upper_right, upper_left),
+    ):
+        pos = torch.tensor([c[0] for c in corners]).reshape(1, 1, 9)
+        nrm = torch.tensor([c[1] for c in corners]).reshape(1, 1, 9)
+        assert _magnification(pos, nrm, [0.0, 0.0, -1.0], d_p) == 1.0
+
+
+def test_blur_sigma_divides_a_sky_reflection_by_the_magnification():
+    """The host formula agrees with the kernel's: ``k / (1 + (m - 1) k)``.
+
+    A sky reflection (``k = 1``) blurs by ``sigma / m``; a contact reflection
+    (``k = 0``) stays sharp whatever ``m`` is; ``m = 1`` is the flat formula.
+    """
+    from algan.rendering.raytracing.settings import glossy_blur_sigma_px
+
+    theta_px = 0.3948 / 480.0
+    flat = glossy_blur_sigma_px(0.35, float("inf"), 5.0, theta_px)
+    curved = glossy_blur_sigma_px(0.35, float("inf"), 5.0, theta_px, 11.0)
+    assert math.isclose(curved, flat / 11.0, rel_tol=1e-6)
+    assert glossy_blur_sigma_px(0.35, 0.0, 5.0, theta_px, 11.0) == 0.0
+    assert glossy_blur_sigma_px(0.35, 50.0, 5.0, theta_px, 1.0) == (
+        glossy_blur_sigma_px(0.35, 50.0, 5.0, theta_px)
+    )
+    # Content beyond a convex mirror's focal distance (R/2 for a sphere of
+    # radius R: d_p / m) is mostly blurred; content nearer is mostly sharp.
+    near = glossy_blur_sigma_px(0.35, 0.05, 23.0, theta_px, 47.0)
+    far = glossy_blur_sigma_px(0.35, 5.0, 23.0, theta_px, 47.0)
+    assert near < 0.25 * far
+    assert far < flat / 47.0
