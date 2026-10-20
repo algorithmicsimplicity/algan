@@ -146,7 +146,35 @@ orthographic camera there is no angular size and the world pixel width
 `|pixel_basis_x|` is used directly against `d_r * sigma_angle`).
 
 `k` is what gives **contact hardening**: a reflection touching its reflector is
-sharp, a distant one is fully blurred. `d_p` is known at the primary hit; `d_r`
+sharp, a distant one is fully blurred.
+
+### 3.1 Curved reflectors
+
+The footprint above is a flat mirror's: turning the view ray by `delta` turns the
+reflected ray by `delta`. A convex mirror also tilts its normal under the moving
+hit point, by `kappa * d_p * delta` at curvature `kappa`, and the reflection swings
+twice that on top, so the reflected content moves `m = 1 + 2 * kappa * d_p` times
+faster than the view and the lobe covers `m` times fewer pixels. Unfolding as
+before, content `d_r` past the hit is seen through a view angle of
+`sigma_angle * d_r / (d_p + m * d_r)`, which is `k / (1 + (m - 1) k)` in terms of
+the flat cone factor: exactly `k` at `m = 1`, `sigma_angle / m` for the sky, and
+sharp again for content nearer than the mirror's focal distance (`R / 2` for a
+sphere of radius `R`, where `d_p / m` tends).
+
+`m` is measured per hit, from the hit triangle's own vertex normals
+(`_reflector_magnification`): along each edge `(n_j - n_i) . e / |e|^2` is the
+normal curvature in that direction, the least and greatest of the three bracket
+the principal curvatures, and `m` is the geometric mean of their two
+magnifications, since one isotropic blur stands for an elliptical footprint.
+Normals are turned to the viewer's side of the triangle first, so winding does
+not matter. A concave direction counts as flat (a concave mirror's magnification
+is unbounded near its focus, and the flat footprint is the widest blur the route
+draws), and so does every Bezier circuit; the change only ever narrows a blur.
+
+Without it, the logo's roughness-0.04 chrome sphere, 23 units from the camera
+(`m` about 47), was blurred into a grey haze with coarse pyramid texels showing
+along its rim, beside a sharp copy of itself in a mirror floor -- a deeper
+bounce, which is never prefiltered (§5). `d_p` is known at the primary hit; `d_r`
 is not known until the glossy ray hits something, so the ray records it — see
 §4.3. A glossy ray that escapes to the background never records one, and its
 `d_r` stays at the initialised infinity, which is `k = 1`: the right answer for
@@ -204,9 +232,10 @@ bounces left, and is the first such sheet in this pixel's walk:
    | 8-10 | resolve | `W = weight * alpha * E`, the factored-out energy |
    | 11 | resolve | `sigma_angle / theta_px`, the full-lobe radius in pixels |
    | 12 | resolve | `d_p`, the primary hit distance |
+   | 13 | resolve | `m`, the curved reflector's magnification (§3.1; 1 when flat) |
 
-   so `pix_accum` is `(2 * primaries, 13)` on this route rather than
-   `(primaries, 7)`. That is 3.7x a per-tile buffer of a few megabytes, and it
+   so `pix_accum` is `(2 * primaries, 14)` on this route rather than
+   `(primaries, 7)`. That is 4x a per-tile buffer of a few megabytes, and it
    costs no kernel argument at all.
 4. It then performs the same occlusion write the non-glass reflective `else`
    branch does (`_run_svis_write` with `trans_share = 0`, `_run_redistribute`)
@@ -311,7 +340,7 @@ at PREVIEW on a 600 MB arena:
   chunk.
 * **Charge the widened `pix_accum`.** `_WAVEFRONT_BYTES_PER_PRIMARY` is the
   measured 28 bytes of the plain `(primaries, 7)` row; this route allocates
-  `(2 * primaries, 13)`, so the tile needs the extra 76 bytes per primary passed
+  `(2 * primaries, 14)`, so the tile needs the extra 84 bytes per primary passed
   as `extra_bytes_per_primary` or it is fitted to a row it does not take.
 
 Getting either wrong is not a graceful degradation. The tile overruns on its
@@ -328,6 +357,9 @@ rather than the render, but that is a backstop, not the budget.
   screen has; on a reflector that is small on screen a wide lobe averages mostly
   its own pixels.
 * **One glossy event per pixel** (§2.2). Deeper glossy bounces keep the throttle.
+* **Curvature only on the pinhole.** An orthographic or blended projection keeps
+  the flat footprint on a curved reflector (§3.1's `m` assumes the view ray's
+  angle, not its offset, is what moves the hit point).
 * **Transmissive materials are untouched.** Glass keeps Schlick and the existing
   refraction transport; the DFG substitution is for the opaque reflective branch,
   where the throttle was the visible error.

@@ -35,6 +35,9 @@ import torch
 
 # Importing algan is what initialises Taichi and Torch for this process.
 import algan  # noqa: F401  (import for its side effects: ti.init lives there)
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    _reflector_magnification,
+)
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _env_brdf_approx,
     _material_env_brdf,
@@ -670,3 +673,93 @@ def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):
     # own brightness on half a pixel of motion (measured 0.052%; both fans
     # are above 3%).
     assert prefiltered < 0.0025, rows
+
+
+@ti.kernel
+def _probe_magnification(
+    pos: ti.types.ndarray(),
+    nrm: ti.types.ndarray(),
+    rd: ti.types.ndarray(),
+    d_p: ti.f32,
+    out: ti.types.ndarray(),
+):
+    for i in range(out.shape[0]):
+        out[i] = _reflector_magnification(
+            i, 0, ti.math.vec3(rd[i, 0], rd[i, 1], rd[i, 2]), pos, nrm, d_p
+        )
+
+
+def _sphere_patch(radius, inward_normals=False, flip_winding=False):
+    """One small triangle on a sphere of ``radius`` about the origin, facing +z,
+    as ``tri_pos`` / ``tri_norm`` rows of shape ``[1, 1, 9]``.
+    """
+    dirs = torch.tensor(
+        [[0.0, 0.0, 1.0], [0.05, 0.0, 1.0], [0.0, 0.05, 1.0]], dtype=torch.float32
+    )
+    dirs = dirs / dirs.norm(dim=1, keepdim=True)
+    if flip_winding:
+        dirs = dirs[[0, 2, 1]]
+    pos = (dirs * radius).reshape(1, 1, 9)
+    nrm = (-dirs if inward_normals else dirs).reshape(1, 1, 9)
+    return pos.contiguous(), nrm.contiguous()
+
+
+def _magnification(pos, nrm, rd, d_p):
+    out = torch.zeros(1, dtype=torch.float32)
+    _probe_magnification(
+        pos, nrm, torch.tensor([rd], dtype=torch.float32), float(d_p), out
+    )
+    return out[0].item()
+
+
+def test_curved_mirror_footprint_shrinks_by_its_magnification():
+    """A convex mirror swings its reflection ``1 + 2 d_p / R`` times faster than
+    the view ray, so its glossy footprint is that many times narrower.
+
+    Left out, a roughness-0.04 chrome sphere 23 units from the camera was
+    blurred 47 times too wide: a grey haze with blocky pyramid texels along
+    its rim, beside a sharp copy of itself in a mirror floor (a deeper bounce,
+    which is never prefiltered). The magnification comes from the hit
+    triangle's vertex normals, so it must hold whichever way the mesh is
+    wound or its normals point, and be exactly 1 on a flat triangle so a flat
+    mirror's footprint stays what it was.
+    """
+    toward_camera = [0.0, 0.0, -1.0]
+    d_p, radius = 23.0, 1.0
+    expected = 1.0 + 2.0 * d_p / radius
+    for inward in (False, True):
+        for flip in (False, True):
+            pos, nrm = _sphere_patch(radius, inward, flip)
+            got = _magnification(pos, nrm, toward_camera, d_p)
+            assert math.isclose(got, expected, rel_tol=0.02), (inward, flip, got)
+    # Seen from inside, the same patch is a concave mirror, which keeps the
+    # flat footprint rather than an unbounded one near its focus.
+    pos, nrm = _sphere_patch(radius)
+    assert _magnification(pos, nrm, [0.0, 0.0, 1.0], d_p) == 1.0
+    # A flat triangle -- equal vertex normals -- is exactly the old footprint.
+    flat_n = torch.tensor([0.0, 0.0, 1.0] * 3).reshape(1, 1, 9)
+    assert _magnification(pos, flat_n, toward_camera, d_p) == 1.0
+
+
+def test_blur_sigma_divides_a_sky_reflection_by_the_magnification():
+    """The host formula agrees with the kernel's: ``k / (1 + (m - 1) k)``.
+
+    A sky reflection (``k = 1``) blurs by ``sigma / m``; a contact reflection
+    (``k = 0``) stays sharp whatever ``m`` is; ``m = 1`` is the flat formula.
+    """
+    from algan.rendering.raytracing.settings import glossy_blur_sigma_px
+
+    theta_px = 0.3948 / 480.0
+    flat = glossy_blur_sigma_px(0.35, float("inf"), 5.0, theta_px)
+    curved = glossy_blur_sigma_px(0.35, float("inf"), 5.0, theta_px, 11.0)
+    assert math.isclose(curved, flat / 11.0, rel_tol=1e-6)
+    assert glossy_blur_sigma_px(0.35, 0.0, 5.0, theta_px, 11.0) == 0.0
+    assert glossy_blur_sigma_px(0.35, 50.0, 5.0, theta_px, 1.0) == (
+        glossy_blur_sigma_px(0.35, 50.0, 5.0, theta_px)
+    )
+    # Content beyond a convex mirror's focal distance (R/2 for a sphere of
+    # radius R: d_p / m) is mostly blurred; content nearer is mostly sharp.
+    near = glossy_blur_sigma_px(0.35, 0.05, 23.0, theta_px, 47.0)
+    far = glossy_blur_sigma_px(0.35, 5.0, 23.0, theta_px, 47.0)
+    assert near < 0.25 * far
+    assert far < flat / 47.0

@@ -40,8 +40,10 @@ from algan.rendering.raytracing.arena_args_taichi import (
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     ACC_GEO,
     GL_ROW_DP,
+    GL_ROW_MAG,
     GL_ROW_SIGMA_SCALE,
     GL_ROW_W,
+    _reflector_magnification,
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_FULL_DUST,
@@ -1142,6 +1144,15 @@ def sheet_resolve_shade_arena(
                             pix_accum[gl_row, GL_ROW_SIGMA_SCALE] = (
                                 2.0 * rough * rough * gl_px_per_rad)
                             pix_accum[gl_row, GL_ROW_DP] = base_dist + t_hit
+                            # A circuit is planar; a triangle may belong to a
+                            # curved mesh, whose reflection the footprint
+                            # must shrink by (DESIGN_glossy_prefilter.md §3).
+                            gl_mag = 1.0
+                            if not fetched_bez:
+                                gl_mag = _reflector_magnification(
+                                    f, prim, surf_rd, tri_pos, tri_norm,
+                                    base_dist + t_hit)
+                            pix_accum[gl_row, GL_ROW_MAG] = gl_mag
                 if not defer:
                     rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
                     _run_redistribute(svis, own_msk, rr)

@@ -3135,19 +3135,25 @@ def glossy_reflection_mode():
     return 2 if glossy_interleave else 1
 
 
-def glossy_blur_sigma_px(roughness, d_reflected, d_primary, theta_px):
+def glossy_blur_sigma_px(
+    roughness, d_reflected, d_primary, theta_px, magnification=1.0
+):
     """The prefilter's blur radius in pixels, in pure Python.
 
     The kernels compute this inline (``sheet_resolve_taichi`` produces the
-    per-pixel scale, ``glossy_prefilter_taichi.gloss_scatter`` applies the cone
-    factor); this is the same arithmetic in one place, for tests and for
-    anything on the host that needs to predict it. See
-    ``DESIGN_glossy_prefilter.md`` §3 for where each term comes from.
+    per-pixel scale and the reflector's magnification,
+    ``glossy_prefilter_taichi.gloss_scatter`` applies the cone factor); this is
+    the same arithmetic in one place, for tests and for anything on the host
+    that needs to predict it. See ``DESIGN_glossy_prefilter.md`` §3 for where
+    each term comes from.
 
     ``d_reflected`` is how far past the primary hit the reflected content sits;
     ``inf`` (a ray that escaped) is a reflection of the sky and blurs by the
     full lobe angle, and 0 (a reflection in contact with its reflector) does
-    not blur at all.
+    not blur at all. ``magnification`` is how many times faster than the view
+    ray the reflection swings -- 1 for a flat mirror, ``1 + 2 d_p / R`` for a
+    sphere of radius ``R`` (``glossy_prefilter_taichi.
+    _reflector_magnification``) -- and divides a sky reflection's blur.
     """
     alpha = float(roughness) * float(roughness)
     sigma_angle = 2.0 * alpha
@@ -3158,6 +3164,8 @@ def glossy_blur_sigma_px(roughness, d_reflected, d_primary, theta_px):
     else:
         total = d_p + d_r
         cone = 0.0 if total <= 0.0 else max(0.0, min(1.0, d_r / total))
+    mag = max(float(magnification), 1.0)
+    cone = cone / (1.0 + (mag - 1.0) * cone)
     return cone * sigma_angle / float(theta_px)
 
 
