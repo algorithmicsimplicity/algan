@@ -54,7 +54,6 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_SAMPLE_WEIGHT,
     _AA_SEC_JITTER,
     _AA_SLIVER_BIT,
-    _GLOSSY_MIN_ROUGHNESS,
     _aa_dump_frag,
     _aa_dump_match,
     _aa_dump_terminal,
@@ -108,6 +107,7 @@ from algan.rendering.raytracing.transport_taichi import (
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
+    _GLOSSY_MIN_ROUGHNESS,
     ALLOC_TRUNC_SURFACES,
     _material_env_brdf,
     _material_reflectance,
@@ -364,6 +364,15 @@ def sheet_resolve_shade_arena(
                     gl_px_per_rad = 1.0 / ti.max(
                         pbx_c.norm() * cam_proj[f, 1] / gen_meta[3] * axis_cos,
                         1e-12)
+            if ti.static(mode != 1):
+                # Published for the drain, NEGATED so the scatter still reads
+                # the pixel as having no glossy branch: when no sheet below
+                # claims the pixel's one prefiltered event, a pool ray that
+                # meets a rough reflector further down the pixel's transport
+                # (seen in a mirror, or through glass) claims it there, and
+                # this is the scale its radius needs. A claim below overwrites
+                # it. See ``wavefront_shade_arena``'s ``gl_take``.
+                pix_accum[r + num_covered, GL_ROW_SIGMA_SCALE] = -gl_px_per_rad
 
         acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         weight = ti.math.vec3(1.0, 1.0, 1.0)

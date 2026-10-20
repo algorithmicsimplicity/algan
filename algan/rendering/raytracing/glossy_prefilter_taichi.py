@@ -60,7 +60,9 @@ _LOBE_CORE_WEIGHT = 0.6
 ACC_GEO = 7
 
 # Columns of a glossy accumulator row (``pix_accum[r + gloss_base]``). The
-# drain owns 0..7, the resolve owns 8..13; see DESIGN_glossy_prefilter.md §4.2.
+# drain owns 0..7 and the resolve 8..13, except that a rough reflector met in
+# the drain adds to ``W`` and claims a pixel the resolve left unclaimed; see
+# DESIGN_glossy_prefilter.md §4.2-§4.3.
 GL_ROW_DIST = 7
 GL_ROW_W = 8
 GL_ROW_SIGMA_SCALE = 11

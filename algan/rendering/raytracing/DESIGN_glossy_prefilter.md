@@ -120,6 +120,48 @@ the Icosahedron's screen box, worst 51, and nothing else in the frame).
 `test_a_creases_siblings_share_the_pixels_prefiltered_claim` pins it: interior
 local maxima on a lit rough-metal Icosahedron, 72 before and 0 after.
 
+**CORRECTED 2026-10-20: the event can be claimed in the drain.** As written,
+only a PRIMARY hit could claim it, so a rough reflector that a pixel sees in a
+mirror or through glass got the throttle. For a metal, the throttle does not
+give a softer reflection; it removes the reflection. The withheld lobe falls to
+local shading, and for a metal that is the 0.01 ambient (§1). A satin gold cone
+(roughness 0.32) standing on a perfect mirror floor reflected at about 1/18 of
+its own brightness in linear light, olive where it is gold.
+`test_a_rough_metal_seen_in_a_mirror_reflects_as_itself` uses a uniform
+environment and a white metal mirror, where the exact answer is 1. Its
+reflection / panel ratio was 0.064 per channel.
+
+Now a pool ray that is not part of a glossy reflection, meeting a rough opaque
+reflector with bounces left, makes the resolve's substitution (`R = E`). It
+adds `weight * alpha * E` to the pixel's `W`. If the resolve did not claim the
+pixel, the first such ray claims it, as the resolve would have:
+
+* it spawns the one glossy ray (mirror direction, throughput 1, glossy row);
+* it records the radius and `d_p`, the camera path length to the hit, which
+  through a planar mirror is exactly the unfolded distance §3 needs;
+* the hit itself carries on as the pass-through.
+
+Two kinds of ray join the claim instead of making their own: rays that arrive
+after it, and drain hits on a pixel the resolve already claimed. Their energy
+sums into `W`, and the one ray carries the radiance. This is the band rule
+above, applied to the drain:
+
+* A mirror pixel's secondary taps are one reflection, seen from sub-pixel
+  offsets.
+* At a silhouette, the primary can claim the event while the uncovered part
+  of the pixel sees the same object in the floor. That is the same surface
+  twice. Left throttled, that share drew a dark dotted line along the contact
+  between an object and its reflection.
+
+Rays inside a glossy reflection still keep the throttle, because their hits
+are the radiance the event prefilters.
+
+Measured:
+
+* the test scene's ratio went from 0.064 to 1.000;
+* the reported cone's reflection / object ratio went from 0.31 to 0.96 in
+  linear light (path tracer, 16 spp: 0.93 / 0.87 / 0.76 per channel).
+
 ## 3. Blur radius
 
 The lobe's median microfacet half-angle is `atan(alpha)` with `alpha =
@@ -235,10 +277,10 @@ bounces left, and is the first such sheet in this pixel's walk:
    | 0-3 | drain | reflected radiance + glow, premultiplied |
    | 4-6 | drain | leftover throughput (what the background shows through) |
    | 7 | drain | `min(base_dist + t_hit)` over the ray and its descendants |
-   | 8-10 | resolve | `W = weight * alpha * E`, the factored-out energy |
-   | 11 | resolve | `sigma_angle / theta_px`, the full-lobe radius in pixels |
-   | 12 | resolve | `d_p`, the primary hit distance |
-   | 13 | resolve | `m`, the curved reflector's magnification (§3.1; 1 when flat) |
+   | 8-10 | resolve, drain (§4.3) | `W = weight * alpha * E`, the factored-out energy |
+   | 11 | resolve, drain (§4.3) | `sigma_angle / theta_px`, the full-lobe radius in pixels; `-1 / theta_px` where nothing has claimed the pixel |
+   | 12 | resolve, drain (§4.3) | `d_p`, the camera path length to the claiming hit |
+   | 13 | resolve, drain (§4.3) | `m`, the curved reflector's magnification (§3.1; 1 when flat) |
 
    so `pix_accum` is `(2 * primaries, 14)` on this route rather than
    `(primaries, 7)`. That is 4x a per-tile buffer of a few megabytes, and it
@@ -278,6 +320,24 @@ reflection as being in contact when it is not); and the composite already knows
 `d_p`, so `d_r = d_tot - d_p` costs nothing there and saves the drain from
 needing `d_p` at all. A glossy ray that never hits anything writes nothing, and
 the host's initialised `+inf` is `k = 1`: a reflection of the sky, fully blurred.
+
+The drain can also hold the pixel's event (§2.2, corrected 2026-10-20). The
+resolve writes `-gl_px_per_rad` into column 11 of every pixel it shades. A
+claim overwrites that value with a positive radius, so a scatter still reads
+an unclaimed pixel as having no glossy branch. In the drain, a pool ray that
+is not a glossy ray and meets a qualifying surface does three things:
+
+1. It takes `R = E`.
+2. It `atomic_add`s its `W` into columns 8-10.
+3. It `atomic_max`es a tiny positive mark into column 11. The one ray that
+   gets a negative value back is the claimant. It writes the radius from that
+   value's magnitude, `d_p` and the hit's magnification `m` (§3.1, with the
+   unfolded path length as `d_p`), and spawns the glossy ray into the pixel's
+   glossy row.
+
+A zero in column 11 means the resolve never ran on this route for the pixel,
+so the drain falls back to the throttle. `gl_take` in
+`wavefront_shade_arena` is the code.
 
 Rows `[primaries:]` are initialised with column 7 at `+inf`.
 `wf_composite_accum_sparse` is handed the first `primaries` rows as a view, so
@@ -362,7 +422,17 @@ rather than the render, but that is a backstop, not the budget.
   is the background, as it is today. The prefilter widens the lobe over what the
   screen has; on a reflector that is small on screen a wide lobe averages mostly
   its own pixels.
-* **One glossy event per pixel** (§2.2). Deeper glossy bounces keep the throttle.
+* **One glossy event per pixel** (§2.2). It goes to the first rough opaque
+  reflector on the pixel's transport: the primary hit, or a surface seen in a
+  mirror or through glass. Bounces inside a glossy reflection keep the
+  throttle.
+* **A claim made in the drain is blurred at the primary ray's angular scale.**
+  That is exact through a planar mirror, where path length unfolds. Through a
+  curved mirror or a refraction it is an approximation.
+* **An object and its mirror image share the pyramid.** Where their lobes
+  overlap on screen, each one's prefilter averages the other's `B`. On the
+  reported cone this moved the object itself by about -12 sRGB; its pixels
+  had previously averaged only its own reflection buffer.
 * **Curvature only on the pinhole.** An orthographic or blended projection keeps
   the flat footprint on a curved reflector (§3.1's `m` assumes the view ray's
   angle, not its offset, is what moves the hit point).
@@ -370,7 +440,9 @@ rather than the render, but that is a backstop, not the budget.
   refraction transport; the DFG substitution is for the opaque reflective branch,
   where the throttle was the visible error.
 * **Several reflective sheets in one pixel** share one `B`, one `W` and one
-  radius — the first qualifying sheet's. Later ones fall back to the throttle.
+  radius — the first qualifying sheet's. Later sheets in the resolve's walk
+  fall back to the throttle. Rough reflectors met in the drain join the event
+  instead (§2.2, corrected 2026-10-20).
 * **A box-mip prefilter is not a GGX prefilter.** It is the shape of the
   footprint, not of the lobe. That is the same approximation every real-time
   split-sum implementation makes for the radiance half.

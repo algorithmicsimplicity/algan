@@ -583,6 +583,122 @@ def test_a_creases_siblings_share_the_pixels_prefiltered_claim(tmp_path):
     )
 
 
+# A rough gold panel standing above a perfect mirror floor, lit by nothing but
+# a UNIFORM environment: a white metal mirror reflects everything, and every
+# direction the panel's lobe can reach carries the same radiance, so the
+# panel's mirror image must come out exactly as the panel does.
+_MIRROR_SCENE = """
+import sys
+import torch
+from algan import (
+    UP, WHITE, Color, MeshStandardMaterial, Off, Prism, SETTINGS, Scene,
+    VideoSettings,
+)
+
+SETTINGS.paths.set(output_root=sys.argv[1], output_directory=".")
+with Scene() as scene:
+    scene.clear_lights()
+    scene.set_environment_map(torch.full((8, 16, 3), 0.5), ambient=False)
+    with Off():
+        floor = Prism(width=40, height=0.02, depth=40, color=WHITE)
+        floor.set_material(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.0)
+        )
+        floor.move(UP * -1.01)
+        floor.spawn()
+        panel = Prism(width=1.6, height=1.2, depth=0.05, color=WHITE)
+        panel.set_material(MeshStandardMaterial(
+            color=Color("#f2c85a"), metalness=1.0, roughness=0.35))
+        panel.move(UP * -0.1)
+        panel.spawn()
+    scene.save_frame(
+        "mirror",
+        VideoSettings(resolution=(192, 144), supersampling=1),
+        overwrite=True,
+    )
+"""
+
+
+def _panel_and_reflection_means(png_path):
+    """Linear mean color of the gold panel and of its image in the floor.
+
+    The gold is found by its hue (red well above blue: the floor and the
+    environment are neutral), eroded by a pixel so neither silhouette's blend
+    with the grey counts, and split into the frame's two separate runs of gold
+    rows -- the panel above, its reflection below.
+    """
+    import numpy as np
+    from PIL import Image
+
+    im = np.asarray(Image.open(png_path).convert("RGB")).astype(np.int32)
+    gold = (im[..., 0] - im[..., 2]) > 12
+    core = gold.copy()
+    core[1:] &= gold[:-1]
+    core[:-1] &= gold[1:]
+    core[:, 1:] &= gold[:, :-1]
+    core[:, :-1] &= gold[:, 1:]
+    rows = np.nonzero(core.any(axis=1))[0]
+    runs = np.split(rows, np.nonzero(np.diff(rows) > 1)[0] + 1)
+    assert len(runs) == 2, f"expected the panel and its reflection, got {len(runs)}"
+    real = core.copy()
+    real[runs[0][-1] + 1 :] = False
+    refl = core.copy()
+    refl[: runs[1][0]] = False
+    c = im / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return lin[real].mean(axis=0), lin[refl].mean(axis=0), int(refl.sum())
+
+
+def test_a_rough_metal_seen_in_a_mirror_reflects_as_itself(tmp_path):
+    """A rough metal's mirror image is shaded by the same model as the metal.
+
+    The resolve claims each pixel's one prefiltered glossy event at its
+    primary hit (§2.2), so a rough reflector the pixel only sees in a mirror
+    -- or through glass -- is met in the drain instead, and the drain gave it
+    the ``_mirror_share`` throttle: ~4% of the lobe on the reflection ray and
+    the rest to local shading, which for a metal has no environment term (its
+    ambient is 1% of F0). A satin gold cone on a mirror floor reflected as a
+    dim olive shape, ~1/18 of its own brightness in the scene it was reported
+    from. The drain now makes the resolve's substitution and joins the pixel's
+    prefiltered event, so the image matches the object.
+
+    In this scene the answer is exact: the floor is a white metal mirror and
+    the environment is uniform, so the reflection must equal the panel.
+    Measured as reflection / panel in linear light, per channel: **0.064
+    before, 1.000 after**. The bounds sit far from both.
+
+    Its own process for the reason the module docstring gives.
+    """
+    env = dict(os.environ)
+    for name in (
+        "ALGAN_GLOSSY_REFLECTION",
+        "ALGAN_GLOSSY_PREFILTER",
+        "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
+    ):
+        env.pop(name, None)
+    env["ALGAN_AUTO_DAEMON"] = "0"
+    proc = subprocess.run(
+        [sys.executable, "-c", _MIRROR_SCENE, str(tmp_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1200,
+        cwd=str(_REPO_ROOT),
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+    frame = tmp_path / "mirror.png"
+    assert frame.exists(), proc.stdout[-2000:]
+    real, refl, refl_px = _panel_and_reflection_means(frame)
+    assert refl_px > 300, f"only {refl_px} pixels of reflection found"
+    ratio = refl / real
+    assert ((ratio > 0.9) & (ratio < 1.1)).all(), (
+        "the panel's mirror image is not shaded like the panel: "
+        f"reflection / panel = {ratio.round(3).tolist()} (linear, RGB)"
+    )
+
+
 @_needs_audit_tree
 @_skip_slow_crawl
 def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):
