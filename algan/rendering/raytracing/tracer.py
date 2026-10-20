@@ -968,6 +968,13 @@ def _environment_radiance(scene):
     at the byte write: a grey-128 map showed as a 188 backdrop, and lit and
     reflected as brightly. A float map is authored radiance and is sampled as
     given.
+
+    The decode is remembered on the Scene. Every chunk's ``render`` asks for
+    the map, and decoding a full-size equirect on the host is tens of
+    milliseconds the GPU spends idle -- measured as one such gap per chunk on
+    the T4, over a second of a 110-frame HD render. The memo is keyed on the
+    map tensor itself and on both tensors' version counters, so a new map, an
+    in-place edit of the old one or of the decoded copy decodes afresh.
     """
     env = getattr(scene, "environment_map", None)
     if (
@@ -976,7 +983,17 @@ def _environment_radiance(scene):
         or not rt_settings.linear_color_space
     ):
         return env
-    return srgb_to_linear(env)
+    memo = getattr(scene, "_environment_radiance_memo", None)
+    if (
+        memo is not None
+        and memo[0] is env
+        and memo[1] == env._version
+        and memo[3] == memo[2]._version
+    ):
+        return memo[2]
+    linear = srgb_to_linear(env)
+    scene._environment_radiance_memo = (env, env._version, linear, linear._version)
+    return linear
 
 
 def _env_sh_coeffs(env, intensity):
@@ -1020,15 +1037,51 @@ def _env_sh_coeffs(env, intensity):
     return A, Bx, By, Bz
 
 
+#: The last map :func:`_append_env_sh_light` projected, with its version
+#: counter, the intensity and the coefficients: ``(env, version, intensity,
+#: coefficients)``. Every chunk of a render packs the same map's light row, and
+#: pooling a full-size equirect down to the projection's grid on the host was
+#: a third of a second of a 110-frame HD render on the T4.
+_ENV_SH_MEMO = None
+
+
+def _same_tensor_view(a, b):
+    """Whether ``a`` and ``b`` view the same elements of the same memory.
+
+    The render detaches the map before packing it, which makes a new tensor
+    object every chunk, so identity cannot say "the same map". The memo that
+    asks keeps ``b`` alive, so its memory cannot be freed and handed to a
+    different tensor while the question can still be asked.
+    """
+    return a is b or (
+        a.data_ptr() == b.data_ptr()
+        and a.device == b.device
+        and a.dtype == b.dtype
+        and a.shape == b.shape
+        and a.stride() == b.stride()
+    )
+
+
 def _append_env_sh_light(light_pos, light_col, num_lights, env, intensity, device):
     """Add the environment map's diffuse irradiance as one ENV_SH light row
     (type 6) to the packed lights, widening the color rows to 16 columns if
     they are still in the compact point-light packing.
     """
+    global _ENV_SH_MEMO
     from algan.rendering.lights import LIGHT_AUX_COLS
 
     width = 3 + LIGHT_AUX_COLS
-    A, Bx, By, Bz = _env_sh_coeffs(env, intensity)
+    memo = _ENV_SH_MEMO
+    if (
+        memo is not None
+        and _same_tensor_view(env, memo[0])
+        and memo[1] == env._version
+        and memo[2] == float(intensity)
+    ):
+        A, Bx, By, Bz = memo[3]
+    else:
+        A, Bx, By, Bz = _env_sh_coeffs(env, intensity)
+        _ENV_SH_MEMO = (env, env._version, float(intensity), (A, Bx, By, Bz))
     row = torch.zeros(width)
     row[0:3] = A
     row[3] = 6.0  # LIGHT_ENV_SH

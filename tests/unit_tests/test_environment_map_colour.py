@@ -127,6 +127,75 @@ def test_the_working_space_at_render_time_decides(tmp_path):
     assert np.array_equal(linear, again)
 
 
+@pytest.mark.usefixtures("working_space")
+def test_the_decoded_map_is_reused_until_the_map_changes():
+    """Every chunk of a render asks for the decoded map; it is decoded once.
+
+    A new map, an in-place edit of the map, an edit of the decoded copy and a
+    change of working space each decode afresh.
+    """
+    from algan.rendering.raytracing.tracer import _environment_radiance
+
+    scene = Scene()
+    scene.set_environment_map(torch.from_numpy(_grey_bytes()))
+    first = _environment_radiance(scene)
+    assert _environment_radiance(scene) is first
+    assert torch.equal(first, srgb_to_linear(scene.environment_map))
+
+    scene.environment_map.mul_(0.5)
+    edited = _environment_radiance(scene)
+    assert edited is not first
+    assert torch.equal(edited, srgb_to_linear(scene.environment_map))
+
+    edited.zero_()
+    assert torch.equal(
+        _environment_radiance(scene), srgb_to_linear(scene.environment_map)
+    )
+
+    rt_settings.set_linear_color_space(False)
+    assert _environment_radiance(scene) is scene.environment_map
+    rt_settings.set_linear_color_space(True)
+
+    scene.set_environment_map(torch.from_numpy(_grey_bytes() // 2))
+    replaced = _environment_radiance(scene)
+    assert torch.equal(replaced, srgb_to_linear(scene.environment_map))
+
+
+def test_the_map_light_row_is_projected_once_per_map(monkeypatch):
+    """Every chunk packs the map's irradiance row from a fresh detached view of
+    the same map; the projection runs again only when the values or the
+    intensity change.
+    """
+    from algan.rendering.raytracing import tracer
+
+    projected = []
+    project = tracer._env_sh_coeffs
+
+    def counting(env, intensity):
+        projected.append(intensity)
+        return project(env, intensity)
+
+    monkeypatch.setattr(tracer, "_env_sh_coeffs", counting)
+    monkeypatch.setattr(tracer, "_ENV_SH_MEMO", None)
+    env = torch.rand(40, 80, 3)
+    lights = (torch.zeros(2, 1, 3), torch.ones(2, 1, 3), 1)
+
+    def row(intensity):
+        return tracer._append_env_sh_light(
+            *lights, env.detach(), intensity, torch.device("cpu")
+        )[1]
+
+    first = row(0.8)
+    assert torch.equal(row(0.8), first)
+    assert projected == [0.8]
+    env.mul_(0.5)
+    halved = row(0.8)
+    assert projected == [0.8, 0.8]
+    assert torch.equal(row(1.6), first)
+    assert not torch.equal(halved, first)
+    assert projected == [0.8, 0.8, 1.6]
+
+
 def test_a_relative_path_is_found_beside_the_running_script(tmp_path, monkeypatch):
     """REGRESSION. Every other asset path is looked for beside the script when
     the working directory does not have it, which is what lets a script load

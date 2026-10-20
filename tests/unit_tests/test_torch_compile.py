@@ -285,6 +285,39 @@ def test_the_cli_health_check_reports_the_switch(capsys):
     assert "torch.compile" in out
 
 
+def test_named_moving_axes_compile_one_graph_for_every_size():
+    """``dynamic_dims`` and ``batch_args`` keep a moving batch on one graph.
+
+    Left to automatic dynamic shapes, these calls trace a static graph, then
+    one per axis seen moving, then one for the batch of one; every graph is
+    traced again in each new process.
+    """
+    from torch._dynamo.utils import counters
+
+    SETTINGS.computing.set(torch_compile=True)
+
+    @tc.compiled(dynamic_dims={"rows": (0,), "points": (0,)}, batch_args=("rows",))
+    def f(rows, points, scale=1.0):
+        return (rows.unsqueeze(1) * points.unsqueeze(0)).sum(-1) * scale
+
+    counters.clear()
+    for batch, count in ((3, 4), (1, 4), (5, 7), (2, 9), (1, 2)):
+        rows = torch.arange(batch * 3.0).view(batch, 3)
+        points = torch.linspace(0, 1, count * 3).view(count, 3)
+        out = f(rows, points=points)
+        assert out.shape == (batch, count)
+        assert torch.equal(out, f.eager(rows, points))
+    assert counters["stats"]["unique_graphs"] == 1
+
+
+def test_a_named_axis_must_name_a_parameter():
+    with pytest.raises(TypeError, match="no parameter named row"):
+
+        @tc.compiled(dynamic_dims={"row": (0,)})
+        def f(rows):
+            return rows
+
+
 def test_a_tensor_subclass_argument_is_traced_as_a_plain_tensor():
     """The merged scene hands the projection a ``Color``; Dynamo refuses it."""
     from algan.constants.color import Color

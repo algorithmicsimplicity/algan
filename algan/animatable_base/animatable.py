@@ -678,9 +678,6 @@ class Animatable:
             self.animatable_attrs = []
         if my_class is None:
             my_class = self.__class__
-        # Attaching a property to a class changes what that class can be told
-        # to set, which is cached per class (Mob._settable_property_names).
-        ANIMATABLE_PROPERTY_VERSION[0] += 1
         for attr in attrs:
             self._add_property_getter_and_setter(attr, my_class)
         self.animatable_attrs.extend(
@@ -730,6 +727,12 @@ class Animatable:
         # it has not during the first write of __init__.
         prop.fset._forwards_to_set_animated_attribute = True
         setattr(class_to_attach_to, property_name, prop)
+        # Attaching a property to a class changes what that class can be told
+        # to set, which is cached per class (Mob._settable_property_names).
+        # Only an attachment invalidates it: a set_shader registers the same
+        # names on every descendant, and bumping per registration made every
+        # one of their ``set`` calls walk its whole MRO again.
+        ANIMATABLE_PROPERTY_VERSION[0] += 1
 
     @property
     def lifespan(self):
