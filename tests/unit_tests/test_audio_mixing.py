@@ -216,10 +216,23 @@ def test_audio_from_a_file_opens_no_decoder_while_authoring(fresh_scene, tones):
 
 
 def _seconds_written(path):
-    import wave as wave_module
+    # Read from the RIFF chunks rather than with ``wave``, which before Python
+    # 3.12 refuses WAVE_FORMAT_EXTENSIBLE -- the header some FFmpeg builds
+    # (macOS's among them) write for 32-bit PCM.
+    import struct
 
-    with wave_module.open(str(path), "rb") as reader:
-        return reader.getnframes() / reader.getframerate()
+    data = path.read_bytes()
+    assert data[:4] == b"RIFF"
+    assert data[8:12] == b"WAVE"
+    offset, rate, block_align, frames = 12, None, None, None
+    while offset + 8 <= len(data):
+        chunk, size = struct.unpack_from("<4sI", data, offset)
+        if chunk == b"fmt ":
+            rate, _, block_align = struct.unpack_from("<IIH", data, offset + 12)
+        elif chunk == b"data":
+            frames = size // block_align
+        offset += 8 + size + (size & 1)
+    return frames / rate
 
 
 def test_audio_track_is_as_long_as_the_video(fresh_scene, tmp_path):
