@@ -2039,6 +2039,18 @@ class Scene(RenderLoopMixin):
                 background = self._background_image_frame(background, not_a_color)
         else:
             background = _coerce_background(background)
+            if torch.is_tensor(background):
+                # A tensor without glow and opacity is a color as a Mob's is:
+                # as given, an RGB tensor's blue was read as its alpha, so the
+                # output came out transparent -- a .mov, not an .mp4.
+                background = to_color(background)
+                if background.dim() == 3:
+                    # [height, width, channels], rows bottom-up: an image, as
+                    # the constructor's coordinate-grid callback returns one.
+                    # Stored as one frame of it, like every image background;
+                    # as it was, a video read it as frames and failed on any
+                    # batch of more.
+                    background = background.unsqueeze(0)
         self.background_frame = self.background = background
         self.background_is_set = True
         return self
