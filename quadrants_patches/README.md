@@ -1059,8 +1059,20 @@ materialization. `algan/utils/taichi_warmstart.py`: upstream #858 memoizes
 `get_pos_info` itself in 1.3.1+, under a new name; the shim switched itself off
 entirely instead of dropping only that memo.
 
-**Not yet done.** The Mac gate and the sm_61 box (0003) on the new wheels, and
-publishing `1.3.3.post1` (which needs the full cp310-cp314 matrix).
+On Kaggle's Tesla T4 (sm_75, Linux) with the cp311 manylinux wheel,
+`verify_cuda_patches.py` and `verify_invariant_load.py` pass as well. The
+session was asked for a P100 (`NvidiaTeslaP100`) and was given the T4, so it
+does not cover 0003: Kaggle no longer appears to offer a pre-Volta card.
+
+**0003 needs a pre-Volta card, and none is reachable from CI.**
+`verify_pre_volta.py` beside this README is that check as one command: CUDA
+comes up, three atomic reductions are right, and the dumped PTX has no
+`atom.sys`. It passes on sm_70+ with or without the patch and says so. The
+wheels it needs are attached to the
+[`quadrants-1.3.3-rebase-wheels`](https://github.com/algorithmicsimplicity/algan/releases/tag/quadrants-1.3.3-rebase-wheels)
+prerelease. GitHub rewrote the `+` in their names to `.`, so save each one
+under its real name, the one in `quadrants_wheels/manifest.json`, before
+installing it.
 
 ## Upstreaming
 
