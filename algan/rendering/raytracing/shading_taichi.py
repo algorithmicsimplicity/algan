@@ -877,6 +877,26 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
     return ld, lc, spec_w, frac
 
 
+_INV_PI = 0.3183098861837907
+
+
+@ti.func
+def _diffuse_norm(spec_w):
+    """The Lambert ``1/pi`` a light row's diffuse term takes, from the row's
+    ``spec_w`` (:func:`_light_eval`).
+
+    A light row's ``lc`` is the irradiance it delivers to a surface facing it,
+    and a Lambert surface sends ``albedo / pi`` of irradiance back out as
+    radiance -- the path tracer's BSDF, so a lit surface reads the same in
+    both renderers. The direction-less rows (``spec_w = 0``) are already a
+    radiance: an ambient or hemisphere colour arrives from every direction,
+    and the ``pi`` of integrating it over the hemisphere cancels the BSDF's
+    ``1/pi``, so they keep ``albedo * lc`` (the env-SH row is normalised to
+    match host-side). The path tracer's fill does the same.
+    """
+    return 1.0 + (_INV_PI - 1.0) * spec_w
+
+
 @ti.func
 def _light_vis(shadows: ti.template(), vis, li):
     """Per-light shadow visibility as an RGB triple (each channel 1 lit /
@@ -1044,10 +1064,12 @@ def _stage_manim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     Each light adds an offset of ``0.5 * (n . to_light) ** 3`` -- halved when
     negative -- scaled by the light's evaluated color and gated by its
     shadow visibility. No ambient, no emissive, no falloff of its own:
-    Manim's model has none. Under the single white intensity-1 point light
-    that ``use_manim_defaults`` installs (decay 0 / distance 0), the color
-    factor is exactly ``(1, 1, 1)`` and this reproduces Manim's scalar
-    ``get_shaded_rgb`` offset exactly; see
+    Manim's model has none. The color takes the same ``1/pi`` as every lit
+    stage's diffuse (:func:`_diffuse_norm`), so a light reads the same here
+    as on a Lambert surface beside it. Under the single white intensity-``pi``
+    point light that ``use_manim_defaults`` installs (decay 0 / distance 0),
+    the color factor is ``(1, 1, 1)`` and this reproduces Manim's scalar
+    ``get_shaded_rgb`` offset; see
     :func:`~algan.rendering.shaders.material_shaders.manim_shader`.
 
     Every vis-weighted term carries the evaluated light color ``lc`` as a
@@ -1070,11 +1092,11 @@ def _stage_manim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     if ti.static(bool(_linear_color_space())):
         base = linear_to_srgb_v3(in_rgb)
     for li in range(num_lights):
-        ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
-                                             pos, n)
+        ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                            pos, n)
         v = _light_vis(shadows, vis, li)
         d = ld.dot(n)
-        w = 0.5 * d * d * d
+        w = 0.5 * d * d * d * _diffuse_norm(spec_w)
         if w < 0.0:
             w *= 0.5
         base += lc * (w * v)
@@ -1107,10 +1129,10 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     refl = in_rgb * (amb * env)
     wsum = amb * env
     for li in range(num_lights):
-        ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
-                                             pos, n)
+        ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                            pos, n)
         v = _light_vis(shadows, vis, li)
-        n_dot_l = ti.max(n.dot(ld), 0.0)
+        n_dot_l = ti.max(n.dot(ld), 0.0) * _diffuse_norm(spec_w)
         refl += in_rgb * lc * (n_dot_l * v)
         # Scalar energy budget, reduced as in _stage_default (see
         # _vis_max_component).
@@ -1127,19 +1149,14 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                  num_lights, shadows: ti.template(), vis, cam_pos):
     """MeshPhongMaterial: Blinn-Phong diffuse + specular highlight + emissive.
 
-    The specular lobe is three.js's ``BRDF_BlinnPhong`` term for term:
-    ``F_Schlick(specular, 1, v.h) * G_BlinnPhong_Implicit * D_BlinnPhong``,
-    with ``G = 0.25`` and ``D = (shininess * 0.5 + 1) * (n.h)^shininess``,
-    scaled by ``n.l``.
-
-    **The one deliberate departure is the ``1/pi``**, and it is the same
-    departure the diffuse term makes. three.js writes
-    ``D = RECIPROCAL_PI * (s*0.5 + 1) * pow(n.h, s)`` and pairs it with
-    ``BRDF_Lambert = albedo / pi``; Algan's light unit is pi times three.js's
-    (an ``intensity=1`` light means "a white surface facing it comes out
-    white"), so BOTH lobes drop the ``1/pi`` and the *ratio* between them --
-    which is what the highlight's appearance actually is -- matches three.js
-    exactly. Dropping it from one lobe only would be the bug.
+    Both lobes are three.js's term for term: ``BRDF_Lambert = albedo / pi``
+    for the diffuse and ``BRDF_BlinnPhong`` for the highlight,
+    ``F_Schlick(specular, 1, v.h) * G_BlinnPhong_Implicit * D_BlinnPhong``
+    with ``G = 0.25`` and ``D = (shininess * 0.5 + 1) * (n.h)^shininess / pi``,
+    scaled by ``n.l``. Both carry the ``1/pi`` (see :func:`_diffuse_norm`), so
+    the lobes keep three.js's ratio -- which is what the highlight's
+    appearance actually is -- and a light lights them in the path tracer's
+    units. Dropping it from one lobe only would be the bug.
 
     Before this, the lobe was a bare ``(n.h)^shininess`` with ``n.l`` as a
     boolean gate: no normalization, so a highlight was
@@ -1171,19 +1188,20 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         n_dot_l = ti.max(n.dot(ld), 0.0)
         n_dot_h = ti.max(n.dot(half), 0.0)
         v_dot_h = ti.max(view_dir.dot(half), 0.0)
+        kd = _diffuse_norm(spec_w)
         s = ti.max(shininess, 1e-3)
-        # D_BlinnPhong without three's 1/pi (see the docstring), G = 0.25.
-        d_blinn = (s * 0.5 + 1.0) * ti.pow(ti.max(n_dot_h, 1e-4), s)
+        # D_BlinnPhong, three's 1/pi included (see the docstring), G = 0.25.
+        d_blinn = _INV_PI * (s * 0.5 + 1.0) * ti.pow(ti.max(n_dot_h, 1e-4), s)
         # F_Schlick(specular, 1.0, v.h): the specular COLOUR enters through
         # the Fresnel term, which is why it is not multiplied in separately.
         one = ti.math.vec3(1.0, 1.0, 1.0)
         fspec = specular + (one - specular) * ti.pow(
             ti.max(1.0 - v_dot_h, 0.0), 5.0)
-        refl += (in_rgb * lc * n_dot_l
+        refl += (in_rgb * lc * (n_dot_l * kd)
                  + fspec * lc * (0.25 * d_blinn * n_dot_l * spec_w)) * v
         # Scalar energy budget, reduced as in _stage_default (see
         # _vis_max_component).
-        wsum += n_dot_l * _vis_max_component(v) \
+        wsum += n_dot_l * kd * _vis_max_component(v) \
             * ti.max(lc[0], ti.max(lc[1], lc[2]))
     acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
@@ -1226,11 +1244,12 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
         spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
         k_d = (one - fresnel) * (1.0 - metalness)
-        diffuse = k_d * rgb * lc * n_dot_l
+        kd = _diffuse_norm(spec_w)
+        diffuse = k_d * rgb * lc * (n_dot_l * kd)
         refl += (diffuse + spec * lc * (n_dot_l * spec_w)) * v
         # Scalar energy budget, reduced as in _stage_default (see
         # _vis_max_component).
-        wsum += n_dot_l * _vis_max_component(v) \
+        wsum += n_dot_l * kd * _vis_max_component(v) \
             * ti.max(lc[0], ti.max(lc[1], lc[2]))
     acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
@@ -1308,7 +1327,8 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         sheen_comp = 1.0 - sheen_max * ti.max(
             _ibl_sheen_brdf(n_dot_v, sheen_r),
             _ibl_sheen_brdf(n_dot_l, sheen_r))
-        direct = (k_d * rgb * lc * n_dot_l
+        kd = _diffuse_norm(spec_w)
+        direct = (k_d * rgb * lc * (n_dot_l * kd)
                   + spec * lc * (n_dot_l * spec_w)) * sheen_comp
         # Clearcoat: a thin dielectric GGX lobe (fixed F0 = 0.04) on top.
         # Not scaled by the sheen compensation, matching Three.js, which
@@ -1326,7 +1346,7 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         direct += sheen_c * lc * (sheen_brdf * n_dot_l * spec_w)
         # Scalar energy budget, reduced as in _stage_default (see
         # _vis_max_component).
-        wsum += n_dot_l * _vis_max_component(v) \
+        wsum += n_dot_l * kd * _vis_max_component(v) \
             * ti.max(lc[0], ti.max(lc[1], lc[2]))
         # NO per-light transmission term. There used to be one here
         # (``rgb * lc * transmission * (1 - metalness) * 0.5``) and it double
@@ -1374,11 +1394,12 @@ def _stage_toon(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     refl = in_rgb * (amb * env)
     wsum = amb * env
     for li in range(num_lights):
-        ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
-                                             pos, n)
+        ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                            pos, n)
         v = _light_vis(shadows, vis, li)
         n_dot_l = ti.max(n.dot(ld), 0.0)
-        stepped = ti.ceil(n_dot_l * bands) / bands
+        # Banded, then the Lambert 1/pi three.js's toon applies too.
+        stepped = ti.ceil(n_dot_l * bands) / bands * _diffuse_norm(spec_w)
         refl += in_rgb * lc * (stepped * v)
         # Scalar energy budget, reduced as in _stage_default (see
         # _vis_max_component); ``stepped`` replaces lambert's raw ``n_dot_l``

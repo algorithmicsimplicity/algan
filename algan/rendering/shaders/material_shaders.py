@@ -48,6 +48,12 @@ from algan.utils.torch_compile import compiled
 #: ``len(inspect.signature(basic_material_shader).parameters)``.
 SHADER_FIXED_PARAM_COUNT = 9
 
+#: The Lambert ``1/pi``: a light's color is the irradiance it delivers to a
+#: surface facing it, and a diffuse surface sends ``albedo / pi`` of that back
+#: out -- the path tracer's units. The twin of ``shading_taichi._diffuse_norm``
+#: for the point lights this per-vertex path sees.
+_INV_PI = 1.0 / math.pi
+
 
 def _ambient_strength():
     """The ambient coefficient for the active working space.
@@ -357,6 +363,7 @@ def _lambert_fused(
 
     kA = ambient_strength * ambient_light_intensity * env_map_intensity
     ambient = rgb * kA
+    n_dot_l = n_dot_l * _INV_PI
     diffuse = rgb * radiance * n_dot_l
     out = (ambient + diffuse) * _energy_scale_core(
         n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
@@ -418,13 +425,14 @@ def manim_shader(
     falloff; ``ambient_light_intensity`` is accepted for signature parity but
     unused, because Manim's model has none.
 
-    Under Manim's own rig -- the single white ``PointLight`` of intensity 1
-    that :meth:`~.Scene.use_manim_defaults` installs, with decay 0 and
-    distance 0 -- the light-color factor below is exactly ``(1, 1, 1)`` and
-    the offset reproduces Manim's scalar one exactly. Multiplying by
-    ``light_color * light_intensity`` is a strict generalisation to colored
-    and multi-light rigs, which Manim does not have; the per-light offsets
-    simply sum.
+    The light's color takes the same ``1/pi`` as every lit shader's diffuse
+    (see :ref:`light-units`). Under Manim's own rig -- the single white
+    ``PointLight`` of intensity ``pi`` that :meth:`~.Scene.use_manim_defaults`
+    installs, with decay 0 and distance 0 -- the light-color factor below is
+    ``(1, 1, 1)`` and the offset reproduces Manim's scalar one. Multiplying by
+    ``light_color * light_intensity / pi`` is a strict generalisation to
+    colored and multi-light rigs, which Manim does not have; the per-light
+    offsets simply sum.
 
     Manim adds its offset to display-referred sRGB values. Under the default
     linear working space this shader therefore encodes the base color to
@@ -456,7 +464,7 @@ def manim_shader(
         ``(*, 4)``; only its RGB is used.
     light_intensity
         Multiplier on the light's contribution. Defaults to whatever the
-        renderer passes (1 for Algan's stock rig).
+        renderer passes (1; the light's own intensity is in ``light_color``).
     ambient_light_intensity
         Accepted for signature parity; unused, since the model has no ambient
         term.
@@ -469,7 +477,7 @@ def manim_shader(
     to_sun = _normalize(light_origin - vertex_location)
     w = 0.5 * dot_product(n, to_sun) ** 3
     w = torch.where(w < 0.0, 0.5 * w, w)
-    offset = w * light_color[..., :3] * light_intensity
+    offset = w * light_color[..., :3] * (light_intensity * _INV_PI)
     if _linear_color_space():
         out = srgb_to_linear(linear_to_srgb(rgb) + offset).clamp(0.0, 1.0)
     else:
@@ -508,20 +516,20 @@ def _phong_fused(
 
     kA = ambient_strength * ambient_light_intensity * env_map_intensity
     ambient = rgb * kA
-    diffuse = rgb * radiance * n_dot_l
+    diffuse = rgb * radiance * (n_dot_l * _INV_PI)
     # Blinn-Phong specular: F_Schlick(specular, 1, V.H) * 0.25 * D, with
-    # D = (shininess * 0.5 + 1) * (N.H)^shininess, scaled by N.L -- which
-    # also keeps back faces dark without a separate gate.
+    # D = (shininess * 0.5 + 1) * (N.H)^shininess / pi, scaled by N.L --
+    # which also keeps back faces dark without a separate gate.
     s = (
         shininess.clamp_min(1e-3)
         if torch.is_tensor(shininess)
         else max(shininess, 1e-3)
     )
-    d_blinn = (s * 0.5 + 1.0) * n_dot_h.clamp_min(1e-4) ** s
+    d_blinn = _INV_PI * (s * 0.5 + 1.0) * n_dot_h.clamp_min(1e-4) ** s
     f_spec = spec_rgb + (1.0 - spec_rgb) * (1.0 - v_dot_h).clamp(0.0, 1.0) ** 5
     specular_out = f_spec * radiance * (0.25 * d_blinn * n_dot_l)
     out = (ambient + diffuse + specular_out) * _energy_scale_core(
-        n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
+        n_dot_l * _INV_PI * radiance.amax(-1, keepdim=True) + kA, linear_space
     ) + emissive * emissive_intensity
     return _recombine_core(out, glow, linear_space)
 
@@ -545,10 +553,9 @@ def phong_shader(
 ):
     """MeshPhongMaterial: Blinn-Phong diffuse + specular highlight + emissive.
 
-    Twin of ``shading_taichi._stage_phong``; read its docstring for why the
-    specular lobe carries three.js's ``0.25 * (shininess * 0.5 + 1)``
-    normalization and its Fresnel term but not its ``1/pi`` (the diffuse lobe
-    drops the same factor, so the ratio between them is three.js's exactly).
+    Twin of ``shading_taichi._stage_phong``: both lobes are three.js's term
+    for term, the specular's ``0.25 * (shininess * 0.5 + 1) / pi``
+    normalization and Fresnel term included.
     """
     # ``specular`` reaches the live path as a tensor (Material.get_shader_param_values
     # runs it through _to_rgb); the signature default is a plain tuple, and
@@ -613,14 +620,14 @@ def _standard_fused(
     specular = (ndf * geom * fresnel) / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
 
     k_d = (1.0 - fresnel) * (1.0 - metalness)
-    diffuse = k_d * rgb * radiance * n_dot_l
+    diffuse = k_d * rgb * radiance * (n_dot_l * _INV_PI)
     direct = diffuse + specular * radiance * n_dot_l
 
     # Ambient/environment approximation (diffuse for dielectrics, tinted for metals).
     kA = ambient_strength * ambient_light_intensity * env_map_intensity
     ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
     out = (ambient + direct) * _energy_scale_core(
-        n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
+        n_dot_l * _INV_PI * radiance.amax(-1, keepdim=True) + kA, linear_space
     ) + emissive * emissive_intensity
     return _recombine_core(out, glow, linear_space)
 
@@ -737,7 +744,7 @@ def _physical_fused(
         _ibl_sheen_brdf(n_dot_v, sheen_r), _ibl_sheen_brdf(n_dot_l, sheen_r)
     )
 
-    diffuse = k_d * rgb * radiance * n_dot_l
+    diffuse = k_d * rgb * radiance * (n_dot_l * _INV_PI)
     direct = (diffuse + specular * radiance * n_dot_l) * sheen_comp
 
     # Clearcoat: a thin dielectric GGX lobe (fixed F0 = 0.04) on top.
@@ -761,7 +768,7 @@ def _physical_fused(
     # renderer's own continuation, and adding it here again double counted.
     # See shading_taichi._stage_physical.
     out = (ambient + direct) * _energy_scale_core(
-        n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
+        n_dot_l * _INV_PI * radiance.amax(-1, keepdim=True) + kA, linear_space
     ) + emissive * emissive_intensity
     return _recombine_core(out, glow, linear_space)
 
@@ -869,7 +876,7 @@ def _toon_fused(
     bands = (
         num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
     )
-    stepped = torch.ceil(n_dot_l * bands) / bands
+    stepped = torch.ceil(n_dot_l * bands) / bands * _INV_PI
     kA = ambient_strength * ambient_light_intensity
     ambient = rgb * kA
     diffuse = rgb * light_color[..., :3] * light_intensity * stepped

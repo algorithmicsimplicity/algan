@@ -48,6 +48,7 @@ from algan import (
     WHITE,
     AmbientLight,
     Circle,
+    DirectionalLight,
     HemisphereLight,
     MeshLambertMaterial,
     MeshPhysicalMaterial,
@@ -654,11 +655,10 @@ def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):
 
     Since the one-BSDF change (``DESIGN_path_tracer_roadmap.md`` section 5) a
     packed light row goes through ``_pt_lit_f_pdf`` like every other emitter
-    kind, so a Lambert surface returns ``albedo / pi * L * cos`` -- ``pi``
-    times dimmer than the deterministic stage, which has no ``1/pi``. That is
-    deliberate: parity with a renderer the user fell back FROM is not a goal,
-    and one response is what makes MIS weights sum to one. This test pins the
-    physical value, which is the thing that must not drift.
+    kind, so a Lambert surface returns ``albedo / pi * L * cos``; one response
+    is what makes MIS weights sum to one. This test pins the physical value,
+    which is the thing that must not drift. The deterministic renderer lights
+    in the same units (the test below).
 
     The light sits on the surface normal above the measured point, so
     ``cos = 1`` and the answer is simply ``albedo * intensity / pi``.
@@ -687,8 +687,83 @@ def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):
     assert abs(measured - reference) <= max(4.0, 0.06 * reference), (
         f"light-row direct lighting off the physical BSDF: measured "
         f"{measured:.1f}, reference {reference:.1f} (a ~pi x reading means "
-        f"the deterministic stage formula is back)"
+        f"a diffuse term without its 1/pi is back)"
     )
+
+
+@pytest.mark.parametrize("light", ["point", "directional", "ambient", "area"])
+def test_a_lit_lambert_surface_reads_the_same_in_both_renderers(tmp_path, light):
+    """The deterministic renderer lights in the path tracer's units: a white
+    Lambert plane comes out at the same physical value under both, for each
+    kind of light row.
+
+    A directed row's color is the irradiance it delivers square-on, and the
+    surface returns ``1/pi`` of it (``shading_taichi._diffuse_norm``); the
+    deterministic stage used to drop that ``1/pi`` and read ``pi`` times
+    brighter. An ambient row's color is a radiance arriving from every
+    direction, so both return ``albedo * L`` for it. The area light is
+    measured against the quadrature reference, since its cells sit off the
+    normal. The deterministic renderer's constant ambient fill is zeroed: the
+    path tracer has no counterpart to it.
+    """
+    width = height = 3.0
+    plane_z = 3.0
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        if light == "point":
+            PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(
+                animate=False
+            )
+        elif light == "directional":
+            DirectionalLight(
+                location=OUT * 5.0, target=ORIGIN, color=WHITE, intensity=1.0
+            ).spawn(animate=False)
+        elif light == "ambient":
+            AmbientLight(color=WHITE, intensity=0.5).spawn(animate=False)
+        else:
+            # Off to the side, so the path tracer's panel is not in the shot.
+            scene.get_camera().move_to(RIGHT * 10.0 + OUT * 7.0)
+            scene.get_camera().look_at(ORIGIN)
+            scene.get_camera().set_fov(10)
+            RectAreaLight(
+                location=OUT * plane_z,
+                width=width,
+                height=height,
+                samples=64,
+                color=WHITE,
+                intensity=12.0,
+            ).spawn(animate=False)
+        plane = Prism(width=7.0, height=7.0, depth=0.1)
+        plane.set_material(MeshLambertMaterial(color=WHITE))
+        plane.spawn(animate=False)
+
+    if light == "ambient":
+        reference = 0.5 * 255.0
+    elif light == "area":
+        # The plane's top face is at z = 0.05 (a 0.1-deep prism at the origin).
+        reference = 255.0 * _rect_light_lambert_reference(
+            0.5 * width, 0.5 * height, plane_z - 0.05, 12.0 / (width * height)
+        )
+    else:
+        reference = 255.0 / np.pi
+    for spp in (1, 32):
+        img = _render_scene_exp(
+            tmp_path,
+            f"lambert_{light}_{spp}.png",
+            build,
+            spp,
+            shadows=False,
+            linear_color_space=False,
+            tonemapping=False,
+            experimental={"post_process_tonemap": False, "ambient_strength": 0.0},
+        )
+        measured = _center_patch_mean(img, half=2)
+        assert abs(measured - reference) <= max(4.0, 0.06 * reference), (
+            f"{light} light at samples_per_pixel={spp}: measured "
+            f"{measured:.1f}, reference {reference:.1f}"
+        )
 
 
 def test_point_light_shadow_under_path_tracing(tmp_path):

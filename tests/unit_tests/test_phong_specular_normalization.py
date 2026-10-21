@@ -15,12 +15,11 @@ shininess of 30, and 10.25x at 80 -- and one that sharpened without
 brightening, where a normalized ``D`` concentrates the same energy as it
 narrows.
 
-**The ``1/pi`` is deliberately absent from Algan's version**, and that is the
-point of :func:`test_specular_to_diffuse_ratio_matches_three_js`: Algan's light
-unit is pi times three.js's, so its *diffuse* lobe drops the same ``1/pi``.
-What has to match three.js is the ratio between the two lobes, because that
-ratio is what the highlight looks like. Dropping the factor from one lobe only
-is the bug this file exists to catch.
+**Both lobes carry the ``1/pi``**, three.js's and the path tracer's light
+unit: ``BRDF_Lambert = albedo / pi`` beside the specular above. The ratio
+between the two lobes is what the highlight looks like, and that is the point
+of :func:`test_specular_to_diffuse_ratio_matches_three_js`. Dropping the factor
+from one lobe only is the bug this file exists to catch.
 
 Outside the fast suite: it compiles a Taichi kernel, and nothing outside the
 shading stages can break it (see ``tests/README.md``).
@@ -118,13 +117,9 @@ def shade(
 
 
 def three_js_specular(n_dot_h, n_dot_l, v_dot_h, shininess, specular):
-    """three.js's ``BRDF_BlinnPhong * irradiance``, with the ``1/pi`` removed.
-
-    The removal is Algan's light-unit convention, applied to both lobes (see
-    the module docstring); every other factor is three.js's, verbatim.
-    """
+    """three.js's ``BRDF_BlinnPhong * irradiance``, verbatim."""
     f = specular + (1.0 - specular) * (1.0 - v_dot_h) ** 5
-    d = (shininess * 0.5 + 1.0) * n_dot_h**shininess
+    d = (shininess * 0.5 + 1.0) * n_dot_h**shininess / math.pi
     return f * 0.25 * d * n_dot_l
 
 
@@ -154,7 +149,7 @@ def test_specular_to_diffuse_ratio_matches_three_js():
     """The ratio between the lobes is three.js's, which is what the pi is about.
 
     three.js: specular ``0.25*(s/2+1)/pi``, diffuse ``albedo/pi`` -- the pi
-    cancels, leaving ``0.25*(s/2+1)/albedo``. Algan drops the pi from both, so
+    cancels, leaving ``0.25*(s/2+1)/albedo``. Algan carries the pi in both, so
     it must land on the same number.
     """
     albedo = 0.5

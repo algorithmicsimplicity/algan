@@ -690,8 +690,8 @@ class ManimMaterial(Material):
     no falloff.
 
     Reproduces Manim's ``get_shaded_rgb`` exactly under the rig
-    :meth:`~.Scene.use_manim_defaults` installs (one white intensity-1 point
-    light); see :func:`~.material_shaders.manim_shader` for the precise
+    :meth:`~.Scene.use_manim_defaults` installs (one white point light of
+    intensity ``PI``); see :func:`~.material_shaders.manim_shader` for the precise
     conditions. It has no properties of its own beyond the shared
     :class:`Material` ones, but
     :meth:`~.Material.get_shader_param_values` still carries

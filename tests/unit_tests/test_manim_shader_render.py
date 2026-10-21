@@ -258,11 +258,14 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
                     # tests pass under ALGAN_LINEAR_COLOR=0 as well).
                     SETTINGS.raytracing.set(linear_color_space=space)
                 else:
-                    # Not Algan's stock rig: this test states its own light.
+                    # Not Algan's stock rig: this test states its own light, at
+                    # the intensity (pi) under which ManimMaterial is Manim's.
                     scene.clear_lights()
-                    PointLight(location=torch.tensor(_TEST_LIGHT), color=WHITE).spawn(
-                        animate=False
-                    )
+                    PointLight(
+                        location=torch.tensor(_TEST_LIGHT),
+                        color=WHITE,
+                        intensity=math.pi,
+                    ).spawn(animate=False)
                     camera = scene.get_camera()
                     camera.move_to(OUT * _CAMERA_DISTANCE)
                     camera.look_at(ORIGIN)
@@ -526,7 +529,7 @@ def _albedo_bytes():
 
 
 def test_in_kernel_stage_matches_get_shaded_rgb(tmp_path, restored_global_settings):
-    """Explicit rig: one white intensity-1 PointLight placed by this test.
+    """Explicit rig: one white intensity-pi PointLight placed by this test.
 
     Both assertions come out of one render. The light sits between the two
     front planes, so the centred cube's front face is turned away from it --
