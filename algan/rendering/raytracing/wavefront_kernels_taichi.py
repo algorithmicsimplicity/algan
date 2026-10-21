@@ -371,14 +371,17 @@ def _shadow_fan_jitter(p, li, cell):
     dithers instead. The hash is of the event's WORLD position (an event
     carries no pixel), so a still frame renders identically every time.
 
-    ``cell`` (from :func:`_shadow_jitter_cell`, about a pixel across on the
+    ``cell`` (from :func:`_shadow_jitter_cell`, under a pixel across on the
     surface; a power of two) keys the hash on the cell of a world grid that
-    holds ``p`` rather than on ``p``'s own bits. That is what makes the grain
-    move with the surface under a moving camera: a pixel's hit point slides
-    along the surface by a fraction of a pixel per frame, which changes its
-    low bits -- keyed on the bits, every penumbra pixel re-rolled every frame
-    and the penumbra boiled, while the cell it lies in is still the cell it
-    lay in. ``cell == 0`` (no footprint: the classic wavefront route, a
+    holds ``p`` rather than on ``p``'s own bits. A pixel's hit point slides
+    along the surface as the camera moves, which changes its low bits --
+    keyed on the bits, every penumbra pixel re-rolled under any motion at
+    all and the penumbra boiled. Keyed on the cell, a pixel keeps its
+    rotation while its hit point stays in the cell it lay in, which holds
+    only for motion well under a pixel per frame: beyond that the grain
+    still re-rolls from frame to frame (see ``shadow_ray_budget`` in
+    ``settings.py`` for measurements). The grain does not move with the
+    surface. ``cell == 0`` (no footprint: the classic wavefront route, a
     bounce event, the sheet route with its sub-pixel shadow taps off) keys on
     the bits.
 

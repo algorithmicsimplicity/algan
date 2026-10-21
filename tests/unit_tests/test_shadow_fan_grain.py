@@ -1,4 +1,4 @@
-"""The budgeted soft-shadow fan's grain is fixed to the surface.
+"""The budgeted soft-shadow fan's grain holds still under a sub-pixel camera move.
 
 The budgeted fan (``shadow_ray_budget``) fires a few rays per light and rotates
 them per shading event, so a penumbra dithers rather than bands; the rotation
@@ -9,7 +9,9 @@ fraction of a pixel per frame -- and the penumbra boiled: under a 0.002-degree
 turn, far below a pixel of motion, penumbra pixels changed by up to 28 levels
 where the unrotated fan's changed by 1. Keyed on the cell of a pixel-sized
 world grid that holds the point (``_shadow_jitter_cell``), the rotation stays
-put while the point stays in its cell, and the grain moves with the surface.
+put while the point stays in its cell. A cell is under a pixel across, so
+motion of a pixel or more per frame still re-rolls the grain: it does not
+move with the surface, and nothing here claims it does.
 
 The probe kernel pins the key; one render pins the penumbra.
 
