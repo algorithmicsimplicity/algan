@@ -60,6 +60,7 @@ from algan.animation_timeline.timeline import (  # noqa: F401
 from algan.constants.color import BLACK, Color
 from algan.errors import (
     AlganConfigurationError,
+    AnimatedBeforeSpawnWarning,
     DespawnedMobWarning,
     HierarchyError,
     NeverVisibleMobWarning,
@@ -314,6 +315,7 @@ def animated_function(
                 if not _opt_disabled("fastpath") and not (
                     hasattr(self, "id") and self.is_spawned_in_subtree()
                 ):
+                    _note_animated_call_before_spawn(self, func)
                     return func(self, *args, **kwargs)
                 # Spawned but non-recording (e.g. inside Off(record_funcs=
                 # False)): attribute edits still record timestamps against
@@ -349,11 +351,54 @@ def animated_function(
                     self.animation_manager.context.increment_times()
             return out
 
-        return wrapper_func
+        first_parameter = next(
+            iter(inspect.signature(func).parameters), "the Mob to animate"
+        )
+
+        @wraps(func)
+        def entry(*args, **kwargs):
+            # Without this, a call with no positional argument -- the Mob
+            # passed by keyword, or forgotten -- failed inside the wrapper as
+            # "missing 1 required positional argument: 'self'", a parameter
+            # the user's function does not have.
+            if not args:
+                raise TypeError(
+                    f"{func.__name__}() is an animated_function: pass the Mob "
+                    f"to animate as its first positional argument "
+                    f"({first_parameter}), e.g. {func.__name__}(square, ...)."
+                )
+            return wrapper_func(*args, **kwargs)
+
+        return entry
 
     if function:
         return _decorate(function)
     return _decorate
+
+
+def _note_animated_call_before_spawn(mob, func):
+    """Remember a script's animated function applied at once to an unspawned Mob.
+
+    Only inside an animating block (not ``Off()``, not the top level, where
+    pre-spawn setup is the usual idiom) and only for the script's own
+    functions: Algan's built-in methods are routinely called on a Mob being
+    built. :meth:`Animatable.spawn` warns if that Mob then spawns while the
+    block is still open -- the call looked like part of the block's animation
+    but was applied before its first frame.
+    """
+    if (getattr(func, "__module__", None) or "").partition(".")[0] == "algan":
+        return
+    if not hasattr(mob, "id"):
+        return
+    context = mob.animation_manager.context
+    if not context.record_funcs or context.prev_context is None:
+        return
+    # Kept on the outermost block, so a call made in a nested block that has
+    # closed by the time the Mob spawns is still found.
+    while context.prev_context.prev_context is not None:
+        context = context.prev_context
+    calls = context.__dict__.setdefault("_animated_calls_before_spawn", {})
+    calls.setdefault(mob.id, func.__name__)
 
 
 def attr_ranges_for_mob(attr_timeline, mob):
@@ -1938,9 +1983,38 @@ class Animatable:
             elif not self.animation_manager.context.spawn_at_end:
                 self._spawn_packed_rows(animate)
             return self
+        self._warn_if_animated_before_spawn()
         self._create_recursive(animate)
         self.animation_manager.context.on_create(self)
         return self
+
+    def _warn_if_animated_before_spawn(self):
+        """Warn when a still-open block applied an animated function to this
+        subtree at once, because nothing in it had spawned yet.
+
+        See :func:`_note_animated_call_before_spawn`.
+        """
+        ids = None
+        context = self.animation_manager.context
+        while context is not None:
+            calls = context.__dict__.get("_animated_calls_before_spawn")
+            if calls:
+                if ids is None:
+                    subtree = getattr(self, "get_descendants", lambda: [self])()
+                    ids = {self.id} | {d.id for d in subtree if hasattr(d, "id")}
+                hit = next((calls.pop(i) for i in list(calls) if i in ids), None)
+                if hit is not None:
+                    warnings.warn(
+                        f"{hit}() was applied at once, not animated: "
+                        f"{self._describe()} had not spawned yet when it was "
+                        f"called, and it is spawned later in the same block, "
+                        f"so it appears already in the final state. Spawn it "
+                        f"before calling {hit}() to animate the change.",
+                        AnimatedBeforeSpawnWarning,
+                        stacklevel=_user_stacklevel(),
+                    )
+                    return
+            context = context.prev_context
 
     @staticmethod
     def _is_standard_hook(node, hook_name):

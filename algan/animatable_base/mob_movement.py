@@ -155,9 +155,11 @@ class MobMovementMixin:
             supported, except exact non-zero multiples of 360 degrees when the
             endpoints differ; such a path would require an infinite radius.
         arc_normal
-            Normal vector of the arc plane; the chord from the current location
-            to ``point`` must be perpendicular to it. Defaults to ``OUTWARD`` (the
-            +z axis, out of the screen), which arcs in the screen plane.
+            Normal vector of the arc plane. Defaults to ``OUTWARD`` (the +z
+            axis, out of the screen), which arcs in the screen plane. The
+            part of the move along it, if any, is made in a straight line at
+            the same pace, so endpoints at different depths are joined by a
+            tilted arc (a short stretch of helix).
         recursive
             Whether to propagate the location change to descendants, preserving
             their offsets from this Mob. Defaults to True; False moves only this
@@ -171,9 +173,9 @@ class MobMovementMixin:
         Raises
         ------
         ValueError
-            If ``arc_normal`` is zero, if the endpoints do not lie in a plane
-            perpendicular to ``arc_normal``, or if distinct endpoints are
-            paired with a non-zero whole-turn sweep.
+            If ``arc_normal`` is zero, or if endpoints that differ in the
+            plane perpendicular to ``arc_normal`` are paired with a non-zero
+            whole-turn sweep.
         """
         start = self.location
         dtype = start.dtype
@@ -190,24 +192,21 @@ class MobMovementMixin:
         if not torch.all(torch.isfinite(normal)):
             raise AlganConfigurationError("arc_normal must contain only finite values")
 
-        # A circular rotation around ``normal`` preserves the coordinate along
-        # that axis, so the chord must lie in the perpendicular plane.
         normal_length = normal.norm(p=2, dim=-1, keepdim=True)
         if torch.any(normal_length == 0):
             raise AlganConfigurationError("arc_normal must be a non-zero vector")
         normal = normal / normal_length
 
+        # A circular rotation around ``normal`` preserves the coordinate along
+        # that axis, so only the chord's in-plane part is swept along the arc;
+        # the part along ``normal`` is covered in a straight line at the same
+        # pace, which tilts the arc into a helix segment. Requiring the chord
+        # to be exactly in the plane refused a label flying to a target a
+        # hair in front of or behind it.
         chord = target - start
+        axial_offset = dot_product(chord, normal) * normal
+        chord = chord - axial_offset
         chord_length = chord.norm(p=2, dim=-1, keepdim=True)
-        coplanar_error = dot_product(chord, normal).abs()
-        coplanar_tolerance = (
-            torch.maximum(torch.ones_like(chord_length), chord_length) * 1e-5
-        )
-        if torch.any(coplanar_error > coplanar_tolerance):
-            raise AlganConfigurationError(
-                "The start and target points must lie in a plane "
-                "perpendicular to arc_normal"
-            )
 
         coincident = chord_length == 0
         whole_turn_count = torch.round(angle_degrees / 360)
@@ -226,6 +225,7 @@ class MobMovementMixin:
             angle_degrees,
             normal,
             recursive=recursive,
+            axial_offset=axial_offset,
         )
 
     @animated_function(animated_args={"interpolation": 0.0}, unique_args=["recursive"])
@@ -236,8 +236,14 @@ class MobMovementMixin:
         arc_normal: torch.Tensor,
         recursive: bool = True,
         interpolation: float | torch.Tensor = 1.0,
+        axial_offset: torch.Tensor | None = None,
     ) -> Mob:
-        """Apply a pre-validated arc displacement at ``interpolation``."""
+        """Apply a pre-validated arc displacement at ``interpolation``.
+
+        ``chord`` lies in the plane perpendicular to ``arc_normal``;
+        ``axial_offset``, the rest of the displacement along ``arc_normal``,
+        is covered linearly. Defaults to ``None``, meaning none.
+        """
         dtype = self.location.dtype
         device = self.location.device
         chord = cast_to_tensor(chord).to(device=device, dtype=dtype)
@@ -294,6 +300,10 @@ class MobMovementMixin:
             linear_offset,
             circular_offset,
         )
+        if axial_offset is not None:
+            offset = offset + interpolation * cast_to_tensor(axial_offset).to(
+                device=device, dtype=dtype
+            )
         new_location = self.location + offset
 
         if recursive:
@@ -328,9 +338,10 @@ class MobMovementMixin:
             Passed to :meth:`~algan.animatable_base.mob.Mob.set_location` (notably
             ``recursive``). When ``arc_angle`` is given, the accepted keywords are
             ``recursive`` and ``arc_normal``: the normal of the plane the arc lies
-            in, which must be perpendicular to the path from the Mob's current
-            location to ``location``. ``arc_normal`` defaults to ``OUTWARD`` (the
-            +z axis, out of the screen), which arcs in the screen plane.
+            in. ``arc_normal`` defaults to ``OUTWARD`` (the +z axis, out of the
+            screen), which arcs in the screen plane. When the endpoints are at
+            different depths along ``arc_normal``, that part of the move is made
+            in a straight line at the same pace as the arc.
 
         Returns
         -------
@@ -341,9 +352,8 @@ class MobMovementMixin:
         ------
         :class:`.AlganConfigurationError`
             If ``arc_angle`` is given and the arc cannot be drawn: a value is
-            not finite, ``arc_normal`` is zero, the path is not perpendicular to
-            ``arc_normal``, or the endpoints differ and the sweep is a non-zero
-            whole number of turns.
+            not finite, ``arc_normal`` is zero, or the endpoints differ in the arc's
+            plane and the sweep is a non-zero whole number of turns.
 
         See Also
         --------

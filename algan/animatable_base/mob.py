@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import difflib
 import functools
+import inspect
 import operator
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -1616,8 +1617,8 @@ class Mob(
     # (a = 1) -- and writes nothing else, PROVIDED the gate's own kwarg
     # checks hold (scope None, recursive False, default interpolation).
     # Stamped on the undecorated body because that is the object
-    # record_function stores on the event; both wrappers carry __wrapped__.
-    _apply_change.__wrapped__.__wrapped__._algan_replay_is_plain_lerp = True
+    # record_function stores on the event; every wrapper carries __wrapped__.
+    inspect.unwrap(_apply_change)._algan_replay_is_plain_lerp = True
 
     @animated_function(animated_args={"interpolation": 0.0})
     def _apply_set(self, attr, value, recursive=True, interpolation=1.0):

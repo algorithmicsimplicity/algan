@@ -195,13 +195,17 @@ class Color(torch.Tensor):
         ``(r, g, b, glow, a)`` sequence, or a tensor of any of those widths.
         Tensors and NumPy arrays keep their leading batch dimensions and use
         their final axis for channels, returning shape ``(*, 5)``.
-        A four- or five-wide value supplies ``opacity`` (and ``glow``) itself.
+        A four- or five-wide value supplies ``opacity`` (and ``glow``) itself,
+        unless the keyword below is given too.
     glow
         Additive emissive brightness, fed to the bloom accumulator. Unbounded
-        above; ``0`` is a non-emissive surface. Defaults to ``0``.
+        above; ``0`` is a non-emissive surface. Defaults to ``None``, meaning
+        ``rgb``'s own glow if it carries one, else ``0``. Given, it replaces
+        the glow of a color passed as ``rgb``: ``Color(YELLOW, glow=2)``.
     opacity
         Alpha, in ``[0, 1]``: ``0`` invisible, ``1`` fully opaque. Defaults to
-        ``1``, except where ``rgb`` carried an alpha of its own.
+        ``None``, meaning ``rgb``'s own alpha if it carries one, else ``1``.
+        Given, it replaces that alpha.
     *args, **kwargs
         Passed to :meth:`torch.Tensor.__new__`.
 
@@ -245,25 +249,32 @@ class Color(torch.Tensor):
     def __new__(
         cls,
         rgb: str | tuple[float, ...] | list[float] | torch.Tensor | np.ndarray,
-        glow=0,
-        opacity=1,
+        glow=None,
+        opacity=None,
         *args,
         **kwargs,
     ):
+        # None means "not given": a glow or opacity passed alongside a color
+        # that already carries those channels -- ``Color(YELLOW, glow=2)``,
+        # ``Color(BLUE, opacity=0.3)`` -- overrides them. Defaulting to 0 and 1
+        # made the two indistinguishable, so both keywords were silently
+        # dropped there.
         # Before the branches, not inside them: the string branch compares
-        # `opacity == 1`, which on an array is an array and not a truth value.
-        glow = _as_color_scalar(glow)
-        opacity = _as_color_scalar(opacity)
+        # opacity, which on an array is an array and not a truth value.
+        glow = None if glow is None else _as_color_scalar(glow)
+        opacity = None if opacity is None else _as_color_scalar(opacity)
         if isinstance(rgb, str):
-            rgb_tuple, extracted_opacity = _parse_color_string(rgb)
-            rgb = rgb_tuple
-            if opacity == 1 and extracted_opacity != 1.0:
+            rgb, extracted_opacity = _parse_color_string(rgb)
+            if opacity is None:
                 opacity = extracted_opacity
         elif isinstance(rgb, (tuple, list)):
             if len(rgb) == 4:
-                rgb, opacity = tuple(rgb[:3]), rgb[3]
+                rgb, carried_opacity = tuple(rgb[:3]), rgb[3]
+                opacity = carried_opacity if opacity is None else opacity
             elif len(rgb) == 5:
-                rgb, glow, opacity = tuple(rgb[:3]), rgb[3], rgb[4]
+                rgb, carried_glow, carried_opacity = tuple(rgb[:3]), rgb[3], rgb[4]
+                glow = carried_glow if glow is None else glow
+                opacity = carried_opacity if opacity is None else opacity
             elif len(rgb) == 3:
                 rgb = tuple(rgb)
             else:
@@ -279,18 +290,20 @@ class Color(torch.Tensor):
                     "Color tensors must have 3, 4 or 5 channels on the last axis."
                 )
             channels = Color.add_defaults(t).clone()
-            if t.shape[-1] < 5:
-                channels[..., 3] = glow
-            if t.shape[-1] == 3:
-                channels[..., 4] = opacity
+            if glow is not None or t.shape[-1] < 5:
+                channels[..., 3] = 0 if glow is None else glow
+            if opacity is not None or t.shape[-1] == 3:
+                channels[..., 4] = 1 if opacity is None else opacity
             return super().__new__(cls, channels, *args, **kwargs)
+        glow = 0 if glow is None else glow
+        opacity = 1 if opacity is None else opacity
         return (
             super()
             .__new__(cls, (*rgb, glow, opacity), *args, **kwargs)
             .to(_ANIMATION_DEVICE)
         )
 
-    def __init__(self, rgb, glow=0, opacity=1, *args, **kwargs):
+    def __init__(self, rgb, glow=None, opacity=None, *args, **kwargs):
         pass  # super().__init__((red, green, blue, glow, opacity))
 
     def __eq__(self, other):

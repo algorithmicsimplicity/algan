@@ -3,8 +3,19 @@ import warnings
 import pytest
 import torch
 
-from algan import RIGHT, Circle, Group, Lag, Off, Scene, Seq, Square, Sync
-from algan.errors import NeverVisibleMobWarning
+from algan import (
+    RIGHT,
+    Circle,
+    Group,
+    Lag,
+    Off,
+    Scene,
+    Seq,
+    Square,
+    Sync,
+    animated_function,
+)
+from algan.errors import AnimatedBeforeSpawnWarning, NeverVisibleMobWarning
 
 # In the fast suite: the spawn/despawn lifespan decides whether a Mob exists at
 # a given frame at all, and containers inherit it from their children.
@@ -238,3 +249,33 @@ def test_never_visible_warning_is_authoring_time_only():
             scene.timeline_manager.set_state_to_times(torch.tensor([0.25, 0.5]))
             assert torch.count_nonzero(bead.opacity > 1e-4) == 0
             scene.timeline_manager.clear_buffers()
+
+
+def test_an_animated_function_before_a_spawn_in_the_same_block_warns():
+    """The call is applied at once, because nothing was on screen to animate,
+    so the Mob appears already in its final state.
+    """
+
+    @animated_function(animated_args={"t": 0})
+    def slide(mob, t=1):
+        mob.location = mob.location + RIGHT * t
+
+    with Scene():
+        square = Square()
+
+        def slide_then_spawn():
+            with Sync():
+                slide(square)
+                square.spawn()
+
+        with pytest.warns(AnimatedBeforeSpawnWarning, match="slide"):
+            slide_then_spawn()
+
+        # Spawning first animates it, and setup before the block is the
+        # usual idiom: neither warns.
+        other = Square()
+        slide(other)
+        with warnings.catch_warnings(), Sync():
+            warnings.simplefilter("error", AnimatedBeforeSpawnWarning)
+            other.spawn()
+            slide(other)

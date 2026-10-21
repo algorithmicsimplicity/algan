@@ -133,3 +133,18 @@ def test_one_positional_argument_too_many_raises_as_a_direct_call_does(where):
 
     with pytest.raises(TypeError, match="takes 2 positional arguments but 3 were"):
         _call_where(where, nudge, 1, 2)
+
+
+def test_a_call_without_the_mob_names_the_missing_first_argument():
+    """REGRESSION. It raised "missing 1 required positional argument:
+    'self'", a parameter the decorated function does not have.
+    """
+
+    @animated_function(animated_args={"t": 0})
+    def slide(mob, t=1):
+        mob.location = mob.location + RIGHT * t
+
+    with pytest.raises(TypeError, match=r"first positional argument \(mob\)"):
+        slide(t=1)
+    with pytest.raises(TypeError, match="must be a Mob"):
+        slide(3, Square())
