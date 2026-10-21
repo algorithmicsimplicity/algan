@@ -27,11 +27,12 @@ cannot silently regress):
 There is no register-cap setting, and that is now a *choice* rather than a
 limitation. On taichi 1.7.4 it was a limitation: ``gpu_max_reg`` (and the
 ``ALGAN_GPU_MAX_REG`` that fed it) never reached ptxas -- the field was read
-only by the cache key. ``quadrants_patches/0005-cuda-max-reg.patch`` fixed both
-halves on the Quadrants wheel Algan builds: ``gpu_max_reg`` now becomes
-``CU_JIT_MAX_REGISTERS`` at module load, and ``qd.loop_config(max_reg=N)``
-becomes a per-kernel PTX ``.maxnreg`` (both confirmed in PTX on sm_61,
-2026-09-05, by ``quadrants_patches/verify_cuda_patches.py``). Nothing in
+only by the cache key. ``quadrants_patches/0005-cuda-max-reg.patch`` makes
+``qd.loop_config(max_reg=N)`` a per-kernel PTX ``.maxnreg`` (confirmed in PTX
+on sm_61, 2026-09-05, by ``quadrants_patches/verify_cuda_patches.py``). On the
+1.3.0 wheel it also turned ``gpu_max_reg`` into ``CU_JIT_MAX_REGISTERS``;
+Quadrants 1.3.1 deleted that field (#890), so on the 1.3.3 rebase only the
+per-loop cap exists, and ``qd.init`` rejects ``gpu_max_reg``. Nothing in
 ``algan/`` sets either, so **0005 is inert on every render today**; it is a
 lever for the register-pressure work in ``taichi_patches/PLAN.md`` §8-§9, and
 turning it on means adding it here and measuring.

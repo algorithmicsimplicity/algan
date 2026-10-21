@@ -1,0 +1,116 @@
+{
+  "_comment": "Written by scripts/build_quadrants_wheels.py. The wheels beside this file are gitignored; this manifest is committed so that which wheel a measurement used stays recoverable.",
+  "workflow": "quadrants_build.yaml",
+  "run_id": 39571753107,
+  "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/39571753107",
+  "run_name": "Quadrants wheels: linux,linux_arm64,macos,windows py3.11,3.13 [algan-eb9562b177]",
+  "conclusion": "success",
+  "ref": "claude/quadrants-v1.3.3-rebase",
+  "head_sha": "ca897f2011055ce90cbec1dd5e38d15577a9e024",
+  "downloaded_at": "2026-10-21T10:36:54+00:00",
+  "patches_from": "commit ca897f201105",
+  "patches": [
+    {
+      "name": "0001-metal-zero-copy-ndarray.patch",
+      "sha256": "984dcb3057466c8db32cfc9ba1e2e0d8118891eda377580bda897fdb2dbdad93"
+    },
+    {
+      "name": "0002-metal-codegen-and-diagnostics.patch",
+      "sha256": "a2c4270aeac2bac03c62b5fd7001924813280f2397b41c23cd72ccc269b45842"
+    },
+    {
+      "name": "0003-pre-volta-cuda.patch",
+      "sha256": "9a09090d0c55b6951f94e24a67073520977b4cf5f88c69d398049cc89a43a0c0"
+    },
+    {
+      "name": "0004-llvm-invariant-load-kernel-args.patch",
+      "sha256": "1851403a52289208ea528766781935b7d3e4495c6b2a22a9f7e632bd37fcde03"
+    },
+    {
+      "name": "0005-cuda-max-reg.patch",
+      "sha256": "2cca24740b71a0c1cd96ef2312c0c87c8cfe545abea7c45bb893adcd14387405"
+    },
+    {
+      "name": "0006-cuda-readonly-ndarray-ldg.patch",
+      "sha256": "f1b82399e89937953e31bf88897ef796683feaffb96e8e1ec7555fa1cca0c846"
+    },
+    {
+      "name": "0007-cuda-fast-expf.patch",
+      "sha256": "1635709dd133258f6fec0397c2466f2c64e25edfed1f1cfcf13383e485592d1b"
+    },
+    {
+      "name": "0008-aarch64-shared-libgcc.patch",
+      "sha256": "c6aa146e4f3c2fa2fb81d0d13ed52c06708cb52008e92fac65ccbfc562838cc4"
+    },
+    {
+      "name": "0009-python-3.14.patch",
+      "sha256": "11eb8caee82e6d5f50b756a55128ae7f2ecf6055efa43813f0377c3ac882571a"
+    }
+  ],
+  "wheels": [
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-manylinux_2_28_x86_64.whl",
+      "platform": "linux",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 31713945,
+      "sha256": "034e07547300b2c820a90825223ce9946f80d48c00bba7378f9bab6e6e47bf27"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-manylinux_2_28_x86_64.whl",
+      "platform": "linux",
+      "python": "3.13",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 31714740,
+      "sha256": "befc4a437dbc9da389a2c756b06bf52c1c5493ebfd6fb38be2bd3671733fa716"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-manylinux_2_34_aarch64.whl",
+      "platform": "linux_arm64",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 28950113,
+      "sha256": "290145ab8a68e6d315526d5a5c6fd499d1b49293d3b5b1e7779a3ce6f9107f77"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-manylinux_2_34_aarch64.whl",
+      "platform": "linux_arm64",
+      "python": "3.13",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 28949471,
+      "sha256": "db9755ede36d89a269e46c5a4ffb81410e99fb4c6b6b5a73efbcc9431735b074"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-macosx_13_0_arm64.whl",
+      "platform": "macos",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 23380623,
+      "sha256": "41c8699752a3ff08af1cb1ff209bde38a4b4ab777f53eff883612ae99a7c6a24"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-macosx_13_0_arm64.whl",
+      "platform": "macos",
+      "python": "3.13",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 23379373,
+      "sha256": "44b09cf4d0f4bb9d65ab563909501c28bdd8ab0d6dee48a36b51c7d59bc0725d"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-win_amd64.whl",
+      "platform": "windows",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 26840125,
+      "sha256": "cc8a7b872b82b6185b740d4b1959e83ada50d85982af48477d7cd6306050074d"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-win_amd64.whl",
+      "platform": "windows",
+      "python": "3.13",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 26840114,
+      "sha256": "fb6f39344a4ce2a63df5ed676c6ec60c6b914d4faae5dd83af3781fcb0a4dc70"
+    }
+  ]
+}

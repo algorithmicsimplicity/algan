@@ -1,11 +1,11 @@
 # The Quadrants patches Algan carries
 
-Nine patches against **Quadrants v1.3.0** (`ab9a58ab5`, dated 2026-08-11 — the pinned upstream base, not a claim
+Nine patches against **Quadrants v1.3.3** (`00423caa9`, dated 2026-09-25 — the pinned upstream base, not a claim
 about the latest upstream release),
 applied **in numeric order** onto a pristine checkout of that tag:
 
     git clone --filter=blob:none https://github.com/Genesis-Embodied-AI/quadrants.git
-    cd quadrants && git checkout v1.3.0
+    cd quadrants && git checkout v1.3.3
     git apply --verbose ../quadrants_patches/[0-9]*.patch
 
 They are the Quadrants-side successors to `taichi_patches/`, which remains the
@@ -30,12 +30,12 @@ touching a patch.
 | `0001-metal-zero-copy-ndarray.patch` | Imports a torch MPS tensor's `MTLBuffer` as a zero-copy ndarray with a non-zero byte offset, because Algan's arrays are slices of one arena. Without it Metal copies every argument through the host, and the second copy-back reverts what the kernel wrote through the first — an Apple GPU renders a black frame. | `taichi_patches/0001`, ported |
 | `0002-metal-codegen-and-diagnostics.patch` | The `ContinueStmt`/`gen_label_` fix (a `continue` under a compile-time gate emits invalid SPIR-V), and diagnostics that name the kernel a Metal pipeline build failed on and print the MSL Metal rejected. | `taichi_patches/0002`, minus its first hunk |
 | `0003-pre-volta-cuda.patch` | Lets `qd.init(qd.gpu)` work on pre-Volta CUDA at all: device-scope atomics in place of `.sys`, and a compute-capability gate on the warp-aggregated reduction. Not a port — new, and the reason `../taichi_patches/PLAN.md` §7.3 calls it Prerequisite 0. | none |
-| `0004-llvm-invariant-load-kernel-args.patch` | `!invariant.load` (plus `!dereferenceable`) on the loads that read a kernel's argument buffer, so LICM can hoist an ndarray's base pointer and shape dims out of the loop instead of re-reading them at every use site. Gated by a new `invariant_arg_loads` compile-config field. Not a port — new, and `../taichi_patches/PLAN.md` row 13. | none |
-| `0005-cuda-max-reg.patch` | `qd.loop_config(max_reg=N)` carried through the frontend IR, `lower_ast`, `offload` and the CUDA codegen to a **per-kernel** PTX `.maxnreg`, and `qd.init(gpu_max_reg=N)` made real by finally passing it to `add_module` (`CU_JIT_MAX_REGISTERS` at module load). Not a port — new, and PLAN row 14. | none |
+| `0004-llvm-invariant-load-kernel-args.patch` | `!invariant.load` (plus `!dereferenceable`) on the loads that read a kernel's argument buffer, so LICM can hoist an ndarray's base pointer and shape dims out of the loop instead of re-reading them at every use site. Gated by a new `invariant_arg_loads` compile-config field. On v1.3.3 it composes with upstream's AMDGPU address-space tagging (#866) on the same three loads: mark invariant first, then tag. Not a port — new, and `../taichi_patches/PLAN.md` row 13. | none |
+| `0005-cuda-max-reg.patch` | `qd.loop_config(max_reg=N)` carried through the frontend IR, `lower_ast`, `offload` and the CUDA codegen to a **per-kernel** PTX `.maxnreg`. Per-kernel only since the v1.3.3 rebase: upstream deleted `gpu_max_reg` (#890), so the module-wide half was dropped. Not a port — new, and PLAN row 14. | none |
 | `0006-cuda-readonly-ndarray-ldg.patch` | A `readonly_ndarray_ldg` compile-config flag under which loads from ndarray arguments the offloaded task never writes go through `ld.global.nc`, the read-only-cache path read-only SNodes already take. Not a port — new, and PLAN row 15. | none |
 | `0007-cuda-fast-expf.patch` | Under `fast_math`, f32 `qd.exp` becomes `__nv_fast_expf` instead of `__nv_expf` — the branch shape `log`, `sin` and `cos` already have. Not a port — new, and PLAN row 18. | none |
 | `0008-aarch64-shared-libgcc.patch` | On aarch64 only, links the extension against the shared libgcc runtime instead of AlmaLinux 9's static one, whose `_dl_find_object` backport carries a `GLIBC_2.35` symbol version — so a wheel built on glibc 2.34 keeps that floor. `libstdc++` stays static. | none |
-| `0009-python-3.14.patch` | **Python 3.14.** Lifts `requires-python` to `<3.15` and drops the four reads of `ast.Str`, which 3.14 removed from the standard library — without that, a kernel with a docstring or an `assert` message fails to compile. Upstream v1.3.0 (and upstream `main` as of 2026-09-28) stops at 3.13. See "0009" below. | none |
+| `0009-python-3.14.patch` | **Python 3.14.** Lifts `requires-python` to `<3.15` and drops the four reads of `ast.Str`, which 3.14 removed from the standard library — without that, a kernel with a docstring or an `assert` message fails to compile. Upstream v1.3.0 through v1.3.3 (and upstream `main` as of 2026-09-28) stop at 3.13. See "0009" below. | none |
 
 0005-0007 are CUDA codegen and were written in one sitting, after 0004 and
 **against a tree that did not have 0003 applied** (their `codegen_cuda.cpp` and
@@ -66,6 +66,14 @@ with CUDA on**: `quadrants_build.yaml`'s Linux leg did exactly that on
 2026-09-04 (run
 [`33926192036`](https://github.com/algorithmicsimplicity/algan/actions/runs/33926192036)),
 and the 0004 checks still pass on the resulting wheel.
+
+**Rebased onto v1.3.3 on 2026-10-21.** Against a pristine `v1.3.3` worktree
+with LF line endings (the patches as committed), all nine apply strictly in
+order, **35 files, +784/−28**, and the result is byte-identical to the tree the
+rebase was built in (patch by patch, one commit each). 0004, 0005 and 0007 also
+apply on their own; 0006 needs 0004, as before. 0001, 0002 and 0009 apply at
+line offsets, which strict `git apply` accepts. "Rebase onto v1.3.3" below says
+what changed in each patch.
 
 Numeric order is the convention rather than a constraint, and it is worth being
 precise about which, because several patches share a file:
@@ -476,7 +484,8 @@ above the store that initializes it, reading uninitialized stack. The guard is
 the identical reason on the identical two functions — but it landed 2026-08-28,
 **after** v1.3.0, so it is not in this base and there is no helper here to reuse.
 Expect a textual conflict at `get_struct_arg` and `get_args_ptr` on a rebase past
-it; the two changes compose, they do not fight.
+it; the two changes compose, they do not fight. (The conflict arrived with the
+v1.3.3 rebase and resolved as predicted: see "Rebase onto v1.3.3".)
 
 **What it deliberately does not do.** No `addrspace(1)` tagging. On NVPTX that
 is what would upgrade the hoisted loads from `ld.global` to `ld.global.nc`
@@ -526,7 +535,9 @@ setter and the offline-cache key and by nothing else — `ALGAN_GPU_MAX_REG` has
 only ever changed the cache key, which is why `algan/rendering/taichi_runtime.py:27-30`
 records that Algan has no register-cap setting at all. Quadrants reached the
 same conclusion and **deleted** the option in `3e45a7a7c` (#890, 2026-08-26) —
-which is *after* v1.3.0, so the field is still there on this base.
+which is *after* v1.3.0, so the field was still there on that base. **Since the
+v1.3.3 rebase it is gone, and so is this patch's module-wide half** (below); the
+per-loop half is unchanged.
 
 Two halves, and they are independent:
 
@@ -996,6 +1007,73 @@ made on a feature branch is not visible to the default branch the release is
 published from, so paying that here would have bought nothing for the
 release. The publish run pays it once and is the first aarch64 cp314 build.
 
+## Rebase onto v1.3.3 (2026-10-21)
+
+The base moved from v1.3.0 to v1.3.3, the latest stable upstream release, which
+also carries the fastcache fixes of 1.3.2 and 1.3.3. v1.3.1 behaves the same for
+every patch here: v1.3.1 to v1.3.3 touches none of the patched files.
+
+| patch | what the rebase changed |
+| --- | --- |
+| 0001-0003, 0008, 0009 | Nothing: they apply as they were (0001, 0002 and 0009 at line offsets). |
+| 0004 | Upstream #866 (AMDGPU address-space tagging) wraps the same three argument-buffer loads in `maybe_tag_amdgpu_global_ptr` and already adds the `quadrants/program/function.h` include. The rebased patch marks each load invariant (and `!dereferenceable` in `get_args_ptr`) first, then lets upstream tag it; the tag is a no-op off AMDGPU, so the CUDA IR is 0004's alone. The `CompileConfig` Python binding was rewritten upstream with a docstring per field; `invariant_arg_loads` now has one. |
+| 0005 | Upstream #890 deleted `CompileConfig::gpu_max_reg`. Its hunk in `llvm_runtime_executor.cpp` still applied textually but would not have compiled, so the module-wide half is gone and `create_jit_module` is upstream's again. `loop_config(max_reg=)` was re-anchored after upstream removed `block_dim_adaptive`, and its docstring and the docs no longer mention `qd.init(gpu_max_reg=N)`. 15 files, +73/−4. |
+| 0006 | Only the `readonly_ndarray_ldg` binding moved, into the new documented style. |
+| 0007 | Only its `fast_math` doc sentence moved, onto upstream's reworded paragraph. |
+| 0010 (the Windows `/O2` fix) | Deleted: it was a backport of upstream PR #921, which v1.3.1 contains. |
+
+The build follows: `quadrants_build.yaml`'s `QUADRANTS_REF` and the gate
+scripts' default ref are `v1.3.3`, and the release version is `1.3.3.post1`
+(`ALGAN_QUADRANTS_VERSION`, `scripts/rebrand_quadrants_wheel.py`). Per
+`PYPI.md`, `pyproject.toml` and `uv.lock` keep `1.3.0.post3` until
+`1.3.3.post1` is on PyPI.
+
+**Built and checked (2026-10-21).** Run `39571753107` built all four platforms
+for cp311 and cp313 with every leg green, the aarch64 glibc 2.34 smoke included
+(`quadrants_wheels/manifest.json`); all wheels came out as
+`1.3.4.dev0+g00423caa9.d20261021`. On the RTX 5080 (sm_120, Windows), with the
+cp313 wheel installed:
+
+* `verify_invariant_load.py`: PASS, `!invariant.load` at 11 sites, loop
+  base-pointer reloads 18 → 0 (0004).
+* `verify_cuda_patches.py`: PASS, `.maxnreg 64`, 2 `ld.global.nc`, fast `expf`
+  only under `fast_math` (0005-0007).
+* `verify_python_314.py`: 4/4 on 3.13 here, the sanity run. The real 0009
+  gate is the cp314 build, run `39572543502`: 4/4 on Python 3.14.8 on its
+  Windows and macOS legs.
+* `benchmarks/_taichi_source_key_check.py`: PASS, 10/10 hits warm, 10/10
+  verified in verify mode, identical frames in all four arms.
+* Algan's full suite: the same failures as on the 1.3.0 wheel on the same
+  machine, and 10 of the 11 suite videos are pixel-identical to the 1.3.0
+  renders. The eleventh, `materials_and_lighting`, differs from 1.3.0 by as much
+  as two 1.3.3 runs differ from each other.
+
+Two Algan shims needed porting, because both reimplement Quadrants internals.
+`algan/utils/taichi_source_key.py`: 1.3.1+ made the fastcache lookup two-phase
+(L1 pruning info, then L2), `materialize` stopped clearing `fast_checksum`
+before the lookup, and a new post-transform step
+(`_maybe_persist_l1_and_set_l2_key`) nulls the key of any kernel without an L1
+key. The shim's existence checks still passed, so unported it would have
+indexed nothing; a stale key could also have been stored under a poisoned
+materialization. `algan/utils/taichi_warmstart.py`: upstream #858 memoizes
+`get_pos_info` itself in 1.3.1+, under a new name; the shim switched itself off
+entirely instead of dropping only that memo.
+
+On Kaggle's Tesla T4 (sm_75, Linux) with the cp311 manylinux wheel,
+`verify_cuda_patches.py` and `verify_invariant_load.py` pass as well. The
+session was asked for a P100 (`NvidiaTeslaP100`) and was given the T4, so it
+does not cover 0003: Kaggle no longer appears to offer a pre-Volta card.
+
+**0003 needs a pre-Volta card, and none is reachable from CI.**
+`verify_pre_volta.py` beside this README is that check as one command: CUDA
+comes up, three atomic reductions are right, and the dumped PTX has no
+`atom.sys`. It passes on sm_70+ with or without the patch and says so. The
+wheels it needs are attached to the
+[`quadrants-1.3.3-rebase-wheels`](https://github.com/algorithmicsimplicity/algan/releases/tag/quadrants-1.3.3-rebase-wheels)
+prerelease. GitHub rewrote the `+` in their names to `.`, so save each one
+under its real name, the one in `quadrants_wheels/manifest.json`, before
+installing it.
+
 ## Upstreaming
 
 0003 is written to be upstreamed rather than carried: minimal, no Algan-specific
@@ -1019,3 +1097,6 @@ is Algan-shaped and will likely stay a fork patch.
 the most to carry: it deletes dead code and moves a version bound, and every
 Quadrants user on 3.14 needs it, not only Algan. Once upstream ships cp314
 wheels of its own, this fork's cp314 row stops being new ground.
+
+0010, the Windows `/O2` fix, was upstream PR #921 and went away with the v1.3.3
+rebase.

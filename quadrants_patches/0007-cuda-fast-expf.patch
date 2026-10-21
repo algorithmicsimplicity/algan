@@ -1,18 +1,18 @@
 diff --git a/docs/source/user_guide/init_options.md b/docs/source/user_guide/init_options.md
-index a74a7fbea..6e07f9619 100644
+index 3ed9c12..78846d5 100644
 --- a/docs/source/user_guide/init_options.md
 +++ b/docs/source/user_guide/init_options.md
-@@ -37,7 +37,7 @@ Whether to run the control-flow-graph optimization pass. Default `True`. Setting
+@@ -29,7 +29,7 @@ Whether to run the control-flow-graph optimization (an internal compile-time opt
  
  ### `fast_math`
  
--Whether to enable IEEE-relaxed floating-point optimizations (FMA fusion, no NaN / infinity / signed-zero guarantees). Default `True`. Disable when investigating numerical anomalies or running deterministic-tolerance tests.
-+Whether to enable IEEE-relaxed floating-point optimizations (FMA fusion, no NaN / infinity / signed-zero guarantees). Default `True`. On CUDA it also selects the approximate single-precision libdevice routines for `qd.sin`, `qd.cos`, `qd.log` and `qd.exp` (`__nv_fast_sinf` and friends, accurate to a few ulp over their intended input ranges; `f64` is never affected). Disable when investigating numerical anomalies or running deterministic-tolerance tests.
+-Whether to enable relaxed floating-point optimizations (fusing multiply-add operations, and dropping NaN / infinity / signed-zero guarantees). Default `True`. Disable when investigating numerical anomalies or running deterministic-tolerance tests.
++Whether to enable relaxed floating-point optimizations (fusing multiply-add operations, and dropping NaN / infinity / signed-zero guarantees). Default `True`. On CUDA it also selects the approximate single-precision libdevice routines for `qd.sin`, `qd.cos`, `qd.log` and `qd.exp` (`__nv_fast_sinf` and friends, accurate to a few ulp over their intended input ranges; `f64` is never affected). Disable when investigating numerical anomalies or running deterministic-tolerance tests.
  
  ### `num_compile_threads`
  
 diff --git a/quadrants/codegen/cuda/codegen_cuda.cpp b/quadrants/codegen/cuda/codegen_cuda.cpp
-index 52e618d69..ad4c71a32 100644
+index 3b1458f..ee7e857 100644
 --- a/quadrants/codegen/cuda/codegen_cuda.cpp
 +++ b/quadrants/codegen/cuda/codegen_cuda.cpp
 @@ -356,8 +356,21 @@ class TaskCodeGenCUDA : public TaskCodeGenLLVM {

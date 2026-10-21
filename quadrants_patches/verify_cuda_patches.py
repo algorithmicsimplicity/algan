@@ -54,11 +54,9 @@ The arm result is written to the named file rather than to stdout, because
 `qd.init()` prints a banner there that a shell redirect would fold into the
 JSON.
 
-What this cannot see: the module-wide `qd.init(gpu_max_reg=N)` half of 0005 is
-a `CU_JIT_MAX_REGISTERS` option at `cuModuleLoadDataEx`, not a PTX directive,
-so it leaves no trace in any dump. Both arms pass `gpu_max_reg=0` so it cannot
-confound the `.maxnreg` count; measure it with `cuobjdump
---dump-resource-usage` on the driver's cubin, or the profiler's register count.
+0005 has no module-wide half to see any more: upstream deleted
+`qd.init(gpu_max_reg=N)` (#890), and the v1.3.3 rebase dropped the patch's hunk
+that fed it to `CU_JIT_MAX_REGISTERS`. Only the per-loop `.maxnreg` is checked.
 """
 
 # ruff: noqa: I002 -- I002 would insert `from __future__ import annotations`,
@@ -134,7 +132,6 @@ def _cfg():
             # Recorded because the ld.global.nc counts are only 0006's while
             # this is False; a True here invalidates the 0006 assertions.
             "invariant_arg_loads": bool(cfg.invariant_arg_loads),
-            "gpu_max_reg": int(cfg.gpu_max_reg),
         }
     except Exception as exc:  # noqa: BLE001 -- the nanobind is the thing under test; do not mask its absence
         return {"unreadable": repr(exc)}
@@ -189,7 +186,6 @@ def measure(arm):
         # counts. Pin it off in BOTH arms so that count is 0006's alone --
         # the docstring's table is the measurement.
         invariant_arg_loads=False,
-        gpu_max_reg=0,  # keep the module-wide cap out of the way of the per-loop one
         print_kernel_llvm_ir=True,  # unoptimized IR: where the libdevice call is still a call by name
         print_kernel_asm=True,  # the PTX
     )

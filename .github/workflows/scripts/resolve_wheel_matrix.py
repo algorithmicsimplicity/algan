@@ -113,7 +113,7 @@ PORTABLE_LLVM: dict[str, str] = {
     ),
     "artifact": "quadrants-portable-llvm-linux-aarch64",
     "archive": "taichi-llvm-22.1.0-linux-aarch64-portable-glibc234.zip",
-    # Must match upstream Quadrants v1.3.0's qd_build/llvm.py output directory.
+    # Must match upstream Quadrants v1.3.3's qd_build/llvm.py output directory.
     # Populating it before `download_llvm.py` runs makes download_dep() reuse the
     # portable tree without patching Quadrants' dependency downloader.
     "cache_dir": "llvm-22.1.0-aarch64-202603120808",

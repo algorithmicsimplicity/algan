@@ -3,7 +3,7 @@
 
 The native build still happens as upstream ``quadrants``. For release builds
 ``SETUPTOOLS_SCM_PRETEND_VERSION`` pins the build-time version to
-``1.3.0.post3`` so CMake and Python agree on the downstream version. This
+``1.3.3.post1`` so CMake and Python agree on the downstream version. This
 script then changes only the *distribution* name from ``quadrants`` to
 ``algan-quadrants``. The import package stays ``quadrants``.
 
@@ -46,9 +46,9 @@ from pathlib import Path
 UPSTREAM_DISTRIBUTION = "quadrants"
 DOWNSTREAM_DISTRIBUTION = "algan-quadrants"
 DOWNSTREAM_WHEEL_DISTRIBUTION = "algan_quadrants"
-DOWNSTREAM_VERSION = "1.3.0.post3"
+DOWNSTREAM_VERSION = "1.3.3.post1"
 
-UPSTREAM_VERSION = "1.3.0"
+UPSTREAM_VERSION = "1.3.3"
 UPSTREAM_HOMEPAGE = "https://github.com/Genesis-Embodied-AI/quadrants"
 ALGAN_REPOSITORY = "https://github.com/algorithmicsimplicity/algan"
 PATCH_DIRECTORY = Path(__file__).resolve().parent.parent / "quadrants_patches"

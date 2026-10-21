@@ -49,7 +49,7 @@ set -o pipefail
 set -u
 
 QD_REPO="${GATE_QD_REPO:-https://github.com/Genesis-Embodied-AI/quadrants.git}"
-QD_REF="${GATE_QD_REF:-v1.3.0}"
+QD_REF="${GATE_QD_REF:-v1.3.3}"
 APPLY_PATCHES="${GATE_QD_PATCHES:-1}"
 WITH_VULKAN="${GATE_QD_VULKAN:-0}"
 WITH_AMDGPU="${GATE_QD_AMDGPU:-0}"
