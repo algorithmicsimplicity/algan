@@ -718,7 +718,7 @@ Limits and approximations
   (``shadow_bounce_rays``). The fan is rotated
   from one shaded point to the next, so a wide emitter's penumbra dithers
   rather than bands. A still frame renders the same dither every time, and
-  a camera moving well under a pixel per frame keeps most of it, but faster
+  a camera moving a fraction of a pixel per frame keeps most of it, but faster
   motion re-rolls it from frame to frame, so a moving camera's penumbrae
   carry a faint grain. ``shadow_ray_budget=0`` restores the fixed, unrotated
   8-ray fan, which holds still under motion but bands.

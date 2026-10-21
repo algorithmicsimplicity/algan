@@ -1442,18 +1442,19 @@ shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
 # ``shadow_radius``, a directional with ``shadow_angle``) fires
 # ``min(SOFT_SHADOW_SAMPLES, budget)``. To keep a small fan from banding, the
 # budgeted fan is Cranley-Patterson rotated per shading event from a hash of
-# the cell of a pixel-sized world grid that holds the event: the penumbra
-# dithers rather than steps, and a still frame renders identically every time.
-# Under a moving camera the grain does NOT stay on the surface. A cell is under
-# a pixel across, so a pixel's hit point stays in its cell, and keeps its
-# rotation, only while the camera moves it a small fraction of a pixel per
-# frame; past that the pixel samples another cell and re-rolls, and the
-# penumbra carries a faint grain that changes every frame. Measured on a soft
-# directional shadow under a camera truck: at 0.1 pixel per frame the dithered
-# penumbra changed about twice as much from frame to frame as the fixed fan's
-# (1.7 against 0.8 levels on average), and from about a pixel per frame every
-# penumbra pixel re-rolls. (Hashed from the position's own bits rather than its
-# cell, it re-rolled even under motion far below a pixel.) ``0`` restores the
+# the cell of a world grid one to two pixels across that holds the event: the
+# penumbra dithers rather than steps, and a still frame renders identically
+# every time. Under a moving camera the grain does NOT stay on the surface: a
+# pixel keeps its rotation only while its hit point stays in its cell, so a
+# camera moving it a fraction of a pixel per frame re-rolls the pixels near
+# cell edges, and from about a pixel per frame every penumbra pixel re-rolls
+# and the penumbra carries a faint grain that changes every frame. Measured on
+# a soft directional shadow under a camera truck at 0.1 pixel per frame: the
+# fixed fan's penumbra changed 0.9 levels from frame to frame on average; the
+# dithered one 1.3 with these cells, and 1.7 with cells under a pixel across
+# (see ``_shadow_jitter_cell`` for the trade against a coarser dither).
+# (Hashed from the position's own bits rather than its cell, it re-rolled even
+# under motion far below a pixel.) ``0`` restores the
 # fixed unjittered fan byte for byte: stable under motion, but banded.
 #
 # ``shadow_bounce_rays`` caps every soft row's fan at a SECONDARY hit -- one
