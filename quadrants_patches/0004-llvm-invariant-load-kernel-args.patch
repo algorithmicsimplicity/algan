@@ -1,5 +1,5 @@
 diff --git a/quadrants/analysis/offline_cache_util.cpp b/quadrants/analysis/offline_cache_util.cpp
-index e5bf0ddc3..e8580ec25 100644
+index 9b6ce71..81ed5ce 100644
 --- a/quadrants/analysis/offline_cache_util.cpp
 +++ b/quadrants/analysis/offline_cache_util.cpp
 @@ -50,6 +50,7 @@ static std::vector<std::uint8_t> get_offline_cache_key_of_compile_config(const C
@@ -11,27 +11,20 @@ index e5bf0ddc3..e8580ec25 100644
    serializer(config.default_ip.to_string());
    if (arch_is_cpu(config.arch)) {
 diff --git a/quadrants/codegen/llvm/codegen_llvm.cpp b/quadrants/codegen/llvm/codegen_llvm.cpp
-index d085c5c6b..ece67acf2 100644
+index 3b0ab38..45935d4 100644
 --- a/quadrants/codegen/llvm/codegen_llvm.cpp
 +++ b/quadrants/codegen/llvm/codegen_llvm.cpp
-@@ -13,6 +13,7 @@
- #include "quadrants/ir/transforms.h"
- #include "quadrants/program/adstack_size_expr_eval.h"
- #include "quadrants/program/extension.h"
-+#include "quadrants/program/function.h"
- #include "quadrants/runtime/program_impls/llvm/llvm_program.h"
- #include "quadrants/codegen/llvm/struct_llvm.h"
- #include "quadrants/util/file_sequence_writer.h"
-@@ -1750,7 +1751,7 @@ void TaskCodeGenLLVM::visit(ExternalPtrStmt *stmt) {
+@@ -1766,7 +1766,8 @@ void TaskCodeGenLLVM::visit(ExternalPtrStmt *stmt) {
        tlctx->get_data_type(TypeFactory::get_instance().get_ndarray_struct_type(arg_type, stmt->ndim, needs_grad));
    auto *gep = builder->CreateGEP(struct_type, llvm_val.at(stmt->base_ptr),
                                   {tlctx->get_constant(0), tlctx->get_constant(int(stmt->is_grad) + 1)});
--  auto *ptr_val = builder->CreateLoad(tlctx->get_data_type(ptr_type), gep);
-+  auto *ptr_val = mark_invariant_arg_load(builder->CreateLoad(tlctx->get_data_type(ptr_type), gep), current_callable);
+-  llvm::Value *ptr_val = builder->CreateLoad(tlctx->get_data_type(ptr_type), gep);
++  llvm::Value *ptr_val =
++      mark_invariant_arg_load(builder->CreateLoad(tlctx->get_data_type(ptr_type), gep), current_callable);
+   ptr_val = maybe_tag_amdgpu_global_ptr(ptr_val);
+   unsigned ptr_val_as = ptr_val->getType()->getPointerAddressSpace();
  
-   int num_indices = stmt->indices.size();
-   std::vector<llvm::Value *> sizes(num_indices);
-@@ -1777,7 +1778,8 @@ void TaskCodeGenLLVM::visit(ExternalPtrStmt *stmt) {
+@@ -1795,7 +1796,8 @@ void TaskCodeGenLLVM::visit(ExternalPtrStmt *stmt) {
      auto raw_arg = builder->CreateGEP(
          struct_type, llvm_val[stmt->base_ptr],
          {tlctx->get_constant(0), tlctx->get_constant(TypeFactory::SHAPE_POS_IN_NDARRAY), tlctx->get_constant(i)});
@@ -41,14 +34,20 @@ index d085c5c6b..ece67acf2 100644
      sizes[i] = raw_arg;
    }
  
-@@ -3434,7 +3436,25 @@ llvm::Value *TaskCodeGenLLVM::get_struct_arg(const std::vector<int> &index, bool
+@@ -3460,7 +3462,8 @@ llvm::Value *TaskCodeGenLLVM::get_struct_arg(const std::vector<int> &index, bool
    if (!create_load) {
      return gep;
    }
--  return builder->CreateLoad(tlctx->get_data_type(arg_type), gep);
-+  return mark_invariant_arg_load(builder->CreateLoad(tlctx->get_data_type(arg_type), gep), current_callable);
-+}
-+
+-  llvm::Value *loaded = builder->CreateLoad(tlctx->get_data_type(arg_type), gep);
++  llvm::Value *loaded =
++      mark_invariant_arg_load(builder->CreateLoad(tlctx->get_data_type(arg_type), gep), current_callable);
+   // Don't tag a Function (@qd.real_func) callee's args: they come from a
+   // caller-local alloca (private memory, e.g. qd.ref params), so tagging them
+   // global would be unsound.
+@@ -3470,6 +3473,24 @@ llvm::Value *TaskCodeGenLLVM::get_struct_arg(const std::vector<int> &index, bool
+   return loaded;
+ }
+ 
 +llvm::LoadInst *TaskCodeGenLLVM::mark_invariant_arg_load(llvm::LoadInst *load, const Callable *callable) {
 +  if (!compile_config.invariant_arg_loads) {
 +    return load;
@@ -65,15 +64,16 @@ index d085c5c6b..ece67acf2 100644
 +  // `qd.volatile_load` lowers to GlobalLoadStmt and never reaches the argument buffer.
 +  load->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(builder->getContext(), {}));
 +  return load;
- }
- 
++}
++
  llvm::Value *TaskCodeGenLLVM::get_args_ptr(const Callable *callable, llvm::Value *context) {
-@@ -3446,8 +3466,18 @@ llvm::Value *TaskCodeGenLLVM::get_args_ptr(const Callable *callable, llvm::Value
+   auto *runtime_context_type = get_runtime_type("RuntimeContext");
+   auto *args_type = tlctx->get_data_type(callable->args_type);
+@@ -3479,7 +3500,18 @@ llvm::Value *TaskCodeGenLLVM::get_args_ptr(const Callable *callable, llvm::Value
    // casting from i8 ** to args_type **
    args_ptr = builder->CreatePointerCast(args_ptr, llvm::PointerType::get(llvm::PointerType::get(args_type, 0), 0));
    // loading the address of the arg buffer (args_type *)
 -  args_ptr = builder->CreateLoad(llvm::PointerType::get(args_type, 0), args_ptr);
--  return args_ptr;
 +  auto *args_ptr_load = mark_invariant_arg_load(builder->CreateLoad(llvm::PointerType::get(args_type, 0), args_ptr),
 +                                                callable);
 +  // `get_struct_arg` re-emits this whole chain for every argument access rather than caching it, so this is the load
@@ -85,17 +85,17 @@ index d085c5c6b..ece67acf2 100644
 +    args_ptr_load->setMetadata(llvm::LLVMContext::MD_dereferenceable,
 +                               llvm::MDNode::get(*llvm_context, {llvm::ConstantAsMetadata::get(size)}));
 +  }
-+  return args_ptr_load;
- }
- void TaskCodeGenLLVM::set_args_ptr(Callable *callable, llvm::Value *context, llvm::Value *ptr) {
-   auto *runtime_context_type = get_runtime_type("RuntimeContext");
++  args_ptr = args_ptr_load;
+   // Only the top-level kernel's arg buffer is device-staged in global memory; a
+   // Function (@qd.real_func) callee's buffer is a caller-local alloca, so don't
+   // tag it.
 diff --git a/quadrants/codegen/llvm/codegen_llvm.h b/quadrants/codegen/llvm/codegen_llvm.h
-index 18fd8aa25..cdeeacfb0 100644
+index ed3e693..9d177f1 100644
 --- a/quadrants/codegen/llvm/codegen_llvm.h
 +++ b/quadrants/codegen/llvm/codegen_llvm.h
-@@ -183,6 +183,10 @@ class TaskCodeGenLLVM : public IRVisitor, public LLVMModuleBuilder {
- 
-   llvm::Value *get_args_ptr(const Callable *callable, llvm::Value *context);
+@@ -187,6 +187,10 @@ class TaskCodeGenLLVM : public IRVisitor, public LLVMModuleBuilder {
+   // flat_* accesses to global_*. AMDGPU only; no-op elsewhere.
+   llvm::Value *maybe_tag_amdgpu_global_ptr(llvm::Value *ptr);
  
 +  // Mark a load out of `callable`'s argument buffer as never changing. Returns the load it was given, so it can wrap
 +  // a `builder->CreateLoad(...)` in place. No-op unless `invariant_arg_loads` is set and `callable` is a kernel.
@@ -105,10 +105,10 @@ index 18fd8aa25..cdeeacfb0 100644
  
    llvm::Value *get_context();
 diff --git a/quadrants/program/compile_config.h b/quadrants/program/compile_config.h
-index 85c7248f4..a68620437 100644
+index f321184..fbfaedc 100644
 --- a/quadrants/program/compile_config.h
 +++ b/quadrants/program/compile_config.h
-@@ -30,6 +30,12 @@ struct CompileConfig {
+@@ -27,6 +27,12 @@ struct CompileConfig {
    // per-task CSE that unification is restored by merge_global_ptrs (pre-offload, fields) and cse_offloaded_tasks
    // (post-offload, ndarrays) -- see compile_to_offloads.cpp -- so this pass itself is unchanged from upstream.
    bool cache_loop_invariant_global_vars{true};
@@ -122,14 +122,17 @@ index 85c7248f4..a68620437 100644
    bool advanced_optimization;
    bool constant_folding;
 diff --git a/quadrants/python/export_lang.cpp b/quadrants/python/export_lang.cpp
-index 281e0a608..63adb3886 100644
+index 17c1222..a5706dd 100644
 --- a/quadrants/python/export_lang.cpp
 +++ b/quadrants/python/export_lang.cpp
-@@ -186,6 +186,7 @@ void export_lang(nb::module_ &m) {
-       .def_rw("lower_access", &CompileConfig::lower_access)
-       .def_rw("move_loop_invariant_outside_if", &CompileConfig::move_loop_invariant_outside_if)
-       .def_rw("cache_loop_invariant_global_vars", &CompileConfig::cache_loop_invariant_global_vars)
-+      .def_rw("invariant_arg_loads", &CompileConfig::invariant_arg_loads)
-       .def_rw("default_cpu_block_dim", &CompileConfig::default_cpu_block_dim)
-       .def_rw("cpu_block_dim_adaptive", &CompileConfig::cpu_block_dim_adaptive)
-       .def_rw("default_gpu_block_dim", &CompileConfig::default_gpu_block_dim)
+@@ -218,6 +218,10 @@ void export_lang(nb::module_ &m) {
+               "advanced_optimization pipeline.")
+       .def_rw("cache_loop_invariant_global_vars", &CompileConfig::cache_loop_invariant_global_vars,
+               "Cache loop-invariant global loads into locals inside loops.")
++      .def_rw("invariant_arg_loads", &CompileConfig::invariant_arg_loads,
++              "Mark loads from a kernel's argument buffer (ndarray base pointers and shapes, scalar args) as "
++              "!invariant.load, so LLVM can hoist them out of loops. On by default; off restores the un-annotated "
++              "codegen for A/B and is part of the offline cache key.")
+       .def_rw("default_cpu_block_dim", &CompileConfig::default_cpu_block_dim,
+               "Number of iterations per CPU parallel-for block.")
+       .def_rw("default_gpu_block_dim", &CompileConfig::default_gpu_block_dim, "Default GPU thread-block size.")

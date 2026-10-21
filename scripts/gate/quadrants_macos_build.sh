@@ -125,7 +125,7 @@ set -u
 
 # --- knobs ------------------------------------------------------------------
 QD_REPO="${GATE_QD_REPO:-https://github.com/Genesis-Embodied-AI/quadrants.git}"
-QD_REF="${GATE_QD_REF:-v1.3.0}"
+QD_REF="${GATE_QD_REF:-v1.3.3}"
 WITH_VULKAN="${GATE_QD_VULKAN:-0}"
 WITH_TESTS="${GATE_QD_TESTS:-0}"
 # `GATE_QD_PATCHES=1` applies `quadrants_patches/` before building, which is

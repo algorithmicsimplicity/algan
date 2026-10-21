@@ -1,7 +1,7 @@
 r"""Build Algan's patched Quadrants wheels on GitHub's runners, and bring them home.
 
 Algan depends on ``algan-quadrants==1.3.0.post3`` and patches it:
-``quadrants_patches/`` carries seven patches against v1.3.0 that the upstream
+``quadrants_patches/`` carries nine patches against v1.3.3 that the upstream
 PyPI wheel does not have, and Algan's platforms need different subsets of them
 -- Metal (0001, 0002) is macOS-only, and the CUDA four (0003, 0005-0007) do
 nothing without an NVIDIA GPU. There is no machine here that can build all of
@@ -599,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--stock",
         action="store_true",
-        help="build unpatched v1.3.0 -- the control arm, for when a build breaks "
+        help="build unpatched v1.3.3 -- the control arm, for when a build breaks "
         "and the question is whether the patches are at fault",
     )
     parser.add_argument(
