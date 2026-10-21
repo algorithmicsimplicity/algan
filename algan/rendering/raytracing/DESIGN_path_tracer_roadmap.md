@@ -927,6 +927,17 @@ deterministic renderer (the parity assertions they replaced are precisely
 what this section deleted); and the furnace check gained a light-row arm,
 `test_lambert_furnace_is_lossless_under_a_light_row`.
 
+**The deterministic renderer followed (2026-10-21).** Its lit stages now
+take the same `1/pi`: `shading_taichi._diffuse_norm` gives every light row's
+diffuse term `1/pi` and leaves the direction-less rows' `albedo * L` alone,
+exactly as `_pt_lit_f_pdf` and the path tracer's fill do, and Phong's
+`D_BlinnPhong` regains three.js's `1/pi`. A Lambert surface under a light now
+reads the same in both renderers (`test_a_lit_lambert_surface_reads_the_same_in_both_renderers`).
+The GGX specular already carried its `1/pi` and is unchanged; the stage keeps
+Schlick-GGX `k = (r+1)^2/8` and Blinn-Phong, so those lobes still differ in
+shape. The default scene light went to intensity `pi` so default scenes keep
+their look; the repo's own scenes scaled their directed lights by `pi`.
+
 The rest of this section is the reasoning, kept.
 
 **What was inconsistent.** A lit vertex answered "how much light comes back

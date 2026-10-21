@@ -254,34 +254,36 @@ Five further consequences of the split, not covered there:
   their deterministic fill.
   What it does not reproduce is the deterministic renderer's screen-space
   glossy prefilter: real sampled glossy transport replaces it.
-* **Lit surfaces are not as bright here, and they answer to one BSDF.** The
-  path tracer evaluates every light with the same physically-normalised
-  response its own rays sample -- ``albedo / pi`` diffuse, GGX with the exact
-  Smith masking-shadowing term, Fresnel and opaque-reflection multiple-scattering compensation
-  -- where the deterministic renderer uses its stage formulas. So a Lambert
-  surface under a light is about ``pi`` times dimmer than its
-  ``samples_per_pixel = 1`` render, before whatever indirect light the scene
-  bounces back into it. This is deliberate: the path tracer is the fallback
-  for scenes the other renderer cannot do, and one response is what makes an
-  area light and an emissive quad of the same radiance light a surface
-  identically. Two consequences worth knowing:
+* **Lit surfaces answer to one BSDF here.** The path tracer evaluates every
+  light with the same physically-normalised response its own rays sample --
+  ``albedo / pi`` diffuse, GGX with the exact Smith masking-shadowing term,
+  Fresnel and opaque-reflection multiple-scattering compensation. The
+  deterministic renderer works in the same units (see
+  :ref:`light-units`): a Lambert surface under a light comes out equally
+  bright in both, and the path tracer adds whatever indirect light the scene
+  bounces back into it. What differs is the shape of some lobes:
 
   * :class:`~algan.rendering.shaders.materials.MeshPhongMaterial` has **no
     Blinn-Phong highlight** under the path tracer. Its ``specular`` colour and
     ``shininess`` are converted to a GGX lobe
     (``alpha = sqrt(2 / (shininess + 2))``, F0 = ``specular``), so the material
-    still has a highlight -- it is a slightly different shape and it sits in a
-    slightly different place. Nothing is dropped; nothing matches the
-    deterministic renderer pixel for pixel either.
-  * The ambient and hemisphere fill reaches **diffuse only**. A constant
-    radiance arriving from every direction, integrated over the diffuse
-    lobe, is exactly what the fill contributes; the specular equivalent is
-    real indirect transport, which this renderer has and the other one does
-    not.
-
-  If you are comparing the two renderers side by side, expect to adjust
-  ``intensity``. If you reached for the path tracer because the other one
-  could not render your scene, there is nothing to compare against.
+    still has a highlight of about the same strength -- it is a slightly
+    different shape and it sits in a slightly different place, and the
+    diffuse gives up the share the highlight reflects. Nothing is dropped;
+    nothing matches the deterministic renderer pixel for pixel either.
+  * :class:`~algan.rendering.shaders.materials.MeshStandardMaterial` and
+    :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial` use the
+    exact Smith term and multiple-scattering compensation here, where the
+    deterministic renderer uses Schlick-GGX, so a rough highlight differs by
+    a few percent.
+  * The ambient and hemisphere fill reaches **diffuse only**, as it does in
+    the deterministic renderer. A constant radiance arriving from every
+    direction, integrated over the diffuse lobe, is exactly what the fill
+    contributes; the specular equivalent is real indirect transport, which
+    this renderer has and the other one does not.
+  * The deterministic renderer's small constant ambient fill
+    (``ambient_strength_linear``, a stand-in for the bounce light it does not
+    trace) is not added here, because the bounce light is.
 * **A** :class:`~.RectAreaLight` **is real geometry here.** The deterministic
   renderer expands one into a grid of ``samples`` point emitters; the path
   tracer instead treats it as an emissive rectangle, which is what it

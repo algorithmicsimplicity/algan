@@ -16,8 +16,9 @@ environment maps (image-based lighting). This tutorial covers all of them.
 The Default Light
 =================
 
-Every scene starts with a single white :class:`~.PointLight` positioned above and
-to the right of the camera. That is what gives 3-D shapes their shading.
+Every scene starts with a single white :class:`~.PointLight` of intensity
+``PI``, positioned above and to the right of the camera. That is what gives
+3-D shapes their shading.
 
 Because lights are :class:`~.Mob` s, you spawn, move, animate, and despawn them
 just like any other shape. **Spawning a light registers it with the Scene
@@ -34,7 +35,7 @@ automatically**:
 
     with Off():
         # Spawning a new light automatically adds it to the scene
-        PointLight(location=LEFT * 5 + OUT * 3, color=BLUE, intensity=2).spawn()
+        PointLight(location=LEFT * 5 + OUT * 3, color=BLUE, intensity=2 * PI).spawn()
 
         # Remove the default light
         Scene.remove_light(lights[0])
@@ -70,6 +71,35 @@ Because lights are standard Mobs, you can animate them directly on the timeline:
 
     Scene.save_video()
 
+.. _light-units:
+
+Light Units
+===========
+
+A light's ``color`` times its ``intensity`` is the light arriving on a surface
+that faces it square-on (its irradiance), in the same units under both
+renderers. A matte surface reflects ``1/pi`` of what arrives on it toward the
+camera, which is the physically correct share, so a white
+:class:`~.MeshLambertMaterial` surface facing a light of ``intensity=PI``
+renders white, and at ``intensity=1`` it reflects a third as much light.
+``PI`` is importable from ``algan``, and the default light uses it.
+
+:class:`~.AmbientLight` and :class:`~.HemisphereLight` work differently: their
+color arrives from every direction at once, and a white matte surface under an
+ambient light of ``intensity=1`` renders white. An environment map's pixels and
+an emissive surface's ``emissive`` color are the same kind of quantity.
+
+A directional light's ``intensity`` means what it does in Three.js, whose
+renderer has worked in these units by default since r155, and so does a point
+or spot light's with ``decay=2``. Earlier versions of Algan's deterministic
+renderer lit matte surfaces ``pi`` times brighter than this. To keep an older
+scene's look, multiply the ``intensity`` of its point, directional, spot and
+rect-area lights by ``PI``, and leave its ambient and hemisphere lights as
+they are. Matte shading then looks as it did; the highlights of
+:class:`~.MeshStandardMaterial` and :class:`~.MeshPhysicalMaterial` come out
+brighter, because they were already in these units and only the diffuse was
+``pi`` times too bright beside them.
+
 Light Types
 ===========
 
@@ -92,7 +122,7 @@ you can opt into physically-correct attenuation with ``decay`` and a finite
     with Off():
         Scene.clear_lights()
         # Inverse-square falloff (decay=2), fading out by 20 units
-        PointLight(location=UP * 4, color=WHITE, intensity=30, decay=2,
+        PointLight(location=UP * 4, color=WHITE, intensity=30 * PI, decay=2,
                    distance=20).spawn()
 
         Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
@@ -119,7 +149,7 @@ Distance does not matter, only direction.
     with Off():
         Scene.clear_lights()
         DirectionalLight(location=UP * 10 + RIGHT * 6, target=ORIGIN,
-                         color=WHITE, intensity=2).spawn()
+                         color=WHITE, intensity=2 * PI).spawn()
 
         Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
                for x in (-1.8, 0, 1.8)]).spawn()
@@ -142,7 +172,7 @@ Almost every rig wants a little of it.
     with Off():
         Scene.clear_lights()
         DirectionalLight(location=UP * 8 + RIGHT * 6 + OUT * 4, target=ORIGIN,
-                         color=WHITE, intensity=2).spawn()
+                         color=WHITE, intensity=2 * PI).spawn()
         AmbientLight(color=WHITE, intensity=0.4).spawn()
 
         ball = Sphere(radius=1.2, color=BLUE).spawn()
@@ -167,14 +197,14 @@ dim over a shot.
 
     with Off():
         Scene.clear_lights()
-        PointLight(location=UP * 4 + OUT * 2, color=WHITE).spawn()
+        PointLight(location=UP * 4 + OUT * 2, color=WHITE, intensity=PI).spawn()
 
         Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
                for x in (-1.8, 0, 1.8)]).spawn()
 
     light = Scene.get_light_sources()[0]
     with Seq(runtime=3):
-        light.intensity = 5
+        light.intensity = 5 * PI
 
     Scene.save_video()
 
@@ -222,7 +252,7 @@ light, it supports ``decay`` and ``distance``.
     with Off():
         Scene.clear_lights()
         SpotLight(location=UP * 5 + OUT * 2, target=ORIGIN, color=WHITE,
-                  intensity=40, cone_angle=28, penumbra=0.6, decay=2).spawn()
+                  intensity=40 * PI, cone_angle=28, penumbra=0.6, decay=2).spawn()
         HemisphereLight(color=BLUE, ground_color=(0.3, 0.2, 0.1), intensity=0.5).spawn()
 
         Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
@@ -272,7 +302,7 @@ Point and spot lights retain their separate artistic falloff controls.
         # 9 samples is a 3x3 emitter grid, which spends 9 of the 16 shadow
         # slots and leaves room for the ambient light (see below).
         RectAreaLight(location=UP * 5, target=ORIGIN, width=4, height=4,
-                      samples=9, color=WHITE, intensity=30).spawn()
+                      samples=9, color=WHITE, intensity=30 * PI).spawn()
         AmbientLight(color=WHITE, intensity=0.2).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
@@ -315,7 +345,7 @@ non-zero emitter size:
     with Off():
         Scene.clear_lights()
         DirectionalLight(location=UP * 8 + RIGHT * 4 + OUT * 4, target=ORIGIN,
-                         color=WHITE, intensity=3, shadow_angle=3).spawn()
+                         color=WHITE, intensity=3 * PI, shadow_angle=3).spawn()
         AmbientLight(color=WHITE, intensity=0.3).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
@@ -422,15 +452,15 @@ ambient:
 
         # Key light: bright, from above and to one side, with a soft shadow.
         SpotLight(location=UP * 6 + RIGHT * 4 + OUT * 4, target=ORIGIN,
-                  color=WHITE, intensity=60, cone_angle=30, penumbra=0.5,
+                  color=WHITE, intensity=60 * PI, cone_angle=30, penumbra=0.5,
                   decay=2, shadow_radius=0.3).spawn()
 
         # Fill: dimmer, from the opposite side, no shadow.
-        PointLight(location=LEFT * 6 + OUT * 2, color=WHITE, intensity=4).spawn()
+        PointLight(location=LEFT * 6 + OUT * 2, color=WHITE, intensity=4 * PI).spawn()
 
         # Rim: from behind, slightly cool.
         DirectionalLight(location=IN * 8 + UP * 4, target=ORIGIN,
-                         color=Color((0.6, 0.7, 1.0))).spawn()
+                         color=Color((0.6, 0.7, 1.0)), intensity=PI).spawn()
 
         # Ambient: stops the shadow side going pure black.
         AmbientLight(color=WHITE, intensity=0.25).spawn()

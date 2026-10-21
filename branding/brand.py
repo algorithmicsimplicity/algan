@@ -153,10 +153,12 @@ def make_lights():
         height=6,
         samples=9,
         color=WHITE,
-        intensity=30,
+        intensity=30 * PI,
     ).spawn()
     PointLight(
-        location=RIGHT * 10 + UP * 4 + OUT * 10, color=Color("#cfe0ff"), intensity=0.5
+        location=RIGHT * 10 + UP * 4 + OUT * 10,
+        color=Color("#cfe0ff"),
+        intensity=0.5 * PI,
     ).spawn()
 
 

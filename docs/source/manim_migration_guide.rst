@@ -416,7 +416,7 @@ through the Scene:
 
     camera = Scene.get_camera()
     Scene.clear_lights()
-    PointLight(location=UP * 4 + LEFT * 4 + OUT * 4).spawn()
+    PointLight(location=UP * 4 + LEFT * 4 + OUT * 4, intensity=PI).spawn()
 
     with Seq(runtime=3, easing=easings.identity):
         camera.rotate(180, UP, about=ORIGIN)

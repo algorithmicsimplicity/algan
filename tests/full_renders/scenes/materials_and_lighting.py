@@ -30,7 +30,7 @@ with Off():
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,
         color=WHITE,
-        intensity=1.0,
+        intensity=PI,
         shadow_angle=0.4,
     ).spawn(animate=False)
 
@@ -172,14 +172,14 @@ with Seq():
         point_light = PointLight(
             location=LEFT * 3.6 + UP * 0.6 + OUT * 2.2,
             color=YELLOW,
-            intensity=2.2,
+            intensity=2.2 * PI,
             decay=1.0,
         ).spawn(animate=False)
         spot_light = SpotLight(
             location=LEFT * 1.2 + UP * 2.4 + OUT * 2.2,
             target=LEFT * 1.2 + DOWN * 0.9,
             color=BLUE_A,
-            intensity=5.0,
+            intensity=5.0 * PI,
             cone_angle=22.0,
             penumbra=0.35,
         ).spawn(animate=False)
@@ -187,7 +187,7 @@ with Seq():
             location=RIGHT * 1.2 + UP * 1.8 + OUT * 2.2,
             target=RIGHT * 1.2 + DOWN * 0.9,
             color=GREEN_A,
-            intensity=3.0,
+            intensity=3.0 * PI,
             width=1.8,
             height=1.0,
         ).spawn(animate=False)
@@ -228,7 +228,7 @@ with Off():
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,
         color=WHITE,
-        intensity=1.0,
+        intensity=PI,
     ).spawn(animate=False)
     emitters = Group(
         Sphere(radius=0.6).set_material(MeshBasicMaterial(color=YELLOW)),

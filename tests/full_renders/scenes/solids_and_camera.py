@@ -41,7 +41,7 @@ with Off():
         location=RIGHT * 5 + UP * 6 + OUT * 4,
         target=ORIGIN,
         color=WHITE,
-        intensity=0.8,
+        intensity=0.8 * PI,
     ).spawn(animate=False)
     HemisphereLight(
         color=BLUE_A,

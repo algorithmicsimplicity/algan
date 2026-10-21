@@ -80,12 +80,12 @@ with Off():
         location=RIGHT * 5 + UP * 5 + OUT * 4,
         target=ORIGIN,
         color=WHITE,
-        intensity=0.85,
+        intensity=0.85 * PI,
     ).spawn(animate=False)
     PointLight(
         location=LEFT * 3 + UP * 2 + OUT * 3,
         color=BLUE_A,
-        intensity=0.6,
+        intensity=0.6 * PI,
     ).spawn(animate=False)
 
     title = Text(

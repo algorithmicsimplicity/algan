@@ -107,7 +107,7 @@ You can turn them on with one setting:
     with Off():
         Scene.clear_lights()
         DirectionalLight(location=UP * 8 + RIGHT * 4 + OUT * 4, target=ORIGIN,
-                         color=WHITE, intensity=3).spawn()
+                         color=WHITE, intensity=3 * PI).spawn()
         AmbientLight(color=WHITE, intensity=0.3).spawn()
 
         sphere = Sphere(radius=0.8, color=BLUE).move(UP * 0.4).spawn()
