@@ -157,7 +157,11 @@ with Off():
     # everything near the origin.
     for x in (-10.0, 0.5, 10.5):
         PointLight(
-            location=at(x, 6.0, 31.0), color=WHITE, intensity=140, decay=2, distance=14
+            location=at(x, 6.0, 31.0),
+            color=WHITE,
+            intensity=140 * PI,
+            decay=2,
+            distance=14,
         ).spawn()
     brand.make_lights()
 

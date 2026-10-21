@@ -17,6 +17,8 @@ Deliberately not marked ``fast``: nothing outside this module can break them.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -371,7 +373,12 @@ def test_black_does_not_divide_by_zero():
 
 
 def _lambert(albedo=1.0, light_intensity=1.0, ambient=1.0):
-    """One white light head-on at ``n.l == 1``, through the torch Lambert shader."""
+    """One white light head-on at ``n.l == 1``, through the torch Lambert shader.
+
+    ``light_intensity`` counts in units of the light that renders a white
+    surface facing it white, an intensity of ``pi`` (see light-units in the
+    lighting docs), so ``1`` is exactly a full light's worth of illumination.
+    """
     from algan.rendering.shaders.material_shaders import lambert_shader
 
     t = torch.tensor
@@ -383,7 +390,7 @@ def _lambert(albedo=1.0, light_intensity=1.0, ambient=1.0):
         t([[0.0, 0.0, 5.0]]),  # camera
         t([[0.0, 0.0, 1.0]]),  # light directly above -> n.l == 1
         t([[1.0, 1.0, 1.0, 1.0]]),
-        light_intensity,
+        light_intensity * math.pi,
         ambient,
         emissive=torch.zeros(1, 3),
         emissive_intensity=1.0,

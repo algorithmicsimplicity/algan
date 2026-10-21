@@ -94,8 +94,16 @@ Only clear the existing rig when implementing a deliberate replacement:
 ```python
 with Off():
     Scene.clear_lights()
-    light = PointLight(location=UP * 3 + OUT * 2, intensity=2).spawn()
+    light = PointLight(location=UP * 3 + OUT * 2, intensity=2 * PI).spawn()
 ```
+
+A light's `color * intensity` is the irradiance it delivers, and a white matte
+surface returns `1/pi` of it, so a point, directional, spot or rect-area light
+of `intensity=PI` renders a white Lambert surface facing it white (the default
+light uses `PI`). Ambient and hemisphere colors are radiances: `intensity=1`
+already renders it white. Both renderers use these units. Scenes written for
+the older deterministic renderer need their directed lights' intensities
+multiplied by `PI` to keep their look.
 
 Configure setup lights in `Off()` so spawning them does not add unwanted opening
 animation time. Lights are Mobs: location, color, and intensity are animatable.

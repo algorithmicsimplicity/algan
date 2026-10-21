@@ -160,7 +160,7 @@ def basic_pbr_shader(
     kD *= 1.0 - metallicness
 
     # Lambertian diffuse model
-    diffuse_brdf = albedo_color  # / torch.pi
+    diffuse_brdf = albedo_color / torch.pi
     diffuse = kD * diffuse_brdf * radiance * NdotL
 
     # 7. Final Combination

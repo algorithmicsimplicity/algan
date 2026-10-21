@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import WHITE
 from algan.constants.spatial import ORIGIN, OUTWARD, RIGHT, UP
@@ -17,8 +19,12 @@ def default_scene_initializer(scene):
         scene_camera.set_fov(manim_fov())
         scene_camera.spawn(animate=False)
     scene.light_sources = []
+    # Intensity pi: a light's color is the irradiance it delivers, and a white
+    # Lambert surface facing it returns 1/pi of that, so this is the light that
+    # renders such a surface white.
     PointLight(
         scene=scene,
         location=scene.camera.location + UP * 1 + RIGHT * 5 + OUTWARD * 1,
         color=WHITE,
+        intensity=math.pi,
     ).spawn(animate=False)

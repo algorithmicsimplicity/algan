@@ -56,11 +56,14 @@ _AUTHORED_BYTES = (128, 64, 191)
 
 
 def _render_centre_pixel(tmp_path, material):
-    """The centre pixel of a slab filling the frame, as (R, G, B) bytes."""
+    """The centre pixel of a slab filling the frame, as (R, G, B) bytes, with
+    no lights, so only the colour the surface has or emits reaches the frame.
+    """
     SceneManager.instance().reset()
     video = VideoSettings((48, 48), 30, supersampling=1)
     with rt_settings_off_tonemap():
         with Off():
+            Scene.clear_lights()
             slab = Prism(width=12.0, height=12.0, depth=0.5)
             slab.set_material(material)
             slab.move_to(torch.tensor((0.0, 0.0, 0.0)))
@@ -118,8 +121,9 @@ def test_an_emissive_colour_renders_as_itself(tmp_path):
     """Emissive is light the surface adds, so it is authored colour too.
 
     It rides the material parameter block rather than any colour array, which is
-    the third route and was the third one missed. The base colour is black so
-    nothing the lights do can contribute.
+    the third route and was the third one missed. The base colour is black and
+    the scene unlit, so nothing else can contribute: a black dielectric still
+    has a 4% specular sheen under a light.
     """
     got = _render_centre_pixel(
         tmp_path,

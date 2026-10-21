@@ -152,6 +152,15 @@ class Light(Mob):
     Lights emit white by default. Pass ``color=`` to choose another colour,
     using any value accepted by :class:`~.Color`.
 
+    ``color * intensity`` is the light arriving on a surface that faces the
+    light square-on, in the same units under both renderers. A white matte
+    surface returns ``1/pi`` of it, so it renders white under a light of
+    ``intensity=PI`` (the default light's) and about a third as bright at
+    ``1``. :class:`~.AmbientLight` and :class:`~.HemisphereLight` are the
+    exception: their color arrives from every direction, and ``intensity=1``
+    renders a white matte surface white. See
+    :ref:`light-units`.
+
     Parameters
     ----------
     intensity
@@ -515,6 +524,12 @@ class DirectionalLight(_TargetedLight):
 
 class AmbientLight(Light):
     """Uniform, direction-less illumination applied to every surface.
+
+    Its color is the light arriving from every direction at once, so a white
+    matte surface under an ambient light of ``intensity=1`` renders white,
+    where a point or directional light needs ``intensity=PI`` for the same
+    result (see :ref:`light-units`). Ambient light reaches the diffuse part of
+    a material only.
 
     Parameters
     ----------

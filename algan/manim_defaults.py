@@ -179,10 +179,15 @@ def apply_manim_defaults(
 
         if shading:
             scene.clear_lights()
+            # Intensity pi, the default light's: ManimMaterial reads a light
+            # in the same units as every lit material (see light-units in the
+            # lighting docs), and pi is the light under which its offset is
+            # exactly Manim's.
             PointLight(
                 scene=scene,
                 location=torch.tensor(MANIM_LIGHT_SOURCE).view(1, 1, 3),
                 color=WHITE,
+                intensity=math.pi,
             ).spawn(animate=False)
             # What the default material reaches, engine by engine. Manim gates its
             # shading on ONE flag -- ``VMobject.shade_in_3d``, which its

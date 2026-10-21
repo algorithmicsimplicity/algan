@@ -6,6 +6,7 @@ this shader's own modules change.
 """
 
 import inspect
+import math
 
 import numpy as np
 import torch
@@ -73,10 +74,11 @@ def _run_shader(light_color):
 
 
 def test_matches_vendored_get_shaded_rgb_in_display_terms():
-    """The external invariant: white intensity-1 light reproduces the vendored
-    Manim function, evaluated in the display-referred terms Manim works in.
+    """The external invariant: a white intensity-pi light -- the one
+    ``use_manim_defaults`` installs -- reproduces the vendored Manim function,
+    evaluated in the display-referred terms Manim works in.
     """
-    out = _run_shader(torch.ones(1, 1, 4))
+    out = _run_shader(torch.full((1, 1, 4), math.pi))
     disp = _display_output(out).view(len(_NORMALS), 3)
 
     expected = []

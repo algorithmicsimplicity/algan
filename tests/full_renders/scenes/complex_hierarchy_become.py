@@ -49,7 +49,7 @@ with Off():
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,
         color=WHITE,
-        intensity=1.0,
+        intensity=PI,
     ).spawn(animate=False)
 
     title = Text(
