@@ -804,6 +804,202 @@ def test_a_faint_veil_does_not_change_the_mirror_behind_it(tmp_path):
     )
 
 
+# A bright unlit post standing on a rough white-metal floor, against a dark
+# uniform environment. The post's reflection runs down the floor from the
+# contact, and each column beside it is floor whose glossy ray misses the post.
+_NEAR_EDGE_SCENE = """
+import sys
+import torch
+from algan import (
+    DOWN, OUT, UP, WHITE, MeshBasicMaterial, MeshStandardMaterial, Off, Prism,
+    SETTINGS, Scene, VideoSettings,
+)
+
+SETTINGS.paths.set(output_root=sys.argv[1], output_directory=".")
+with Scene() as scene:
+    scene.clear_lights()
+    scene.set_environment_map(torch.full((8, 16, 3), 0.02), ambient=False)
+    cam = Scene.get_camera()
+    cam.move_to(UP * 1.6 + OUT * 7.0)
+    cam.look_at(DOWN * 0.6)
+    with Off():
+        floor = Prism(width=8.0, height=0.05, depth=8.0, color=WHITE)
+        floor.set_material(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.3))
+        floor.move(DOWN * 1.0)
+        floor.spawn()
+        post = Prism(width=0.5, height=1.2, depth=0.5, color=WHITE)
+        post.set_material(MeshBasicMaterial(color=WHITE))
+        post.move(DOWN * 0.375)
+        post.spawn()
+    scene.save_frame(
+        "near",
+        VideoSettings(resolution=(192, 144), supersampling=1),
+        overwrite=True,
+    )
+"""
+
+
+def test_a_near_objects_reflection_has_a_soft_edge(tmp_path):
+    """A rough reflector blurs a nearby object's reflection at its edges too.
+
+    Each pixel's blur radius comes from its own glossy ray, so the floor
+    pixels whose ray met the post were blurred by a few pixels, and the ones
+    beside them, whose ray went past it to the sky, by the full lobe. The
+    post's reflection ended in a hard vertical edge where the radius jumped,
+    where the path tracer draws a soft one: the lobe of a pixel beside the
+    reflection still sees part of the post. In the logo's demo the same step
+    drew the sphere's reflection in the satin cone as a sharp-edged tongue
+    that changed shade as the camera moved. The prefilter now blurs near and
+    far content in separate layers, each at its own radius.
+
+    Measured as the largest one-pixel change across a floor row below the
+    post, as a fraction of the reflection's contrast against the floor far
+    from it: **0.79 to 1.0 before, 0.10 to 0.12 after**; the path tracer at
+    512 spp gives 0.07 to 0.20.
+
+    Its own process for the reason the module docstring gives.
+    """
+    import numpy as np
+    from PIL import Image
+
+    env = dict(os.environ)
+    for name in (
+        "ALGAN_GLOSSY_REFLECTION",
+        "ALGAN_GLOSSY_PREFILTER",
+        "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
+    ):
+        env.pop(name, None)
+    env["ALGAN_AUTO_DAEMON"] = "0"
+    proc = subprocess.run(
+        [sys.executable, "-c", _NEAR_EDGE_SCENE, str(tmp_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1200,
+        cwd=str(_REPO_ROOT),
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+    frame = tmp_path / "near.png"
+    assert frame.exists(), proc.stdout[-2000:]
+    im = np.asarray(Image.open(frame).convert("L")).astype(np.int32)
+    h, w = im.shape
+    for y in range(int(h * 0.72), h - 4, 4):
+        row = im[y]
+        centre = row[w // 2 - 3 : w // 2 + 4].mean()
+        floor = np.median(np.concatenate([row[:12], row[-12:]]))
+        # The reflection must be there for its edge to mean anything.
+        assert centre - floor > 60, (y, row.tolist())
+        sharpest = np.abs(np.diff(row)).max() / (centre - floor)
+        assert sharpest < 0.3, (
+            f"row {y}: the post's reflection steps by {sharpest:.2f} of its "
+            f"contrast in one pixel: {row.tolist()}"
+        )
+
+
+def _prefilter_frame(texels, width, height):
+    """Run a frame's prefilter on hand-built glossy pixels, in linear float.
+
+    ``texels`` is one ``(G, scale, radiance)`` per pixel, row-major, ``scale``
+    the full lobe's radius in pixels. Every pixel is glossy with ``W = 1`` and
+    nothing else in it, so the output is the prefiltered reflection itself.
+    """
+    from algan.rendering.raytracing.glossy_prefilter_taichi import (
+        _NEAR_G_HI,
+        _NEAR_G_LO,
+        _PYR_GV,
+        _PYR_LLV,
+        _PYR_LV,
+        _PYR_V,
+        GL_MAIN_G,
+        GL_MAIN_SCALE,
+        GL_MAIN_SIGMA,
+        GL_MAIN_W,
+        GL_MAIN_WIDTH,
+        GL_PYR_FAR,
+        GL_PYR_NEAR,
+        GL_PYR_WIDTH,
+        gloss_composite,
+        gloss_pyramid_level,
+    )
+    from algan.rendering.raytracing.tracer import _gloss_pyramid_levels
+
+    levels, total = _gloss_pyramid_levels(width, height, 16)
+    sigma_max = 0.28867513459481287 * (1 << (len(levels) - 1))
+    gl_main = torch.zeros(width * height, GL_MAIN_WIDTH)
+    gl_pyr = torch.zeros(total, GL_PYR_WIDTH)
+    for p, (g, scale, radiance) in enumerate(texels):
+        w_near = min(max((_NEAR_G_HI - g) / (_NEAR_G_HI - _NEAR_G_LO), 0.0), 1.0)
+        gl_main[p, GL_MAIN_W : GL_MAIN_W + 3] = 1.0
+        gl_main[p, GL_MAIN_SIGMA] = min(g * scale, sigma_max)
+        gl_main[p, GL_MAIN_G] = g
+        gl_main[p, GL_MAIN_SCALE] = scale
+        for base, w in ((GL_PYR_FAR, 1.0 - w_near), (GL_PYR_NEAR, w_near)):
+            gl_pyr[p, base : base + 3] = radiance * w
+            gl_pyr[p, base + _PYR_V] = w
+            gl_pyr[p, base + _PYR_GV] = w * g
+        gl_pyr[p, GL_PYR_NEAR + _PYR_LV] = w_near * math.log2(scale)
+        gl_pyr[p, GL_PYR_NEAR + _PYR_LLV] = w_near * math.log2(scale) ** 2
+    meta = torch.tensor(levels, dtype=torch.int32)
+    for lvl in range(1, len(levels)):
+        gloss_pyramid_level(lvl - 1, lvl, meta, gl_pyr)
+    out = torch.zeros(1, width * height, 4)
+    gloss_composite(
+        width * height,
+        width,
+        height,
+        len(levels),
+        0,
+        3,
+        1.0,
+        meta,
+        gl_main,
+        gl_pyr,
+        out,
+    )
+    return out[0, :, 0].reshape(height, width)
+
+
+def test_a_glossy_surface_beside_a_rougher_one_keeps_its_own_reflection():
+    """Near content another surface wrote is not part of this one's reflection.
+
+    The pyramid is screen space. A rough surface in front of a glossy one
+    writes, along its silhouette, what its lobe meets just behind it: the
+    glossy surface, up close, so near. With the two layers, the glossy
+    surface's pixels beside that silhouette found it in their near footprint
+    and took a share of it as their own reflection, which drew a bright
+    outline round the wave on the logo's chrome A, and round its reflection
+    in the floor. A surface's near reflection comes in at its own roughness,
+    so the share now goes only to near content written at a similar lobe
+    scale, and a pixel beside its own surface's near reflection still gets its
+    soft edge.
+
+    Hand-built rows of a frame: a glossy surface (lobe radius 30 px) whose
+    reflection is a uniform 50, beside a much rougher one (300 px) whose first
+    six columns reflect something bright (200) close behind it and the rest
+    the same 50. Without the scale test the glossy pixels beside the boundary
+    reflected 54 to 97; they reflect 50.
+    """
+    width, height, split = 192, 8, 96
+    texels = []
+    for _y in range(height):
+        for x in range(width):
+            if x < split:
+                texels.append((1.0, 30.0, 50.0))
+            elif x < split + 6:
+                texels.append((0.05, 300.0, 200.0))
+            else:
+                texels.append((1.0, 300.0, 50.0))
+    refl = _prefilter_frame(texels, width, height)[height // 2]
+    beside = refl[split - 8 : split].tolist()
+    assert all(abs(v - 50.0) < 1.0 for v in beside), beside
+    # The rough surface's own far pixels beside its near strip still share it:
+    # that is the soft edge, and it must survive.
+    assert refl[split + 6].item() > 60.0, refl[split : split + 12].tolist()
+
+
 @_needs_audit_tree
 @_skip_slow_crawl
 def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):
@@ -997,6 +1193,19 @@ def test_a_cone_keeps_the_flat_footprint_on_both_halves_of_each_quad():
         pos = torch.tensor([c[0] for c in corners]).reshape(1, 1, 9)
         nrm = torch.tensor([c[1] for c in corners]).reshape(1, 1, 9)
         assert _magnification(pos, nrm, [0.0, 0.0, -1.0], d_p) == 1.0
+
+    # A triangle of the subdivided surface need not have an edge along a
+    # generator. Its least curved EDGE is then curved, by 0.036 here, and
+    # sized by it the triangle was magnified 2.65 times: a thin wedge sharper
+    # than its neighbours. The least curvature over every direction is zero.
+    corners = (
+        ring(0.0, math.radians(-2.0)),
+        ring(0.1, math.radians(2.0)),
+        ring(0.15, 0.0),
+    )
+    pos = torch.tensor([c[0] for c in corners]).reshape(1, 1, 9)
+    nrm = torch.tensor([c[1] for c in corners]).reshape(1, 1, 9)
+    assert _magnification(pos, nrm, [0.0, 0.0, -1.0], d_p) < 1.02
 
 
 def test_blur_sigma_divides_a_sky_reflection_by_the_magnification():
