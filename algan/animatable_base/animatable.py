@@ -323,6 +323,10 @@ def animated_function(
                 ):
                     return func(self, *args, **kwargs)
             else:
+                # The body below is re-run at replay, where it may not write
+                # anything the replay would not; this is the last point a Mob
+                # can still bring its own rows up to date first.
+                self._before_recorded_call()
                 with AnimationContext(animation_manager=self.animation_manager):
                     kwargs = prepare_kwargs(
                         self, func, args, kwargs, animated_args, unique_args
@@ -1751,9 +1755,29 @@ class Animatable:
         if self.is_spawned() and spawn:
             clone.spawn(animate_creation)
         if copy_recursive:
-            clone.add_children(*children_clones)
+            if clone_data:
+                clone.add_children(*children_clones)
+            else:
+                # A view rebuilds its source's subtree under the source's own
+                # id. The source's children have not changed, so a live
+                # updater addressing it has nothing to be warned about
+                # (MobHierarchyMixin._note_hierarchy_change).
+                object.__setattr__(clone, "_assembling_view", True)
+                try:
+                    clone.add_children(*children_clones)
+                finally:
+                    object.__delattr__(clone, "_assembling_view")
         clone.components = component_clones
         return clone
+
+    def _before_recorded_call(self):
+        """Called before one of this Mob's animated functions is recorded.
+
+        Outside every other recorded call, so an instant write made here is an
+        ordinary edit of its own rather than part of the function's replay.
+        The default does nothing; :class:`~algan.mobs.group.Group` uses it to
+        bring a pivot that follows its members up to date.
+        """
 
     def _after_repack(self):
         """Called once ``batch_mobs`` has finished packing this Mob's rows.

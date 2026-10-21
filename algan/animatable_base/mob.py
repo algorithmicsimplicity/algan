@@ -2093,6 +2093,13 @@ class Mob(
         my_loc = self.get_animated_attribute(
             "location", include_descendants=False, copy=False
         )
+        if recursive and _selects_several_members(self, my_loc):
+            # A view of several members of a pack (``pack[2:5]``) turns and
+            # scales as one block, about the middle of its members, the way a
+            # Group of them would. About each member's own pivot, a scaled
+            # column grew every label in place and kept their spacing.
+            middle = (my_loc.amin(-2, keepdim=True) + my_loc.amax(-2, keepdim=True)) / 2
+            my_loc = middle.expand_as(my_loc)
 
         # A float64 change is one float32 could not carry (see the basis
         # setter), so the composition runs in float64 -- wherever the setter
@@ -2878,6 +2885,10 @@ class Mob(
         index = integer_or_none(item)
         cloned_mob._set_data_sub_inds(item if index is None else [index])
         return cloned_mob
+
+
+def _selects_several_members(mob: Mob, rows: torch.Tensor) -> bool:
+    return getattr(mob, "data_sub_inds", None) is not None and rows.shape[-2] > 1
 
 
 def _selects_no_rows(mob: Mob) -> bool:
