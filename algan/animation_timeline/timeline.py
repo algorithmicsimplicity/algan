@@ -1501,10 +1501,8 @@ class AttributeTimeline:
                     f"value that counts up, use Algan's DecimalNumber, whose "
                     f"digits animate without rebuilding geometry, with room "
                     f"for the largest value it will show:\n\n"
-                    f"    import algan.manim as mn\n\n"
-                    f"    tracker = mn.ValueTracker(0).spawn()\n"
                     f"    display = DecimalNumber(0.0, integer_places=2).spawn()\n"
-                    f"    display.add_updater(lambda m, t: m.set_value(tracker.get_value()))\n"
+                    f"    display.add_updater(lambda m, t: m.set_value(10 * t))\n"
                 )
 
         self.invalidate_prepared_queries(retain_edit_prefix=True)
