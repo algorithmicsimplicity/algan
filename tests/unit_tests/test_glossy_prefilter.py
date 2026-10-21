@@ -899,6 +899,107 @@ def test_a_near_objects_reflection_has_a_soft_edge(tmp_path):
         )
 
 
+def _prefilter_frame(texels, width, height):
+    """Run a frame's prefilter on hand-built glossy pixels, in linear float.
+
+    ``texels`` is one ``(G, scale, radiance)`` per pixel, row-major, ``scale``
+    the full lobe's radius in pixels. Every pixel is glossy with ``W = 1`` and
+    nothing else in it, so the output is the prefiltered reflection itself.
+    """
+    from algan.rendering.raytracing.glossy_prefilter_taichi import (
+        _NEAR_G_HI,
+        _NEAR_G_LO,
+        _PYR_GV,
+        _PYR_LLV,
+        _PYR_LV,
+        _PYR_V,
+        GL_MAIN_G,
+        GL_MAIN_SCALE,
+        GL_MAIN_SIGMA,
+        GL_MAIN_W,
+        GL_MAIN_WIDTH,
+        GL_PYR_FAR,
+        GL_PYR_NEAR,
+        GL_PYR_WIDTH,
+        gloss_composite,
+        gloss_pyramid_level,
+    )
+    from algan.rendering.raytracing.tracer import _gloss_pyramid_levels
+
+    levels, total = _gloss_pyramid_levels(width, height, 16)
+    sigma_max = 0.28867513459481287 * (1 << (len(levels) - 1))
+    gl_main = torch.zeros(width * height, GL_MAIN_WIDTH)
+    gl_pyr = torch.zeros(total, GL_PYR_WIDTH)
+    for p, (g, scale, radiance) in enumerate(texels):
+        w_near = min(max((_NEAR_G_HI - g) / (_NEAR_G_HI - _NEAR_G_LO), 0.0), 1.0)
+        gl_main[p, GL_MAIN_W : GL_MAIN_W + 3] = 1.0
+        gl_main[p, GL_MAIN_SIGMA] = min(g * scale, sigma_max)
+        gl_main[p, GL_MAIN_G] = g
+        gl_main[p, GL_MAIN_SCALE] = scale
+        for base, w in ((GL_PYR_FAR, 1.0 - w_near), (GL_PYR_NEAR, w_near)):
+            gl_pyr[p, base : base + 3] = radiance * w
+            gl_pyr[p, base + _PYR_V] = w
+            gl_pyr[p, base + _PYR_GV] = w * g
+        gl_pyr[p, GL_PYR_NEAR + _PYR_LV] = w_near * math.log2(scale)
+        gl_pyr[p, GL_PYR_NEAR + _PYR_LLV] = w_near * math.log2(scale) ** 2
+    meta = torch.tensor(levels, dtype=torch.int32)
+    for lvl in range(1, len(levels)):
+        gloss_pyramid_level(lvl - 1, lvl, meta, gl_pyr)
+    out = torch.zeros(1, width * height, 4)
+    gloss_composite(
+        width * height,
+        width,
+        height,
+        len(levels),
+        0,
+        3,
+        1.0,
+        meta,
+        gl_main,
+        gl_pyr,
+        out,
+    )
+    return out[0, :, 0].reshape(height, width)
+
+
+def test_a_glossy_surface_beside_a_rougher_one_keeps_its_own_reflection():
+    """Near content another surface wrote is not part of this one's reflection.
+
+    The pyramid is screen space. A rough surface in front of a glossy one
+    writes, along its silhouette, what its lobe meets just behind it: the
+    glossy surface, up close, so near. With the two layers, the glossy
+    surface's pixels beside that silhouette found it in their near footprint
+    and took a share of it as their own reflection, which drew a bright
+    outline round the wave on the logo's chrome A, and round its reflection
+    in the floor. A surface's near reflection comes in at its own roughness,
+    so the share now goes only to near content written at a similar lobe
+    scale, and a pixel beside its own surface's near reflection still gets its
+    soft edge.
+
+    Hand-built rows of a frame: a glossy surface (lobe radius 30 px) whose
+    reflection is a uniform 50, beside a much rougher one (300 px) whose first
+    six columns reflect something bright (200) close behind it and the rest
+    the same 50. Without the scale test the glossy pixels beside the boundary
+    reflected 54 to 97; they reflect 50.
+    """
+    width, height, split = 192, 8, 96
+    texels = []
+    for _y in range(height):
+        for x in range(width):
+            if x < split:
+                texels.append((1.0, 30.0, 50.0))
+            elif x < split + 6:
+                texels.append((0.05, 300.0, 200.0))
+            else:
+                texels.append((1.0, 300.0, 50.0))
+    refl = _prefilter_frame(texels, width, height)[height // 2]
+    beside = refl[split - 8 : split].tolist()
+    assert all(abs(v - 50.0) < 1.0 for v in beside), beside
+    # The rough surface's own far pixels beside its near strip still share it:
+    # that is the soft edge, and it must survive.
+    assert refl[split + 6].item() > 60.0, refl[split : split + 12].tolist()
+
+
 @_needs_audit_tree
 @_skip_slow_crawl
 def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):

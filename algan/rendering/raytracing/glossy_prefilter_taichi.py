@@ -85,18 +85,21 @@ GL_MAIN_G = 8
 GL_MAIN_SCALE = 9
 GL_MAIN_WIDTH = 10
 
-# A ``gl_pyr`` texel holds two layers of the reflection, FAR then NEAR, each
-# six lanes: reflected radiance, reflected glow, the validity weight that
-# normalises them, and that weight times ``G``. The glow lane is ``out``'s
-# column 3, which is bloom coverage rather than alpha, and it has to be
-# prefiltered alongside the color or a blurred reflection would carry a sharp
-# bloom mask. A texel is split between the layers by ``_near_weight`` of its
-# own ``G``; see ``gloss_composite`` for why there are two.
+# A ``gl_pyr`` texel holds two layers of the reflection, FAR then NEAR: each
+# has reflected radiance, reflected glow, the validity weight that normalises
+# them, and that weight times ``G``, and the near layer also that weight times
+# ``log2 SCALE`` and its square. The glow lane is ``out``'s column 3, which is bloom coverage
+# rather than alpha, and it has to be prefiltered alongside the color or a
+# blurred reflection would carry a sharp bloom mask. A texel is split between
+# the layers by ``_near_weight`` of its own ``G``; see ``gloss_composite`` for
+# why there are two, and ``_near_same_surface`` for the near layer's scale.
 GL_PYR_FAR = 0
 GL_PYR_NEAR = 6
-GL_PYR_WIDTH = 12
+GL_PYR_WIDTH = 14
 _PYR_V = 4
 _PYR_GV = 5
+_PYR_LV = 6
+_PYR_LLV = 7
 
 # The ramp, in ``G``, from a fully near reflection to a fully far one. Content
 # a tenth of the way from the reflector to the eye (the sphere in the logo's
@@ -105,6 +108,14 @@ _PYR_GV = 5
 # an object standing on a rough floor -- has no seam where it crosses over.
 _NEAR_G_LO = 0.15
 _NEAR_G_HI = 0.35
+
+# The ramp, in ``|log2|`` of the ratio between the near content's full-lobe
+# radius and this pixel's, from near content this pixel's surface could have
+# written (it keeps its share) to content another surface wrote (it loses it).
+# ``SCALE`` is ``2 * roughness^2`` times the frame's pixels per radian, so
+# 0.5 and 1.5 are roughnesses within a factor of 1.19 and beyond 1.68.
+_SAME_SURFACE_LO = 0.5
+_SAME_SURFACE_HI = 1.5
 
 
 @ti.func
@@ -361,6 +372,53 @@ def _layer_mean_g(s0, s1, frac, base: ti.template(), fallback):
 
 
 @ti.func
+def _near_same_surface(s0, s1, frac, scale):
+    """The share of a fetch's near content this pixel's own surface could have
+    written, judged by the full-lobe radius it was written at.
+
+    The pyramid is screen space and does not know where one surface ends. A
+    rough surface in front of a glossy one writes, along its silhouette, what
+    its own lobe meets just behind it: the glossy surface, up close, near. The
+    glossy surface's pixels beside that silhouette then found it in their
+    near footprint and took it as part of their own reflection, which drew a
+    bright outline round the wave in the logo's chrome A. A surface's near
+    reflection comes in at its own roughness, so near content written at a
+    very different ``SCALE`` is another surface's.
+
+    The footprint can hold both, so a mean scale is not enough: half this
+    surface's own near content and half another's averages to a scale
+    neither wrote at. Read as two populations, one at this pixel's
+    ``log2 SCALE`` and one ``d`` away from it, the first two moments of the
+    offset ``e`` fix both: the other's share is ``E[e]^2 / E[e^2]`` and
+    ``d`` is ``E[e^2] / E[e]``. Its share counts against this pixel by how
+    far ``d`` is past the ``_SAME_SURFACE`` ramp.
+    """
+    v = (s0[GL_PYR_NEAR + _PYR_V] * (1.0 - frac)
+         + s1[GL_PYR_NEAR + _PYR_V] * frac)
+    lv = (s0[GL_PYR_NEAR + _PYR_LV] * (1.0 - frac)
+          + s1[GL_PYR_NEAR + _PYR_LV] * frac)
+    llv = (s0[GL_PYR_NEAR + _PYR_LLV] * (1.0 - frac)
+           + s1[GL_PYR_NEAR + _PYR_LLV] * frac)
+    same = 1.0
+    if v > 1e-6 and scale > 0.0:
+        own = ti.log(scale) * 1.4426950408889634
+        m1 = lv / v
+        e1 = m1 - own
+        # E[e^2] about this pixel's own scale. The floor keeps float
+        # cancellation in a footprint of one scale from reading as a second
+        # population.
+        e2 = llv / v - 2.0 * own * m1 + own * own
+        if e2 > 1e-4:
+            other = ti.min(e1 * e1 / e2, 1.0)
+            offset = e2 / ti.max(ti.abs(e1), 1e-6)
+            past = ti.math.clamp(
+                (offset - _SAME_SURFACE_LO)
+                / (_SAME_SURFACE_HI - _SAME_SURFACE_LO), 0.0, 1.0)
+            same = 1.0 - other * past
+    return same
+
+
+@ti.func
 def _near_share(s0, s1, frac):
     """The near layer's share of the valid texels in a fetch's footprint."""
     a = 0.0
@@ -501,6 +559,9 @@ def gloss_scatter(
         gl_pyr[p, GL_PYR_FAR + _PYR_GV] = w_far * g
         gl_pyr[p, GL_PYR_NEAR + _PYR_V] = w_near
         gl_pyr[p, GL_PYR_NEAR + _PYR_GV] = w_near * g
+        log_scale = ti.log(sigma_scale) * 1.4426950408889634
+        gl_pyr[p, GL_PYR_NEAR + _PYR_LV] = w_near * log_scale
+        gl_pyr[p, GL_PYR_NEAR + _PYR_LLV] = w_near * log_scale * log_scale
 
 
 @ti.kernel
@@ -581,9 +642,11 @@ def gloss_composite(
     within reach, at this pixel's own lobe scale. Far content excludes the
     near texels, as the near object occludes it in the reflection, and
     normalising by the far layer's own weight fills the hole behind it from
-    around it. With no near texel within reach the near term is zero and the
-    far layer is all there is, which is the single blur exactly: a frame
-    with no near reflection anywhere renders as it did before.
+    around it. Near content another surface wrote at a different roughness
+    takes no share (``_near_same_surface``). With no near texel within reach
+    the near term is zero and the far layer is all there is, which is the
+    single blur exactly: a frame with no near reflection anywhere renders as
+    it did before.
     """
     sigma_max = _BOX_SIGMA * ti.cast(1 << (num_levels - 1), ti.f32)
     for p in range(num_pixels):
@@ -650,7 +713,12 @@ def gloss_composite(
                                            sigma_near * lobe_sigma,
                                            num_levels, px, py, width, height)
                 near, v_near = _layer_at(n0, n1, nf, GL_PYR_NEAR)
-                a = _near_share(n0, n1, nf)
+                # A near pixel's own near content is in its footprint, so
+                # the footprint's mean scale says little about whose the rest
+                # is, and only a far pixel is held to it.
+                same = _near_same_surface(n0, n1, nf, scale)
+                a = _near_share(n0, n1, nf) * (
+                    w_near + (1.0 - w_near) * same)
                 # A layer with nothing in its footprint stands in for neither
                 # colour: the other one fills it.
                 if v_far <= 1e-6:

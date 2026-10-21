@@ -277,6 +277,30 @@ thread. The far layer excludes the near texels, as the near object occludes the
 far content in the reflection, and normalising by the far layer's own weight
 fills the hole behind it from around it.
 
+The pyramid does not know where one surface ends, and the near layer made that
+visible. A rough surface in front of a glossy one writes, along its silhouette,
+what its lobe meets just behind it: the glossy surface, up close, so near. The
+glossy surface's pixels beside the silhouette found that in their near
+footprint and took a share of it, which drew a bright outline round the wave
+on the logo's chrome A and round its reflection in the floor. A surface's own
+near reflection comes in at its own roughness, so the near layer also carries
+`log2 S` and its square, and a pixel reads the footprint as two populations,
+one at its own `log2 S` and one `d` away: the other's share of the near
+validity is `E[e]^2 / E[e^2]` and `d = E[e^2] / E[e]`, for `e` the offset from
+the pixel's own. That share comes off `a` by how far `d` is past a ramp from
+0.5 to 1.5 (roughness within a factor of 1.19 counts as the same surface,
+beyond 1.68 as another). A mean scale alone would not do: half the pixel's own
+near content and half another's averages to a scale neither wrote at, so a
+test on the mean throws the pixel's own share away with the other's. The test
+applies in full to a far pixel and scales away as the pixel is itself near,
+since a near pixel's own content is in its footprint whatever surrounds it;
+held to the test on the mean, the chrome A's pixels reflecting the underside
+of the wave lost their share to the wave's own and came out up to 45 levels
+brighter.
+`test_a_glossy_surface_beside_a_rougher_one_keeps_its_own_reflection` builds
+the case by hand: the glossy pixels beside the boundary reflected 54 to 97
+where the answer is 50, and reflect 50.
+
 A pixel with no near texel within reach takes the far layer alone at its own
 radius, which is the single blur exactly, so a frame with no near reflection
 renders as before. `test_a_near_objects_reflection_has_a_soft_edge` measures
@@ -464,7 +488,7 @@ Two per-**frame** buffers, allocated once outside the tile loop:
 | buffer | shape | contents |
 | --- | --- | --- |
 | `gl_main` | `(pixels_per_frame, 10)` f32 | `csum.rgba` (the pixel's linear pre-finalize color, background folded in), `W.rgb`, `sigma_px` (`< 0` = not a glossy pixel), `G` (the radius as a fraction of the full lobe's, before the clamp) and `S` (the full lobe's radius) |
-| `gl_pyr` | `(~4/3 · pixels_per_frame, 12)` f32 | the mip pyramid of `B` in two layers, far then near (§3), each `(B.rgb, B.glow, v, v·G)` with `v` the layer's validity weight, level 0 first. The glow lane is `out`'s column 3 (it is bloom coverage, not alpha) and it has to be prefiltered with the color or a blurred reflection would carry a sharp bloom mask. |
+| `gl_pyr` | `(~4/3 · pixels_per_frame, 14)` f32 | the mip pyramid of `B` in two layers, far then near (§3), each `(B.rgb, B.glow, v, v·G)` with `v` the layer's validity weight, the near layer followed by `(v·log2 S, v·log2² S)`, level 0 first. The glow lane is `out`'s column 3 (it is bloom coverage, not alpha) and it has to be prefiltered with the color or a blurred reflection would carry a sharp bloom mask. |
 
 Per frame, not per batch: a batch is many frames and this would otherwise be the
 dominant allocation. Covered ordinals are ordered by global pixel index, so a
@@ -480,7 +504,8 @@ overwrites the raw prefilled background this reads):
   and `sigma_px = clamp(k · sigma_scale)` computed from the glossy row's `d_p`
   (column 12) and `d_tot` (one over column 7), with `G` and `S`, into
   `gl_main[pixel]`; and level 0 of `gl_pyr[pixel]`, `(w_f · B, w_f, w_f · G)`
-  far and `(w_n · B, w_n, w_n · G)` near, with `B` the glossy row's radiance
+  far and `(w_n · B, w_n, w_n · G, w_n · log2 S, w_n · log2² S)` near, with
+  `B` the glossy row's radiance
   composited against the same background and `w_n = 1 - w_f` the pixel's near
   weight (§3).
 
@@ -506,8 +531,9 @@ transfer path as its neighbours.
 
 ### 4.5 Memory
 
-`gl_main` + `gl_pyr` is ~104 bytes per pixel of **one frame** (40 + 64; it was
-53 before the two layers of §3) — 43 MB at PREVIEW, 216 MB at HD. Both come from `ManualMemory`, so `rendering/memory_model.py`
+`gl_main` + `gl_pyr` is ~115 bytes per pixel of **one frame** (40 + 75; it was
+53 before the two layers of §3) — 47 MB at PREVIEW, 238 MB at HD. Both come
+from `ManualMemory`, so `rendering/memory_model.py`
 measures them like everything else and the batch size adapts on its own. They
 are allocated only when the mode is active.
 
@@ -570,9 +596,11 @@ rather than the render, but that is a backstop, not the budget.
 * **Two distances, not many.** The near and far layers (§3) separate content
   by an order of magnitude in blur; two near objects at different distances
   share one near radius where their footprints overlap, the mean of theirs.
-  The layers are screen-space like everything else here, so a near reflection
-  in one object reaches a neighbouring object's pixels within its own small
-  radius, as the far layer's wide blur always has.
+  The layers are screen-space like everything else here. Near content is kept
+  to the surface that wrote it only by roughness (§3), so two touching
+  surfaces of one roughness still share each other's near reflections within
+  that small radius, and the far layer's wide blur mixes surfaces as it always
+  has.
 * **A box-mip prefilter is not a GGX prefilter.** It is the shape of the
   footprint, not of the lobe. That is the same approximation every real-time
   split-sum implementation makes for the radiance half.
