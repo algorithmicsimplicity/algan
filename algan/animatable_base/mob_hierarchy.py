@@ -52,7 +52,7 @@ class MobHierarchyMixin:
         """
         bump_hierarchy_version()
         scene = getattr(self, "scene", None)
-        if scene is not None:
+        if scene is not None and not self.__dict__.get("_assembling_view"):
             scene.timeline_manager.note_hierarchy_change(self)
 
     def _link_parent(self, other_mob: Mob) -> None:

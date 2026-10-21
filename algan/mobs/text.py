@@ -742,11 +742,15 @@ class Tex(Mob):
         # built with add_to_scene=False is reference geometry -- a morph target,
         # or DecimalNumber's spacing template -- and a registered view of it
         # was reported as a Group the user had built and never spawned.
-        return Group(
+        selection = Group(
             [self.character_mobs[item]],
             scene=self.scene,
             add_to_scene=self._added_to_scene,
         )
+        # The glyphs move whenever this text does, which the Group's own pivot
+        # would not; it follows them instead (Group._follow_members_from_here).
+        selection._follow_members_from_here()
+        return selection
 
     def __len__(self):
         """Get the number of glyphs, so ``len(text)`` works.
@@ -836,6 +840,11 @@ class Tex(Mob):
                 targets = {id(part): part.opacity for part in parts}
                 image_targets = [im.opacity for im in self.image_mobs]
                 self.opacity = 0
+                # The wave fades in the glyphs, never this container, so its
+                # own row goes straight back: left at 0 it read as 0 forever
+                # after, and ``text.opacity = text.opacity * k`` -- a write
+                # that reaches every glyph -- hid the text for good.
+                self.set_non_recursive(opacity=opacity)
                 # Glyphs a selection spawned earlier are on screen already:
                 # only the rest enter (see _spawn_packed_rows below).
                 for part in parts:

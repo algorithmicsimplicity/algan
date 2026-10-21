@@ -60,6 +60,11 @@ def _layout_direction(name, value):
     return F.normalize(direction / scale, p=2, dim=-1)
 
 
+def _holds_materialized_frames(timeline_manager):
+    location = timeline_manager.attr_to_timeline.get("location")
+    return location is not None and location.active_state is not location.current_state
+
+
 class Group(Mob):
     r"""Combine a collection of Mobs into a single Mob.
 
@@ -164,6 +169,87 @@ class Group(Mob):
             )
         ):
             self.spawn(animate=False)
+
+    def _follow_members_from_here(self):
+        """Internal: keep this Group's pivot where its members are, from now on.
+
+        A Group's pivot is a row of its own, moved only by the Group's own
+        transforms. Members that something else moves leave it behind -- a
+        selection of a packed text's glyphs, whose rows move whenever the text
+        does -- and every later ``move_to``, ``rotate`` or ``scale`` of the
+        Group then works about a point the glyphs are no longer at.
+
+        Called once the Group is built, this remembers the pivot in the frame of
+        its members (their mean location and the first member's basis), which
+        the Group's own transforms carry along unchanged. Every authoring read
+        of the pivot afterwards (:meth:`_follow_members`) puts it back there
+        first, so the Group follows its members however they were moved.
+        """
+        frame = self._member_frame()
+        if frame is None:
+            return
+        anchor, basis = frame
+        offset = self.get_animated_attribute("location").reshape(1, 3) - anchor
+        self._pivot_in_member_frame = offset @ torch.linalg.inv(basis)
+
+    def _member_frame(self):
+        """Internal: the members' mean location and first basis, or None."""
+        locations = [
+            child.get_animated_attribute("location").reshape(-1, 3)
+            for child in self.children
+        ]
+        if not locations:
+            return None
+        basis = self.children[0].get_animated_attribute("basis").reshape(-1, 3, 3)[0]
+        if not bool(torch.linalg.det(basis).abs() > 1e-12):
+            return None
+        return torch.cat(locations).mean(0, keepdim=True), basis
+
+    def _follow_members(self):
+        """Internal: move the pivot back to its place among the members.
+
+        Instant (inside ``Off()``) and only while the script is authoring, at
+        the top level: recorded animation, updaters and replay read the rows
+        as they stand.
+        """
+        offset = self.__dict__.get("_pivot_in_member_frame")
+        if offset is None or self.__dict__.get("_following_members"):
+            return
+        tm = self.scene.timeline_manager
+        if (
+            tm._materialization_times is not None
+            or tm._active_replay_event is not None
+            or tm._active_updater_trace is not None
+            # Inside a recorded function's body, which is re-run at replay
+            # without this: an instant write here would hold over its replay.
+            or tm._active_edit_event is not None
+            # Buffers still holding materialized frames rather than the
+            # authoring state.
+            or _holds_materialized_frames(tm)
+        ):
+            return
+        object.__setattr__(self, "_following_members", True)
+        try:
+            frame = self._member_frame()
+            if frame is None:
+                return
+            anchor, basis = frame
+            target = (anchor + offset @ basis).reshape(1, 1, 3)
+            pivot = self.get_animated_attribute("location")
+            if torch.allclose(pivot, target, rtol=1e-5, atol=1e-6):
+                return
+            with Off(animation_manager=self.animation_manager):
+                self.set_non_recursive(location=target)
+        finally:
+            object.__setattr__(self, "_following_members", False)
+
+    def _before_recorded_call(self):
+        self._follow_members()
+
+    def get_animated_attribute(self, key, include_descendants=False, *args, **kwargs):
+        if key == "location" and not include_descendants:
+            self._follow_members()
+        return super().get_animated_attribute(key, include_descendants, *args, **kwargs)
 
     @staticmethod
     def _midpoint_for(mobs):

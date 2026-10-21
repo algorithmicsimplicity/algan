@@ -93,6 +93,13 @@ A body's ring count is only adequate because the body's PN patches curve back on
 Index a pack (`pack[3]`) for a view sharing the pack's rows and lifespan; members therefore cannot spawn or despawn
 independently. `Text` packs its glyphs this way and a point cloud packs its dots.
 
+A view of **several** members (`pack[2:5]`) scales and turns as one block, about the middle of its members' pivots, the
+way a Group of them would (`_apply_basis_change`, `_selects_several_members`). The whole pack and a one-member view keep
+the per-member pivot. `text[i:j]` and `get_segment` are Groups over such a view; a Group's pivot is a row only its own
+transforms move, so these follow their glyphs instead (`Group._follow_members_from_here`): the pivot is remembered in the
+members' frame and put back there, in `Off()`, on every authoring read. `tests/unit_tests/test_text_selections.py` pins
+both.
+
 ## The z convention, and the one rule that follows from it
 
 `OUTWARD` is **+z** — out of the screen, towards the viewer — matching Manim, Three.js and
