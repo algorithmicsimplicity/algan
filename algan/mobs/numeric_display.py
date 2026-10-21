@@ -131,6 +131,8 @@ class DecimalNumber(Mob):
     Alternatively, ``significant_figures=3`` shows three significant digits,
     including trailing zeros: ``12.0``, ``0.00120``, or ``1.20e+04``. This mode
     centers the formatted number on the Mob; its width can change with notation.
+    ``group_with_commas=True`` separates thousands in either mode:
+    ``1,234,567``.
 
     Animation
     ---------
@@ -178,7 +180,13 @@ class DecimalNumber(Mob):
         Scientific notation is used when the rounded decimal exponent is less
         than ``-4`` or at least ``significant_figures``; otherwise fixed
         notation is used. Exponents have a sign and at least two digits,
-        e.g. ``1.00e-05``. No thousands separators are added.
+        e.g. ``1.00e-05``. Commas are added only with ``group_with_commas``,
+        and only in fixed notation: ``12,300``.
+    group_with_commas
+        Put a comma between each group of three integer digits, as in
+        ``1,234,567``. Defaults to ``False``. A comma is drawn only once
+        the number has a digit to its left, so ``999`` counting up to
+        ``1,000`` gains its comma with the fourth digit.
     **kwargs
         Passed to :class:`~algan.mobs.text.Tex`, which typesets the digits --
         notably ``color`` and ``font_size`` -- and on to :class:`~.Mob`.
@@ -213,6 +221,19 @@ class DecimalNumber(Mob):
 
         Scene.save_video()
 
+    A population count, with commas between thousands:
+
+    .. algan:: Example3DecimalNumber
+
+        from algan import *
+
+        counter = DecimalNumber(0, decimal_places=0, group_with_commas=True)
+        counter.spawn()
+        with Seq(runtime=3):
+            counter.value = 1234567
+
+        Scene.save_video()
+
     Count using three significant figures, switching notation as needed:
 
     .. algan:: Example2DecimalNumber
@@ -234,6 +255,7 @@ class DecimalNumber(Mob):
         integer_places: int | None = None,
         *,
         significant_figures: int | None = None,
+        group_with_commas: bool = False,
         **kwargs: Any,
     ) -> None:
         if significant_figures is not None:
@@ -250,6 +272,7 @@ class DecimalNumber(Mob):
         value = cast_to_tensor(value)
         self.significant_figures = significant_figures
         self.decimal_places = decimal_places
+        self.group_with_commas = bool(group_with_commas)
         if significant_figures is not None:
             value = value.to(dtype=torch.get_default_dtype())
         # Neither mode has a glyph for NaN or infinity, and decimal places
@@ -270,9 +293,14 @@ class DecimalNumber(Mob):
             Off(animation_manager=animation_manager),
             NoExtra(priority_level=1, animation_manager=animation_manager),
         ):
-            self.placeholder = Tex(
-                "-" + "0" * num_i + ("." + "0" * num_d if num_d > 0 else ""), **kwargs
+            # One character per glyph. Tex typesets math, where a bare comma
+            # is punctuation followed by a space; "{,}" sets it between digits.
+            placeholder_glyphs = (
+                "-"
+                + self._group_digits("0" * num_i)
+                + ("." + "0" * num_d if num_d > 0 else "")
             )
+            self.placeholder = Tex(placeholder_glyphs.replace(",", "{,}"), **kwargs)
             ct = self.placeholder.animation_manager.context.timespan.current_time
             self.placeholder.animation_manager.context.rewind(
                 1 / self.placeholder.scene.frames_per_second + 1e-3
@@ -280,9 +308,14 @@ class DecimalNumber(Mob):
             self.placeholder.opacity = 0
             self.placeholder.animation_manager.context.timespan.current_time = ct
 
-            # Placeholder glyphs: [0]='-', [1..num_i]=integer digits,
-            # [num_i+1]='.', [num_i+2..]=decimal digits.
-            self.decimal = self.placeholder[num_i + 1] if num_d > 0 else None
+            # Placeholder glyphs: [0]='-', then the integer digits (with a
+            # comma between groups of three when grouping), '.', and the
+            # decimal digits.
+            digit_glyphs = [i for i, c in enumerate(placeholder_glyphs) if c == "0"]
+            comma_glyphs = [i for i, c in enumerate(placeholder_glyphs) if c == ","]
+            self.decimal = (
+                self.placeholder[placeholder_glyphs.index(".")] if num_d > 0 else None
+            )
             self.negative_sign = self.placeholder[0]
             # The point and sign are drawn at the digits' opacity; the sign is
             # shown and hidden through its alpha (_show_glyphs), as they are.
@@ -291,13 +324,13 @@ class DecimalNumber(Mob):
                     part.opacity = 1
             if num_i >= 2:
                 digit_advance_points = (
-                    self.placeholder[1].location,
-                    self.placeholder[2].location,
+                    self.placeholder[digit_glyphs[num_i - 2]].location,
+                    self.placeholder[digit_glyphs[num_i - 1]].location,
                 )
             elif num_d >= 2:
                 digit_advance_points = (
-                    self.placeholder[num_i + 2].location,
-                    self.placeholder[num_i + 3].location,
+                    self.placeholder[digit_glyphs[num_i]].location,
+                    self.placeholder[digit_glyphs[num_i + 1]].location,
                 )
             else:
                 spacing_kwargs = dict(kwargs)
@@ -312,11 +345,22 @@ class DecimalNumber(Mob):
                 self.digit_mobs.append(Tex("0123456789", **kwargs))
             self._glyph_alphas = _glyph_alphas(self.digit_mobs[0]._character_batch)
             for i in range(len(self.digit_mobs)):
-                location = self.placeholder[
-                    1 + i + (1 if (num_d > 0 and i >= num_i) else 0)
-                ].location
+                location = self.placeholder[digit_glyphs[i]].location
                 for d in self.digit_mobs[i].character_mobs:
                     d.location = location
+            # separator_mobs[j] is the comma left of the (3j+3)-th integer
+            # digit from the right, drawn once the number has that digit. The
+            # template is never drawn: it is what more commas are cloned from
+            # when the number grows.
+            self.separator_mobs = []
+            self._separator_template = None
+            if self.group_with_commas:
+                self._separator_template = Tex(",", **kwargs)
+                for index in reversed(comma_glyphs):
+                    separator = Tex(",", **kwargs)
+                    for glyph in separator.character_mobs:
+                        glyph.location = self.placeholder[index].location
+                    self.separator_mobs.append(separator)
             super().__init__(**kwargs)
             self.register_attrs_as_animatable(["value"], DecimalNumber)
             self._setattr_without_record("value", value)
@@ -332,17 +376,30 @@ class DecimalNumber(Mob):
             self._digit_advance = to_local(digit_advance_points[1]) - to_local(
                 digit_advance_points[0]
             )
-            leftmost_integer_location = self._rightmost_integer_location - (
-                self._digit_advance * (num_i - 1)
-            )
-            self._negative_sign_offset = (
-                to_local(self.negative_sign.location) - leftmost_integer_location
-            )
+            # The extra advance a comma adds between two digits, and where a
+            # comma sits from the digit on its left.
+            self._separator_advance = torch.zeros_like(self._digit_advance)
+            self._separator_offset = torch.zeros_like(self._digit_advance)
+            if self.group_with_commas:
+                spacing_kwargs = dict(kwargs)
+                spacing_kwargs["add_to_scene"] = False
+                spacing_template = Tex("0{,}0", **spacing_kwargs)
+                left, comma, right = (
+                    to_local(spacing_template[i].location) for i in range(3)
+                )
+                self._separator_advance = right - left - self._digit_advance
+                self._separator_offset = comma - left
+                self._place_separator(self._separator_template, 0)
+            self._negative_sign_offset = to_local(
+                self.negative_sign.location
+            ) - self._integer_slot_location(num_i - 1)
             self.update_display(self.value)
+        parts = [self.digit_mobs, self.separator_mobs]
+        if self._separator_template is not None:
+            parts.append(self._separator_template)
         if self.decimal is not None:
-            self.add_children(self.digit_mobs, self.decimal, self.negative_sign)
-        else:
-            self.add_children(self.digit_mobs, self.negative_sign)
+            parts.append(self.decimal)
+        self.add_children(*parts, self.negative_sign)
         for c in self.children:
             c.on_create = lambda c=c: c
         _keep_glyph_selection(self.get_descendants())
@@ -537,7 +594,9 @@ class DecimalNumber(Mob):
         # rounds the stored binary float to nearest, with ties to even.
         if value == 0:
             value = 0.0  # Normalize negative zero, as in the decimal-place mode.
-        return f"{value:#.{self.significant_figures}g}".replace(".e", "e").rstrip(".")
+        grouping = "," if self.group_with_commas else ""
+        formatted = f"{value:#{grouping}.{self.significant_figures}g}"
+        return formatted.replace(".e", "e").rstrip(".")
 
     def _init_significant_display(self, value, kwargs):
         # General notation needs at most p+7 characters: sign, p digits,
@@ -545,7 +604,12 @@ class DecimalNumber(Mob):
         # notation uses at most four leading fractional zeros instead. Reserve
         # all slots now so replay never creates glyphs, even across zero or
         # under an easing curve that overshoots the authored endpoints.
-        self._significant_characters = "0123456789.e+-"
+        # Grouping adds at most one comma per three of the p integer digits
+        # fixed notation can have.
+        self._significant_characters = "0123456789.e+-" + (
+            "," if self.group_with_commas else ""
+        )
+        commas = (self.significant_figures - 1) // 3 if self.group_with_commas else 0
         with (
             Off(animation_manager=kwargs["scene"].animation_manager),
             NoExtra(
@@ -561,9 +625,25 @@ class DecimalNumber(Mob):
             ) - map_global_to_local_coords(
                 self.location, self.basis, spacing[0].location
             )
+            # A comma's offset from the digit on its left, and the advance
+            # between the digits either side of it, in digit advances.
+            self._comma_advances = (1.0, 2.0)
+            if self.group_with_commas:
+                comma_spacing = Tex("0{,}0", **{**kwargs, "add_to_scene": False})
+                left, comma, right = (
+                    map_global_to_local_coords(
+                        self.location, self.basis, comma_spacing[i].location
+                    )
+                    for i in range(3)
+                )
+                squared = float((self._digit_advance**2).sum())
+                self._comma_advances = tuple(
+                    float(((point - left) * self._digit_advance).sum()) / squared
+                    for point in (comma, right)
+                )
             self._significant_slots = [
                 Tex(self._significant_characters, **kwargs)
-                for _ in range(self.significant_figures + 7)
+                for _ in range(self.significant_figures + 7 + commas)
             ]
             template = self._significant_slots[0]
             self._glyph_alphas = _glyph_alphas(template._character_batch)
@@ -584,12 +664,14 @@ class DecimalNumber(Mob):
 
     def _update_significant_display(self, value):
         strings = [self._format_significant_value(float(v)) for v in value.reshape(-1)]
-        lengths = self.location.new_tensor([len(s) for s in strings]).reshape(
-            value.shape
+        positions = self.location.new_tensor(
+            [self._significant_positions(s) for s in strings]
         )
         with Sync(animation_manager=self.animation_manager):
             for i, slot in enumerate(self._significant_slots):
-                slot_location = self._digit_advance * (i - (lengths - 1) / 2)
+                slot_location = self._digit_advance * positions[:, i].reshape(
+                    value.shape
+                )
                 shown = []
                 for character, glyph, offset in zip(
                     self._significant_characters,
@@ -610,6 +692,32 @@ class DecimalNumber(Mob):
                     slot._character_batch, torch.cat(shown, -2), self._glyph_alphas
                 )
 
+    def _significant_positions(self, string):
+        """Where each slot draws ``string``, in digit advances from its center.
+
+        Every character takes one digit advance except a comma, which is set
+        as tightly as between two digits. Slots past the string's end, which
+        draw nothing, continue at one advance apiece.
+        """
+        positions = []
+        for k, character in enumerate(string):
+            if k == 0:
+                position = 0.0
+            elif character == ",":
+                position = positions[-1] + self._comma_advances[0]
+            elif string[k - 1] == ",":
+                position = positions[-2] + self._comma_advances[1]
+            else:
+                position = positions[-1] + 1.0
+            positions.append(position)
+        center = (positions[0] + positions[-1]) / 2
+        positions = [position - center for position in positions]
+        positions += [
+            positions[-1] + k
+            for k in range(1, len(self._significant_slots) - len(string) + 1)
+        ]
+        return positions
+
     def _required_integer_places(self, value):
         """Return the slots needed by ``value`` after decimal rounding."""
         required = 1
@@ -626,27 +734,37 @@ class DecimalNumber(Mob):
         required = self._required_integer_places(value)
         if required <= self.integer_places:
             return
-        if self.scene.timeline_manager.is_replaying():
-            # An updater, run for a batch of frames. A slot built now is never
-            # drawn -- the batch's Mobs were gathered before the updater ran --
-            # and is discarded with the batch while this number still holds it.
+        timeline_manager = self.scene.timeline_manager
+        if timeline_manager.is_replaying():
+            # An updater, or an animated function, run for a batch of frames. A
+            # slot built now is never drawn -- the batch's Mobs were gathered
+            # before it ran -- and is discarded with the batch while this
+            # number still holds it.
             largest = max(
                 abs(float(item))
                 for item in cast_to_tensor(value).reshape(-1)
                 if math.isfinite(float(item))
             )
+            if timeline_manager.is_running_updater():
+                writer, when = "An updater", "An updater"
+            else:
+                # Recorded with its final arguments, which needed fewer
+                # digits than a value it passes through on the way.
+                writer = "An animated function, replayed while the video renders,"
+                when = "An animated function"
             raise UnsupportedFeatureError(
-                f"An updater set this DecimalNumber to {largest:.{self.decimal_places}f}, "
-                f"which needs {required} digits before the decimal point, and it "
-                f"was built with {self.integer_places}. An updater cannot add "
-                "digits while the video renders: build the number with room for "
-                "the largest value it will show, e.g. "
-                f"DecimalNumber(0, integer_places={required})."
+                f"{writer} set this DecimalNumber to "
+                f"{largest:.{self.decimal_places}f}, which needs {required} digits "
+                f"before the decimal point, and it was built with "
+                f"{self.integer_places}. {when} cannot add digits while the video "
+                "renders: build the number with room for the largest value it "
+                f"will show, e.g. DecimalNumber(0, integer_places={required})."
             )
 
         old_integer_places = self.integer_places
         source_digit = self.digit_mobs[0]
         new_digits_near_to_far = []
+        new_separators = []
         with Off(
             record_funcs=False,
             record_attr_modifications=False,
@@ -662,13 +780,18 @@ class DecimalNumber(Mob):
                 slot_location = map_local_to_global_coords(
                     self.location,
                     self.basis,
-                    self._rightmost_integer_location
-                    - self._digit_advance * place_from_right,
+                    self._integer_slot_location(place_from_right),
                 )
                 for digit in digit_mob.character_mobs:
                     digit.location = slot_location
                 digit_mob.on_create = lambda digit_mob=digit_mob: digit_mob
                 new_digits_near_to_far.append(digit_mob)
+            if self.group_with_commas:
+                for j in range(len(self.separator_mobs), (required - 1) // 3):
+                    separator = self._separator_template.clone(spawn=False)
+                    self._place_separator(separator, j)
+                    separator.on_create = lambda separator=separator: separator
+                    new_separators.append(separator)
 
         new_digits = list(reversed(new_digits_near_to_far))
         self.digit_mobs = (
@@ -677,14 +800,48 @@ class DecimalNumber(Mob):
             + self.digit_mobs[old_integer_places:]
         )
         self.integer_places = required
-        self.add_children(new_digits)
+        self.separator_mobs = self.separator_mobs + new_separators
+        self.add_children(new_digits, new_separators)
         _keep_glyph_selection(
-            mob for digit_mob in new_digits for mob in digit_mob.get_descendants()
+            mob
+            for slot in new_digits + new_separators
+            for mob in slot.get_descendants()
         )
 
         if self.is_spawned() and not self.is_despawned():
-            for digit_mob in new_digits:
-                digit_mob.spawn(animate=False)
+            for slot in new_digits + new_separators:
+                slot.spawn(animate=False)
+
+    def _group_digits(self, digits):
+        """``digits`` with a comma between groups of three, if grouping."""
+        if not self.group_with_commas:
+            return digits
+        head = len(digits) % 3 or 3
+        groups = [digits[:head]] + [
+            digits[i : i + 3] for i in range(head, len(digits), 3)
+        ]
+        return ",".join(groups)
+
+    def _integer_slot_location(self, place_from_right):
+        """Local location of an integer digit slot, ``0`` being the units.
+
+        ``place_from_right`` is an integer or a tensor of shape ``(*, 1)``.
+        """
+        return (
+            self._rightmost_integer_location
+            - self._digit_advance * place_from_right
+            - self._separator_advance * (place_from_right // 3)
+        )
+
+    def _place_separator(self, separator, j):
+        """Put ``separator`` where ``separator_mobs[j]`` is drawn."""
+        location = map_local_to_global_coords(
+            self.location,
+            self.basis,
+            self._integer_slot_location(3 * j + 3) + self._separator_offset,
+        )
+        for glyph in separator.character_mobs:
+            glyph.location = location
 
     def update_display(self, value):
         """Internal: select and position glyphs for the current value."""
@@ -735,8 +892,7 @@ class DecimalNumber(Mob):
         sign_location = map_local_to_global_coords(
             self.location,
             self.basis,
-            self._rightmost_integer_location
-            - self._digit_advance * (visible_integer_places - 1)
+            self._integer_slot_location(visible_integer_places - 1)
             + self._negative_sign_offset,
         )
 
@@ -747,4 +903,16 @@ class DecimalNumber(Mob):
             for i, digit_mob in enumerate(self.digit_mobs):
                 _show_glyphs(
                     digit_mob._character_batch, all_shown[i], self._glyph_alphas
+                )
+            for j, separator in enumerate(self.separator_mobs):
+                _show_glyphs(
+                    separator._character_batch,
+                    torch.where(visible_integer_places > 3 * j + 3, 1, 0),
+                    self._glyph_alphas,
+                )
+            if self._separator_template is not None:
+                _show_glyphs(
+                    self._separator_template._character_batch,
+                    torch.zeros_like(negative),
+                    self._glyph_alphas,
                 )

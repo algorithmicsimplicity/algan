@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 import torch
 
@@ -14,6 +16,7 @@ from algan import (
     easings,
 )
 from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.utils.tensor_utils import cast_to_tensor
 
 
 def _drawn(part):
@@ -55,7 +58,12 @@ def _displayed_value(display, frame=None, threshold=0.5):
         ]
         digits.append("" if not visible else str(visible[0]))
 
-    integer_digits = "".join(digits[: display.integer_places]) or "0"
+    integer_digits = digits[: display.integer_places]
+    for j, separator in enumerate(display.separator_mobs):
+        # separator_mobs[j] is left of the (3j+3)-th integer digit from the right.
+        if opacity(separator) > threshold:
+            integer_digits[-3 * j - 4] += ","
+    integer_digits = "".join(integer_digits) or "0"
     fractional_digits = "".join(digits[display.integer_places :])
     sign = "-" if opacity(display.negative_sign) > threshold else ""
     decimal = "." if display.decimal_places else ""
@@ -513,3 +521,97 @@ def test_a_clone_shows_its_source_value_and_counts_on_its_own(precision):
         start = "-12.50" if precision is None else "-12.5"
         assert [_displayed_value(display, frame) for frame in (0, 1)] == [start, "7.00"]
         assert [_displayed_value(copy, frame) for frame in (0, 1)] == [start, "3.25"]
+
+
+@pytest.mark.parametrize(
+    ("value", "kwargs", "expected"),
+    [
+        (0, {}, "0.00"),
+        (999.5, {"decimal_places": 0}, "1,000"),
+        (1234567.0, {"decimal_places": 0}, "1,234,567"),
+        (-123456.25, {}, "-123,456.25"),
+        (-12.5, {"integer_places": 7}, "-12.50"),
+        (12345.0, {"significant_figures": 5}, "12,345"),
+        (-1234567.0, {"significant_figures": 7}, "-1,234,567"),
+        (123456.0, {"significant_figures": 3}, "1.23e+05"),
+        (0.000125, {"significant_figures": 3}, "0.000125"),
+    ],
+)
+def test_group_with_commas_formatting(value, kwargs, expected):
+    with Scene():
+        display = DecimalNumber(value, group_with_commas=True, **kwargs)
+        assert _displayed_value(display) == expected
+
+
+def test_commas_appear_as_a_count_grows_and_go_as_it_shrinks():
+    with Scene() as scene:
+        display = DecimalNumber(0, decimal_places=0, group_with_commas=True).spawn(
+            animate=False
+        )
+        with Sync(runtime=1, easing=easings.identity):
+            display.value = -2_222_222
+        with Sync(runtime=1, easing=easings.identity):
+            display.value = 5
+        assert display.integer_places == 7
+        assert len(display.separator_mobs) == 2
+
+        times = [0.0, 0.0004, 0.6, 1.0, 1.5, 2.0]
+        scene.timeline_manager.set_state_to_times(torch.tensor(times))
+        shown = [_displayed_value(display, i) for i in range(len(times))]
+        expected = [0, -889, -1_333_333, -2_222_222, -1_111_109, 5]
+        for string, number in zip(shown, expected):
+            # Grouped exactly as Python groups it; the digits are float32 and
+            # interpolated, so allow a unit either way.
+            assert re.fullmatch(r"-?\d{1,3}(,\d{3})*", string), string
+            assert abs(int(string.replace(",", "")) - number) <= 1, string
+        assert shown[0] == "0"
+        assert shown[-1] == "5"
+        # The sign stays beside the leftmost digit drawn, past the commas.
+        frame = times.index(0.6)
+        leading = display.digit_mobs[0]._character_batch
+        sign_to_digit = (
+            display.negative_sign.location[frame]
+            - leading.location[frame].reshape(-1, 3)[0]
+        )
+        torch.testing.assert_close(
+            sign_to_digit.reshape(-1), display._negative_sign_offset.reshape(-1)
+        )
+
+
+def test_commas_keep_digit_spacing_inside_each_group():
+    with Scene():
+        plain = DecimalNumber(1234567, decimal_places=0)
+        grouped = DecimalNumber(1234567, decimal_places=0, group_with_commas=True)
+
+        def x(display, place_from_right):
+            return float(display._integer_slot_location(place_from_right)[..., 0])
+
+        advance = x(plain, 0) - x(plain, 1)
+        assert x(grouped, 1) - x(grouped, 2) == pytest.approx(advance)
+        # Crossing a comma adds its width, but less than a whole digit.
+        across = x(grouped, 2) - x(grouped, 3)
+        assert advance < across < 2 * advance
+
+
+@pytest.mark.parametrize("grow", ["updater", "animated_function"])
+def test_replayed_growth_says_what_set_the_value(grow):
+    from algan.errors import UnsupportedFeatureError
+
+    @animated_function(animated_args={"u": 0.0})
+    def rise_and_fall(number, u):
+        # Back to 0 at u=1, the only value recorded while authoring.
+        number.value = 100 * torch.sin(torch.pi * cast_to_tensor(u))
+
+    with Scene() as scene:
+        display = DecimalNumber(0).spawn(animate=False)
+        if grow == "updater":
+            display.add_updater(lambda m, t: m.set_value(100 * t))
+            scene.wait(1)
+        else:
+            with Sync(runtime=1):
+                rise_and_fall(display, 1.0)
+        assert display.integer_places == 1
+        writer = "An updater" if grow == "updater" else "An animated function"
+        with pytest.raises(UnsupportedFeatureError, match=writer) as raised:
+            scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
+        assert "integer_places=" in str(raised.value)

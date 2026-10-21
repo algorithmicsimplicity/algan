@@ -312,6 +312,9 @@ in between when you change it:
 needs more integer digits, the display grows automatically; the extra slots remain
 available so its width stays stable afterwards.
 
+``group_with_commas=True`` separates thousands, ``1,234,567``, in either mode.
+Each comma appears once the number has a digit to its left.
+
 Use ``significant_figures`` to select significant digits instead. This overrides
 ``decimal_places`` and ``integer_places``; omitting it preserves the default
 decimal-place formatting. The formatted number is centered on the Mob and may
