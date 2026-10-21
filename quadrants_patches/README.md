@@ -1024,9 +1024,9 @@ every patch here: v1.3.1 to v1.3.3 touches none of the patched files.
 
 The build follows: `quadrants_build.yaml`'s `QUADRANTS_REF` and the gate
 scripts' default ref are `v1.3.3`, and the release version is `1.3.3.post1`
-(`ALGAN_QUADRANTS_VERSION`, `scripts/rebrand_quadrants_wheel.py`). Per
-`PYPI.md`, `pyproject.toml` and `uv.lock` keep `1.3.0.post3` until
-`1.3.3.post1` is on PyPI.
+(`ALGAN_QUADRANTS_VERSION`, `scripts/rebrand_quadrants_wheel.py`). It was
+published from `master` on 2026-10-21 and is what `pyproject.toml` and
+`uv.lock` consume (`PYPI.md`, "1.3.3.post1").
 
 **Built and checked (2026-10-21).** Run `39571753107` built all four platforms
 for cp311 and cp313 with every leg green, the aarch64 glibc 2.34 smoke included
@@ -1064,7 +1064,17 @@ On Kaggle's Tesla T4 (sm_75, Linux) with the cp311 manylinux wheel,
 session was asked for a P100 (`NvidiaTeslaP100`) and was given the T4, so it
 does not cover 0003: Kaggle no longer appears to offer a pre-Volta card.
 
-**0003 needs a pre-Volta card, and none is reachable from CI.**
+**The Mac gate passed (2026-10-21).** `run_on_mac.yaml` run `39618277605`
+ran the CI MPS arm's `pytest tests/unit_tests tests/fast` on the Apple GPU
+with the macOS cp311 wheel and torch 2.13.0: 7217 passed, 327 skipped, 1
+xfailed. The `mac-cpu` arm of run `39595215507` passed too: 7261 passed, 284
+skipped. Two earlier MPS attempts failed for harness reasons, not the wheel:
+the harness had not installed CI's torch 2.13
+(`agent_guidance/gpu_harnesses.md`), and then no macOS runner was free.
+
+**0003 needs a pre-Volta card, and none is reachable from CI.** It was
+published without one: the patch file is byte-identical to the one verified on
+the GTX 1050 on 2026-09-05, and it applied to v1.3.3 unchanged.
 `verify_pre_volta.py` beside this README is that check as one command: CUDA
 comes up, three atomic reductions are right, and the dumped PTX has no
 `atom.sys`. It passes on sm_70+ with or without the patch and says so. The

@@ -5,10 +5,11 @@ name `algan-quadrants`. The installed Python package is still named
 `quadrants`, so Algan continues to use `import quadrants` and
 `algan.taichi_compat` does not change.
 
-The repository consumes `algan-quadrants==1.3.0.post3`, the first revision
-with cp314 wheels (see "Python 3.14" below). post3 is twenty wheels; the
-recorded post2 publication on 2026-09-06 contained sixteen; post1 contained
-twelve. Check actual PyPI availability before changing the consumer pin or
+The repository consumes `algan-quadrants==1.3.3.post1`, the patch set rebased
+onto upstream Quadrants v1.3.3 (see "1.3.3.post1" at the end). It is twenty
+wheels, cp310-cp314 on four platforms, like `1.3.0.post3` before it, the first
+revision with cp314 wheels (see "Python 3.14" below); the recorded post2
+publication on 2026-09-06 contained sixteen; post1 contained twelve. Check actual PyPI availability before changing the consumer pin or
 attempting a new publication. The
 `post` suffix identifies Algan's patched build of upstream Quadrants v1.3.0
 and keeps it distinct from the upstream `quadrants==1.3.0` release.
@@ -40,7 +41,7 @@ what it counts as complete is `resolve_wheel_matrix.py`'s platform table rather
 than a list of names in the YAML — so a platform (or Python) added there is
 required here without this document or that gate being edited. Each platform builds the
 ordinary `quadrants` wheel with `SETUPTOOLS_SCM_PRETEND_VERSION` set from
-the workflow's `ALGAN_QUADRANTS_VERSION` (currently `1.3.0.post3`), so
+the workflow's `ALGAN_QUADRANTS_VERSION` (currently `1.3.3.post1`), so
 Quadrants' Python metadata and its native build see the same version. After all
 twenty wheels succeed, the publish job rewrites only the distribution metadata
 from `quadrants` to `algan-quadrants`, validates the complete matrix, and
@@ -235,3 +236,23 @@ from `algan-quadrants 1.3.0.post3` itself), so no 3.10–3.13 pin moved. The
 requirement at all. `uv lock --locked` passes with both uv 0.4.25 (the
 `install-uv` pin) and 0.7.9. The 3.14 test arm in `test.yaml` is the first run
 of this lock on 3.14; it was not synced locally before pushing.
+
+## 1.3.3.post1: the patch set on upstream v1.3.3
+
+The first revision on a newer upstream base. `quadrants_patches/README.md`,
+"Rebase onto v1.3.3", records what the rebase changed, which Algan shims had to
+be ported with it, and how each patch was checked before publication.
+
+**Performed** (2026-10-21), by the same two-stage procedure.
+[Run 39633838968](https://github.com/algorithmicsimplicity/algan/actions/runs/39633838968)
+published all twenty wheels from `master` (merge `402e2d9e`, PR #183).
+`uv lock --upgrade-package algan-quadrants`, run with uv 0.7.9 against PyPI,
+changed one `(name, version)` pair: `algan-quadrants` 1.3.0.post3 became
+1.3.3.post1. `uv lock --locked` passes with uv 0.4.25 (the `install-uv` pin)
+and 0.7.9. A fresh `uv pip install` can miss a release this new because uv
+caches PyPI's index; `--refresh-package algan-quadrants` fixes that.
+
+The published wheel was checked on the RTX 5080 (Windows, cp313):
+`verify_cuda_patches.py` and `verify_invariant_load.py` pass,
+`benchmarks/_taichi_source_key_check.py` passes, and the fast scene renders
+identically to 1.3.0.post3 on the same checkout.
