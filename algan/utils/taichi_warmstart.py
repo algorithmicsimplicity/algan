@@ -502,17 +502,20 @@ def _apply_quadrants(version):
             f"{'.'.join(str(p) for p in version) or 'an unknown version'}"
         )
     ctx_cls = getattr(_atu, "ASTTransformerFuncContext", None)
-    if ctx_cls is None or not hasattr(ctx_cls, "get_pos_info"):
+    # Upstream #858 (in 1.3.1+) memoizes the position banner itself, renaming
+    # `get_pos_info` to `memoized_get_pos_info` over a `_build_pos_info`. Ours
+    # is then redundant rather than wrong, so only that memo stands down --
+    # not the other three, which upstream has no counterpart for.
+    upstream_pos_info_memo = ctx_cls is not None and hasattr(ctx_cls, "_build_pos_info")
+    if ctx_cls is None or not (
+        upstream_pos_info_memo or hasattr(ctx_cls, "get_pos_info")
+    ):
         return _skip("quadrants 1.3's transformer entry points have moved")
-    if hasattr(ctx_cls, "_build_pos_info"):
-        # Upstream #858 memoizes this itself (on `main`, in no release yet).
-        # When a release carries it, ours is redundant rather than wrong --
-        # stand down rather than stacking two caches on one function.
-        return _skip("quadrants memoizes get_pos_info itself on this build")
     if not _install_inside_class_patch(_ki):
         return _skip("quadrants 1.3's decorator internals have moved")
 
-    _install_pos_info_memo(ctx_cls, guard_src_bounds=True)
+    if not upstream_pos_info_memo:
+        _install_pos_info_memo(ctx_cls, guard_src_bounds=True)
 
     # --- get_source_info_and_src memo -----------------------------------
     # `getsourcefile` + `getsourcelines` (each swapping `inspect.findsource`

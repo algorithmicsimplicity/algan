@@ -81,7 +81,8 @@ def main():
             "LIVE_CONFIG "
             + json.dumps(
                 {
-                    "gpu_max_reg": cfg.gpu_max_reg,
+                    # Gone from Quadrants 1.3.1 on (#890); so is `--max-reg`.
+                    "gpu_max_reg": getattr(cfg, "gpu_max_reg", None),
                     "readonly_ndarray_ldg": getattr(cfg, "readonly_ndarray_ldg", None),
                     "invariant_arg_loads": getattr(cfg, "invariant_arg_loads", None),
                 }

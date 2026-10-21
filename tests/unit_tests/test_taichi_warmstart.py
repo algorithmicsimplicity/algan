@@ -160,7 +160,9 @@ def test_pos_info_memo_reproduces_the_original_for_every_node():
     ctx_cls = _context_class()
     if ctx_cls is None:
         pytest.skip(f"no transformer context class on {BACKEND}")
-    memoized = ctx_cls.get_pos_info
+    memoized = getattr(ctx_cls, "get_pos_info", None)
+    if memoized is None:
+        pytest.skip("this compiler memoizes the position banner itself (#858)")
     original = getattr(memoized, "_algan_original", None)
     if original is None:
         pytest.skip("get_pos_info is not the memoized version on this compiler")

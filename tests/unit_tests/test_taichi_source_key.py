@@ -538,9 +538,10 @@ def hooks(monkeypatch):
     def original_store(frontend_cache_key, fast_cache_key, *args, **kwargs):
         hasher.stored.append((frontend_cache_key, fast_cache_key))
 
-    try_load, store = sk._build_hooks(
+    try_load, store, persist = sk._build_hooks(
         None, hasher, "NONE", original_try_load, original_store
     )
+    assert persist is None, "1.3.0 has no post-transform L1/L2 step to guard"
     monkeypatch.setattr(sk, "STATS", dict.fromkeys(sk.STATS, 0))
     monkeypatch.setattr(sk, "POISONED", {})
     monkeypatch.setattr(sk, "_WARNED", set())
@@ -630,6 +631,55 @@ def test_quadrants_own_fastcache_is_deferred_to(hooks):
     kernel = _StubKernel()
     kernel.quadrants_callable = type("Callable", (), {"is_pure": True})()
     assert try_load(kernel, (), ("k",)) == "ORIGINAL"
+
+
+def test_a_poisoned_materialization_clears_the_previous_checksum(hooks, monkeypatch):
+    # Quadrants 1.3.1+ no longer clears `fast_checksum` in `materialize`; a
+    # stale one would make `launch_kernel` store this compile under the
+    # previous materialization's key.
+    try_load, _store, _hasher = hooks
+    kernel = _StubKernel()
+    kernel.fast_checksum = "PREVIOUS"
+    monkeypatch.setattr(sk, "compute_key", lambda kernel, args: (None, "because"))
+    with pytest.warns(RuntimeWarning):
+        assert try_load(kernel, (), ("k",)) is None
+    assert kernel.fast_checksum is None
+    kernel.fast_checksum = "PREVIOUS"
+    kernel.autodiff_mode = "FORWARD"
+    assert try_load(kernel, (), ("k",)) is None
+    assert kernel.fast_checksum is None
+
+
+def test_the_l1_step_keeps_a_source_key_and_handles_everything_else(monkeypatch):
+    # Quadrants 1.3.1+: after the transform, `materialize` passes
+    # `fast_checksum` through `_maybe_persist_l1_and_set_l2_key`, which clears
+    # it for a kernel that has no L1 key -- every source-keyed one.
+    persisted = []
+
+    def original_persist(self, key, py_args):
+        persisted.append(key)
+        self.fast_checksum = None
+
+    try_load, _store, persist = sk._build_hooks(
+        None,
+        _StubHasher(),
+        "NONE",
+        lambda self, args, key: "ORIGINAL",
+        lambda *args, **kwargs: None,
+        original_persist,
+    )
+    monkeypatch.setattr(sk, "STATS", dict.fromkeys(sk.STATS, 0))
+    monkeypatch.setattr(sk, "compute_key", lambda kernel, args: ("KEY", None))
+    kernel = _StubKernel()
+    assert try_load(kernel, (), ("k",)) is None
+    persist(kernel, ("k",), ())
+    assert kernel.fast_checksum == "KEY", "the miss must still be indexed"
+    assert persisted == []
+
+    kernel.quadrants_callable = type("Callable", (), {"is_pure": True})()
+    assert try_load(kernel, (), ("pure",)) == "ORIGINAL"
+    persist(kernel, ("pure",), ())
+    assert persisted == [("pure",)], "Quadrants' own fastcache keeps its L1 step"
 
 
 # --- subprocess checks --------------------------------------------------------

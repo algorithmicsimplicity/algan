@@ -1344,7 +1344,9 @@ def _settings_fingerprint(ctx):
 #: Deliberately the same list Quadrants' own ``config_hasher.EXCLUDE_PREFIXES``
 #: uses, so this key is never *less* config-sensitive than the fastcache key it
 #: replaces -- ``verbose_`` and not ``verbose``, which keeps the bare
-#: ``verbose`` field in, exactly as the compiler keeps it.
+#: ``verbose`` field in, exactly as the compiler keeps it. (1.3.1 added
+#: ``config_hasher.EXCLUDE_KEYS`` on top -- ``debug_dump_path``,
+#: ``cuda_stack_limit``; those stay in here, which costs only a miss.)
 _CONFIG_EXCLUDE_PREFIXES = ("_", "offline_cache", "print_", "verbose_")
 #: Process-local, not IR-relevant: the torch MPS queue's address (Quadrants
 #: #850 excluded it from the C++ key for the same reason), and the size of the
@@ -1683,15 +1685,35 @@ def _quadrants_entry_points(version):
 
 
 def _build_hooks(
-    kernel_module, src_hasher, autodiff_none, original_try_load, original_store
+    kernel_module,
+    src_hasher,
+    autodiff_none,
+    original_try_load,
+    original_store,
+    original_persist=None,
 ):
-    """The two replacements: ``Kernel._try_load_fastcache`` and ``src_hasher.store``.
+    """The replacements: ``Kernel._try_load_fastcache``, ``src_hasher.store``
+    and, from Quadrants 1.3.1 on, ``Kernel._maybe_persist_l1_and_set_l2_key``.
+
+    1.3.1 made Quadrants' own lookup two-phase (an args-free L1 entry holding
+    the pruning set, then an L2 key narrowed by it) and moved two things this
+    rests on. ``materialize`` no longer clears ``fast_checksum`` before the
+    lookup -- the lookup does -- so the replacement clears it itself; left
+    alone, a poisoned materialization would store its artifact under the
+    previous one's key. And after the transform ``materialize`` hands
+    ``fast_checksum`` to ``persist_l1_and_set_l2_key``, which returns ``None``
+    for a kernel with no L1 key, so the third hook keeps a source-keyed
+    kernel's key away from it. None of L1 applies to a source key: the walk in
+    :func:`compute_key` already reads every value the body reads, which is
+    what L1's pruning set exists to narrow the args hash down to.
 
     Built by a factory rather than written at module level so a test can hold
-    a pair against stub objects without installing them on the live compiler.
+    the hooks against stub objects without installing them on the live
+    compiler. The third is ``None`` when ``original_persist`` is (1.3.0).
     """
 
     def _try_load_fastcache(self, args, key):
+        self._algan_source_keyed = False
         # Quadrants' own fastcache, where a kernel opted into it: defer.
         if (
             self.runtime.src_ll_cache
@@ -1699,17 +1721,21 @@ def _build_hooks(
             and self.quadrants_callable.is_pure
         ):
             return original_try_load(self, args, key)
+        # What Quadrants' own lookup resets on entry; `launch_kernel` stores
+        # only when `fast_checksum` is set, so every early return below leaves
+        # nothing to store.
+        self.fast_checksum = None
+        self._l1_key = None
+        self._pruning_paths_from_l1 = None
         if not self.runtime.src_ll_cache or self.autodiff_mode != autodiff_none:
             return None
         fast_key, reason = compute_key(self, args)
         if fast_key is None:
-            # Nothing is stored under an unsound key: `materialize` reset
-            # `fast_checksum` to None before calling, and `launch_kernel`
-            # only stores when it is set.
             STATS["poisoned"] += 1
             _warn_poisoned(self, reason)
             return None
         STATS["keyed"] += 1
+        self._algan_source_keyed = True
         self.fast_checksum = fast_key
         self.src_ll_cache_observations.cache_key_generated = True
         cache_value = src_hasher.load(fast_key)
@@ -1745,7 +1771,16 @@ def _build_hooks(
 
     _try_load_fastcache._algan_original = original_try_load
     _store._algan_original = original_store
-    return _try_load_fastcache, _store
+    if original_persist is None:
+        return _try_load_fastcache, _store, None
+
+    def _maybe_persist_l1_and_set_l2_key(self, key, py_args):
+        if getattr(self, "_algan_source_keyed", False):
+            return None
+        return original_persist(self, key, py_args)
+
+    _maybe_persist_l1_and_set_l2_key._algan_original = original_persist
+    return _try_load_fastcache, _store, _maybe_persist_l1_and_set_l2_key
 
 
 def _apply_quadrants(version):
@@ -1755,14 +1790,17 @@ def _apply_quadrants(version):
     kernel_module, src_hasher, impl, autodiff_none = entry_points
     kernel_cls = kernel_module.Kernel
     original_store = src_hasher.store
-    try_load, store = _build_hooks(
+    try_load, store, persist = _build_hooks(
         kernel_module,
         src_hasher,
         autodiff_none,
         kernel_cls._try_load_fastcache,
         original_store,
+        getattr(kernel_cls, "_maybe_persist_l1_and_set_l2_key", None),
     )
     kernel_cls._try_load_fastcache = try_load
+    if persist is not None:
+        kernel_cls._maybe_persist_l1_and_set_l2_key = persist
     src_hasher.store = store
     # Rebound wherever it is *read*: kernel.py imported the module, not the
     # function, so patching the attribute is enough there; anything that did

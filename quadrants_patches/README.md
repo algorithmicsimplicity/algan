@@ -1028,16 +1028,39 @@ scripts' default ref are `v1.3.3`, and the release version is `1.3.3.post1`
 `PYPI.md`, `pyproject.toml` and `uv.lock` keep `1.3.0.post3` until
 `1.3.3.post1` is on PyPI.
 
-**Not yet done or verified.** No wheel has been built on the new base. Before
-one is published: build all four platforms, re-run `verify_invariant_load.py`,
-`verify_cuda_patches.py` and the 0009 gate on it, run Algan's suites and pixel
-baselines (CUDA, the Mac gate, and the sm_61 box for 0003), and port Algan's
-fastcache shim. `algan/utils/taichi_source_key.py` replaces Quadrants'
-`Kernel._try_load_fastcache` and `src_hasher.store` with a reimplementation of
-v1.3.0's lookup; upstream 1.3.1+ made that lookup two-phase (L1 pruning info,
-then L2) with cache schema v6, and the shim's existence checks would still pass
-against it. `benchmarks/_taichi_source_key_check.py --arms warm,on,verify` is
-the acceptance test.
+**Built and checked (2026-10-21).** Run `39571753107` built all four platforms
+for cp311 and cp313 with every leg green, the aarch64 glibc 2.34 smoke included
+(`quadrants_wheels/manifest.json`); all wheels came out as
+`1.3.4.dev0+g00423caa9.d20261021`. On the RTX 5080 (sm_120, Windows), with the
+cp313 wheel installed:
+
+* `verify_invariant_load.py`: PASS, `!invariant.load` at 11 sites, loop
+  base-pointer reloads 18 → 0 (0004).
+* `verify_cuda_patches.py`: PASS, `.maxnreg 64`, 2 `ld.global.nc`, fast `expf`
+  only under `fast_math` (0005-0007).
+* `verify_python_314.py`: 4/4 on 3.13 here, the sanity run. The real 0009
+  gate is the cp314 build, run `39572543502`: 4/4 on Python 3.14.8 on its
+  Windows and macOS legs.
+* `benchmarks/_taichi_source_key_check.py`: PASS, 10/10 hits warm, 10/10
+  verified in verify mode, identical frames in all four arms.
+* Algan's full suite: the same failures as on the 1.3.0 wheel on the same
+  machine, and 10 of the 11 suite videos are pixel-identical to the 1.3.0
+  renders. The eleventh, `materials_and_lighting`, differs from 1.3.0 by as much
+  as two 1.3.3 runs differ from each other.
+
+Two Algan shims needed porting, because both reimplement Quadrants internals.
+`algan/utils/taichi_source_key.py`: 1.3.1+ made the fastcache lookup two-phase
+(L1 pruning info, then L2), `materialize` stopped clearing `fast_checksum`
+before the lookup, and a new post-transform step
+(`_maybe_persist_l1_and_set_l2_key`) nulls the key of any kernel without an L1
+key. The shim's existence checks still passed, so unported it would have
+indexed nothing; a stale key could also have been stored under a poisoned
+materialization. `algan/utils/taichi_warmstart.py`: upstream #858 memoizes
+`get_pos_info` itself in 1.3.1+, under a new name; the shim switched itself off
+entirely instead of dropping only that memo.
+
+**Not yet done.** The Mac gate and the sm_61 box (0003) on the new wheels, and
+publishing `1.3.3.post1` (which needs the full cp310-cp314 matrix).
 
 ## Upstreaming
 
