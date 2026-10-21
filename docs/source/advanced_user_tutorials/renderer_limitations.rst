@@ -717,9 +717,11 @@ Limits and approximations
   glass gets one ray per light, or per area-light cell
   (``shadow_bounce_rays``). The fan is rotated
   from one shaded point to the next, so a wide emitter's penumbra dithers
-  rather than bands. The dither is fixed to the surface, so under a moving
-  camera it moves with the surface rather than flickering;
-  ``shadow_ray_budget=0`` restores the fixed, unrotated 8-ray fan.
+  rather than bands. A still frame renders the same dither every time, and
+  a camera moving a fraction of a pixel per frame keeps most of it, but faster
+  motion re-rolls it from frame to frame, so a moving camera's penumbrae
+  carry a faint grain. ``shadow_ray_budget=0`` restores the fixed, unrotated
+  8-ray fan, which holds still under motion but bands.
 * **Contact shadows have a small floor.** A shadow ray starts just off the
   surface and stops just short of the light. The offset is 256
   floating-point steps of the hit point's coordinates -- 1.5e-5 to 3e-5 of

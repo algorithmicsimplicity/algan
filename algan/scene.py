@@ -1849,7 +1849,7 @@ class Scene(RenderLoopMixin):
             project_run.queue_frames(batch)
         result = results if returns_list else results[0]
         if project_run is not None:
-            project_run.record_frame_results(result)
+            project_run.record_frame_results(result, self.animation_manager.context)
         return result
 
     @active_scene_method

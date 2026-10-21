@@ -198,6 +198,7 @@ class _ProjectSceneRun:
     stopped_early: bool = False
     last_frame_name: str = ""
     _render_current_frame: bool = False
+    _stop_pending: bool = False
     frame_options: dict = field(default_factory=dict)
     frame_batches: list = field(default_factory=list)
 
@@ -278,7 +279,7 @@ class _ProjectSceneRun:
         finally:
             self.frame_batches.clear()
 
-    def record_frame_results(self, result) -> None:
+    def record_frame_results(self, result, context=None) -> None:
         if isinstance(result, list):
             self.frame_results.extend(result)
         else:
@@ -292,6 +293,20 @@ class _ProjectSceneRun:
             # Unwinding here rather than at the next save_frame
             # is what skips authoring the whole tail of a long scene.
             self.stopped_early = True
+            if context is not None and context.prev_context is not None:
+                # Not yet: the still is inside a block that is still open (a
+                # Speech, a Seq with a runtime), and that block times what
+                # was recorded in it only when it closes. Unwound now, it
+                # never would, and the still would leave all of it out.
+                # Author on to the end of the outermost open block.
+                self._stop_pending = True
+                return
+            raise _StopSceneEarly
+
+    def stop_if_pending(self) -> None:
+        """Stop the scene now that the block an early stop waited for has closed."""
+        if self._stop_pending:
+            self._stop_pending = False
             raise _StopSceneEarly
 
 
@@ -753,8 +768,12 @@ class Project:
             matched at least once, rather than authoring the rest of it. This is
             what makes iterating on an early frame of a long scene quick, but it
             leaves the scene half-run: its transcript is not synced and its later
-            frames on disk stay as an earlier run left them. Requires ``frames``.
-            Defaults to False. Collected requests render after unwinding.
+            frames on disk stay as an earlier run left them. A frame taken inside
+            a block that is still open, such as a :class:`~.Speech` or a
+            :class:`~.Seq` with a runtime, stops the scene when the outermost
+            such block closes instead, because that block times everything
+            recorded in it. Requires ``frames``. Defaults to False. Collected
+            requests render after unwinding.
         video_settings
             Settings used to author the scene and as checkpoint defaults.
             Defaults to None, meaning the project's settings or SETTINGS.video.

@@ -3310,8 +3310,9 @@ def _shadow_fan_cell(
         ang_j = 0.0
         first_pos = 0
         if fan_col > 0:
-            # Keyed on the event's cell of a pixel-sized world grid, so the
-            # grain moves with the surface (see _shadow_fan_jitter).
+            # Keyed on the event's cell of a one-to-two-pixel world grid, so a
+            # sub-pixel camera move does not re-roll it (see
+            # _shadow_fan_jitter; a larger one still does).
             cell = 0.0
             if ti.static(sec_aa > 1):
                 cell = _shadow_jitter_cell(dpx, dpy)

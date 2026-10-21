@@ -1,4 +1,4 @@
-"""The budgeted soft-shadow fan's grain is fixed to the surface.
+"""The budgeted soft-shadow fan's grain holds still under a sub-pixel camera move.
 
 The budgeted fan (``shadow_ray_budget``) fires a few rays per light and rotates
 them per shading event, so a penumbra dithers rather than bands; the rotation
@@ -9,7 +9,9 @@ fraction of a pixel per frame -- and the penumbra boiled: under a 0.002-degree
 turn, far below a pixel of motion, penumbra pixels changed by up to 28 levels
 where the unrotated fan's changed by 1. Keyed on the cell of a pixel-sized
 world grid that holds the point (``_shadow_jitter_cell``), the rotation stays
-put while the point stays in its cell, and the grain moves with the surface.
+put while the point stays in its cell. A cell is one to two pixels across, so
+motion of a pixel or more per frame still re-rolls the grain: it does not
+move with the surface, and nothing here claims it does.
 
 The probe kernel pins the key; one render pins the penumbra.
 
@@ -73,16 +75,17 @@ def _rotations(points, footprint):
     return out
 
 
-def test_the_cell_is_the_largest_power_of_two_within_a_pixel():
+def test_the_cell_is_twice_the_largest_power_of_two_within_a_pixel():
+    """One to two pixels across: see _shadow_jitter_cell for why."""
     out = _rotations(torch.zeros(4, 3), 0.3)
-    assert out[:, 2].tolist() == [0.25] * 4
+    assert out[:, 2].tolist() == [0.5] * 4
     assert _rotations(torch.zeros(1, 3), 0.0)[0, 2] == 0.0  # no footprint
     # The shorter of the two steps: a grazing pixel's long side does not
     # merge its neighbours across the short one.
     steps = torch.tensor([[0.0, 0.0, 0.9, 0.0, 0.07, 0.0]])
     out = torch.zeros((1, 3))
     _probe(torch.zeros(1, 3), steps, out)
-    assert float(out[0, 2]) == 0.0625
+    assert float(out[0, 2]) == 0.125
 
 
 def test_a_point_sliding_within_its_cell_keeps_its_rotation():
@@ -90,13 +93,13 @@ def test_a_point_sliding_within_its_cell_keeps_its_rotation():
     generator = torch.Generator().manual_seed(0)
     corner = torch.tensor([0.75, -1.25, 2.5])  # a corner of a 0.25 cell
     inside = corner + 0.2499 * torch.rand((64, 3), generator=generator)
-    out = _rotations(inside, 0.3)
+    out = _rotations(inside, 0.15)
     assert torch.unique(out[:, :2], dim=0).shape[0] == 1
-    # The pixels around it lie in other cells and dither independently.
+    # The cells around it dither independently.
     neighbours = corner + 0.25 * torch.tensor(
         [[i, j, 0.0] for i in (-1, 0, 1) for j in (-1, 0, 1)]
     )
-    assert torch.unique(_rotations(neighbours, 0.3)[:, :2], dim=0).shape[0] == 9
+    assert torch.unique(_rotations(neighbours, 0.15)[:, :2], dim=0).shape[0] == 9
 
 
 def test_without_a_footprint_every_point_keeps_its_own_rotation():
@@ -107,8 +110,13 @@ def test_without_a_footprint_every_point_keeps_its_own_rotation():
     assert not torch.equal(out[0, :2], out[1, :2])
 
 
-def _penumbra_frames(turn):
-    """A cube's soft shadow on a floor, before and after a camera turn of ``turn`` degrees."""
+def _penumbra_frames(turn=0.0, truck=0.0, frames=2, angle=8):
+    """A cube's soft shadow on a floor under a moving camera, ``frames`` frames.
+
+    The camera turns ``turn`` degrees over the first frame step, or trucks
+    sideways ``truck`` units every frame step; ``angle`` is the light's
+    shadow angle.
+    """
     SETTINGS.raytracing.set(shadows=True)
     video = VideoSettings(resolution=(320, 180), frames_per_second=10, supersampling=1)
     with Scene(video_settings=video) as scene:
@@ -121,7 +129,7 @@ def _penumbra_frames(turn):
                 target=ORIGIN,
                 color=WHITE,
                 intensity=0.6,
-                shadow_angle=8,
+                shadow_angle=angle,
             ).spawn(animate=False)
             Surface(
                 coord_function=lambda uv: torch.cat(
@@ -141,10 +149,17 @@ def _penumbra_frames(turn):
             )
             scene.camera.rotate(-30, RIGHT, about=ORIGIN)
             scene.camera.rotate(20, UP, about=ORIGIN)
-        with Seq(runtime=0.1):
-            scene.camera.rotate(turn, UP, about=ORIGIN)
-        frames = torch.cat([f.cpu() for f in scene.get_frames(0, 2)])
-    return frames.float()[..., :3]
+            if truck:
+                # Closer, so the penumbra is wide enough to measure.
+                scene.camera.move(scene.camera.get_forward_direction() * 5)
+        if truck:
+            with Seq(runtime=frames / 10, easing=lambda t: t):
+                scene.camera.move(RIGHT * truck * frames)
+        else:
+            with Seq(runtime=0.1):
+                scene.camera.rotate(turn, UP, about=ORIGIN)
+        out = torch.cat([f.cpu() for f in scene.get_frames(0, frames)])
+    return out.float()[..., :3]
 
 
 def test_a_penumbra_holds_still_under_a_sub_pixel_camera_turn():
@@ -169,3 +184,28 @@ def test_a_penumbra_holds_still_under_a_sub_pixel_camera_turn():
     assert levels.numel() > 20, levels
     changed = (frames[1] - frames[0]).abs().amax(-1) > 2
     assert int(changed.sum()) <= 8, changed.nonzero().tolist()
+
+
+def test_a_slow_truck_re_rolls_little_of_the_penumbra(monkeypatch):
+    """A camera trucking a tenth of a pixel per frame, against the fixed fan.
+
+    Every penumbra pixel changes a little as the shadow slides across the
+    pixel grid, the fixed fan's included; the dither adds to that whatever
+    it re-rolls. With jitter cells under a pixel across the dithered
+    penumbra changed 2.1 times as much from frame to frame as the fixed
+    fan's (1.74 levels on average against 0.84); with cells one to two
+    pixels across, 1.4 times (1.28 against 0.93).
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    monkeypatch.setattr(rt_settings, "shadow_ray_budget", 0)
+    fixed = _penumbra_frames(truck=0.005, frames=8, angle=20).mean(-1)
+    monkeypatch.setattr(rt_settings, "shadow_ray_budget", 16)
+    dithered = _penumbra_frames(truck=0.005, frames=8, angle=20).mean(-1)
+    penumbra = ((dithered - fixed).abs() > 0.5).any(0)
+    assert int(penumbra.sum()) > 200, "the shadow should have a penumbra"
+
+    def flicker(frames):
+        return float((frames[1:] - frames[:-1]).abs()[:, penumbra].mean())
+
+    assert flicker(dithered) < 1.7 * flicker(fixed)

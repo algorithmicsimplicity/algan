@@ -371,14 +371,17 @@ def _shadow_fan_jitter(p, li, cell):
     dithers instead. The hash is of the event's WORLD position (an event
     carries no pixel), so a still frame renders identically every time.
 
-    ``cell`` (from :func:`_shadow_jitter_cell`, about a pixel across on the
-    surface; a power of two) keys the hash on the cell of a world grid that
-    holds ``p`` rather than on ``p``'s own bits. That is what makes the grain
-    move with the surface under a moving camera: a pixel's hit point slides
-    along the surface by a fraction of a pixel per frame, which changes its
-    low bits -- keyed on the bits, every penumbra pixel re-rolled every frame
-    and the penumbra boiled, while the cell it lies in is still the cell it
-    lay in. ``cell == 0`` (no footprint: the classic wavefront route, a
+    ``cell`` (from :func:`_shadow_jitter_cell`, one to two pixels across on
+    the surface; a power of two) keys the hash on the cell of a world grid that
+    holds ``p`` rather than on ``p``'s own bits. A pixel's hit point slides
+    along the surface as the camera moves, which changes its low bits --
+    keyed on the bits, every penumbra pixel re-rolled under any motion at
+    all and the penumbra boiled. Keyed on the cell, a pixel keeps its
+    rotation while its hit point stays in the cell it lay in, which holds
+    for most pixels only while the camera moves them well under a pixel per
+    frame: beyond that the grain still re-rolls from frame to frame (see
+    ``shadow_ray_budget`` in ``settings.py`` for measurements). The grain
+    does not move with the surface. ``cell == 0`` (no footprint: the classic wavefront route, a
     bounce event, the sheet route with its sub-pixel shadow taps off) keys on
     the bits.
 
@@ -421,17 +424,26 @@ def _shadow_jitter_cell(dpx, dpy):
     """The grid cell :func:`_shadow_fan_jitter` keys on, from a pixel's footprint.
 
     ``dpx`` / ``dpy`` are one pixel's steps across the surface. The cell is
-    the largest power of two no wider than the shorter of them (its float's
-    exponent, mantissa cleared), so an event's neighbouring pixels nearly
-    always lie in other cells and dither independently (a step at 45 degrees
-    to the grid shares one at worst about one time in twelve), and the cell
-    stays put while a slow camera move changes the footprint a little. 0 when
-    there is no footprint.
+    twice the largest power of two no wider than the shorter of them (its
+    float's exponent, mantissa cleared, plus one), so between one and two
+    pixels across, and it stays put while a slow camera move changes the
+    footprint a little. 0 when there is no footprint.
+
+    Why that size: a pixel keeps its rotation only while the camera carries
+    its hit point less than the rest of its cell, so a larger cell re-rolls
+    fewer pixels per frame of motion, but neighbouring pixels sharing a cell
+    share a rotation, and the dither coarsens. Measured on a soft
+    directional shadow under a camera truck at 0.1 pixel per frame, the
+    jitter added 0.9 levels of mean frame-to-frame change over the fixed
+    fan's with cells under a pixel, 0.35 with these, and 0.2 with cells
+    twice as large again, whose 2-4 pixel blocks show as clumps.
     """
     fp = ti.min(dpx.norm(), dpy.norm())
     cell = 0.0
     if fp > 0.0:
-        cell = ti.bit_cast(ti.bit_cast(fp, ti.u32) & ti.u32(0xFF800000), ti.f32)
+        cell = 2.0 * ti.bit_cast(
+            ti.bit_cast(fp, ti.u32) & ti.u32(0xFF800000), ti.f32
+        )
     return cell
 
 
