@@ -236,3 +236,23 @@ def test_a_manim_shape_takes_a_bare_rgb_tensor(shape):
     reference = shape(color=Color((1.0, 0.0, 0.0)), add_to_scene=False)
     for part, expected in zip(mob.get_descendants(), reference.get_descendants()):
         torch.testing.assert_close(part.color, expected.color)
+
+
+@pytest.mark.parametrize(
+    ("color", "expected"),
+    [
+        (lambda: Color(algan.YELLOW, glow=2), [1.0, 1.0, 0.0, 2.0, 1.0]),
+        (lambda: Color(algan.YELLOW, opacity=0.3), [1.0, 1.0, 0.0, 0.0, 0.3]),
+        (lambda: Color((1, 0, 0, 0.5), opacity=0.2), [1.0, 0.0, 0.0, 0.0, 0.2]),
+        (lambda: Color((1, 0, 0, 2, 0.5)), [1.0, 0.0, 0.0, 2.0, 0.5]),
+        (lambda: Color("#FF000080"), [1.0, 0.0, 0.0, 0.0, 128 / 255]),
+        (lambda: Color((1, 0, 0)), [1.0, 0.0, 0.0, 0.0, 1.0]),
+    ],
+)
+def test_glow_and_opacity_keywords_override_a_five_channel_color(color, expected):
+    """REGRESSION. Both keywords were dropped when ``rgb`` already carried
+    them, so ``Color(YELLOW, glow=2)`` built a color with no glow at all.
+    """
+    torch.testing.assert_close(
+        color().as_subclass(torch.Tensor).reshape(-1), torch.tensor(expected)
+    )

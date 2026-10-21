@@ -178,6 +178,18 @@ class NeverVisibleMobWarning(AlganWarning):
     code = "ALGAN_NEVER_VISIBLE_MOB"
 
 
+class AnimatedBeforeSpawnWarning(AlganWarning):
+    """Warns that an animated function took effect at once on a Mob not yet
+    spawned, and the Mob was then spawned inside the same animation block.
+
+    Nothing is recorded for a Mob with nothing on screen: the call is applied
+    immediately, so the Mob appears already in its final state. Spawn it before
+    the call -- or call it after the block -- to see the change animate.
+    """
+
+    code = "ALGAN_ANIMATED_BEFORE_SPAWN"
+
+
 class HierarchyChangedDuringUpdaterWarning(AlganWarning):
     """Warns that a hierarchy change reaches back over a live updater's frames.
 
@@ -250,6 +262,7 @@ __all__ = [
     "NeverSpawnedMobWarning",
     "DespawnedMobWarning",
     "NeverVisibleMobWarning",
+    "AnimatedBeforeSpawnWarning",
     "HierarchyChangedDuringUpdaterWarning",
     "DivergentReplayWarning",
     "Float32PrecisionWarning",

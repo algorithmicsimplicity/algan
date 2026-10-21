@@ -6,6 +6,7 @@ AlganWarning
 AmbientLight
 Angle
 Animatable
+AnimatedBeforeSpawnWarning
 AnimatedBoundary
 AnimationContext
 AnimationManager
@@ -337,9 +338,9 @@ TracedPath
 TransformMatchingShapes
 TransformMatchingTex
 Triangle
-Typst
 TriangleMesh
 TruncationCounts
+Typst
 UHD
 UP
 Underline

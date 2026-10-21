@@ -141,7 +141,6 @@ def test_non_recursive_arc_move_leaves_child_location_unchanged():
 @pytest.mark.parametrize(
     ("target", "angle", "normal", "message"),
     [
-        ([1, 0, 1], 90, [0, 0, 1], "perpendicular"),
         ([1, 0, 0], 360, [0, 0, 1], "multiple-of-360"),
         ([1, 0, 0], 90, [0, 0, 0], "non-zero vector"),
     ],
@@ -151,4 +150,32 @@ def test_invalid_arc_geometry_is_rejected(target, angle, normal, message):
     mob = Mob(location=[0, 0, 0], add_to_scene=False)
     with pytest.raises(ValueError, match=message):
         mob.move_to(target, angle, arc_normal=normal)
+    scene._terminate()
+
+
+def test_arc_between_depths_tilts_into_a_helix():
+    # A label flying to a target slightly in front of it used to be refused:
+    # the chord had to lie exactly in the arc's plane. The in-plane part now
+    # arcs and the part along the normal is covered linearly alongside it.
+    scene = Scene(scene_initializer=_empty_scene)
+    mob = Mob(location=[0, 0, 0]).spawn(animate=False)
+    mob.move_to([2, 0, 0.2], 180, arc_normal=[0, 0, 1])
+    torch.testing.assert_close(
+        mob.location, torch.tensor([[[2.0, 0.0, 0.2]]]), atol=1e-6, rtol=0
+    )
+    scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
+    torch.testing.assert_close(
+        mob.location, torch.tensor([[[1.0, 1.0, 0.1]]]), atol=2e-5, rtol=2e-5
+    )
+    scene._terminate()
+
+
+def test_arc_along_the_normal_alone_is_a_straight_move():
+    scene = Scene(scene_initializer=_empty_scene)
+    mob = Mob(location=[0, 0, 0]).spawn(animate=False)
+    mob.move_to([0, 0, 1], 360, arc_normal=[0, 0, 1])
+    scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
+    torch.testing.assert_close(
+        mob.location, torch.tensor([[[0.0, 0.0, 0.5]]]), atol=2e-5, rtol=0
+    )
     scene._terminate()
