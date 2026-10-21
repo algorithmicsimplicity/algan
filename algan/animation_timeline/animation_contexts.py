@@ -952,6 +952,13 @@ class AnimationContext:
                         mob.spawn()
             if self.exit_callbacks:
                 self._run_exit_callbacks(am.context)
+            if am.context.prev_context is None:
+                # Back at the top level. A project still taken inside this
+                # block may have asked to stop the scene early: it waited for
+                # the block to close, since its timing is the block's.
+                run = getattr(am.scene, "_project_run", None)
+                if run is not None:
+                    run.stop_if_pending()
             return False
         finally:
             # Context-stack restoration is unconditional.  In particular, an

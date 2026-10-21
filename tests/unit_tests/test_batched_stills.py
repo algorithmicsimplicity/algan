@@ -248,6 +248,36 @@ def test_project_selection_and_early_stop_still_render_after_unwind(
     assert not list(project.transcript_directory.glob("*.txt"))
 
 
+def test_early_stop_inside_an_open_block_waits_for_it_to_close(
+    monkeypatch, tmp_path
+):
+    """A still inside a Seq with a runtime is timed by the Seq's closing.
+
+    Stopping at the still unwound the Seq without closing it, so nothing
+    recorded inside it, the still's own time included, was ever placed on
+    the timeline. The stop now waits for the outermost open block, and the
+    still is the frame a full authoring pass takes.
+    """
+    authored = []
+
+    def intro():
+        square = Square().spawn(animate=False)
+        with Seq(runtime=4):
+            square.move(RIGHT)
+            Scene.save_frame("inside")
+            Scene.wait(1)
+        authored.append("unwanted tail")
+        Scene.wait(1)
+
+    calls, _ = _frame_spy(monkeypatch)
+    project = _project(tmp_path, intro)
+    full = project.render_screenshots(frames=["inside"])
+    early = project.render_screenshots(frames=["inside"], stop_early=True)
+    assert len(authored) == 1  # the full pass only
+    assert calls[0][0] == calls[1][0] == (22,)
+    assert [r.output_path.name for r in early] == [r.output_path.name for r in full]
+
+
 def test_failed_authoring_does_not_render_or_leak_requests(monkeypatch, tmp_path):
     fail = [True]
 
