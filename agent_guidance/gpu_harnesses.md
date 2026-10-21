@@ -101,12 +101,22 @@ only for experiments that intentionally replace that supported dependency.
   Installed on every Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the
   run; it wins over the Taichi wheel when both are given. It also sets
   `UV_NO_SYNC=1` for the rest of the job, because a local replacement wheel can differ from the locked
-  `algan-quadrants==1.3.0.post3` distribution. A dependency sync can replace the
+  `algan-quadrants==1.3.3.post1` distribution. A dependency sync can replace the
   experimental compiler, so verify both installed metadata and import location. A script that
   installs its own wheel must use `.venv/bin/python`, as the gate scripts do.
   `quadrants_patches/README.md` ("Getting a patched wheel") is how one gets
   built: `scripts/build_quadrants_wheels.py` dispatches the build and prints
   the run id.
+* **An MPS test run needs CI's torch, and the harness does not install it.**
+  The harness runs `uv sync --locked`, which gives torch 2.7.1 below Python
+  3.14. Algan's MPS arena needs torch 2.13 or newer to import Metal DLPack
+  storage, so `test.yaml`'s MPS arm installs `torch==2.13.0` /
+  `torchaudio==2.11.0` before pytest. A harness command that runs the suite on
+  `mac-mps` has to do the same first:
+  `uv pip install --python .venv/bin/python "torch==2.13.0" "torchaudio==2.11.0" && ...`.
+  Without it every render fails with "This PyTorch build cannot import Metal
+  DLPack storage". One such run (2026-10-21) then hung until its 150-minute
+  timeout, which read like a compiler regression until the log was checked.
 * **`arms`**. Each Mac arm consumes a runner slot. Check the account's current
   concurrency and billing limits before fanning out experiments.
 
