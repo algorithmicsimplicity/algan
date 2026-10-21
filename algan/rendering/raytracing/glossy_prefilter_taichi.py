@@ -74,17 +74,37 @@ GL_ROW_WIDTH = 14
 # background already folded in exactly as ``wf_composite_accum_sparse`` folds
 # it), the factored-out reflection energy, and the blur radius. A NEGATIVE
 # radius is the "not a glossy pixel" flag -- the host initialises the column to
-# -1 per frame, and only ``gloss_scatter`` ever clears it.
+# -1 per frame, and only ``gloss_scatter`` ever clears it. ``G`` is the radius
+# as a fraction of the full lobe's (the cone factor, before the clamp) and
+# ``SCALE`` the full lobe's radius, so a neighbour's fraction can be turned
+# into the radius THIS pixel's lobe gives the same content.
 GL_MAIN_CSUM = 0
 GL_MAIN_W = 4
 GL_MAIN_SIGMA = 7
-GL_MAIN_WIDTH = 8
+GL_MAIN_G = 8
+GL_MAIN_SCALE = 9
+GL_MAIN_WIDTH = 10
 
-# Columns of a ``gl_pyr`` texel: reflected radiance, reflected glow, and the
-# validity weight that normalises them. The glow lane is ``out``'s column 3,
-# which is bloom coverage rather than alpha, and it has to be prefiltered
-# alongside the color or a blurred reflection would carry a sharp bloom mask.
-GL_PYR_WIDTH = 5
+# A ``gl_pyr`` texel holds two layers of the reflection, FAR then NEAR, each
+# six lanes: reflected radiance, reflected glow, the validity weight that
+# normalises them, and that weight times ``G``. The glow lane is ``out``'s
+# column 3, which is bloom coverage rather than alpha, and it has to be
+# prefiltered alongside the color or a blurred reflection would carry a sharp
+# bloom mask. A texel is split between the layers by ``_near_weight`` of its
+# own ``G``; see ``gloss_composite`` for why there are two.
+GL_PYR_FAR = 0
+GL_PYR_NEAR = 6
+GL_PYR_WIDTH = 12
+_PYR_V = 4
+_PYR_GV = 5
+
+# The ramp, in ``G``, from a fully near reflection to a fully far one. Content
+# a tenth of the way from the reflector to the eye (the sphere in the logo's
+# satin cone, ``G`` about 0.07) is near; the environment (1) is far. Linear
+# rather than a hard split, so a reflection whose distance varies smoothly --
+# an object standing on a rough floor -- has no seam where it crosses over.
+_NEAR_G_LO = 0.15
+_NEAR_G_HI = 0.35
 
 
 @ti.func
@@ -99,6 +119,53 @@ def _edge_curvature(pa, pb, na, nb):
     if ee > 1e-20:
         k = (nb - na).dot(e) / ee
     return k
+
+
+@ti.func
+def _least_curvature(e01, e12, e20, k01, k12, k20):
+    """The least normal curvature of a surface, in any direction, from the
+    normal curvatures ``k01``, ``k12``, ``k20`` measured along a triangle's
+    three edges.
+
+    Normal curvature is a quadratic form in the direction (Euler), and three
+    directions fix its three coefficients, so the form's smaller eigenvalue
+    is the least curvature over every direction in the triangle's plane. The
+    least of the three edges is only that when an edge happens to lie along
+    the flattest direction. A cone is flat along its generators, but a
+    triangle of its subdivided surface need not have an edge along one, and
+    those triangles came out curved, magnified 1.44 against the 1 of their
+    neighbours on the logo's cone: thin, sharper wedges across the satin cone
+    that moved with the camera. The eigenvalue is never more than any edge's value, so
+    the result is the least of the edges and the form's, and a sliver
+    triangle, whose edges pin the form down poorly, keeps the edges alone.
+    """
+    k_lo = ti.min(k01, ti.min(k12, k20))
+    w = e01.cross(-e20)
+    w_len = w.norm()
+    e_len = e01.norm()
+    if w_len > 1e-20 and e_len > 1e-20:
+        u = e01 / e_len
+        v = (w / w_len).cross(u)
+        m = ti.Matrix.zero(ti.f32, 3, 3)
+        for i in ti.static(range(3)):
+            e = e01
+            if ti.static(i == 1):
+                e = e12
+            elif ti.static(i == 2):
+                e = e20
+            x = e.dot(u)
+            y = e.dot(v)
+            ll = ti.max(x * x + y * y, 1e-30)
+            m[i, 0] = x * x / ll
+            m[i, 1] = 2.0 * x * y / ll
+            m[i, 2] = y * y / ll
+        if ti.abs(m.determinant()) > 1e-3:
+            abc = m.inverse() @ ti.math.vec3(k01, k12, k20)
+            half_diff = 0.5 * (abc[0] - abc[2])
+            lam = 0.5 * (abc[0] + abc[2]) - ti.sqrt(
+                half_diff * half_diff + abc[1] * abc[1])
+            k_lo = ti.min(k_lo, lam)
+    return k_lo
 
 
 @ti.func
@@ -122,19 +189,19 @@ def _reflector_magnification(f, prim, rd, tri_pos: ti.template(),
     edge ``(n_j - n_i) . e / |e|^2`` is the normal curvature in that
     direction. The footprint is an ellipse, narrowed most along the most
     curved direction; the one isotropic blur that stands for it is sized by
-    the LEAST curved edge, so it never undercuts the footprint in any
-    direction. That is exact on a sphere and leaves a surface that is flat
-    one way -- a cylinder, a cone along its generators -- at the flat
-    footprint. It is also what keeps the blur continuous: the estimate is
-    constant over a triangle, and the largest curvature jumps between
-    neighbours wherever the curvature varies -- a cone's ring nearer the apex
-    is twice as curved as the ring below it -- which drew sawtooth stripes
-    and seams across a satin cone. Normals are first turned to the viewer's
-    side of the triangle, so a surface bulging towards the camera is convex
-    whichever way its mesh is wound. A concave direction counts as flat: a
-    concave mirror can magnify without bound near its focus, and the flat
-    footprint is the widest blur this route ever drew, so the change only
-    ever narrows it.
+    the LEAST curved direction (``_least_curvature``), so it never undercuts
+    the footprint in any direction. That is exact on a sphere and leaves a
+    surface that is flat one way -- a cylinder, a cone along its generators
+    -- at the flat footprint. It is also what keeps the blur continuous: the
+    estimate is constant over a triangle, and the largest curvature jumps
+    between neighbours wherever the curvature varies -- a cone's ring nearer
+    the apex is twice as curved as the ring below it -- which drew sawtooth
+    stripes and seams across a satin cone. Normals are first turned to the
+    viewer's side of the triangle, so a surface bulging towards the camera is
+    convex whichever way its mesh is wound. A concave direction counts as
+    flat: a concave mirror can magnify without bound near its focus, and the
+    flat footprint is the widest blur this route ever drew, so the change
+    only ever narrows it.
 
     A flat triangle -- every polyhedron face, every Bezier circuit, which
     never comes here -- returns exactly 1.
@@ -170,7 +237,7 @@ def _reflector_magnification(f, prim, rd, tri_pos: ti.template(),
         k01 = _edge_curvature(p0, p1, n0, n1)
         k12 = _edge_curvature(p1, p2, n1, n2)
         k20 = _edge_curvature(p2, p0, n2, n0)
-        k_lo = ti.min(k01, ti.min(k12, k20))
+        k_lo = _least_curvature(p1 - p0, p2 - p1, p0 - p2, k01, k12, k20)
         if k_lo > 0.0:
             mag = 1.0 + 2.0 * d_p * k_lo
     return mag
@@ -181,10 +248,10 @@ def _sample_pyramid_level(gl_pyr: ti.template(), level_meta: ti.template(),
                           lvl, px, py, width, height):
     """Bilinear fetch of one pyramid level at level-0 pixel ``(px, py)``.
 
-    Returns the raw (unnormalised) 5-vector; the caller divides the radiance by
-    the validity weight. Sampling in level-0 coordinates and mapping into the
-    level is what keeps the two levels of a trilinear fetch registered with
-    each other and with the pixel being composited.
+    Returns the raw (unnormalised) texel; the caller divides each layer's
+    radiance by that layer's validity weight. Sampling in level-0 coordinates
+    and mapping into the level is what keeps the two levels of a trilinear
+    fetch registered with each other and with the pixel being composited.
     """
     off = level_meta[lvl, 0]
     lw = level_meta[lvl, 1]
@@ -226,14 +293,22 @@ def _sample_pyramid_level(gl_pyr: ti.template(), level_meta: ti.template(),
 
 
 @ti.func
-def _prefilter_at(gl_pyr: ti.template(), level_meta: ti.template(),
-                  sigma, num_levels, px, py, width, height):
-    """One prefiltered radiance fetch at Gaussian width ``sigma`` pixels.
+def _near_weight(g):
+    """How much of a reflection blurred at fraction ``g`` of its lobe is
+    near.
+    """
+    return ti.math.clamp((_NEAR_G_HI - g) / (_NEAR_G_HI - _NEAR_G_LO),
+                         0.0, 1.0)
 
-    Trilinear: the two levels whose box widths bracket ``sigma``, each fetched
-    bilinearly, lerped by the fractional level. Returns a vec4 (radiance +
-    glow) already divided by the validity weight; a footprint that found no
-    valid texel at all returns zero.
+
+@ti.func
+def _pyramid_taps(gl_pyr: ti.template(), level_meta: ti.template(),
+                  sigma, num_levels, px, py, width, height):
+    """The raw texels of one trilinear fetch at Gaussian width ``sigma`` px.
+
+    The two levels whose box widths bracket ``sigma``, each fetched
+    bilinearly, and the fractional level between them. Normalising is left to
+    the caller (``_layer_at``), because each layer has its own validity.
     """
     lvl = 0.0
     if sigma > _BOX_SIGMA:
@@ -248,16 +323,55 @@ def _prefilter_at(gl_pyr: ti.template(), level_meta: ti.template(),
     if l1 != l0:
         s1 = _sample_pyramid_level(gl_pyr, level_meta, l1, px, py,
                                    width, height)
+    return s0, s1, frac
+
+
+@ti.func
+def _layer_at(s0, s1, frac, base: ti.template()):
+    """One layer of a trilinear fetch: its radiance + glow, each level divided
+    by its own validity weight and then lerped, and the lerped weight.
+
+    A footprint that found no valid texel of the layer returns zero radiance
+    and zero weight.
+    """
     out = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     for k in ti.static(range(4)):
         a = 0.0
-        if s0[4] > 1e-6:
-            a = s0[k] / s0[4]
+        if s0[base + _PYR_V] > 1e-6:
+            a = s0[base + k] / s0[base + _PYR_V]
         b = 0.0
-        if s1[4] > 1e-6:
-            b = s1[k] / s1[4]
+        if s1[base + _PYR_V] > 1e-6:
+            b = s1[base + k] / s1[base + _PYR_V]
         out[k] = a * (1.0 - frac) + b * frac
-    return out
+    v = s0[base + _PYR_V] * (1.0 - frac) + s1[base + _PYR_V] * frac
+    return out, v
+
+
+@ti.func
+def _layer_mean_g(s0, s1, frac, base: ti.template(), fallback):
+    """The validity-weighted mean ``G`` of one layer over a fetch's footprint,
+    or ``fallback`` where the footprint holds none of it.
+    """
+    v = s0[base + _PYR_V] * (1.0 - frac) + s1[base + _PYR_V] * frac
+    gv = s0[base + _PYR_GV] * (1.0 - frac) + s1[base + _PYR_GV] * frac
+    g = fallback
+    if v > 1e-6:
+        g = gv / v
+    return g
+
+
+@ti.func
+def _near_share(s0, s1, frac):
+    """The near layer's share of the valid texels in a fetch's footprint."""
+    a = 0.0
+    t0 = s0[GL_PYR_FAR + _PYR_V] + s0[GL_PYR_NEAR + _PYR_V]
+    if t0 > 1e-6:
+        a = s0[GL_PYR_NEAR + _PYR_V] / t0
+    b = 0.0
+    t1 = s1[GL_PYR_FAR + _PYR_V] + s1[GL_PYR_NEAR + _PYR_V]
+    if t1 > 1e-6:
+        b = s1[GL_PYR_NEAR + _PYR_V] / t1
+    return a * (1.0 - frac) + b * frac
 
 
 @ti.kernel
@@ -320,12 +434,12 @@ def gloss_scatter(
         w_refl = ti.math.vec4(pix_accum[gr, 4], pix_accum[gr, 5],
                               pix_accum[gr, 6], 0.0)
         w_refl[3] = ti.max(w_refl[0], ti.max(w_refl[1], w_refl[2]))
+        refl = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[frame_rel, p, ci], ti.f32)
             gl_main[p, GL_MAIN_CSUM + ci] = (
                 pix_accum[r, ci] * 255.0 + w_main[ci] * bg)
-            gl_pyr[p, ci] = pix_accum[gr, ci] * 255.0 + w_refl[ci] * bg
-        gl_pyr[p, 4] = 1.0
+            refl[ci] = pix_accum[gr, ci] * 255.0 + w_refl[ci] * bg
 
         for k in ti.static(range(3)):
             gl_main[p, GL_MAIN_W + k] = pix_accum[gr, GL_ROW_W + k]
@@ -354,6 +468,7 @@ def gloss_scatter(
         # and the expression is then exactly ``k``.
         mag = ti.max(pix_accum[gr, GL_ROW_MAG], 1.0)
         k_cone = k_cone / (1.0 + (mag - 1.0) * k_cone)
+        g = k_cone
         gl_main[p, GL_MAIN_SIGMA] = ti.min(k_cone * sigma_scale,
                                            sigma_max)
         if ti.static(_projected(cam_proj)):
@@ -370,6 +485,22 @@ def gloss_scatter(
                 elif inv_virtual > 0.0:
                     sigma = sigma_scale / inv_virtual
                 gl_main[p, GL_MAIN_SIGMA] = ti.min(sigma, sigma_max)
+                g = sigma / sigma_scale
+        gl_main[p, GL_MAIN_G] = g
+        gl_main[p, GL_MAIN_SCALE] = sigma_scale
+
+        # Level 0 of both layers. A texel wholly in one layer writes exact
+        # zeros to the other, so a frame with no near reflection anywhere
+        # leaves the near lanes zero through every level of the pyramid.
+        w_near = _near_weight(g)
+        w_far = 1.0 - w_near
+        for ci in ti.static(range(4)):
+            gl_pyr[p, GL_PYR_FAR + ci] = refl[ci] * w_far
+            gl_pyr[p, GL_PYR_NEAR + ci] = refl[ci] * w_near
+        gl_pyr[p, GL_PYR_FAR + _PYR_V] = w_far
+        gl_pyr[p, GL_PYR_FAR + _PYR_GV] = w_far * g
+        gl_pyr[p, GL_PYR_NEAR + _PYR_V] = w_near
+        gl_pyr[p, GL_PYR_NEAR + _PYR_GV] = w_near * g
 
 
 @ti.kernel
@@ -432,7 +563,29 @@ def gloss_composite(
     at roughness 0.35 the lobe's median deflection is ~300 px on a PREVIEW
     frame, which no separable blur can afford and no strided approximation of
     one can sample without aliasing.
+
+    Each pixel's radius comes from its own glossy ray, so a single blur drew
+    a hard edge round every near reflection: the pixels whose ray met the
+    nearby object were blurred a few pixels, the ones beside them whose ray
+    went past it a hundred, and the object's reflection stopped dead where
+    the radius jumped. In a rough reflector the lobe of a pixel beside it
+    still sees part of the object, at the object's own small blur, in front
+    of the distant content at the large one. So the reflection is prefiltered
+    in two layers (``_near_weight``), each at its own radius:
+
+        refl = a * near(sigma_near) + (1 - a) * far(sigma_far)
+
+    with ``a`` the near layer's share of the footprint at ``sigma_near``,
+    which is how much of the lobe the near content covers. A pixel knows its
+    own layer's radius; the other layer's is the mean ``G`` of that layer
+    within reach, at this pixel's own lobe scale. Far content excludes the
+    near texels, as the near object occludes it in the reflection, and
+    normalising by the far layer's own weight fills the hole behind it from
+    around it. With no near texel within reach the near term is zero and the
+    far layer is all there is, which is the single blur exactly: a frame
+    with no near reflection anywhere renders as it did before.
     """
+    sigma_max = _BOX_SIGMA * ti.cast(1 << (num_levels - 1), ti.f32)
     for p in range(num_pixels):
         sigma = gl_main[p, GL_MAIN_SIGMA]
         if sigma < 0.0:
@@ -440,11 +593,71 @@ def gloss_composite(
         py = p // width
         px = p - py * width
 
-        core = _prefilter_at(gl_pyr, level_meta, sigma * _LOBE_CORE_SIGMA,
-                             num_levels, px, py, width, height)
-        halo = _prefilter_at(gl_pyr, level_meta, sigma * _LOBE_HALO_SIGMA,
-                             num_levels, px, py, width, height)
-        refl = core * _LOBE_CORE_WEIGHT + halo * (1.0 - _LOBE_CORE_WEIGHT)
+        g = gl_main[p, GL_MAIN_G]
+        scale = gl_main[p, GL_MAIN_SCALE]
+        w_near = _near_weight(g)
+        # The widest halo a near reflection can have at this pixel's scale:
+        # near content farther away than this does not reach its lobe.
+        reach = ti.min(_NEAR_G_HI * _LOBE_HALO_SIGMA * scale, sigma_max)
+        r0, r1, rf = _pyramid_taps(gl_pyr, level_meta, reach, num_levels,
+                                   px, py, width, height)
+        near_in_reach = (r0[GL_PYR_NEAR + _PYR_V] * (1.0 - rf)
+                         + r1[GL_PYR_NEAR + _PYR_V] * rf)
+        refl = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        if w_near <= 0.0 and near_in_reach <= 0.0:
+            c0, c1, cf = _pyramid_taps(gl_pyr, level_meta,
+                                       sigma * _LOBE_CORE_SIGMA, num_levels,
+                                       px, py, width, height)
+            core, _vc = _layer_at(c0, c1, cf, GL_PYR_FAR)
+            h0, h1, hf = _pyramid_taps(gl_pyr, level_meta,
+                                       sigma * _LOBE_HALO_SIGMA, num_levels,
+                                       px, py, width, height)
+            halo, _vh = _layer_at(h0, h1, hf, GL_PYR_FAR)
+            refl = core * _LOBE_CORE_WEIGHT + halo * (1.0 - _LOBE_CORE_WEIGHT)
+        else:
+            g_far = _layer_mean_g(r0, r1, rf, GL_PYR_FAR, 1.0)
+            g_near = _layer_mean_g(r0, r1, rf, GL_PYR_NEAR, g)
+            sigma_far = sigma
+            if w_near > 0.0:
+                sigma_far = ti.min(
+                    ((1.0 - w_near) * g + w_near * g_far) * scale, sigma_max)
+                # A near pixel's own ``G`` is not its near layer's radius
+                # where the pixel is only partly near: on the outline of a
+                # near reflection the glossy ray's coverage-weighted cone
+                # factor mixes the object's with the sky's, and blurring the
+                # near layer at that mix drew the outline as a bright thread.
+                # The near layer's mean ``G`` over the pixel's own near
+                # footprint is the object's alone, and is the pixel's own
+                # wherever the near reflection is uniform.
+                o0, o1, of = _pyramid_taps(
+                    gl_pyr, level_meta,
+                    ti.min(g * _LOBE_HALO_SIGMA * scale, sigma_max),
+                    num_levels, px, py, width, height)
+                g_own = _layer_mean_g(o0, o1, of, GL_PYR_NEAR, g)
+                g_near = w_near * g_own + (1.0 - w_near) * g_near
+            sigma_near = ti.min(g_near * scale, sigma_max)
+            for lobe in ti.static(range(2)):
+                lobe_sigma = ti.static(
+                    _LOBE_CORE_SIGMA if lobe == 0 else _LOBE_HALO_SIGMA)
+                lobe_weight = ti.static(
+                    _LOBE_CORE_WEIGHT if lobe == 0
+                    else 1.0 - _LOBE_CORE_WEIGHT)
+                f0, f1, ff = _pyramid_taps(gl_pyr, level_meta,
+                                           sigma_far * lobe_sigma, num_levels,
+                                           px, py, width, height)
+                far, v_far = _layer_at(f0, f1, ff, GL_PYR_FAR)
+                n0, n1, nf = _pyramid_taps(gl_pyr, level_meta,
+                                           sigma_near * lobe_sigma,
+                                           num_levels, px, py, width, height)
+                near, v_near = _layer_at(n0, n1, nf, GL_PYR_NEAR)
+                a = _near_share(n0, n1, nf)
+                # A layer with nothing in its footprint stands in for neither
+                # colour: the other one fills it.
+                if v_far <= 1e-6:
+                    far = near
+                if v_near <= 1e-6:
+                    near = far
+                refl += (a * near + (1.0 - a) * far) * lobe_weight
 
         w_energy = ti.math.vec3(gl_main[p, GL_MAIN_W],
                                 gl_main[p, GL_MAIN_W + 1],
