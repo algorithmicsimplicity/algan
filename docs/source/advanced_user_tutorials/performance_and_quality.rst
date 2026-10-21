@@ -409,9 +409,42 @@ afterwards, so it is an environment variable set **before** ``import algan``:
 
     from algan import *
 
-It defaults to ``cpu``, which is usually right: materializing the timeline is
-Python-bound rather than compute-bound, and the geometry is moved to the render
-device afterwards anyway.
+It defaults to ``cpu``, and ``cpu`` is the only supported value. Running a
+script and materializing its timeline are hundreds of thousands of small tensor
+operations, not a few large ones: the benchmark explainer scene issues about
+200,000 while it is authored, almost all on tensors of under a thousand
+elements. A GPU adds a kernel launch to each of them and a device
+synchronization wherever a value is read back, and finds nothing large to speed
+up; the geometry moves to the render device for projection anyway. Measured
+warm on an RTX 5080, with the render device on CUDA in both arms (PREVIEW, the
+6-second ``benchmarks/performance`` workloads):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Workload
+     - Phase
+     - ``cpu``
+     - ``cuda``
+   * - explainer
+     - running the script
+     - 0.62 s
+     - 2.30 s (3.7x slower)
+   * - explainer
+     - batch preparation
+     - 0.11 s
+     - 0.33 s (3x slower)
+   * - graphics
+     - running the script
+     - 1.19 s
+     - 4.20 s (3.5x slower)
+   * - graphics
+     - batch preparation
+     - 0.33 s
+     - 0.59 s (1.8x slower)
+
+Any other value warns at import. It is also untested: ``Text``, surfaces and
+morphs are known to fail on it.
 
 :meth:`~algan.settings.abstract_settings.Settings.set` raises a specific error,
 rather than a generic unknown setting error, if you try to set the animation
