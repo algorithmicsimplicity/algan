@@ -59,6 +59,7 @@ remains the default and the fallback for non-local tensor/backend pairs.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 from algan.environment import env_flag, env_int
@@ -88,6 +89,23 @@ bvh_sah_bins = max(2, env_int("ALGAN_SAH_BINS", 16))
 # build, but the full UHD A/B did not establish an end-to-end speedup.
 # See benchmarks/performance/refit_optimization_report.md.
 refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", False)
+
+# Column count up to which a device build runs its topology (the binned-SAH
+# level loop below) on the host, in NumPy (``_build_topology_host``); 0 keeps
+# it on the device always. The loop is ~60 tiny tensor ops per binary pass
+# plus a host readback or two per pass to size the next one, so on a GPU it is
+# launch-bound, nearly whatever its size: ~5000 launches, 70 ms of host time
+# against 13 ms of device work, for a 10k-triangle tree on a 5080 under WDDM,
+# and ~45 ms for one of a thousand circuits. NumPy runs the same arithmetic for
+# a microsecond or two a call, so its cost grows with the tree instead -- 7 ms
+# for those thousand circuits, about the device's for ten thousand triangles --
+# which is where the bound sits. Every step is exact (integer arithmetic,
+# min/max, sorts with unique or stable keys) or an elementwise IEEE
+# ``+ - * /`` of the same float32 inputs, and ``argmin`` takes the first index
+# everywhere, so the tree is bit-for-bit the one the device builds
+# (``tests/unit_tests/test_refit_bvh.py`` pins it). The per-frame refit stays
+# on the device.
+refit_host_topology_max_columns = env_int("ALGAN_REFIT_HOST_TOPOLOGY", 8192)
 
 # Depth budget of the emitted ARITY-ary tree. Must not exceed the traversal
 # kernels' fixed sibling-stack depth (raytrace_kernels_taichi._GROUP_STACK,
@@ -274,6 +292,170 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     return nl
 
 
+def _half_area_host(lo, hi):
+    """:func:`_half_area` in NumPy, term for term, on per-coordinate arrays."""
+    d0, d1, d2 = (np.maximum(up - down, np.float32(0.0)) for down, up in zip(lo, hi))
+    return d0 * d1 + d1 * d2 + d0 * d2
+
+
+def _binary_split_host(order, starts, counts, forced, cent, ulo, uhi):
+    """:func:`_binary_split` in NumPy, step for step (see
+    ``refit_host_topology_max_columns`` for why the two agree bit for bit).
+
+    The ranges' primitives are contiguous runs of the ``S`` gathered rows, in
+    range order, so the per-range centroid bounds are segmented reductions.
+    The bin tables lead with the bin and keep each box coordinate in an array
+    of its own: the per-bin box unions are then one-dimensional ``ufunc.at``
+    scatters, and the prefix/suffix scans run down the leading axis a whole
+    row at a time -- each an order of magnitude faster than the [K, 3, nb, 3]
+    layout the device uses, and the same values. Counts are float32 where they
+    meet the costs, as torch promotes them.
+    """
+    K = starts.shape[0]
+    S = int(counts.sum())
+    seg = np.repeat(np.arange(K), counts)
+    base = np.zeros(K, dtype=np.int64)
+    base[1:] = np.cumsum(counts)[:-1]
+    rank = np.arange(S) - base[seg]
+    pos = starts[seg] + rank
+    tp = order[pos]
+    pc = cent[tp]  # [S, 3]
+
+    cmin = np.minimum.reduceat(pc, base, axis=0)
+    cmax = np.maximum.reduceat(pc, base, axis=0)
+    ext = cmax - cmin
+    nb = bvh_sah_bins
+    t = (pc - cmin[seg]) / np.maximum(ext[seg], np.float32(1e-30))
+    bins = np.clip((t * np.float32(nb)).astype(np.int64), 0, nb - 1)  # [S, 3]
+
+    # Slot of (bin, range, axis) in a [nb, K * 3] table.
+    slots = bins * (K * 3) + (seg[:, None] * 3 + np.arange(3)[None, :])  # [S, 3]
+    cnt = np.bincount(slots.reshape(-1), minlength=nb * K * 3).reshape(nb, K * 3)
+    plo = np.ascontiguousarray(ulo[tp].T)  # [3, S], one row per box coordinate
+    phi = np.ascontiguousarray(uhi[tp].T)
+    blo, bhi = [], []
+    for coordinate in range(3):
+        low = np.full(nb * K * 3, np.inf, dtype=np.float32)
+        high = np.full(nb * K * 3, -np.inf, dtype=np.float32)
+        for axis in range(3):
+            np.minimum.at(low, slots[:, axis], plo[coordinate])
+            np.maximum.at(high, slots[:, axis], phi[coordinate])
+        blo.append(low.reshape(nb, K * 3))
+        bhi.append(high.reshape(nb, K * 3))
+
+    # Split s puts bins [0, s] left and (s, nb) right, s in [0, nb - 2].
+    lcnt = np.cumsum(cnt, axis=0)[:-1]  # [nb-1, K * 3]
+    rcnt = np.repeat(counts, 3)[None, :] - lcnt
+    llo = [np.minimum.accumulate(b, axis=0)[:-1] for b in blo]
+    lhi = [np.maximum.accumulate(b, axis=0)[:-1] for b in bhi]
+    rlo = [np.minimum.accumulate(b[::-1], axis=0)[::-1][1:] for b in blo]
+    rhi = [np.maximum.accumulate(b[::-1], axis=0)[::-1][1:] for b in bhi]
+    cost = _half_area_host(llo, lhi) * lcnt.astype(np.float32) + _half_area_host(
+        rlo, rhi
+    ) * rcnt.astype(np.float32)
+    invalid = (lcnt == 0) | (rcnt == 0)
+    cost = np.where(invalid, np.float32(np.inf), cost)
+    # The device's [K, 3 * (nb - 1)] order (axis-major), for its argmin.
+    flat = cost.reshape(nb - 1, K, 3).transpose(1, 2, 0).reshape(K, 3 * (nb - 1))
+    best = flat.argmin(1)  # [K]
+    best_axis = best // (nb - 1)
+    best_bin = best % (nb - 1)
+    no_valid = np.isinf(flat[np.arange(K), best])
+    use_median = forced | no_valid
+
+    pb = bins[np.arange(S), best_axis[seg]]
+    side_sah = pb > best_bin[seg]
+    side_med = rank >= (counts[seg] // 2)
+    side = np.where(use_median[seg], side_med, side_sah)
+
+    key = seg * 2 + side.astype(np.int64)
+    perm = np.argsort(key, kind="stable")
+    order[pos] = tp[perm]
+    return np.bincount(seg[~side], minlength=K).astype(np.int64)
+
+
+def _build_topology_host(M, cent, ulo, uhi, a):
+    """:func:`_build_topology` in NumPy, on float32 ``[M, 3]`` arrays.
+
+    Returns ``(child_kind uint8, child_ref int64, levels)`` as NumPy arrays and
+    a list, the same values the device build returns as tensors.
+    """
+    s_rounds = a.bit_length() - 1
+    order = np.arange(M, dtype=np.int64)
+    kind_rows, ref_rows, levels = [], [], []
+    next_block = 0
+    if M <= 1:
+        kind = np.zeros((1, a), dtype=np.uint8)
+        ref = np.full((1, a), -1, dtype=np.int64)
+        if M == 1:
+            kind[0, 0] = 1
+            ref[0, 0] = 0
+        kind_rows.append(kind)
+        ref_rows.append(ref)
+        levels.append((0, 1))
+        next_block = 1
+    else:
+        r_start = np.zeros(1, dtype=np.int64)
+        r_count = np.full(1, M, dtype=np.int64)
+        depth = 0
+        while r_start.size:
+            K = r_start.shape[0]
+            lv_start = next_block
+            next_block += K
+            levels.append((lv_start, next_block))
+            remaining = MAX_DEPTH - depth
+            forced_blk = r_count > (a ** max(remaining - 1, 0))
+
+            sub_start = r_start
+            sub_count = r_count
+            sub_block = np.arange(K, dtype=np.int64)
+            for _ in range(s_rounds):
+                splittable = sub_count >= 2
+                n_split = int(splittable.sum())
+                if n_split == 0:
+                    break
+                perm = np.argsort(splittable.astype(np.int8), kind="stable")
+                keep_idx = perm[: perm.size - n_split]
+                split_idx = perm[perm.size - n_split :]
+                ss = sub_start[split_idx]
+                sc = sub_count[split_idx]
+                sb = sub_block[split_idx]
+                nl = _binary_split_host(order, ss, sc, forced_blk[sb], cent, ulo, uhi)
+                sub_start = np.concatenate([sub_start[keep_idx], ss, ss + nl])
+                sub_count = np.concatenate([sub_count[keep_idx], nl, sc - nl])
+                sub_block = np.concatenate([sub_block[keep_idx], sb, sb])
+            # The keys are unique, so any sort gives the device's order.
+            skey = np.argsort(sub_block * (M + 1) + sub_start)
+            sub_start = sub_start[skey]
+            sub_count = sub_count[skey]
+            sub_block = sub_block[skey]
+            slot = np.arange(sub_block.shape[0]) - np.searchsorted(
+                sub_block, sub_block, side="left"
+            )
+            is_leaf = sub_count == 1
+            kind = np.zeros((K, a), dtype=np.uint8)
+            ref = np.full((K, a), -1, dtype=np.int64)
+            kind[sub_block, slot] = np.where(is_leaf, 1, 2).astype(np.uint8)
+            child_ids = np.cumsum(~is_leaf) - 1 + next_block
+            ref[sub_block, slot] = np.where(is_leaf, order[sub_start], child_ids)
+            kind_rows.append(kind)
+            ref_rows.append(ref)
+            internal = np.flatnonzero(~is_leaf)
+            r_start = sub_start[internal]
+            r_count = sub_count[internal]
+            depth += 1
+            if depth > MAX_DEPTH:
+                raise RuntimeError("refit BVH exceeded its depth budget (builder bug)")
+
+    B = next_block
+    if B > (1 << (31 - bvh_arity)):  # noqa: SIM300 -- see _build_topology
+        raise ValueError(
+            f"refit BVH has {B} sibling blocks; the traversal stack packs "
+            f"block << {bvh_arity} into int32 entries"
+        )
+    return np.concatenate(kind_rows, 0), np.concatenate(ref_rows, 0), levels
+
+
 def build_refit_bvh(
     frame_lo,
     frame_hi,
@@ -314,12 +496,6 @@ def build_refit_bvh(
 
     valid = (frame_hi >= frame_lo).all(-1)  # [Tc, N]
     ever = valid.any(0)
-    pids = ever.nonzero(as_tuple=True)[0]  # tree -> orig
-    M = int(pids.shape[0])
-    if M >= LINK_PRIM_MASK:
-        raise ValueError(
-            f"refit BVH link words carry 29-bit primitive indices; got {M}"
-        )
 
     # Batch-union boxes + centroids of the ever-visible primitives (the SAH
     # metric of the validated "union" topology in _rt2_refit_sah.py).
@@ -329,11 +505,87 @@ def build_refit_bvh(
     vhi = torch.where(
         valid.unsqueeze(-1), frame_hi, torch.full_like(frame_hi, EMPTY_HI)
     )
-    ulo = vlo.amin(0)[pids]  # [M, 3]
-    uhi = vhi.amax(0)[pids]
-    cent = (ulo + uhi) * 0.5
+    union_lo = vlo.amin(0)  # [N, 3]
+    union_hi = vhi.amax(0)
+    if (
+        0 < N <= refit_host_topology_max_columns
+        and device.type != "cpu"
+        and union_lo.dtype == torch.float32
+    ):
+        # One readback carries everything the topology reads, and the tree
+        # goes back in one upload per table (see refit_host_topology_max_columns).
+        host = (
+            torch.cat((union_lo, union_hi, ever.unsqueeze(-1).to(union_lo.dtype)), -1)
+            .cpu()
+            .numpy()
+        )
+        pids = np.flatnonzero(host[:, 6] > 0)  # tree -> orig
+        M = int(pids.shape[0])
+        if M >= LINK_PRIM_MASK:
+            raise ValueError(
+                f"refit BVH link words carry 29-bit primitive indices; got {M}"
+            )
+        ulo = host[pids, 0:3]
+        uhi = host[pids, 3:6]
+        child_kind, child_ref, levels = _build_topology_host(
+            M, (ulo + uhi) * np.float32(0.5), ulo, uhi, bvh_arity
+        )
+        if M:
+            child_ref = np.where(
+                child_kind == 1, pids[np.maximum(child_ref, 0)], child_ref
+            )
+        return _refit_blocks(
+            vlo,
+            vhi,
+            torch.from_numpy(child_kind).to(device, non_blocking=True),
+            torch.from_numpy(child_ref).to(device, non_blocking=True),
+            levels,
+            Tc,
+            N,
+            opaque,
+            casts,
+            leaf_prim,
+        )
+    pids = ever.nonzero(as_tuple=True)[0]  # tree -> orig
+    M = int(pids.shape[0])
+    if M >= LINK_PRIM_MASK:
+        raise ValueError(
+            f"refit BVH link words carry 29-bit primitive indices; got {M}"
+        )
+    ulo = union_lo[pids]  # [M, 3]
+    uhi = union_hi[pids]
+    child_kind, child_ref, levels = _build_topology(
+        M, (ulo + uhi) * 0.5, ulo, uhi, bvh_arity
+    )
+    # Leaf refs: tree-primitive -> original primitive index.
+    if M:
+        child_ref = torch.where(
+            child_kind == 1, pids[child_ref.clamp_min(0)], child_ref
+        )
+    return _refit_blocks(
+        vlo,
+        vhi,
+        child_kind.to(device, non_blocking=True),
+        child_ref.to(device, non_blocking=True),
+        levels,
+        Tc,
+        N,
+        opaque,
+        casts,
+        leaf_prim,
+    )
 
-    a = bvh_arity
+
+def _build_topology(M, cent, ulo, uhi, a):
+    """The tree's shape over ``M`` ever-visible primitives, on ``cent``'s device.
+
+    Returns ``(child_kind [B, A] uint8, child_ref [B, A] long, levels)``:
+    ``child_kind`` is 0 for an absent slot, 1 for a leaf and 2 for an internal
+    child; ``child_ref`` is a leaf's TREE primitive index (the caller maps it
+    through ``pids``) or an internal child's block index; ``levels`` lists each
+    level's ``(block_start, block_end)``, root first.
+    """
+    device = cent.device
     s_rounds = a.bit_length() - 1  # log2(arity)
 
     # ------------------------------------------------------------------
@@ -442,12 +694,18 @@ def build_refit_bvh(
         )
     child_kind = torch.cat(kind_rows, 0)  # [B, A]
     child_ref = torch.cat(ref_rows, 0)  # [B, A]
-    # Leaf refs: tree-primitive -> original primitive index.
-    if M:
-        child_ref = torch.where(
-            child_kind == 1, pids[child_ref.clamp_min(0)], child_ref
-        )
+    return child_kind, child_ref, levels
 
+
+def _refit_blocks(
+    vlo, vhi, child_kind, child_ref, levels, Tc, N, opaque, casts, leaf_prim
+):
+    """Per-frame bounds and link words of a built topology, packed into the
+    kernel-facing ``RefitBVH`` blocks.
+    """
+    device = vlo.device
+    a = bvh_arity
+    B = int(child_kind.shape[0])
     # ------------------------------------------------------------------
     # Refit: per-frame child boxes + links per level, bottom-up, all frames
     # in one [Tb, blocks-in-level, ARITY, 3] reduction per level.
