@@ -1,8 +1,120 @@
 {
  "entries": {
+  "16ffc9d9c17ef9c2caa008cc0cadc7b6": {
+   "requires": {},
+   "seconds": 0.35,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "uint8",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      2,
+      []
+     ],
+     [
+      "A",
+      "uint8",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "int16",
+      3,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "bool",
+       true
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.refit_bvh_taichi:refit_pack_level"
+   },
+   "variants": [
+    "2d",
+    "3d",
+    "3d-default-light",
+    "shadows",
+    "glass"
+   ]
+  },
   "2a5476330b7d5d11a61d29925d9d94e9": {
    "requires": {},
-   "seconds": 0.79,
+   "seconds": 0.34,
    "spec": {
     "args": [
      [
@@ -193,9 +305,120 @@
     "shadows"
    ]
   },
+  "2b339bbf55f53022e49200c315d50fc2": {
+   "requires": {},
+   "seconds": 0.31,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "uint8",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      2,
+      []
+     ],
+     [
+      "A",
+      "uint8",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "int16",
+      3,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "bool",
+       true
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "T",
+      [
+       "bool",
+       true
+      ]
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.refit_bvh_taichi:refit_pack_level"
+   },
+   "variants": [
+    "3d",
+    "3d-default-light",
+    "shadows",
+    "glass"
+   ]
+  },
   "320cdaff70656736fe08a922094c4533": {
    "requires": {},
-   "seconds": 0.13,
+   "seconds": 0.08,
    "spec": {
     "args": [
      [
@@ -281,7 +504,7 @@
   },
   "3a51f1b4d759ebbc617f1fef931deb17": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -371,7 +594,7 @@
   },
   "3d4b29ed8eea0e128c56cb27076a6dab": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -454,7 +677,7 @@
   },
   "437e5cca4ab20feb7eab51257311fe86": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -495,7 +718,7 @@
   },
   "48a46811026513dd762b150e531cacf7": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -528,7 +751,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 34.73,
+   "seconds": 18.4,
    "spec": {
     "args": [
      [
@@ -772,7 +995,7 @@
   },
   "65263531ef3e007c706431aead1e8619": {
    "requires": {},
-   "seconds": 0.85,
+   "seconds": 0.43,
    "spec": {
     "args": [
      [
@@ -941,7 +1164,7 @@
   },
   "69f22f7c5b2fdf7ba6cdf2e53a055fa0": {
    "requires": {},
-   "seconds": 0.7,
+   "seconds": 0.33,
    "spec": {
     "args": [
      [
@@ -1146,7 +1369,7 @@
   },
   "70cfdc793e6e4a0df4987cd44fb5832e": {
    "requires": {},
-   "seconds": 1.9,
+   "seconds": 0.93,
    "spec": {
     "args": [
      [
@@ -1216,7 +1439,7 @@
   },
   "72259646438f3aa3cbb37ae237efa3d0": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -1278,7 +1501,7 @@
   },
   "76246c8d866cde01ddcb99c3a973fcec": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -1361,7 +1584,7 @@
   },
   "7ddfd827b075660c8ccaed3ca3bf779d": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -1405,7 +1628,7 @@
   },
   "7e5667092e02b311d7c89bc721b5814c": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.02,
    "spec": {
     "args": [
      [
@@ -1461,7 +1684,7 @@
   },
   "809fa45a1572b41cf1390260919aa936": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -1533,7 +1756,7 @@
   },
   "8622a1b18bff0cff7b09f39ef442299e": {
    "requires": {},
-   "seconds": 1.83,
+   "seconds": 0.94,
    "spec": {
     "args": [
      [
@@ -1749,7 +1972,7 @@
   },
   "8ba98f143a3fb210c0e20fdaa3ba87a3": {
    "requires": {},
-   "seconds": 0.14,
+   "seconds": 0.08,
    "spec": {
     "args": [
      [
@@ -1806,7 +2029,7 @@
   },
   "9145fb1b3375f853f9da4b08cf7b46a9": {
    "requires": {},
-   "seconds": 2.65,
+   "seconds": 1.3,
    "spec": {
     "args": [
      [
@@ -1992,7 +2215,7 @@
   },
   "99662f0b46624b6662612e07c7321bd7": {
    "requires": {},
-   "seconds": 0.11,
+   "seconds": 0.06,
    "spec": {
     "args": [
      [
@@ -2049,7 +2272,7 @@
   },
   "9abff45188bd2eeb4e7cae8edb81a5a5": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -2146,7 +2369,7 @@
   },
   "9aebfd8ff120e602766606cdef899193": {
    "requires": {},
-   "seconds": 0.43,
+   "seconds": 0.23,
    "spec": {
     "args": [
      [
@@ -2292,7 +2515,7 @@
   },
   "9c6a8ec057ab597e7e4603d70dc522e2": {
    "requires": {},
-   "seconds": 0.33,
+   "seconds": 0.19,
    "spec": {
     "args": [
      [
@@ -2394,7 +2617,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 29.42,
+   "seconds": 15.31,
    "spec": {
     "args": [
      [
@@ -2638,7 +2861,7 @@
   },
   "9d38abbc23e299e6e71dd2adc7517910": {
    "requires": {},
-   "seconds": 7.92,
+   "seconds": 3.9,
    "spec": {
     "args": [
      [
@@ -2952,7 +3175,7 @@
   },
   "9fd18930082054fab591e6f9f8c3d301": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -3011,7 +3234,7 @@
   },
   "a3ee59807576a8a009310a7e6454645a": {
    "requires": {},
-   "seconds": 0.51,
+   "seconds": 0.25,
    "spec": {
     "args": [
      [
@@ -3151,7 +3374,7 @@
   },
   "a4cd8299362737fdb84b6d40c9a1d34a": {
    "requires": {},
-   "seconds": 0.15,
+   "seconds": 0.09,
    "spec": {
     "args": [
      [
@@ -3178,7 +3401,7 @@
   },
   "b5c5e0b51f55bac2489a0c47e8b9713a": {
    "requires": {},
-   "seconds": 0.15,
+   "seconds": 0.11,
    "spec": {
     "args": [
      [
@@ -3270,7 +3493,7 @@
   },
   "b6587aa489926967dc7a41ab6571da8f": {
    "requires": {},
-   "seconds": 0.15,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -3349,7 +3572,7 @@
   },
   "b8f1979d09e7292bd7e7ad5a063bc39b": {
    "requires": {},
-   "seconds": 0.41,
+   "seconds": 0.14,
    "spec": {
     "args": [
      [
@@ -3451,7 +3674,7 @@
   },
   "b941c36eddb12146e70527b623fbbbb6": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -3523,7 +3746,7 @@
   },
   "bcebc0e9c8680001a2f93b52fb78a3ff": {
    "requires": {},
-   "seconds": 1.54,
+   "seconds": 0.62,
    "spec": {
     "args": [
      [
@@ -3730,7 +3953,7 @@
   },
   "c4648153df9190f14f4e38cd235f9428": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -3789,7 +4012,7 @@
   },
   "c73defcc9e8a5c00ab2fa6b94776260b": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -3903,7 +4126,7 @@
   },
   "cebb87ce6b3da4ec09930887ed75d168": {
    "requires": {},
-   "seconds": 0.36,
+   "seconds": 0.18,
    "spec": {
     "args": [
      [
@@ -3983,7 +4206,7 @@
   },
   "d234d7577202e0e7254398b87f118e08": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -4049,7 +4272,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 6.75,
+   "seconds": 4.85,
    "spec": {
     "args": [
      [
@@ -4363,7 +4586,7 @@
   },
   "e511268c779e3b8cc2d2d2e4556cedd0": {
    "requires": {},
-   "seconds": 8.1,
+   "seconds": 4.18,
    "spec": {
     "args": [
      [
@@ -4677,7 +4900,7 @@
   },
   "e6837dd971a968c75ae3c7dac6966ae2": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.02,
    "spec": {
     "args": [
      [
@@ -4714,7 +4937,7 @@
   },
   "ee57917c78ee5ee2ab5a412758168673": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.1,
    "spec": {
     "args": [
      [
@@ -4757,7 +4980,7 @@
   },
   "f195648f8def54d5eaf9369dbc30beda": {
    "requires": {},
-   "seconds": 25.01,
+   "seconds": 15.03,
    "spec": {
     "args": [
      [
@@ -5003,7 +5226,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 2.79,
+   "seconds": 1.35,
    "spec": {
     "args": [
      [
@@ -5215,7 +5438,7 @@
   },
   "f19cf3c5d2031560b7aa593f375c5ff0": {
    "requires": {},
-   "seconds": 38.74,
+   "seconds": 17.07,
    "spec": {
     "args": [
      [
@@ -5459,7 +5682,7 @@
   },
   "f45688fd25324e74de94c5dd59a03ad2": {
    "requires": {},
-   "seconds": 45.37,
+   "seconds": 17.24,
    "spec": {
     "args": [
      [
@@ -5703,7 +5926,7 @@
   },
   "f6d13eb7cb37fab8bb60a43ffc70bcd5": {
    "requires": {},
-   "seconds": 29.44,
+   "seconds": 17.38,
    "spec": {
     "args": [
      [
@@ -5947,7 +6170,7 @@
   },
   "f850c38dc3b91d40a6a6b4ea6fb00208": {
    "requires": {},
-   "seconds": 0.09,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -6031,7 +6254,7 @@
   },
   "f8b0941f5382429798f443dd78c63c5c": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -6078,7 +6301,7 @@
   },
   "f96b04cf50794dd1ca2d42247a952145": {
    "requires": {},
-   "seconds": 10.55,
+   "seconds": 3.86,
    "spec": {
     "args": [
      [
@@ -6392,7 +6615,7 @@
   },
   "fdaa18ad0ccf1114a39713472f5da3fc": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.06,
    "spec": {
     "args": [
      [
@@ -6429,7 +6652,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 2.61,
+   "seconds": 1.1,
    "spec": {
     "args": [
      [
