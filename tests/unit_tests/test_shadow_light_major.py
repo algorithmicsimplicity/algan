@@ -50,7 +50,7 @@ def test_light_major_keeps_primary_and_secondary_visibility_exact(
     secondary_slot = params.index("secondary")
     snapshot = SETTINGS.snapshot()
 
-    def make_checked(memory, sort_sources=None):
+    def make_checked(memory, sort_sources=None, merged=None):
         def trace(*call):
             args = list(call)
             args[order_slot] = False
