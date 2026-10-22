@@ -193,6 +193,55 @@ def clear_pack_cache():
     _table_cache.clear()
 
 
+#: Keep the render's per-chunk and per-tile host work from synchronizing the
+#: device where it does not need a value back (CUDA): small host-to-device
+#: uploads -- this module's offset tables and ``tracer._arena_copy`` -- are
+#: staged in page-locked memory and copied without blocking, scalar stores into
+#: device tensors are fills rather than item assignments, and the sheet
+#: resolve reads back only the CSR offsets its tiles start and end at. A copy
+#: from pageable memory drains the stream, and the sheet route misses the
+#: table cache on almost every launch -- each tile binds new sheet slices, and
+#: mode 2 of the resolve binds the ``shadow_vis`` the trace just filled -- so
+#: mode 2's upload waited out the whole primary shadow trace queued ahead of
+#: it: 360 times, 3.8 s of host time, in a 30-frame graphics UHD render. Every
+#: change is a scheduling change; the values are identical. ``None`` resolves
+#: on first use from ``ALGAN_OPT_DISABLE=tilesync``; an A/B script may assign
+#: True/False.
+defer_syncs = None
+
+
+def defer_syncs_enabled():
+    """Whether the render's avoidable host-device synchronizations are off."""
+    global defer_syncs
+    if defer_syncs is None:
+        # Imported lazily, as sheets.py does: the timeline module is not part
+        # of the renderer's import graph.
+        from algan.animation_timeline.timeline import _opt_disabled
+
+        defer_syncs = not _opt_disabled("tilesync")
+    return defer_syncs
+
+
+def _upload_table(values, device):
+    """``values`` as an int32 tensor on ``device``.
+
+    On CUDA the list is staged in page-locked memory and copied with
+    ``non_blocking``: the copy is ordered on the current stream ahead of the
+    launch that reads the table (Quadrants launches on the same stream), and
+    the caching host allocator holds the staging block until the copy has
+    run, so it is safe to drop here. The values are the same either way.
+    """
+    if device.type == "cuda" and defer_syncs_enabled():
+        try:
+            host = torch.tensor(values, dtype=torch.int32, pin_memory=True)
+        except RuntimeError:
+            # A host may be unable to lock more pages; pinning is optional.
+            pass
+        else:
+            return host.to(device, non_blocking=True)
+    return torch.tensor(values, dtype=torch.int32, device=device)
+
+
 def _table_key(spec, tensors):
     """The table inputs and validated layout, including strides per tensor.
 
@@ -317,7 +366,7 @@ def pack(spec, tensors):
     device = arenas[0].device
     # One allocation and one host-to-device copy for both tables: they are the
     # same dtype and the kernel takes contiguous slices of it.
-    table = torch.tensor(offsets + shapes, dtype=torch.int32, device=device)
+    table = _upload_table(offsets + shapes, device)
     if key is not None:
         if len(_table_cache) >= _TABLE_CACHE_SIZE:
             del _table_cache[next(iter(_table_cache))]
