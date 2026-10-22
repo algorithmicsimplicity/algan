@@ -190,8 +190,7 @@ def _opt_disabled(name):
     strokepixels,solobands,packedfragsort,binfragsort,fusedbinkeys,hostbackoff,
     writerrepeats,writerview,unrecordedset,rendergc,arenareuse,tilesync,loopsync,
     bgupload,exactfills,glossfuse,opaquefirst,nodewords,devshadow,adaptivepool
-    disables individual
-    optimizations (read once, first use).
+    disables individual optimizations (read once, first use).
     ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion A/B
     timeslice/lazyzeros through this; ``benchmarks/_query_rowdedup_parity.py``
     A/Bs rowdedup; ``benchmarks/_updater_clone_memo_parity.py`` A/Bs clonememo;
