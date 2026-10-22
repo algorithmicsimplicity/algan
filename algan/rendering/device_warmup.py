@@ -92,6 +92,11 @@ def _ops(device):
     """
     import torch
 
+    from algan.rendering.mps_compat import accumulate_dtype
+
+    # The renderer's wide accumulators, through the one module allowed to name
+    # float64 (test_mps_friendly enforces it); float64 on CUDA, where this runs.
+    wide = accumulate_dtype()
     big = 8192
     n = types.SimpleNamespace()
 
@@ -99,7 +104,7 @@ def _ops(device):
         n.f = torch.ones(8, device=device)
         n.f3 = torch.ones((4, 3), device=device)
         n.m = torch.ones((1, 2, 2), device=device)
-        n.d = torch.ones(8, device=device, dtype=torch.float64)
+        n.d = torch.ones(8, device=device, dtype=wide)
 
     def ints():
         n.i = torch.arange(8, device=device)
@@ -218,7 +223,7 @@ def _ops(device):
                 n.f.long(),
                 n.b.long(),
                 n.i32.long(),
-                n.f.double(),
+                n.f.to(wide),
                 n.d.float(),
                 n.f.half(),
             ),
