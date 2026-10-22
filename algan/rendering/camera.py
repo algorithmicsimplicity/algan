@@ -718,7 +718,28 @@ class Camera(Mob):
         return getattr(self, "_near", 0.0)
 
     def set_near(self, near):
-        """Set the near clip plane distance (0 disables near clipping)."""
+        """Set the near clip plane distance; 0 disables near clipping.
+
+        Configuration, not animation: takes effect immediately for the whole
+        render rather than being recorded.
+
+        Parameters
+        ----------
+        near
+            Distance in world units along the forward axis; finite and at least
+            ``0.0``.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If ``near`` is non-finite or negative, or if both clips are enabled
+            and ``near`` is not less than ``far``.
+        """
         near = self._validated_clip("near", near)
         self._validate_clip_order(near, self.far)
         self._near = near
@@ -734,7 +755,28 @@ class Camera(Mob):
         return getattr(self, "_far", 0.0)
 
     def set_far(self, far):
-        """Set the far clip distance (0 disables far clipping)."""
+        """Set the far clip distance; 0 disables far clipping.
+
+        Configuration, not animation: takes effect immediately for the whole
+        render rather than being recorded.
+
+        Parameters
+        ----------
+        far
+            Distance in world units of ray travel from the camera; finite and at
+            least ``0.0``.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If ``far`` is non-finite or negative, or if both clips are enabled
+            and ``far`` is not greater than ``near``.
+        """
         far = self._validated_clip("far", far)
         self._validate_clip_order(self.near, far)
         self._far = far
@@ -1200,7 +1242,9 @@ class Camera(Mob):
 
         The camera slides sideways to centre the Mob and in or out until the Mob just
         fits, leaving ``buffer_portion`` of margin. It does not rotate, so the viewing
-        angle you set is preserved.
+        angle you set is preserved. An orthographic camera, whose view does not change
+        with distance, instead resizes its frame to fit (backing off only if the Mob
+        is not wholly in front of it).
 
         Animation
         ---------

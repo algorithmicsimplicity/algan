@@ -91,6 +91,9 @@ class Group(Mob):
     ------
     TypeError
         If a member is not an :class:`~.Animatable` instance.
+    :class:`.AlganConfigurationError`
+        If the members belong to different Scenes, or ``scene`` is passed and is
+        not the members' Scene.
 
     Examples
     --------
@@ -247,6 +250,7 @@ class Group(Mob):
         self._follow_members()
 
     def get_animated_attribute(self, key, include_descendants=False, *args, **kwargs):
+        """Internal: read an attribute, re-centering ``location`` on the members first."""
         if key == "location" and not include_descendants:
             self._follow_members()
         return super().get_animated_attribute(key, include_descendants, *args, **kwargs)

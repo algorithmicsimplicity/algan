@@ -468,8 +468,11 @@ class Scene(RenderLoopMixin):
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``time`` is not a finite, non-negative number, or a keyword names
-            a parameter :meth:`~.Scene.wait` does not have.
+            If ``time`` is not a finite, non-negative number, or a keyword is
+            an animation-context timing parameter (``runtime``, ``run_time``,
+            ``rate_func``, ...), with the spelling to use instead.
+        TypeError
+            If any other keyword argument is passed.
         """
         if kwargs:
             _reject_context_kwargs(kwargs)
@@ -1594,6 +1597,13 @@ class Scene(RenderLoopMixin):
         list[torch.Tensor]
             The frame(s) that were plotted, as ``(channels, height, width)`` tensors
             with values in ``[0, 1]``.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``at`` is negative or not finite. Unlike
+            :meth:`~.Scene.save_frame`, a negative ``at`` is not an offset
+            back from the current time.
         """
         from algan.utils.plotting_utils import plot_tensor
 
@@ -1723,7 +1733,9 @@ class Scene(RenderLoopMixin):
             separator) has ``SETTINGS.paths.output_filename`` placed inside it.
             A missing extension defaults to ``.png``. Defaults to ``None``,
             meaning ``SETTINGS.paths.output_filename``. The path actually
-            written is reported, absolute, as ``result.output_path``.
+            written is reported, absolute, as ``result.output_path``. When
+            ``at`` is a sequence, each still is written to
+            ``<name>_<timestamp><extension>``, such as ``sheet_1.5.png``.
         video_settings
             Resolution and anti-aliasing for this still only, normally a
             preset such as ``HD``. Its frame rate is not used: the still shows
@@ -1769,7 +1781,9 @@ class Scene(RenderLoopMixin):
             sequence, in the input's order. Batched wall time is shared evenly
             among the rendered files. Inside a project screenshot pass, the
             result is ``"deferred"``; the project's return value contains the
-            completed results.
+            completed results. An empty list is returned, and nothing is
+            rendered, when a project run has filtered this still out or is
+            rendering video only, or when ``at`` is an empty sequence.
 
         Raises
         ------
@@ -2119,7 +2133,9 @@ class Scene(RenderLoopMixin):
             one of the presets (``PREVIEW``, ``LD``, ``MD``, ``HD``,
             ``PRODUCTION``, ``UHD``). Applies to this render only; the Scene's
             own settings are restored afterwards. Defaults to ``None``, meaning
-            ``SETTINGS.video``.
+            the settings the Scene was given (``Scene(video_settings=...)`` or
+            :meth:`~.Scene.set_video_settings`), or ``SETTINGS.video`` if it
+            was given none.
         overwrite
             Whether an existing file at the destination is replaced. Defaults to
             True; False skips rendering and returns a ``"skipped"`` result.
@@ -2194,7 +2210,9 @@ class Scene(RenderLoopMixin):
             Metadata with ``status`` (``"rendered"`` or ``"skipped"``),
             ``output_path``, ``walltime_seconds``, the resolved
             ``render_plan``, and ``passes``: the directory of each pass
-            written.
+            written. Inside a project run that does not allow video renders,
+            nothing is rendered and a ``"skipped"`` result naming the
+            destination is returned.
 
         Raises
         ------
@@ -2262,7 +2280,58 @@ class Scene(RenderLoopMixin):
 
     @staticmethod
     def render_all_funcs(*args, **kwargs):
-        """Render discovered scene functions in isolated Scene contexts."""
+        """Render every scene function in a module, each to its own video.
+
+        Finds the module's functions decorated with ``@algan_scene`` (or, if
+        there are none, its zero-argument functions, with a
+        ``LegacySceneDiscoveryWarning``), and runs each one in source order
+        inside a fresh :class:`~.Scene`, then saves that Scene's video as
+        ``<index>_<name>.<file_extension>`` in a directory named after the
+        module.
+
+        Parameters
+        ----------
+        module_name
+            The module to search: its name (``__name__`` of a script) or the
+            module object.
+        video_settings
+            Settings for every render. Defaults to ``None``, meaning
+            ``SETTINGS.video``.
+        profile
+            Whether to profile the run with ``cProfile``, writing
+            ``profiler_dump.txt``. Defaults to False.
+        overwrite
+            Whether existing videos are replaced. Defaults to True.
+        start_index, max_rendered
+            Render only the functions from ``start_index`` (negative counts
+            from the end) onwards, and at most ``max_rendered`` of them
+            (``-1``, the default, for no limit). ``start_index`` defaults
+            to ``0``.
+        output_directory, output_root
+            Where the videos go. Default to ``None``, meaning
+            ``SETTINGS.paths.output_directory`` and
+            ``SETTINGS.paths.output_root``.
+        file_extension
+            Container of each video, without the dot. Defaults to ``"mp4"``.
+        smoke_test
+            Run every function but render nothing. Defaults to False.
+        prefix
+            Only functions whose ``__module__`` starts with this are
+            considered. Defaults to ``None``, meaning the module's own name.
+        funcs
+            An explicit list of ``(name, function)`` pairs to render instead
+            of searching the module. Defaults to ``None``.
+        speech_source
+            Speech source each Scene's narration uses. Defaults to ``None``.
+        **kwargs
+            Passed on to every :meth:`~.Scene.save_video` call, such as
+            ``background`` or ``codec``.
+
+        Returns
+        -------
+        list of RenderResult
+            One result per video rendered; empty when ``smoke_test`` is True.
+        """
         from algan.utils.algan_utils import render_all_funcs
 
         return render_all_funcs(*args, **kwargs)

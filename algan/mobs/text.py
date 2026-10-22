@@ -1738,6 +1738,22 @@ class Text(Tex):
 
         Spawn the text without its ordinary entrance first:
         ``Text(...).spawn(False).write()``.
+
+        Animation
+        ---------
+        Recorded as an animation, timed as in :meth:`~algan.mobs.text.Tex.write`.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed to
+            :func:`~algan.animations.manim_animations.DrawBorderThenFill`. A
+            ``stroke_color`` given here overrides the white trace.
+
+        Returns
+        -------
+        :class:`~algan.mobs.text.Text`
+            This text, so calls can be chained.
         """
         if self._write_uses_default_pango_border and "stroke_color" not in kwargs:
             kwargs["stroke_color"] = WHITE
@@ -1745,13 +1761,34 @@ class Text(Tex):
 
 
 class TexTriangulated(Tex):
-    """LaTeX text rendered as one packed batch of triangulated glyphs."""
+    """LaTeX text rendered as one packed batch of triangulated glyphs.
+
+    Takes the same arguments as :class:`~algan.mobs.text.Tex` and behaves the
+    same way (indexing, :meth:`~algan.mobs.text.Tex.get_segment`,
+    :meth:`~algan.mobs.text.Tex.write`); only the glyph geometry differs, being
+    filled triangle meshes rather than bezier outlines.
+    """
 
     triangulated = True
 
 
 class TextTriangulated(TexTriangulated):
-    """Triangulated plain text; accepts the same arguments as :class:`Text`."""
+    """Plain text rendered as one packed batch of triangulated glyphs.
+
+    The text is always typeset through LaTeX's text mode (the same layout
+    :class:`~algan.mobs.text.Text` falls back to without Pango), never through
+    Pango, so Pango-only styling such as ``font``, ``weight`` or ``color_map``
+    is not supported here.
+
+    Parameters
+    ----------
+    text
+        The text to display. Cast to ``str``.
+    **kwargs
+        Passed to :class:`~algan.mobs.text.TexTriangulated` -- notably
+        ``font_size`` (defaults to ``48``, as for :class:`~algan.mobs.text.Text`),
+        ``color`` and ``location``.
+    """
 
     def __init__(self, text, **kwargs):
         # Reuse Text's fallback layout (one row per line, characters set
@@ -1868,7 +1905,48 @@ class MarkupText(Text):
 
 
 class Paragraph(Group):
-    """A group of individually addressable text lines."""
+    r"""A block of text lines, each its own :class:`~algan.mobs.text.Text`.
+
+    Every argument is converted to ``str`` and split on newlines, and each
+    resulting line becomes one :class:`~algan.mobs.text.Text` member, stacked
+    top to bottom. Index the paragraph (``paragraph[1]``) or use ``chars`` to
+    reach one line.
+
+    Animation
+    ---------
+    Constructing a ``Paragraph`` records nothing: the lines are laid out before
+    the paragraph is spawned.
+
+    Parameters
+    ----------
+    *text
+        One or more strings. Each is split on ``"\n"``, so
+        ``Paragraph("a", "b")`` and ``Paragraph("a\nb")`` give the same two
+        lines. No strings at all gives one empty line.
+    line_spacing
+        Gap between consecutive lines, in world units. Defaults to ``None``,
+        meaning ``0.2``.
+    alignment
+        ``"left"``, ``"center"`` or ``"right"``: which edge the lines line up
+        on. Defaults to ``None``, which centers them like ``"center"``.
+    **kwargs
+        Passed to every line's :class:`~algan.mobs.text.Text` -- notably
+        ``font_size``, ``color`` and ``font`` -- and ``scene``/``add_to_scene``
+        to the Group.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``alignment`` is not one of the values above.
+
+    Attributes
+    ----------
+    lines_text
+        The source lines, after splitting, as a list of strings.
+    chars
+        The line Mobs, in order. Manim's name; each entry is a whole line, not
+        a character.
+    """
 
     @_reports_refused_keywords
     def __init__(self, *text, line_spacing=None, alignment=None, **kwargs):
