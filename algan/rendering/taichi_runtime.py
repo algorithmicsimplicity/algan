@@ -699,9 +699,10 @@ def taichi_launch_is_local(device):
       default and have no device gate of their own, so ``key_run_order``,
       ``pixel_group_order`` and ``rank_groups`` run on Metal once the
       zero-copy hook is installed.
-    * ``ALGAN_REFIT_PACK_KERNEL``, ``ALGAN_SHEET_METADATA_KERNEL`` and
-      ``ALGAN_DEVICE_RADIX_SORT`` ask this too, but are opt-in on every
-      device, so their kernels stay off on Metal unless asked for.
+    * ``ALGAN_SHEET_METADATA_KERNEL`` and ``ALGAN_DEVICE_RADIX_SORT`` ask
+      this too, but are opt-in on every device, so their kernels stay off on
+      Metal unless asked for; ``ALGAN_REFIT_PACK_KERNEL`` (on by default) is
+      gated off on MPS by ``refit_bvh`` itself.
     * The PN level searches are decided first by
       ``pn_criterion_kernel_active``, which wants a CUDA render device or the
       CPU arch and so still answers no there; this function only vets their

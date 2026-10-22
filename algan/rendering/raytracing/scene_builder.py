@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from algan.environment import env_int
+from algan.environment import env_flag, env_int
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
@@ -229,6 +229,19 @@ def _iter_primitive_source_tensors(primitive, include_shader_params=True):
     yield from zip(primitive.shader_param_names, values)
 
 
+#: Upload projection sources without a stream synchronisation per tensor.
+#: They are pageable host memory, which the driver stages before the copy call
+#: returns, so the host copy is free to change or go the moment it does; a
+#: blocking copy additionally waits out every kernel the projection of the
+#: previous primitive queued (a hundred-odd waits in a text-heavy batch), so
+#: the device sat idle while the host caught up.
+async_source_upload = env_flag("ALGAN_ASYNC_SOURCE_UPLOAD", True)
+
+
+def _to_device(value, device):
+    return value.to(device, non_blocking=async_source_upload and not value.is_pinned())
+
+
 def upload_primitive_source(primitive, device):
     """Move a primitive's pre-projection source geometry onto ``device`` so
     ``project_to_screen`` (and its vertex shader) run there (project-on-gpu).
@@ -237,7 +250,7 @@ def upload_primitive_source(primitive, device):
         primitive, include_shader_params=False
     ):
         if value.device != device:
-            setattr(primitive, name, value.to(device))
+            setattr(primitive, name, _to_device(value, device))
     # The default-material seed is a vertex-shader input like any other. A
     # primitive built by the no-material fallback carries the process default
     # material's parameter values (SETTINGS.style.default_material), and the
@@ -249,7 +262,7 @@ def upload_primitive_source(primitive, device):
     seed = getattr(primitive, "default_material_params", None)
     if seed:
         primitive.default_material_params = {
-            name: value.to(device)
+            name: _to_device(value, device)
             if torch.is_tensor(value) and value.device != device
             else value
             for name, value in seed.items()
@@ -259,7 +272,7 @@ def upload_primitive_source(primitive, device):
     for i in range(len(primitive.shader_param_values)):
         value = primitive.shader_param_values[i]
         if value.device != device:
-            primitive.shader_param_values[i] = value.to(device)
+            primitive.shader_param_values[i] = _to_device(value, device)
 
 
 def gpu_project_input_bytes(primitives):
@@ -682,7 +695,52 @@ def _tex_meta_placeholder(device):
 content_dedup_min_texels = max(0, env_int("ALGAN_CONTENT_DEDUP_MIN_TEXELS", 4096))
 
 
-def _split_promotable(p, _append_texture, device, scene, note=None):
+#: Append a batch's promoted 1x1 maps with one decode and one concatenation
+#: for all of them (``_append_promoted_maps``) instead of one decode and two
+#: appends per group. The same texels at the same offsets; the switch exists to
+#: A/B that claim.
+promoted_maps_batched = env_flag("ALGAN_PROMOTED_MAPS_BATCHED", True)
+
+
+def _append_promoted_maps(cmap_all, mmap_all, c_const, m_const, append_texels):
+    """Append every promoted group's color and material map at once.
+
+    Per group ``g`` this lays down exactly what ``_append_texture`` lays down
+    for ``cmap_all[:t, g]`` (``is_color``) and then ``mmap_all[:t', g]``, in
+    that order, ``t`` being 1 where the map is time-constant: the color
+    channels decoded to linear light (when the renderer works in it), five
+    channels, frames flattened along the texel axis. The decode is elementwise,
+    and on a CUDA device every element takes the same arithmetic whatever the
+    tensor around it, so decoding all groups and frames at once and slicing is
+    the per-group decode bit for bit. (A host decode is not position-blind --
+    its SIMD body and scalar tail may disagree in the last ulp -- which is why
+    only CUDA batches take this path.) Returns ``[(color_meta, material_meta)]``
+    per group, each ``(offset, 1, 1, frames, -1)``.
+    """
+    colors = cmap_all.float()
+    if rt_settings.linear_color_space:
+        colors = torch.cat((srgb_to_linear(colors[..., :3]), colors[..., 3:]), -1)
+    materials = mmap_all.float()
+    pieces, metas = [], []
+    offset = append_texels(None)
+    for gid in range(colors.shape[1]):
+        color = colors[: 1 if c_const[gid] else colors.shape[0], gid]
+        material = materials[: 1 if m_const[gid] else materials.shape[0], gid]
+        metas.append(
+            (
+                (offset, 1, 1, color.shape[0], -1),
+                (offset + color.shape[0], 1, 1, material.shape[0], -1),
+            )
+        )
+        offset += color.shape[0] + material.shape[0]
+        pieces += [color, material]
+    append_texels(torch.cat(pieces).unsqueeze(0))
+    return metas
+
+
+def _split_promotable(
+    p, _append_texture, device, scene, note=None, _append_texels=None
+):
     """Partition a non-textured triangle primitive into the triangles that must
     stay per-vertex and the triangles whose color + material are constant
     across their three corners and every frame (and are non-glowing). The
@@ -799,16 +857,34 @@ def _split_promotable(p, _append_texture, device, scene, note=None):
         scene["tex_has_refractive"] = True
     if flags[2 * G + 1]:
         scene["tex_has_reflective"] = True
+    batched = (
+        _append_texels is not None
+        and promoted_maps_batched
+        and cmap_all.is_cuda
+        and SETTINGS.raytracing.texture_time_flat
+        and (
+            not SETTINGS.raytracing.texture_content_dedup
+            or max(Tc, Te) < content_dedup_min_texels
+        )
+    )
+    if batched:
+        metas = _append_promoted_maps(
+            cmap_all, mmap_all, c_const_h, m_const_h, _append_texels
+        )
     group_meta = []
     for gid in range(G):
-        cmap = cmap_all[: 1 if c_const_h[gid] else Tc, gid : gid + 1]  # [T',1,5]
-        color_meta = _append_texture(
-            cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous(), is_color=True
-        )
-        mmap = mmap_all[: 1 if m_const_h[gid] else Te, gid : gid + 1]
-        material_meta = _append_texture(
-            mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous()
-        )
+        if batched:
+            color_meta, material_meta = metas[gid]
+        else:
+            cmap = cmap_all[: 1 if c_const_h[gid] else Tc, gid : gid + 1]  # [T',1,5]
+            color_meta = _append_texture(
+                cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous(),
+                is_color=True,
+            )
+            mmap = mmap_all[: 1 if m_const_h[gid] else Te, gid : gid + 1]
+            material_meta = _append_texture(
+                mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous()
+            )
         group_meta.append(
             [
                 *color_meta[:3],
@@ -1693,6 +1769,16 @@ def _merge_scene(
         _texel_offset[0] += 256
         return base
 
+    def _append_texels(flat):
+        """Append ``[1, n, 5]`` texels as they are and return their offset;
+        ``None`` appends nothing and returns where the next texels would go.
+        """
+        offset = _texel_offset[0]
+        if flat is not None:
+            _texture_tensors.append(flat)
+            _texel_offset[0] += flat.shape[1]
+        return offset
+
     def _append_tex_opacity(op):
         """Append one color map's per-frame opacity region; ``(row, frames)``.
 
@@ -1944,6 +2030,7 @@ def _merge_scene(
                     device,
                     scene,
                     note=_note if signature is not None else None,
+                    _append_texels=_append_texels,
                 )
             else:
                 Np = p._rt_tri_pos.shape[1]

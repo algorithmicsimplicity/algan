@@ -3641,6 +3641,17 @@ pn_geometry_slack = env_flag("ALGAN_PN_GEOMETRY_SLACK", True)
 # ALGAN_PN_ANISOTROPIC_DICE=0 restores the uniform per-patch grid.
 pn_anisotropic_dice = env_flag("ALGAN_PN_ANISOTROPIC_DICE", True)
 
+# The PN dice's launch diet (primitives.LogicalPNTrianglePrimitive._dice_logical_pn):
+# every dice shape's rows from one sort, positions and normals snapped in one
+# call, and an eager evaluation's patch weights built once per shape. The same
+# arithmetic on the same values -- the switch exists to A/B that claim.
+pn_dice_launch_diet = env_flag("ALGAN_PN_DICE_LAUNCH_DIET", True)
+
+# Plan the circuit inward-sign probe on the host
+# (primitives._probe_inward_signs_host_planned) rather than reading its plan
+# back from the device piece by piece. Bit for bit the same signs.
+inward_signs_host_plan = env_flag("ALGAN_INWARD_SIGNS_HOST_PLAN", True)
+
 
 def set_fragment_shading(enabled):
     """Toggle per-fragment shading of the *deterministic* ray tracer.

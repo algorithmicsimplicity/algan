@@ -193,3 +193,94 @@ def test_packed_refit_static_opacity_and_empty_tree(hidden, monkeypatch):
         candidate = build_refit_bvh(lo, hi, num_frames=4, opaque=opacity)
     assert launches, "the packed kernel must actually run in the parity test"
     assert torch.equal(_block_bits(candidate), _block_bits(reference))
+
+
+def _topology_inputs(n, kind, seed):
+    """``[n, 3]`` union boxes: scattered, clustered with exact duplicates (the
+    median-split fallbacks), or a long line (the depth budget's forced splits).
+    """
+    generator = torch.Generator().manual_seed(seed)
+    if kind == "scattered":
+        lo = torch.randn(n, 3, generator=generator) * 10
+    elif kind == "duplicates":
+        lo = torch.randint(0, 4, (n, 3), generator=generator).float()
+    else:
+        lo = torch.zeros(n, 3)
+        lo[:, 0] = torch.arange(n, dtype=torch.float32) ** 2
+    hi = lo + torch.rand(n, 3, generator=generator)
+    return lo, hi
+
+
+@pytest.mark.parametrize("kind", ["scattered", "duplicates", "line"])
+@pytest.mark.parametrize("n", [0, 1, 2, 3, 37, 1000])
+def test_host_topology_is_the_device_topology(n, kind):
+    """The NumPy build is the torch build, bit for bit, on every device."""
+    import numpy as np
+
+    from algan.rendering.raytracing import refit_bvh
+
+    lo, hi = _topology_inputs(n, kind, seed=n)
+    lo_np, hi_np = lo.numpy(), hi.numpy()
+    kind_h, ref_h, levels_h = refit_bvh._build_topology_host(
+        n, (lo_np + hi_np) * np.float32(0.5), lo_np, hi_np, refit_bvh.bvh_arity
+    )
+    devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+    for device in devices:
+        dlo, dhi = lo.to(device), hi.to(device)
+        kind_d, ref_d, levels_d = refit_bvh._build_topology(
+            n, (dlo + dhi) * 0.5, dlo, dhi, refit_bvh.bvh_arity
+        )
+        assert levels_d == levels_h, device
+        assert np.array_equal(kind_d.cpu().numpy(), kind_h), device
+        assert np.array_equal(ref_d.cpu().numpy(), ref_h), device
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu"] + (["cuda"] if torch.cuda.is_available() else []),
+)
+def test_host_topology_builds_the_device_tree(monkeypatch, device):
+    """Through ``build_refit_bvh``: moving visibility, flags and slivers."""
+    from algan.rendering.raytracing import refit_bvh
+
+    generator = torch.Generator().manual_seed(5)
+    lo = (torch.randn(6, 700, 3, generator=generator) * 4).to(device)
+    hi = lo + torch.rand(6, 700, 3, generator=generator).to(device)
+    lo[2, ::5], hi[2, ::5] = 1e17, -1e17
+    lo[:, ::97], hi[:, ::97] = 1e17, -1e17  # never visible
+    opaque = (torch.rand(6, 700, generator=generator) > 0.3).to(device)
+    casts = (torch.rand(700, generator=generator) > 0.2).to(device)
+    leaf_prim = (torch.arange(700) // 2).to(device)
+    trees = []
+    # 0 keeps the topology on the tensors' own device; the second arm takes
+    # the NumPy build (a CPU render takes it at any bound above 0).
+    for bound in (0, 1 << 20):
+        monkeypatch.setattr(refit_bvh, "refit_host_topology_max_columns", bound)
+        trees.append(
+            build_refit_bvh(lo, hi, opaque=opaque, casts=casts, leaf_prim=leaf_prim)
+        )
+    assert trees[0].num_blocks == trees[1].num_blocks
+    assert torch.equal(_block_bits(trees[0]), _block_bits(trees[1]))
+
+
+def test_host_topology_is_quiet_about_huge_coordinates():
+    """NumPy warns where a product of ~1e19 coordinates overflows; torch is
+    silent there, and the overflow is masked out of the costs either way.
+    """
+    import warnings
+
+    from algan.rendering.raytracing import refit_bvh
+
+    torch.manual_seed(3)
+    lo = torch.rand(1, 64, 3) * 1e20
+    hi = lo + torch.rand(1, 64, 3) * 1e20
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        host = build_refit_bvh(lo, hi)
+    device = refit_bvh.refit_host_topology_max_columns
+    try:
+        refit_bvh.refit_host_topology_max_columns = 0
+        reference = build_refit_bvh(lo, hi)
+    finally:
+        refit_bvh.refit_host_topology_max_columns = device
+    assert torch.equal(_block_bits(host), _block_bits(reference))
