@@ -1,9 +1,15 @@
 """A runtime child index must preserve packed BVH links, including NaN bits."""
 
+import pytest
 import torch
 
 from algan.rendering.raytracing.raytrace_kernels_taichi import NODE_ARG, _refit_link
-from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16
+from algan.rendering.raytracing.stbvh import (
+    bvh_arity,
+    bvh_block_f16,
+    bvh_node_words,
+    kernel_blocks,
+)
 from algan.rendering.taichi_runtime import init_taichi
 from algan.settings._startup import render_device
 from algan.taichi_compat import ti
@@ -17,7 +23,23 @@ def _decode_links(
         out[i] = _refit_link(i // bvh_arity, choices[i], blocks)
 
 
-def test_refit_links_preserve_all_bits_at_dynamic_child_indices():
+def _kernel_view(blocks, fmt):
+    """The block array as the kernels take it: ``native`` is
+    ``stbvh.kernel_blocks`` (words, or the lane vectors under
+    ``ALGAN_BVH_NODE_WORDS=0``); the others force one word format.
+    """
+    if fmt == "native":
+        return kernel_blocks(blocks)
+    lanes = blocks.reshape(blocks.shape[0], -1)
+    if fmt == "scalar":
+        return lanes
+    return lanes.view(torch.int64 if fmt == "i64" else torch.int32)
+
+
+@pytest.mark.parametrize("fmt", ["native", "i64", "i32", "scalar"])
+def test_refit_links_preserve_all_bits_at_dynamic_child_indices(fmt):
+    if fmt != "native" and not bvh_node_words:
+        pytest.skip("ALGAN_BVH_NODE_WORDS=0 takes only the lane vectors")
     init_taichi()
     device = render_device()
     # Internal, invalid, leaf, opaque and non-casting link words. Several
@@ -39,5 +61,5 @@ def test_refit_links_preserve_all_bits_at_dynamic_child_indices():
         blocks.view(torch.int32)[:, 6] = words
     choices = torch.arange(bvh_arity - 1, -1, -1, dtype=torch.int32).repeat(8)
     out = torch.empty(choices.numel(), dtype=torch.int32, device=device)
-    _decode_links(blocks.to(device), choices.to(device), out)
+    _decode_links(_kernel_view(blocks.to(device), fmt), choices.to(device), out)
     assert torch.equal(out.cpu(), words.flip(1).reshape(-1))
