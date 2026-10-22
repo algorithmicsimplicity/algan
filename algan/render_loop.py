@@ -3013,9 +3013,11 @@ class RenderLoopMixin:
         index = self._actor_window_index(actors)
         indexed_actors, spawns = index[0], index[1]
         candidates = self._actors_in_window(index, start_time, max_end_time)
+        # The candidates' spawn times in one read rather than a scalar read
+        # per actor (the same float64 values ``float(spawns[i])`` gave).
         primitive_actors = [
-            (indexed_actors[i], float(spawns[i]))
-            for i in candidates.tolist()
+            (indexed_actors[i], spawn)
+            for i, spawn in zip(candidates.tolist(), spawns[candidates].tolist())
             if hasattr(indexed_actors[i], "get_render_primitives")
         ]
 
