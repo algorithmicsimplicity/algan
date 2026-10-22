@@ -976,6 +976,27 @@ def worker_environment(context_env=None):
     return env
 
 
+def _kill_tree(process):
+    """Kill ``process`` and everything it started.
+
+    ``sys.executable`` in a venv on Windows is a launcher that runs the base
+    interpreter as its child, so killing the ``Popen`` alone left the real
+    worker compiling -- an orphan holding a core through the render that
+    stopped its pool, until its megakernel finished. The children are listed
+    before the parent dies, while they can still be found by it.
+    """
+    children = []
+    with contextlib.suppress(Exception):
+        import psutil
+
+        children = psutil.Process(process.pid).children(recursive=True)
+    with contextlib.suppress(Exception):
+        process.kill()
+    for child in children:
+        with contextlib.suppress(Exception):
+            child.kill()
+
+
 class PrecompilePool:
     """Worker processes compiling a list of jobs, longest first.
 
@@ -1044,8 +1065,7 @@ class PrecompilePool:
                     job.reason = "pool stopped"
             self._queue = []
         for worker in workers:
-            with contextlib.suppress(Exception):
-                worker.process.kill()
+            _kill_tree(worker.process)
         for worker in workers:
             with contextlib.suppress(Exception):
                 worker.process.wait(timeout=5)

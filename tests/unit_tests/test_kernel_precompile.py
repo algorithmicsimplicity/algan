@@ -30,6 +30,7 @@ parallelism.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -467,6 +468,34 @@ def test_a_worker_never_starts_a_pool_of_its_own(recorded_pools, monkeypatch):
     monkeypatch.setattr(kp, "current_script", lambda: "/worker.py")
     assert kp._pool_for_current_settings("test") is None
     assert recorded_pools == []
+
+
+def test_stopping_a_worker_kills_the_interpreter_its_launcher_started(tmp_path):
+    """A venv's ``python.exe`` on Windows is a launcher; the worker is its child."""
+    psutil = pytest.importorskip("psutil")
+    marker = tmp_path / "child.pid"
+    code = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+    parent = subprocess.Popen([sys.executable, "-c", code])
+    try:
+        for _ in range(200):
+            if marker.exists() and marker.read_text():
+                break
+            threading.Event().wait(0.05)
+        assert marker.read_text()
+        tree = psutil.Process(parent.pid).children(recursive=True)
+        assert tree
+        kp._kill_tree(parent)
+        parent.wait(timeout=10)
+        _, alive = psutil.wait_procs(tree, timeout=10)
+        assert alive == []
+    finally:
+        with contextlib.suppress(Exception):
+            parent.kill()
 
 
 def test_scripts_are_remembered_most_recent_first_and_bounded():
