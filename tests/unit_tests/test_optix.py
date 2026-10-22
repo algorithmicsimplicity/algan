@@ -549,3 +549,23 @@ def test_a_failed_launch_renders_the_software_image(tmp_path, monkeypatch):
     assert "gather" in calls
     assert np.array_equal(hardware, software)
 
+
+def test_the_device_shadow_glue_stays_where_optix_cannot_run(monkeypatch):
+    from algan.animation_timeline import timeline
+    from algan.rendering.raytracing import optix as optix_package
+    from algan.rendering.raytracing import tracer
+
+    monkeypatch.setattr(timeline, "_OPT_DISABLED", frozenset())
+    monkeypatch.setattr(rt_settings, "shadow_ray_parallel", False)
+
+    monkeypatch.setattr(rt_settings, "optix", True)
+    # A CPU render never takes the OptiX arm, so its glue is unchanged.
+    assert tracer._device_shadow_glue("cpu") is True
+    if not torch.cuda.is_available():
+        return
+    # No runtime (no RT cores, no driver support): unchanged too.
+    monkeypatch.setattr(optix_package, "runtime_for", lambda device: None)
+    assert tracer._device_shadow_glue("cuda") is True
+    # A runtime that came up: the host glue, which the OptiX arm plugs into.
+    monkeypatch.setattr(optix_package, "runtime_for", lambda device: object())
+    assert tracer._device_shadow_glue("cuda") is False

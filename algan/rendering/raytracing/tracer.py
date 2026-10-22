@@ -407,10 +407,27 @@ def _device_shadow_glue(device):
     return (
         not _tracer_opt_disabled("devshadow")
         and not rt_settings.shadow_ray_parallel
-        # The OptiX shadow arm is a queue arm too (shadow_queue.py).
-        and not (rt_settings.optix and not _tracer_opt_disabled("optixshadow"))
         and torch.device(device).type in ("cuda", "cpu")
+        # The OptiX shadow arm is a queue arm too (shadow_queue.py).
+        and not _optix_shadows_will_run(device)
     )
+
+
+def _optix_shadows_will_run(device):
+    """Whether the OptiX shadow arm can take this device's shadow rays.
+
+    The switch on and not ``optixshadow``-disabled, a CUDA device, and a
+    runtime that came up. A CPU render, or a GPU OptiX declines, keeps every
+    path it would have without the switch.
+    """
+    if not rt_settings.optix or _tracer_opt_disabled("optixshadow"):
+        return False
+    device = torch.device(device)
+    if device.type != "cuda":
+        return False
+    from algan.rendering.raytracing.optix import runtime_for
+
+    return runtime_for(device) is not None
 
 
 def _optix_gather(
