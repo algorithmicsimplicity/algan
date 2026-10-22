@@ -22,6 +22,21 @@ _GAS_KEY = "_optix_gather_gas"
 #: Launches taken and rays gathered on RT cores, for tests and harnesses.
 STATS = {"launches": 0, "rays": 0}
 
+_LAUNCH_FAILURE_LOGGED = [False]
+
+
+def launch_failed(exc):
+    """Log a gather launch failure once; the caller falls back to software."""
+    if not _LAUNCH_FAILURE_LOGGED[0]:
+        _LAUNCH_FAILURE_LOGGED[0] = True
+        from algan.logging.logger import get_logger
+
+        get_logger(__name__).warning(
+            "OptiX: a gather launch failed, so those rays were traversed in "
+            "software: %s",
+            exc,
+        )
+
 
 def gather_gas(runtime, merged, tri_pos):
     """This batch's gather GASes (every visible triangle), built on first use.

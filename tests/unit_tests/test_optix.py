@@ -524,3 +524,28 @@ def test_path_tracer_gather_agrees_with_the_software_walk(
     if opaque_only:
         # One hit each, exactly as _nearest_surface_g answers.
         assert verify["same_count"] >= 0.998 * verify["rays"]
+
+
+def test_a_failed_launch_renders_the_software_image(tmp_path, monkeypatch):
+    """Every OptiX launch refused: the frame is the software walk's.
+
+    Shadows and gathers fall back per launch, byte for byte.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing.optix import runtime as optix_runtime
+
+    _runtime()
+    calls = []
+
+    def refuse(self, program, params, width):
+        calls.append(program)
+        raise optix_runtime.abi.OptixError("refused for the test", code=7050)
+
+    monkeypatch.setattr(optix_runtime.OptixRuntime, "launch", refuse)
+    hardware = _render_mixed(tmp_path / "on.png", True, 3)
+    software = _render_mixed(tmp_path / "off.png", False, 3)
+    assert "shadow" in calls
+    assert "gather" in calls
+    assert np.array_equal(hardware, software)
+

@@ -471,47 +471,59 @@ def _optix_gather(
     gas = optix_gather.gather_gas(runtime, merged, a_pos)
     if gas is None:
         return False
-    tri_f, tri_i = hit_f, hit_i
-    if has_bez:
-        tri_f = memory.get_tensor((kbuf, 4, na), torch.float32)
-        tri_i = memory.get_tensor((kbuf, 2, na), torch.int32)
-    optix_gather.gather(
-        runtime,
-        gas,
-        active=active,
-        num_active=na,
-        rs_ro=rs_ro,
-        rs_rd=rs_rd,
-        rs_sca=rs_sca,
-        rs_int=rs_int,
-        rs_pix=rs_pix,
-        hit_f=tri_f,
-        hit_i=tri_i,
-        time_start=time_start,
-        ray_offset=ray_offset,
-        pixels_per_frame=int(width) * int(height),
-        layer_offset=layer_offset,
-        closest_only=bool(opaque_closest),
-    )
-    if has_bez:
-        from algan.rendering.raytracing.optix_gather_taichi import optix_gather_merge
+    from algan.rendering.raytracing.optix._abi import OptixError
 
-        tri_count = memory.get_tensor((na,), torch.int32)
-        torch.index_select(rs_int[:, 3], 0, active[:na], out=tri_count)
-        software(0)
-        optix_gather_merge(
-            active,
-            na,
-            rs_int,
-            tri_count,
-            tri_f,
-            tri_i,
-            hit_f,
-            hit_i,
-            1 if opaque_closest else kbuf,
+    try:
+        tri_f, tri_i = hit_f, hit_i
+        if has_bez:
+            tri_f = memory.get_tensor((kbuf, 4, na), torch.float32)
+            tri_i = memory.get_tensor((kbuf, 2, na), torch.int32)
+        optix_gather.gather(
+            runtime,
+            gas,
+            active=active,
+            num_active=na,
+            rs_ro=rs_ro,
+            rs_rd=rs_rd,
+            rs_sca=rs_sca,
+            rs_int=rs_int,
+            rs_pix=rs_pix,
+            hit_f=tri_f,
+            hit_i=tri_i,
+            time_start=time_start,
+            ray_offset=ray_offset,
+            pixels_per_frame=int(width) * int(height),
+            layer_offset=layer_offset,
+            closest_only=bool(opaque_closest),
         )
-    if optix_gather.VERIFY:
-        optix_gather.verify(active, na, rs_int, hit_f, hit_i, lambda: software(1))
+        if has_bez:
+            from algan.rendering.raytracing.optix_gather_taichi import (
+                optix_gather_merge,
+            )
+
+            tri_count = memory.get_tensor((na,), torch.int32)
+            torch.index_select(rs_int[:, 3], 0, active[:na], out=tri_count)
+            software(0)
+            optix_gather_merge(
+                active,
+                na,
+                rs_int,
+                tri_count,
+                tri_f,
+                tri_i,
+                hit_f,
+                hit_i,
+                1 if opaque_closest else kbuf,
+            )
+        if optix_gather.VERIFY:
+            optix_gather.verify(active, na, rs_int, hit_f, hit_i, lambda: software(1))
+    except (OptixError, TypeError, ValueError) as exc:
+        # A launch the driver refused, past the 2^30-thread limit, or on
+        # buffers of a layout the programs do not read: the software
+        # traversal the caller runs next rewrites the whole k-buffer and
+        # every count, whatever got written here.
+        optix_gather.launch_failed(exc)
+        return False
     return True
 
 
