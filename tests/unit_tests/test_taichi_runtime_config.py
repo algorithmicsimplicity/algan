@@ -504,21 +504,12 @@ def test_building_a_specialization_registers_the_flush(monkeypatch):
     """
     import atexit
 
-    from algan.rendering import kernel_precompile, taichi_runtime
+    from algan.rendering import taichi_runtime
 
     taichi_runtime.ensure_taichi_for_render()
     registered = []
-    keys = []
-    note = kernel_precompile.note_materialized
     monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: registered.append(fn))
     monkeypatch.setattr(taichi_runtime, "_FLUSH_REGISTERED", False)
-    monkeypatch.setattr(taichi_runtime, "_COMPILED_SINCE_DUMP", False)
-    monkeypatch.setattr(
-        kernel_precompile,
-        "note_materialized",
-        lambda token, **kwargs: keys.append(kwargs.get("cache_key"))
-        or note(token, **kwargs),
-    )
 
     @ti.kernel
     def _salted(out: ti.types.ndarray(), salt: ti.template()):
@@ -527,58 +518,25 @@ def test_building_a_specialization_registers_the_flush(monkeypatch):
     _salted(torch.zeros(1), time.time_ns() % 1_000_000_007)
 
     assert registered == [taichi_runtime.flush_kernel_cache]
-    assert taichi_runtime._COMPILED_SINCE_DUMP is True
-    if BACKEND != "quadrants":
-        return
-    # The end of a render job writes it without tearing the program down.
-    live = program()
-    artifact = (
-        Path(taichi_runtime._TAICHI_CACHE_DIRECTORY)
-        / "kernel_compilation_manager"
-        / f"{keys[-1]}.qdc"
-    )
-    assert not artifact.exists()
-    assert taichi_runtime.dump_new_kernels() is True
-    assert artifact.exists()
-    assert program() is live
-    assert taichi_runtime._COMPILED_SINCE_DUMP is False
-    assert taichi_runtime.dump_new_kernels() is False
 
 
-def test_the_job_dump_keeps_the_flushs_conditions(monkeypatch):
-    """Off as the A/B arm, and never under a running render."""
-    from algan.rendering import taichi_runtime
+def test_a_render_job_never_dumps_the_live_program(monkeypatch):
+    """No ``dump_cache_data_to_disk`` while the program will launch again.
 
-    taichi_runtime.ensure_taichi_for_render()
-    dumps = []
-    monkeypatch.setattr(
-        type(program()), "dump_cache_data_to_disk", lambda self: dumps.append(self)
-    )
-    monkeypatch.setattr(taichi_runtime, "_COMPILED_SINCE_DUMP", False)
-    assert taichi_runtime.dump_new_kernels() is False
-
-    monkeypatch.setattr(taichi_runtime, "_COMPILED_SINCE_DUMP", True)
-    monkeypatch.setenv("ALGAN_FLUSH_KERNEL_CACHE", "0")
-    assert taichi_runtime.dump_new_kernels() is False
-    monkeypatch.delenv("ALGAN_FLUSH_KERNEL_CACHE")
-    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: True)
-    assert taichi_runtime.dump_new_kernels() is False
-    assert dumps == []
-    assert taichi_runtime._COMPILED_SINCE_DUMP is True
-
-    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
-    assert taichi_runtime.dump_new_kernels() is True
-    assert dumps == [program()]
-    assert taichi_runtime._COMPILED_SINCE_DUMP is False
-
-
-def test_the_outermost_render_job_dumps_before_writing_the_manifest(monkeypatch):
-    """The manifest confirms a compiled spec only once its ``.qdc`` exists."""
+    Quadrants' ``KernelCompilationManager::dump`` moves the newly compiled
+    kernels out of its cache and frees them; ``compiled_kernel_data_by_key``
+    and taichi_fast_launch's plans then hold dangling handles, and the next
+    launch segfaulted every render worker on the macOS CPU CI job. The end of
+    a render job writes the manifest only; kernels reach the disk at exit.
+    """
     from algan.rendering import kernel_precompile, taichi_runtime
 
+    taichi_runtime.ensure_taichi_for_render()
     calls = []
     monkeypatch.setattr(
-        taichi_runtime, "dump_new_kernels", lambda: calls.append("dump")
+        type(program()),
+        "dump_cache_data_to_disk",
+        lambda self: calls.append("dump"),
     )
     monkeypatch.setattr(
         kernel_precompile, "flush_manifest", lambda: calls.append("manifest")
@@ -587,7 +545,7 @@ def test_the_outermost_render_job_dumps_before_writing_the_manifest(monkeypatch)
         with taichi_runtime.render_job_holding_the_arch():
             pass
         assert calls == []
-    assert calls == ["dump", "manifest"]
+    assert calls == ["manifest"]
 
 
 def test_the_exit_flush_confirms_what_it_wrote(monkeypatch):
@@ -601,7 +559,7 @@ def test_the_exit_flush_confirms_what_it_wrote(monkeypatch):
         kernel_precompile, "flush_manifest", lambda: calls.append("manifest")
     )
     # Restored afterwards: the stubbed reset leaves the program running.
-    for name in ("_ARCH_READY_FOR", "_BUILT_A_SPECIALIZATION", "_COMPILED_SINCE_DUMP"):
+    for name in ("_ARCH_READY_FOR", "_BUILT_A_SPECIALIZATION"):
         monkeypatch.setattr(taichi_runtime, name, getattr(taichi_runtime, name))
     monkeypatch.setattr(taichi_runtime, "_forget_compiled_in_settings", lambda: None)
     assert taichi_runtime.flush_kernel_cache(force=True) is True
