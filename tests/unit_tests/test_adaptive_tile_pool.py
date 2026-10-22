@@ -242,8 +242,8 @@ def _render_arm(arm, out_path):
 
 
 def _child(arm, out_path):
-    """Render one arm in a child process of its own (see
-    ``test_device_shadow_glue._child`` for why one render a process).
+    """Render one arm in a child process of its own, on one CPU thread: the
+    arms share nothing but the kernel cache on disk.
     """
     env = dict(os.environ)
     for name in list(env):

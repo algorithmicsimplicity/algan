@@ -326,7 +326,7 @@ changes a chunk's arena peak, which the chunk model sizes the next window
 from, and windows move moving content (above); `e2e_scene.py` prints the
 sheet route's chunk, attempt and retry counts per run so an A/B can see it.
 `tests/unit_tests/test_device_shadow_glue.py` and `test_adaptive_tile_pool.py`
-hold both, byte for byte, each arm in a CPU process of its own on one thread.
+hold both, byte for byte, on one CPU thread.
 
 ### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
 
@@ -367,14 +367,6 @@ Practical rules:
   `taichi_runtime.taichi_init_kwargs()` before the first render, in a process
   of its own. `test_tile_state_fills.py` does this. That compiles kernels
   under their own cache key.
-- On Windows, give each arm that compiles kernel variants of its own a CPU
-  process of its own too. A second render in one CPU process that compiles new
-  variants after a first render ran has corrupted the heap (`0xc0000374`,
-  reported at the next kernel launch, usually the drain's compaction) every
-  time it was tried on Quadrants 1.3.3 -- including at `f0289245` with only
-  shadow identity and the terminator flipped between the renders. Compiling
-  everything in one render, or rendering again from kernels already in the
-  offline cache, did not. Not investigated further.
 - A *larger* difference than `|d| = 1` is NOT this mechanism. Branches are never
   silently dropped: a continuation that does not fit raises the pool's overflow
   flag, and the host discards and retries the tile with fewer primaries

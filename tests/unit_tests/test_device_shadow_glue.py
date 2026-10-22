@@ -253,12 +253,10 @@ def _render_arm(glue, config, out_path):
 
 
 def _child(glue, config, out_path):
-    """Render one arm in a child process of its own.
+    """Render one arm in a child process of its own, on one CPU thread.
 
-    One render a process: compiling a second set of kernel variants after a
-    render in the same CPU process corrupts the heap on Windows (Quadrants
-    1.3.3; reproduced with this branch's switches off and at its base), and
-    the host and device arms compile different variants.
+    The arms share nothing but the kernel cache on disk, so neither can warm
+    or size anything for the other.
     """
     env = dict(os.environ)
     for name in list(env):
