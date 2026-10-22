@@ -31,6 +31,23 @@ from algan.utils.tensor_utils import (
 _SCREEN_FIT_REFINEMENT_PASSES = 24
 _SCREEN_FIT_TOLERANCE = 1e-6
 
+#: device -> ``(a, 1 - a)``: the integer corner selectors ``a = (i, j, k)`` of a
+#: box's eight corners, in ``i * 4 + j * 2 + k`` order, as ``[8, 3]`` int64.
+#: Built once per device; only ever operands of out-of-place arithmetic.
+_CORNER_SELECTORS = {}
+
+
+def _corner_selectors(device):
+    selectors = _CORNER_SELECTORS.get(device)
+    if selectors is None:
+        select = torch.tensor(
+            [(i, j, k) for i in range(2) for j in range(2) for k in range(2)],
+            device=device,
+        )
+        selectors = (select, 1 - select)
+        _CORNER_SELECTORS[device] = selectors
+    return selectors
+
 
 class MobLayoutMixin:
     """Bounding boxes, boundary queries, and screen-relative placement
@@ -62,17 +79,18 @@ class MobLayoutMixin:
 
     @staticmethod
     def _box_corners(lower_corner, upper_corner):
-        """Expand a min/max pair, ``(*, 1, 3)``, into the box's eight corners."""
+        """Expand a min/max pair, ``(*, 1, 3)``, into the box's eight corners.
+
+        Corner ``i * 4 + j * 2 + k`` is ``lower * (1 - a) + a * upper`` for the
+        integer selector ``a = (i, j, k)``, all eight in one broadcast instead
+        of one small expression each. The arithmetic per element is the same
+        -- including ``0 * x`` against a negative ``x``, which is ``-0.0`` and
+        decides the sign of a zero corner -- so the corners are bit for bit
+        what the per-corner loop wrote.
+        """
         out = torch.empty(*lower_corner.shape[:-2], 8, 3, device=lower_corner.device)
-        lower_corner = lower_corner.squeeze(-2)
-        upper_corner = upper_corner.squeeze(-2)
-        for i in range(2):
-            for j in range(2):
-                for k in range(2):
-                    a = torch.tensor((i, j, k), device=lower_corner.device)
-                    out[..., i * 4 + j * 2 + k, :] = (
-                        lower_corner * (1 - a) + (a) * upper_corner
-                    )
+        select, complement = _corner_selectors(lower_corner.device)
+        out[...] = lower_corner * complement + select * upper_corner
         return out
 
     def _get_bounding_box_recursive(self, lower_corner, upper_corner, axes=None):
