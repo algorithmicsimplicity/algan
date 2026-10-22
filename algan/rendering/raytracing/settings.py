@@ -1497,8 +1497,39 @@ pinned_frame_readback = env_flag("ALGAN_PINNED_FRAME_READBACK", True)
 # Holds between narrated animations are often a third of an explainer's
 # frames. Deterministic renderer only (samples_per_pixel == 1), and skipped
 # for callable backgrounds, traced paths and live camera views. See
-# RenderLoopMixin._static_frame_runs.
+# RenderLoopMixin._static_frame_runs. Off: rendering fewer frames moves the
+# batch windows of a multi-batch clip, and window-dependent batch choices then
+# move animated frames (by up to 77 levels on a chord-count-sensitive hold
+# scene in 12-frame windows; byte-identical in every one-batch clip measured).
 reuse_static_frames = env_flag("ALGAN_REUSE_STATIC_FRAMES", False)
+
+# Frames the first batch of a render job is held to, so the prefetch worker
+# prepares the rest of the clip while that first window renders (0: the first
+# fetch takes the whole clip, and a one-batch clip overlaps nothing). See
+# RenderLoopMixin._get_frames_impl's fetch_end_for. Off: on an RTX 5080 the
+# benchmark renders are preparation-bound (explainer PREVIEW renders 60 frames
+# in 0.09 s of 0.8), so a second batch's serial preparation costs more than
+# the overlap saves -- 4-29% slower at PREVIEW, 17% on explainer UHD, within
+# noise on graphics UHD -- and the moved window shifts animated frames (nn:
+# 25 levels on one frame).
+first_batch_frames = max(0, env_int("ALGAN_FIRST_BATCH_FRAMES", 0))
+
+# Make a video batch's per-frame choices the way still batches do
+# (``Scene._frame_local_batches``): replay one frame at a time, give each
+# frame its own circuit chord counts, outline and bounds rather than the
+# batch's widest, decode its colors as one frame, and post-process it alone.
+# That removes the window dependence those choices carry, which made every
+# scene measured byte-stable under re-windowing -- but not all of it. Still
+# jobs also split a batch whose frames would make the merge's batch-wide
+# choices (route, opacity and material gates, triangle promotion) differently,
+# and keep one still per batch where nothing per frame covers the batch:
+# the path tracer, the wavefront memory trim and tonemapping inside the
+# composite (RenderLoopMixin._stills_may_share_batches). A video batch does
+# neither, and expanded stroke outlines are still padded to its widest frame.
+# Experimental: the per-frame chord counts move animated circuits against the
+# batch-wide default, and preparation costs 20-170% more; see
+# RenderLoopMixin.get_frames.
+frame_local_video_batches = env_flag("ALGAN_FRAME_LOCAL_VIDEO_BATCHES", False)
 
 # Bounded light-major queue, one worker per shadow ray, fixed-order reduction.
 # Host dispatch gates: changing these never invalidates compiled settings.
@@ -3640,6 +3671,17 @@ pn_geometry_slack = env_flag("ALGAN_PN_GEOMETRY_SLACK", True)
 # Moves rendered output (different microtriangles under the same tolerance).
 # ALGAN_PN_ANISOTROPIC_DICE=0 restores the uniform per-patch grid.
 pn_anisotropic_dice = env_flag("ALGAN_PN_ANISOTROPIC_DICE", True)
+
+# The PN dice's launch diet (primitives.LogicalPNTrianglePrimitive._dice_logical_pn):
+# every dice shape's rows from one sort, positions and normals snapped in one
+# call, and an eager evaluation's patch weights built once per shape. The same
+# arithmetic on the same values -- the switch exists to A/B that claim.
+pn_dice_launch_diet = env_flag("ALGAN_PN_DICE_LAUNCH_DIET", True)
+
+# Plan the circuit inward-sign probe on the host
+# (primitives._probe_inward_signs_host_planned) rather than reading its plan
+# back from the device piece by piece. Bit for bit the same signs.
+inward_signs_host_plan = env_flag("ALGAN_INWARD_SIGNS_HOST_PLAN", True)
 
 
 def set_fragment_shading(enabled):

@@ -44,6 +44,7 @@ from algan.rendering.mps_compat import clamp_floor, index_copy_rows
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.projection import is_pinhole, kernel_projection
+from algan.rendering.raytracing.arena_args_taichi import defer_syncs_enabled
 from algan.rendering.raytracing.float32_rounding import (
     DEPTH_ORDER_RECORDS,
     attach_depth_order,
@@ -227,6 +228,13 @@ def _host_tensor(value):
     return torch.as_tensor(value, device="cpu")
 
 
+#: Largest upload ``_arena_copy`` stages through page-locked memory. The ones
+#: worth staging are a chunk's ten-odd small tables; the path tracer's light
+#: tree, shell and media tables can run to tens of MB, and torch's caching host
+#: allocator keeps every pinned block it hands out for the life of the process.
+_PINNED_STAGING_MAX_BYTES = 1 << 20
+
+
 def _arena_copy(memory, tensor, dtype=None):
     """Copy ``tensor`` into the render arena, optionally casting on copy.
 
@@ -236,6 +244,30 @@ def _arena_copy(memory, tensor, dtype=None):
     """
     dtype = tensor.dtype if dtype is None else dtype
     out = memory.get_tensor(tensor.shape, dtype)
+    if (
+        out.is_cuda
+        and tensor.device.type == "cpu"
+        and tensor.numel() * out.element_size() <= _PINNED_STAGING_MAX_BYTES
+        and defer_syncs_enabled()
+    ):
+        # A blocking copy from pageable memory synchronizes the stream, and a
+        # chunk makes about ten of these (camera rows, lights, generation and
+        # layer tables), each waiting out whatever the previous chunk left
+        # queued. Stage the bytes in page-locked memory instead and copy
+        # without blocking. The host converts and lays the source out exactly
+        # as the blocking copy does (dtype conversion on the CPU, then a
+        # contiguous copy), so the bytes that land are the same; the caching
+        # host allocator keeps the staging block until the copy has run.
+        src = tensor.to(dtype).contiguous()
+        try:
+            staged = torch.empty(src.shape, dtype=dtype, pin_memory=True)
+        except RuntimeError:
+            # A host may be unable to lock more pages; pinning is optional.
+            staged = None
+        if staged is not None:
+            staged.copy_(src)
+            out.copy_(staged, non_blocking=True)
+            return out
     out.copy_(tensor)
     return out
 
@@ -345,7 +377,13 @@ def _gloss_frame_bounds(covered_idx, pixels_per_frame, num_frames):
     a contiguous ordinal range and one searchsorted finds every boundary. The
     tile loop clamps to these so a per-frame reflection buffer is complete
     before it is prefiltered.
+
+    The first boundary is always 0 and the last always ``len(covered_idx)``
+    (every index lies in ``[0, num_frames * pixels_per_frame)``), so a
+    one-frame window -- every chunk of a UHD render -- needs no readback.
     """
+    if int(num_frames) == 1 and defer_syncs_enabled():
+        return [0, int(covered_idx.numel())]
     edges = torch.arange(
         num_frames + 1, device=covered_idx.device, dtype=covered_idx.dtype
     ) * int(pixels_per_frame)
@@ -872,6 +910,7 @@ class _ArenaRayCompactor:
         self.current = self.a
         self.spare = self.b
         self.size = 0
+        self.also_values = None
 
     def reorder(self, active, perm):
         """Permute ``active`` (the list ``select`` last returned) by ``perm``
@@ -901,7 +940,17 @@ class _ArenaRayCompactor:
         scan_pool=False,
         rs_key=None,
         desired_key=0,
+        also_read=None,
     ):
+        """Compact the slots whose status is ``desired_status``; return them.
+
+        ``also_read`` (a 1-D tensor of the counter's dtype on its device) is
+        read back in the same transfer as the count, into ``also_values``: the
+        count is a synchronization the caller pays anyway, so a word it would
+        otherwise read with one of its own -- the tile's ``rs_alloc`` -- rides
+        along for free. Read after the compaction, so after every launch queued
+        before this call.
+        """
         if source is None:
             source = self.current[: self.size]
         source_size = self.capacity if scan_pool else int(source.numel())
@@ -921,7 +970,12 @@ class _ArenaRayCompactor:
             self.spare,
             self.count,
         )
-        size = int(self.count.item())
+        if also_read is None:
+            size = int(self.count.item())
+        else:
+            words = torch.cat((self.count, also_read)).tolist()
+            size = int(words[0])
+            self.also_values = words[1:]
         self.current, self.spare = self.spare, self.current
         self.size = size
         return self.current[:size]
@@ -3183,6 +3237,21 @@ def raytrace_render_wavefront(
             cam_proj_table,
             projected,
         )
+        cols = 3 * int(num_lights)
+        if (
+            defer_syncs_enabled()
+            and cols <= 3 * vis_lights
+            # MPS index assignment into the strided ``vis_tab[:, :cols]`` view
+            # is unverified; Metal keeps the padded copy.
+            and vis_tab.device.type != "mps"
+        ):
+            # The traced rows straight into the light columns of the all-lit
+            # table: the columns past them already hold the 1.0 a padded
+            # ``filled`` row carried, so the table comes out the same, without
+            # an [events, 3 * vis_lights] tensor from torch's allocator (outside
+            # the arena) and its fill and copy on every bounce.
+            index_copy_rows(vis_tab[:, :cols], acc_idx, shadow_vis.view(num_events, -1))
+            return vis_tab
         filled = torch.ones(
             (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device
         )
@@ -3191,13 +3260,17 @@ def raytrace_render_wavefront(
         return vis_tab
 
     def _drain_sparse_secondary(
-        active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis
+        active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis, alloc_words=None
     ):
         """Run iterations >= 1 for compact raster primaries.
 
         ``rs_pix`` contains the real window-local pixel while
         ``rs_int[:, 4]`` contains the compact accumulator row.  A zero
         ``ray_offset`` therefore addresses the full prepared frame window.
+        ``alloc_words`` (``rs_alloc``, or None) rides along with every
+        compaction count (``_ArenaRayCompactor.select``'s ``also_read``), so
+        the caller finds the tile's final allocator words in
+        ``compactor.also_values`` without a readback of its own.
         """
         (
             rs_ro,
@@ -3409,6 +3482,7 @@ def raytrace_render_wavefront(
                 0,
                 source=active,
                 scan_pool=(pool_ratio != 1 or not rt_settings.wf_compact_active_only),
+                also_read=alloc_words,
             )
             it += 1
 
@@ -3656,10 +3730,22 @@ def raytrace_render_wavefront(
                                 # so the zero the clear leaves is what a glossy
                                 # ray that never hits anything should read as:
                                 # a reflection infinitely far, fully blurred.
-                                layer_offsets_t[7] = float(attempt_primary)
+                                # ``fill_`` on a one-element slice, not item
+                                # assignment: assigning a Python scalar into a
+                                # CUDA tensor copies a CPU scalar tensor
+                                # through pageable memory, which synchronizes
+                                # the stream (twice per tile, with the line
+                                # below). The stored value is the same.
+                                if defer_syncs_enabled():
+                                    layer_offsets_t[7:8].fill_(float(attempt_primary))
+                                else:
+                                    layer_offsets_t[7] = float(attempt_primary)
                             rs_int[:, 2].fill_(1)
                             rs_alloc.zero_()
-                            rs_alloc[0] = attempt_primary
+                            if defer_syncs_enabled():
+                                rs_alloc[0:1].fill_(attempt_primary)
+                            else:
+                                rs_alloc[0] = attempt_primary
 
                         with memory.temp():
                             covered_idx = shade_sparse_raster_coverage(
@@ -3746,10 +3832,58 @@ def raytrace_render_wavefront(
                     # drain adds to the same counters. Truncations are folded
                     # in at the ACCEPT point below, once, so this stage keeps
                     # the split-free short-circuit it always had.
+                    #
+                    # With ``defer_syncs`` the poll reads nothing of its own:
+                    # the drain's first compaction is launched here instead
+                    # and ``rs_alloc`` comes back in the same transfer as its
+                    # count (a compaction does not touch ``rs_alloc``, so the
+                    # words are the ones the resolve left). Its result is
+                    # simply dropped if the resolve overflowed.
+                    alloc_words = rs_alloc if defer_syncs_enabled() else None
+                    first_active = None
+                    poll_oom = None
                     with _stage("wavefront:   - pool overflow poll"):
-                        overflow = (
-                            pool_ratio > 1 and int(rs_alloc[ALLOC_OVERFLOW].item()) != 0
-                        )
+                        if alloc_words is not None:
+                            try:
+                                first_active = compactor.select(
+                                    rs_int,
+                                    0,
+                                    source=compactor.current,
+                                    scan_pool=True,
+                                    also_read=alloc_words,
+                                )
+                            except (InsufficientMemoryException, RuntimeError) as exc:
+                                # This is the drain's first compaction, moved
+                                # out of the drain's try below; an OOM here
+                                # takes the same halving retry it would there.
+                                if not isinstance(
+                                    exc, InsufficientMemoryException
+                                ) and not is_cuda_oom(exc):
+                                    raise
+                                poll_oom = exc
+                    if poll_oom is not None:
+                        memory.set_pointers(state_ptrs)
+                        release_torch_memory(force_gc=False)
+                        if attempt_primary <= 1:
+                            raise OutOfRenderMemory(
+                                "Sparse raster bounce scratch did not fit for "
+                                "one covered pixel. Lower the resolution or "
+                                "transparency complexity." + path_tracer_fallback_hint()
+                            ) from poll_oom
+                        next_primary = max(1, attempt_primary // 2)
+                        _WAVEFRONT_POOL_RETRIES[0] += 1
+                        learned_primary_cap = min(learned_primary_cap, next_primary)
+                        attempt_primary = next_primary
+                        continue
+                    with _stage("wavefront:   - pool overflow poll"):
+                        if alloc_words is not None:
+                            polled = compactor.also_values
+                            overflow = pool_ratio > 1 and polled[ALLOC_OVERFLOW] != 0
+                        else:
+                            overflow = (
+                                pool_ratio > 1
+                                and int(rs_alloc[ALLOC_OVERFLOW].item()) != 0
+                            )
                     if overflow:
                         memory.set_pointers(state_ptrs)
                         if attempt_primary <= 1:
@@ -3762,7 +3896,11 @@ def raytrace_render_wavefront(
                                 + path_tracer_fallback_hint()
                             )
                         next_primary = _overflow_retry_primary(
-                            attempt_primary, int(rs_alloc[ALLOC_NEXT].item()), pool
+                            attempt_primary,
+                            polled[ALLOC_NEXT]
+                            if alloc_words is not None
+                            else int(rs_alloc[ALLOC_NEXT].item()),
+                            pool,
                         )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
@@ -3771,9 +3909,12 @@ def raytrace_render_wavefront(
 
                     try:
                         with _stage("wavefront:   - bounce drain"):
-                            active = compactor.select(
-                                rs_int, 0, source=compactor.current, scan_pool=True
-                            )
+                            if first_active is not None:
+                                active = first_active
+                            else:
+                                active = compactor.select(
+                                    rs_int, 0, source=compactor.current, scan_pool=True
+                                )
                             if active.numel() > 0 and merged.get("bvh_deferred"):
                                 _ensure_bvhs()
                             _drain_sparse_secondary(
@@ -3784,6 +3925,7 @@ def raytrace_render_wavefront(
                                 rs_alloc,
                                 compactor,
                                 rs_vis,
+                                alloc_words,
                             )
                     except (InsufficientMemoryException, RuntimeError) as exc:
                         # Taichi launches OOM as a bare RuntimeError from their
@@ -3813,7 +3955,12 @@ def raytrace_render_wavefront(
                     # resolve's and the drain's truncation counters are folded
                     # into the render's totals.
                     with _stage("wavefront:   - alloc readback"):
-                        alloc = _read_tile_alloc(rs_alloc)
+                        if alloc_words is not None:
+                            # Read with the drain's last count, after the last
+                            # launch that could move it.
+                            alloc = list(compactor.also_values)
+                        else:
+                            alloc = _read_tile_alloc(rs_alloc)
                     if pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0:
                         memory.set_pointers(state_ptrs)
                         if attempt_primary <= 1:

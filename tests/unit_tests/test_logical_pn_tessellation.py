@@ -1061,3 +1061,103 @@ def test_geometry_slack_follows_a_scaled_surface():
 
     torch.testing.assert_close(full, mob.geometry_tolerance * torch.ones_like(full))
     torch.testing.assert_close(tenth, full * 0.1)
+
+
+def _dice_devices():
+    devices = [torch.device("cpu")]
+    if torch.cuda.is_available():
+        devices.append(torch.device("cuda"))
+    return devices
+
+
+@pytest.mark.parametrize("device", _dice_devices(), ids=str)
+def test_the_patch_basis_evaluates_bit_for_bit_like_the_patch(device):
+    """The dice's prebuilt weights are the eager evaluation's own arithmetic."""
+    from algan.rendering.logical_pn import (
+        _evaluate_logical_pn_normals_fused,
+        evaluate_logical_pn_from_basis,
+        logical_pn_basis,
+    )
+
+    generator = torch.Generator().manual_seed(7)
+    controls = torch.randn(13, 10, 3, generator=generator).to(device)
+    normal_controls = torch.randn(13, 6, 3, generator=generator).to(device)
+    for level in range(5):
+        uv = subdivision_vertex_uvs(level, device=device, dtype=torch.float32)
+        position, normal = logical_pn_basis(uv)
+        assert torch.equal(
+            evaluate_logical_pn_from_basis(controls, position),
+            evaluate_logical_pn.eager(controls, uv),
+        )
+        assert torch.equal(
+            evaluate_logical_pn_from_basis(normal_controls, normal),
+            _evaluate_logical_pn_normals_fused.eager(normal_controls, uv),
+        )
+
+
+@pytest.mark.parametrize("deforming", [False, True], ids=["static", "deforming"])
+@pytest.mark.parametrize("device", _dice_devices(), ids=str)
+def test_the_dice_launch_diet_writes_the_same_bits(device, deforming, monkeypatch):
+    """One snap over positions and normals, prebuilt weights, one sort for
+    every dice shape's rows: nothing moves.
+
+    The sphere seen this close dices its patches at several levels with uneven
+    seams, so the boundary snap is exercised (checked through a spy, so a
+    fixture that stops snapping fails here rather than passing vacuously). A
+    deforming sphere takes the dice's frame-major path, a still one the
+    patch-major path that dedups frames.
+    """
+    import algan.rendering.logical_pn as logical_pn
+
+    def diced(diet):
+        mob = Sphere()
+        primitive = LogicalPNTrianglePrimitive(
+            triangle_collection=[mob.get_render_primitives()]
+        )
+        primitive = _materialized_per_frame(primitive, 3)
+        if deforming:
+            growth = torch.tensor([1.0, 1.01, 1.02])
+            growth = growth.view(3, *([1] * (primitive.corners.ndim - 1)))
+            primitive.corners = primitive.corners * growth
+        for name in ("corners", "normals", "colors", *primitive._surface_params):
+            value = getattr(primitive, name, None)
+            if value is not None:
+                setattr(primitive, name, value.to(device))
+        if primitive.uvs is not None:
+            primitive.uvs = primitive.uvs.to(device)
+        primitive.shader_param_values = [
+            value.to(device) for value in primitive.shader_param_values
+        ]
+        with SETTINGS.raytracing.experimental.override(pn_dice_launch_diet=diet):
+            primitive._dice_logical_pn(_camera([-2.5, -1.8, -1.4], device=device))
+        return primitive
+
+    snaps = []
+    original = logical_pn._snap_boundary_values_fused
+    monkeypatch.setattr(
+        logical_pn,
+        "_snap_boundary_values_fused",
+        lambda *args: snaps.append(1) or original(*args),
+    )
+    reference = diced(False)
+    assert snaps, "the fixture must exercise the boundary snap"
+    candidate = diced(True)
+    for name in (
+        "corners",
+        "normals",
+        "colors",
+        "uvs",
+        *reference._surface_params,
+        "_logical_pn_padding",
+        "_logical_pn_subdivision_levels",
+        "_logical_pn_tri_obj",
+    ):
+        expected, actual = getattr(reference, name), getattr(candidate, name)
+        if expected is None:
+            assert actual is None, name
+            continue
+        assert torch.equal(expected, actual), name
+    for expected, actual in zip(
+        reference.shader_param_values, candidate.shader_param_values
+    ):
+        assert torch.equal(expected, actual)

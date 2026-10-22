@@ -370,14 +370,11 @@ def surface_weld_flags(grid):
     if not rt_settings.weld_surface_seams or grid.dim() < 3:
         return (False, False, False)
     tol = _WELD_TOLERANCE
-    wrap_x = bool((grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all().item())
-    pole_lo = bool(
-        (grid[..., :, 0, :] - grid[..., :1, 0, :]).abs().lt(tol).all().item()
-    )
-    pole_hi = bool(
-        (grid[..., :, -1, :] - grid[..., :1, -1, :]).abs().lt(tol).all().item()
-    )
-    return (wrap_x, pole_lo, pole_hi)
+    wrap_x = (grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all()
+    pole_lo = (grid[..., :, 0, :] - grid[..., :1, 0, :]).abs().lt(tol).all()
+    pole_hi = (grid[..., :, -1, :] - grid[..., :1, -1, :]).abs().lt(tol).all()
+    # One host read for all three answers.
+    return tuple(torch.stack((wrap_x, pole_lo, pole_hi)).tolist())
 
 
 def surface_closed_axes(grid):

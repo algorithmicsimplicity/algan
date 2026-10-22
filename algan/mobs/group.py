@@ -251,6 +251,11 @@ class Group(Mob):
             self._follow_members()
         return super().get_animated_attribute(key, include_descendants, *args, **kwargs)
 
+    # Every other attribute reads exactly as the base implementation reads it,
+    # which is what lets an unrecorded write skip its second read
+    # (Mob._writes_immediately).
+    get_animated_attribute._intercepted_attributes = frozenset({"location"})
+
     @staticmethod
     def _midpoint_for(mobs):
         if not mobs:

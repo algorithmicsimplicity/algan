@@ -134,6 +134,10 @@ class SceneManager(Singleton):
             return scene
         if self._scene_stack[-1] is not scene:
             raise RuntimeError("Only the current active Scene can be terminated")
+        from algan.utils.memory_utils import note_scene_discarded
+
+        # Usually the Scene's last reference goes with it: see reset().
+        note_scene_discarded()
         self._scene_stack.pop()
         scene._terminated = True
         return scene
@@ -151,6 +155,11 @@ class SceneManager(Singleton):
         )
 
         manager = cls.instance()
+        if manager._scene_stack:
+            from algan.utils.memory_utils import note_scene_discarded
+
+            # The next render's pre-render collection must reach their cycles.
+            note_scene_discarded()
         for scene in manager._scene_stack:
             scene._terminated = True
         manager._scene_stack.clear()
