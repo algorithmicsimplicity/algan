@@ -55,9 +55,10 @@ from algan.settings import SETTINGS
 # loudly, instead of silently un-gating the kernel.
 _WEIGHT_FLOOR_EXIT_ARG_INDEX = 47
 # 73 after appending the per-batch ``tri_shell`` table and then the camera's
-# ``cam_proj`` projection rows with their ``projected`` template. The existing
-# visibility and one-sided shadow-cull templates retain their positions.
-_EXPECTED_SHADE_ARGS = 73
+# ``cam_proj`` projection rows with their ``projected`` template; 74 with the
+# ``det_sum`` template right after this one. The existing visibility and
+# one-sided shadow-cull templates retain their positions.
+_EXPECTED_SHADE_ARGS = 74
 
 
 @pytest.mark.fast
