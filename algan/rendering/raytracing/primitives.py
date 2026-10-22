@@ -475,6 +475,75 @@ def _resolve_surface_identity(members, counts, *, track_members=False):
     return torch.cat(blocks).contiguous(), next_id, keys, first_member
 
 
+def _member_surface_param_reference(member, name):
+    """One collection member's surface param ``name``, broadcast the merge's way.
+
+    The reference recipe: the param (or its default fill) broadcast against the
+    member's first frame of corners, colors and normals, ignoring channels, then
+    cut to one channel.
+    """
+    v = getattr(member, name, None)
+    if v is None:
+        fill = -1.0 if name == "reflectivity" else 0.0
+        v = torch.full_like(member.colors[:1, ..., :1], fill)
+    return broadcast_all(
+        [member.corners[:1], member.colors[:1], member.normals[:1], v],
+        ignored_dims=[-1],
+    )[-1][..., :1]
+
+
+def _gather_member_surface_params(members, names):
+    """``{name: [per-member view]}`` of every member's surface params.
+
+    The views :func:`_member_surface_param_reference` makes, from the same
+    ``unsqueeze`` / ``expand`` / slice calls on the same tensors, but with each
+    member's broadcast target -- the elementwise largest of its first frame of
+    corners, colors and normals -- worked out once from the shapes instead of
+    re-broadcasting those three tensors for every one of the eight params.
+    Members whose shapes the shortcut does not describe (a reference that is
+    not a tensor, a param of higher rank than the references) take the
+    reference recipe, as does everything under ``ALGAN_OPT_DISABLE=mergeshapes``.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    gathered = {name: [] for name in names}
+    if _opt_disabled("mergeshapes"):
+        for member in members:
+            for name in names:
+                gathered[name].append(_member_surface_param_reference(member, name))
+        return gathered
+    for member in members:
+        refs = (member.corners, member.colors, member.normals)
+        if not all(isinstance(r, torch.Tensor) for r in refs):
+            for name in names:
+                gathered[name].append(_member_surface_param_reference(member, name))
+            continue
+        rank = max(r.dim() for r in refs)
+        target = [0] * rank
+        for r in refs:
+            # ``r[:1]``'s shape, left-padded to ``rank``.
+            shape = (1,) * (rank - r.dim()) + (min(r.shape[0], 1),) + tuple(r.shape[1:])
+            for i, size in enumerate(shape):
+                if size > target[i]:
+                    target[i] = size
+        for name in names:
+            v = getattr(member, name, None)
+            if v is None:
+                fill = -1.0 if name == "reflectivity" else 0.0
+                v = torch.full_like(member.colors[:1, ..., :1], fill)
+            dim = v.dim()
+            if dim > rank:
+                gathered[name].append(_member_surface_param_reference(member, name))
+                continue
+            while dim < rank:
+                v = v.unsqueeze(0)
+                dim += 1
+            size = [max(t, s) for t, s in zip(target, v.shape)]
+            size[-1] = -1
+            gathered[name].append(v.expand(torch.Size(size))[..., :1])
+    return gathered
+
+
 def _declares_no_shadow_cast(primitive):
     """Whether this primitive declined to cast, as one bool for the whole mob.
 
@@ -744,23 +813,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # line up -- except along time: the references are sliced to a
             # single frame so a static parameter (the usual case) stays
             # single-frame instead of being expanded to the batch length.
+            gathered = _gather_member_surface_params(
+                triangle_collection, self._surface_params
+            )
             for name in self._surface_params:
-                values = []
-                for triangle in triangle_collection:
-                    v = getattr(triangle, name, None)
-                    if v is None:
-                        fill = -1.0 if name == "reflectivity" else 0.0
-                        v = torch.full_like(triangle.colors[:1, ..., :1], fill)
-                    v = broadcast_all(
-                        [
-                            triangle.corners[:1],
-                            triangle.colors[:1],
-                            triangle.normals[:1],
-                            v,
-                        ],
-                        ignored_dims=[-1],
-                    )[-1][..., :1]
-                    values.append(v)
+                values = gathered[name]
                 # A registered (animatable) surface param on an *animated* mob
                 # materializes per batch timestep ([T, ...]) while static
                 # mobs' params stay single-frame; unify the time dims before

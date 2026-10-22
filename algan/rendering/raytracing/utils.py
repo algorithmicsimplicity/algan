@@ -66,6 +66,28 @@ DEGENERATE_CUBIC_LEGS_SQUARED = 1e-9
 CONNECTION_GAP = 1e-5
 
 
+#: Element count from which :func:`_control_point_box` takes one fused
+#: ``aminmax`` pass instead of separate ``amin`` and ``amax`` passes. Below it
+#: the fused op's fixed overhead loses (measured: 4.7 us against 12.8 us at 120
+#: elements, 37 us against 18 us at 2400, 1.64 ms against 0.41 ms at 0.8M).
+_FUSED_BOX_MIN_NUMEL = 1024
+
+
+def _control_point_box(corners):
+    """``(amin, amax)`` of ``corners`` over its control-point axis (``-2``).
+
+    Selection is exact, so the fused pass returns the same values as the two
+    separate reductions (a signed zero may come back with the other sign,
+    which nothing downstream can see: the box only ever reaches ``hi - lo``
+    and a norm). ``ALGAN_OPT_DISABLE=circuitscale`` keeps the separate passes.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    if corners.numel() >= _FUSED_BOX_MIN_NUMEL and not _opt_disabled("circuitscale"):
+        return torch.aminmax(corners, dim=-2)
+    return corners.amin(-2), corners.amax(-2)
+
+
 def _circuit_scale(corners, circuit_of_segment=None):
     """Each cubic's tolerance scale: its circuit's size over the reference, at most 1.
 
@@ -74,8 +96,7 @@ def _circuit_scale(corners, circuit_of_segment=None):
     diagonal of the circuit's control-point box in each frame. Returns
     ``[..., S]``. See :data:`CIRCUIT_REFERENCE_SIZE`.
     """
-    lo = corners.amin(-2)  # [..., S, 3]
-    hi = corners.amax(-2)
+    lo, hi = _control_point_box(corners)  # [..., S, 3] each
     if circuit_of_segment is None:
         size = (hi.amax(-2) - lo.amin(-2)).norm(p=2, dim=-1, keepdim=True)
         size = size.expand(lo.shape[:-1])
