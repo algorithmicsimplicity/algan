@@ -304,6 +304,72 @@ backprop project is the per-frame diagnosis;
 `tests/unit_tests/test_static_frame_reuse.py` checks frame-for-frame equality
 and which frames are rendered.
 
+### Batch windows, the first-batch split and frame-local video (October 22)
+
+Measured on an RTX 5080, lossless, against same-process reuse-off renders.
+The five benchmark workloads and the fast scene have no provable repeats
+(nn's net runs an idle updater throughout), so reuse is a no-op on them. On
+one-batch hold scenes it was byte-identical every time (holds HD 1.60 ->
+1.11 s, explainer-plus-hold HD 1.59 -> 1.38 s). In forced 12-frame windows a
+chord-count-sensitive hold scene moved 20 of 50 frames by up to 77 levels --
+but the reuse-off render of that scene moves 26 frames by up to 82 between
+one batch and 12-frame windows: windows, not reuse, are the hazard.
+
+`first_batch_frames` (`ALGAN_FIRST_BATCH_FRAMES`, off) holds a job's first
+fetch to a few frames so the prefetch worker prepares the rest while they
+render. It is a loss here: these renders are preparation-bound (explainer
+PREVIEW: 0.11 s gc, 0.15 s materialize, 0.31 s projection + merge, 0.09 s
+tracing), and the second batch's preparation is serial. PREVIEW +4-29%,
+explainer UHD +17%, graphics UHD within noise (-1.6% with
+`prefetch_gpu_prep`). nn moved one frame by 25 levels.
+
+`frame_local_video_batches` (`ALGAN_FRAME_LOCAL_VIDEO_BATCHES`, off) gives
+video batches the stills' per-frame choices. Every scene measured (nn,
+explainer, fast on CUDA and CPU, holds, grow-hold in three windowings) was
+then byte-stable under re-windowing, reuse and the split included. It costs
++20% (nn) to +170% (explainer) at PREVIEW -- per-frame replay alone is +27%
+on the explainer, per-frame chord counts and edges the rest -- and moves the
+explainer by up to 194 levels against the batch-wide default.
+`tests/unit_tests/test_frame_local_video.py` holds the stability.
+
+### A render's start: the collection and the arena (October 22)
+
+Two fixed costs of every render job, measured warm on an RTX 5080: the full
+`gc.collect()` before `scene_excluded_from_gc` freezes the scene (0.09-0.14
+s; it walks the whole live scene and freed no device memory on any
+workload), and sizing the arena, whose `empty_cache` handed the last job's
+6 GB arena back to the driver (~35 ms) only for it to be allocated again
+(~8 ms).
+
+- The collection is of generations 0-1 only while (a) the render device's
+  segments that hold a live block total at most
+  `_FROZEN_GARBAGE_DEVICE_BYTES` (64 MiB) -- `allocated + inactive_split`
+  bytes, not allocated alone: `empty_cache` returns only wholly free
+  segments, so one small tensor kept by garbage in the last arena's segment
+  keeps all of it; (b) no Scene was discarded since the last full collection
+  (`note_scene_discarded`, from `Scene.reset`, `SceneManager.reset` and
+  `terminate`: a replaced Scene is cyclic garbage that only a full collection
+  reaches, and frozen it would sit out the render); and (c) the host is not
+  short of memory. So the cheap path is a script's first render and a
+  re-render of the same Scene; `ALGAN_OPT_DISABLE=rendergc` restores the full
+  one everywhere.
+- `_cuda_arena_from_cache` reads the free figure as the driver's free memory
+  plus PyTorch's wholly free segments (equal to the post-`empty_cache`
+  reading on every render probed), and when one cached segment on the current
+  stream is exactly the arena's rounded size, allocates from it before
+  emptying the cache of the rest. Nothing is held between renders that was not
+  already in PyTorch's cache. It falls back with
+  `ALGAN_OPT_DISABLE=arenareuse`, a `PYTORCH_CUDA_ALLOC_CONF`, an override,
+  allocation-history recording, a free private-pool or expandable segment,
+  or off CUDA.
+
+Arena sizes were identical in every arm; outputs byte-identical (explainer,
+nn, graphics with `max_bounces=0` -- graphics is not run-to-run
+deterministic otherwise). Warm save_video medians, both on vs both off:
+explainer PREVIEW 0.58 vs 0.66 s, graphics PREVIEW 1.78 vs 1.88 s (pinned:
+1.38 vs 1.49 s), nn PREVIEW 1.18 vs 1.32 s.
+`tests/unit_tests/test_render_start_memory.py` covers both.
+
 ## Authoring memos (September 26)
 
 - **Circuit frames.** `from_batches` frames all of its members in one NumPy
