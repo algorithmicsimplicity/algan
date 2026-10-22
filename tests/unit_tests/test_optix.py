@@ -569,3 +569,56 @@ def test_the_device_shadow_glue_stays_where_optix_cannot_run(monkeypatch):
     # A runtime that came up: the host glue, which the OptiX arm plugs into.
     monkeypatch.setattr(optix_package, "runtime_for", lambda device: object())
     assert tracer._device_shadow_glue("cuda") is False
+
+
+def test_one_budget_covers_a_batchs_structures(monkeypatch):
+    from algan.rendering.raytracing.optix import gas as gas_module
+
+    runtime = _runtime()
+    tri_pos, valid, opaque, casts = _scene(3, 300)
+    frames = valid.expand(4, -1).clone()
+    built = gas_module.build_batch_gas(runtime, tri_pos, frames, opaque)
+    assert built is not None
+    assert built.frames == 4
+    # What the batch already holds counts against the same budget.
+    assert gas_module.build_batch_gas(runtime, tri_pos, frames, opaque) is not None
+    held = gas_module.GAS_BUDGET_BYTES - 1024
+    assert (
+        gas_module.build_batch_gas(runtime, tri_pos, frames, opaque, held_bytes=held)
+        is None
+    )
+    # And so does the device's free memory.
+    monkeypatch.setattr(gas_module, "FREE_SHARE", 1e-9)
+    assert gas_module.build_batch_gas(runtime, tri_pos, frames, opaque) is None
+
+
+def test_the_arena_preflight_shrinks_a_window_whose_structures_do_not_fit(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from algan.render_loop import RenderLoopMixin
+    from algan.rendering.raytracing.optix import gas as gas_module
+
+    merged = {
+        "num_triangles": 1000,
+        "tri_pos": torch.zeros((6, 1000, 9)),
+        "tri_frame_valid": torch.ones((1, 1000), dtype=torch.bool),
+    }
+    need = gas_module.preflight_bytes(merged, 1000)
+    assert need == 6 * (1000 * 112 + 16 * 1024) + 1000 * 48
+    static = dict(merged, tri_pos=torch.zeros((1, 1000, 9)))
+    assert gas_module.preflight_bytes(static, 1000) == 1000 * 112 + 16 * 1024 + 48000
+    if not torch.cuda.is_available():
+        return
+    loop = SimpleNamespace(memory=SimpleNamespace(data=torch.zeros(1, device="cuda")))
+    fits = RenderLoopMixin._optix_structures_fit
+    monkeypatch.setattr(rt_settings, "optix", True)
+    monkeypatch.setattr(gas_module, "batch_budget", lambda device, held=0: need - 1)
+    assert not fits(loop, merged, 6)
+    assert fits(loop, merged, 1)  # nothing smaller to try
+    monkeypatch.setattr(gas_module, "batch_budget", lambda device, held=0: need)
+    assert fits(loop, merged, 6)
+    monkeypatch.setattr(rt_settings, "optix", False)
+    monkeypatch.setattr(gas_module, "batch_budget", lambda device, held=0: 0)
+    assert fits(loop, merged, 6)

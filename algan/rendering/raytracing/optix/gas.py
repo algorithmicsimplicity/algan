@@ -15,10 +15,17 @@ Frames share a GAS when nothing that decides it changes over the batch (every
 source table deduplicated to one frame); otherwise there is one per frame.
 
 The GASes are ordinary PyTorch allocations, not arena views, kept on the
-merged scene for the batch: the arena is 40% of the device and builds stay
-well inside the rest, and a budget check refuses a batch whose structures
-would not (the batch then keeps the software walk). Builds are compacted,
-which costs the batch one readback of the compacted sizes.
+merged scene for the batch. One budget covers all of a batch's structures
+(the shadow GASes and, where non-casters make it separate, the gather's): at
+most ``GAS_BUDGET_BYTES``, and at most ``FREE_SHARE`` of the device memory
+free outside PyTorch's live tensors when a build starts, counting each
+build's peak -- every uncompacted structure, the shared scratch and the
+compacted copies made before the uncompacted ones go. A batch past it keeps
+the software walk. The render loop's arena preflight asks the same question
+of a frame window before it renders one (:func:`preflight_bytes`), so a window
+whose structures would not fit is shrunk rather than rendered in software.
+Builds are compacted, which costs the batch one readback of the compacted
+sizes.
 """
 
 from __future__ import annotations
@@ -34,9 +41,23 @@ from algan.rendering.raytracing.optix.runtime import CLASS_OPAQUE, CLASS_TRANSLU
 
 logger = get_logger(__name__)
 
-#: Device bytes the uncompacted structures of one batch may take; past it the
-#: batch keeps the software walk.
+#: Device bytes all of one batch's structures may take at their builds' peak.
 GAS_BUDGET_BYTES = 1 << 30
+
+#: Share of the device memory free outside PyTorch's live tensors (driver free
+#: plus PyTorch's cached, unallocated blocks) a batch's structures may take;
+#: the rest stays for the next batch's merge and everything else outside the
+#: arena.
+FREE_SHARE = 0.5
+
+#: Build peak per triangle and GAS frame, and per triangle of the scratch one
+#: build reuses, for estimates made before any runtime exists (the arena
+#: preflight). Measured with OptiX 9.1 on an RTX 5080: the uncompacted
+#: structure takes 53.6 bytes a triangle, its compacted copy ~22, the scratch
+#: 44.6; the uncompacted size bounds the copy here.
+PEAK_BYTES_PER_TRIANGLE_FRAME = 112
+SCRATCH_BYTES_PER_TRIANGLE = 48
+_FRAME_OVERHEAD_BYTES = 16 * 1024
 
 _ALIGN = abi.OPTIX_ACCEL_BUFFER_BYTE_ALIGNMENT
 
@@ -87,8 +108,57 @@ def _frames_of(*tables):
     return frames
 
 
-def build_batch_gas(runtime, tri_pos, valid, opaque, casts=None, all_translucent=False):
+def device_free_bytes(device):
+    """Device memory free outside PyTorch's live tensors.
+
+    What the driver has free plus PyTorch's cached blocks no tensor holds.
+    """
+    device = torch.device(device)
+    free, _total = torch.cuda.mem_get_info(device)
+    cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+    return int(free) + max(0, int(cached))
+
+
+def batch_budget(device, held_bytes=0):
+    """Bytes a batch's next build may take at its peak."""
+    return max(
+        0,
+        min(
+            GAS_BUDGET_BYTES - int(held_bytes),
+            int(FREE_SHARE * device_free_bytes(device)),
+        ),
+    )
+
+
+def preflight_bytes(merged, num_triangles):
+    """Estimated build peak of a batch's shadow GASes, for the arena preflight.
+
+    Frame count from the merged tables' frame axes (one GAS when every table
+    is one frame), bytes from the measured per-triangle rates above; ``0``
+    when the batch has nothing to build.
+    """
+    num = int(num_triangles)
+    tables = [
+        merged.get(key)
+        for key in ("tri_pos", "tri_frame_valid", "tri_frame_opaque", "tri_frame_casts")
+    ]
+    tables = [t for t in tables if t is not None]
+    if num <= 0 or not tables:
+        return 0
+    frames = _frames_of(*tables) or max(int(t.shape[0]) for t in tables)
+    return (
+        frames * (num * PEAK_BYTES_PER_TRIANGLE_FRAME + _FRAME_OVERHEAD_BYTES)
+        + num * SCRATCH_BYTES_PER_TRIANGLE
+    )
+
+
+def build_batch_gas(
+    runtime, tri_pos, valid, opaque, casts=None, all_translucent=False, held_bytes=0
+):
     """Build one GAS per frame; return a :class:`BatchGas`, or ``None``.
+
+    ``held_bytes`` is what this batch's structures already hold (the shadow
+    GASes, when the gather builds its own): the budget is the batch's.
 
     ``None`` -- the batch keeps the software walk -- also when the build
     fails: out of device memory (the structures live outside the arena, so the
@@ -104,6 +174,7 @@ def build_batch_gas(runtime, tri_pos, valid, opaque, casts=None, all_translucent
             opaque,
             casts=casts,
             all_translucent=all_translucent,
+            held_bytes=held_bytes,
         )
     except (abi.OptixError, torch.OutOfMemoryError) as exc:
         if not _BUILD_FAILURE_LOGGED:
@@ -120,7 +191,7 @@ _BUILD_FAILURE_LOGGED = False
 
 
 def _build_batch_gas(
-    runtime, tri_pos, valid, opaque, casts=None, all_translucent=False
+    runtime, tri_pos, valid, opaque, casts=None, all_translucent=False, held_bytes=0
 ):
     """:func:`build_batch_gas` without the fallback.
 
@@ -180,12 +251,17 @@ def _build_batch_gas(
     sizes = runtime.accel_sizes(build_input(anchor, anchor, anchor), options)
     out_bytes = int(sizes.outputSizeInBytes)
     temp_bytes = int(sizes.tempSizeInBytes)
-    if frames * (out_bytes + _ALIGN) + temp_bytes > GAS_BUDGET_BYTES:
+    # The peak: every uncompacted structure, the shared scratch, and the
+    # compacted copies (no larger than the uncompacted ones) made before the
+    # uncompacted ones are released.
+    peak = frames * 2 * (out_bytes + _ALIGN) + temp_bytes + _ALIGN
+    budget = batch_budget(device, held_bytes)
+    if peak > budget:
         logger.log(
             PERF,
             f"OptiX: {frames} frames of {num} triangles would need "
-            f"{frames * out_bytes / 2**20:.0f} MiB of acceleration structures; "
-            "this batch keeps the software traversal",
+            f"{peak / 2**20:.0f} MiB at their build's peak, past the batch's "
+            f"{budget / 2**20:.0f} MiB; this batch keeps the software traversal",
         )
         return None
 

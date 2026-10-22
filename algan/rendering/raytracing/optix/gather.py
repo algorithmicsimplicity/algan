@@ -18,6 +18,7 @@ import torch
 from algan.rendering.raytracing.optix.runtime import new_params
 
 _GAS_KEY = "_optix_gather_gas"
+_SHADOW_GAS_KEY = "_optix_shadow_gas"
 
 #: Launches taken and rays gathered on RT cores, for tests and harnesses.
 STATS = {"launches": 0, "rays": 0}
@@ -61,7 +62,16 @@ def gather_gas(runtime, merged, tri_pos):
         if shared is not None and not getattr(shared, "all_translucent", False):
             gas = shared
         else:
-            gas = build_batch_gas(runtime, tri_pos, valid.to(device), opaque.to(device))
+            # One budget for the batch: shadow GASes it already built count
+            # against it (none are built here for the purpose).
+            shadow = merged.get(_SHADOW_GAS_KEY) or None
+            gas = build_batch_gas(
+                runtime,
+                tri_pos,
+                valid.to(device),
+                opaque.to(device),
+                held_bytes=shadow.nbytes() if shadow is not None else 0,
+            )
     merged[_GAS_KEY] = gas if gas is not None else False
     return gas
 
