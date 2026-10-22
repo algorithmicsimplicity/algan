@@ -304,6 +304,34 @@ backprop project is the per-frame diagnosis;
 `tests/unit_tests/test_static_frame_reuse.py` checks frame-for-frame equality
 and which frames are rendered.
 
+### Batch windows, the first-batch split and frame-local video (October 22)
+
+Measured on an RTX 5080, lossless, against same-process reuse-off renders.
+The five benchmark workloads and the fast scene have no provable repeats
+(nn's net runs an idle updater throughout), so reuse is a no-op on them. On
+one-batch hold scenes it was byte-identical every time (holds HD 1.60 ->
+1.11 s, explainer-plus-hold HD 1.59 -> 1.38 s). In forced 12-frame windows a
+chord-count-sensitive hold scene moved 20 of 50 frames by up to 77 levels --
+but the reuse-off render of that scene moves 26 frames by up to 82 between
+one batch and 12-frame windows: windows, not reuse, are the hazard.
+
+`first_batch_frames` (`ALGAN_FIRST_BATCH_FRAMES`, off) holds a job's first
+fetch to a few frames so the prefetch worker prepares the rest while they
+render. It is a loss here: these renders are preparation-bound (explainer
+PREVIEW: 0.11 s gc, 0.15 s materialize, 0.31 s projection + merge, 0.09 s
+tracing), and the second batch's preparation is serial. PREVIEW +4-29%,
+explainer UHD +17%, graphics UHD within noise (-1.6% with
+`prefetch_gpu_prep`). nn moved one frame by 25 levels.
+
+`frame_local_video_batches` (`ALGAN_FRAME_LOCAL_VIDEO_BATCHES`, off) gives
+video batches the stills' per-frame choices. Every scene measured (nn,
+explainer, fast on CUDA and CPU, holds, grow-hold in three windowings) was
+then byte-stable under re-windowing, reuse and the split included. It costs
++20% (nn) to +170% (explainer) at PREVIEW -- per-frame replay alone is +27%
+on the explainer, per-frame chord counts and edges the rest -- and moves the
+explainer by up to 194 levels against the batch-wide default.
+`tests/unit_tests/test_frame_local_video.py` holds the stability.
+
 ## Authoring memos (September 26)
 
 - **Circuit frames.** `from_batches` frames all of its members in one NumPy
