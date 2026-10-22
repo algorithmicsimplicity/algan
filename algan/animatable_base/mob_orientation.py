@@ -33,7 +33,6 @@ _RADIANS_TO_DEGREES = 180.0 / math.pi
 _AXIS_NAMES = {"right": 0, "up": 1, "forward": 2}
 
 
-
 def _normalized_axis(axis) -> torch.Tensor:
     """``axis`` as a unit direction, rejecting a zero-length axis.
 

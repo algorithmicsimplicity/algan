@@ -1,5 +1,6 @@
 """Render/scene settings at unusual values: degenerate inputs must fail with a
-clear configuration error rather than an obscure crash deep in the renderer."""
+clear configuration error rather than an obscure crash deep in the renderer.
+"""
 
 import pytest
 
