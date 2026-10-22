@@ -1212,7 +1212,7 @@ JIT at each first launch: ~14 s of a cold `explainer` render on the RTX 5080.
 | --- | --- |
 | `program/kernel_launcher.h`, `runtime/llvm/kernel_launcher.{h,cpp}` | `KernelLauncher::prepare_kernel`: a no-op by default, `register_llvm_kernel` on the LLVM backends. A later launch of the same data reuses the registration. |
 | `program/program.{h,cpp}`, `python/export_lang.cpp` | `Program::prepare_kernel`, bound as `prog.prepare_kernel(compiled_kernel_data)`. |
-| `program/program_impl.{h,cpp}`, `runtime/cuda/jit_cuda.h` | `NeedsFinalizing::dump_cache_data_to_disk()`, called by `ProgramImpl::dump_cache_data_to_disk`; CUDA's PTX-cache finalizer implements it. The PTX cache used to reach disk only when the program finalized, which a precompile worker (`os._exit`) and a killed process never do. |
+| `program/program_impl.{h,cpp}`, `runtime/cuda/jit_cuda.h` | `NeedsFinalizing::dump_cache_data_to_disk()`, called by `ProgramImpl::dump_cache_data_to_disk`; CUDA's PTX-cache finalizer implements it. The PTX cache used to reach disk only when the program finalized, which a precompile worker (`os._exit`) never does. |
 | `runtime/cuda/ptx_cache.{h,cpp}` | `dump()` keeps serving what it wrote (it dropped it, harmless only at finalize), keeps memory-only entries when there is no disk cache, and writes each file beside its name and renames it into place. `load_ptx(key, allow_unindexed)` also takes a file missing from the index this process read at start-up, if it ends in the NUL every PTX buffer ends in. |
 | `runtime/cuda/jit_cuda.cpp` | One line: the content-hash lookup passes `allow_unindexed=true`. |
 
@@ -1246,6 +1246,18 @@ which Algan puts under `ALGAN_CACHE_DIR` for every process.
   megakernel, inside the 0.6 GB a CUDA worker is already budgeted.
 * **A process killed mid-dump leaves `<key>.ptx.<pid>.tmp`** behind. Nothing
   reads it.
+* **`dump_cache_data_to_disk` is still destructive** -- severity *crash if
+  misused*, unchanged by this patch. `KernelCompilationManager::dump` moves
+  every kernel compiled in this process out of its cache and frees it, while
+  Python (`compiled_kernel_data_by_key`, Algan's fast-launch plans) keeps the
+  handles; the next launch of one reads freed memory. That is how Algan's
+  per-render-job dump crashed five macOS CPU CI workers (PR #186, removed in
+  `667a6c0a`). 0011's PTX half keeps what it writes, but only a process that
+  will not launch those kernels again may call the dump: a precompile worker,
+  or the exit flush. Algan's worker also never prepares a kernel it compiled
+  and dumped itself (`kernel_precompile._DUMPED_HERE`). Making the `.qdc`
+  half keep its kernels (move them into `cached_data_` instead of a local
+  that dies) would be a patch of its own.
 
 ## 0010-0011 — what is verified, and how to test a wheel
 

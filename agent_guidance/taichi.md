@@ -199,7 +199,10 @@ has it, a CUDA worker prepares every spec before its dump
 (`kernel_precompile.prepare_for_launch`, off under `ALGAN_PRECOMPILE_PTX=0`).
 The render finds that PTX even though its PTX index was read at `init`,
 before the pool finished: 0011 lets a content-hash lookup take a file the
-index lacks.
+index lacks. 0011 does not make the dump safe mid-process: its PTX half keeps
+what it wrote, but the `.qdc` half still frees every kernel it writes, so the
+rule above stands -- and a worker never prepares a kernel it compiled and
+dumped itself (`_DUMPED_HERE`), whose handle that dump freed.
 
 **Loading cached kernels cannot overlap authoring on a thread.** On a warm
 cache a fresh process's first render spends ~2.5 s (`explainer`) to ~4.4 s

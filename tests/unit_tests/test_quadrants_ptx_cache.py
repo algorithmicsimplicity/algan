@@ -231,6 +231,7 @@ def worker(monkeypatch):
 
     monkeypatch.setattr(kp, "prepare_for_launch", prepare)
     monkeypatch.setattr(kp, "placeholder_args", lambda spec, device: ())
+    monkeypatch.setattr(kp, "_DUMPED_HERE", {})
     monkeypatch.setattr(
         type(program()),
         "dump_cache_data_to_disk",
@@ -286,3 +287,31 @@ def test_a_compiled_kernel_is_prepared_before_the_one_dump(worker, monkeypatch):
     assert prepared == [data]
     assert kernel.compiled_kernel_data_by_key["key"] is data
     assert calls == ["prepare", "enter", "dump"]
+
+
+def test_a_kernel_this_worker_dumped_is_never_prepared_again(worker, monkeypatch):
+    """Quadrants' dump frees what it writes, so the second sight of it dangles.
+
+    ``KernelCompilationManager::dump`` moves each newly compiled kernel out of
+    its cache and drops it, while ``compiled_kernel_data_by_key`` keeps the
+    handle. A later spec with the same key comes back as ``cached``; preparing
+    it would read freed memory. It was prepared before its dump anyway.
+    """
+    kernel_for, calls, prepared = worker
+    kernel_for(cached=None)
+    data = object()
+    monkeypatch.setattr(
+        type(program()),
+        "compile_kernel",
+        lambda self, *args: SimpleNamespace(
+            compiled_kernel_data=data, cache_hit=False, cache_key="T0"
+        ),
+    )
+    kp.compile_spec({})
+    assert prepared == [data]
+    calls.clear()
+    outcome = kp.compile_spec({}, before_writing=lambda: calls.append("enter"))
+    assert outcome["status"] == "cached"
+    assert "ptx_seconds" not in outcome
+    assert prepared == [data]
+    assert calls == []

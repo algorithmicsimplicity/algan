@@ -883,6 +883,16 @@ def prepare_for_launch(prog, compiled_kernel_data):
     return time.perf_counter() - started
 
 
+#: The ``CompiledKernelData`` handles this worker compiled and then dumped, by
+#: ``id`` (the handle is kept, so the id is not reused). Quadrants'
+#: ``KernelCompilationManager::dump`` frees every kernel it writes, so each of
+#: these points at freed memory while ``compiled_kernel_data_by_key`` still
+#: holds it: a later spec with the same key comes back as ``cached`` and must
+#: not be prepared again -- it was prepared before its dump, and touching it
+#: now would read freed memory.
+_DUMPED_HERE = {}
+
+
 def _prepare(prog, compiled_kernel_data, outcome):
     """:func:`prepare_for_launch`, noting its time or its failure in ``outcome``.
 
@@ -914,8 +924,9 @@ def compile_spec(spec, on_started=None, before_writing=None):
     ``status`` is ``cached`` (the index served it), ``offline-hit`` (the
     frontend ran, the backend was on disk) or ``compiled``. A cached kernel is
     still prepared, and dumped if it was: its ``.qdc`` may predate the PTX
-    tier. ``before_writing`` is called just before the index store and the
-    dump -- the writes that take the cache's metadata lock (see
+    tier -- unless this worker compiled it, whose handle its dump freed
+    (:data:`_DUMPED_HERE`). ``before_writing`` is called just before the index
+    store and the dump -- the writes that take the cache's metadata lock (see
     :func:`worker_main`).
     """
     from algan.settings._startup import render_device
@@ -936,7 +947,7 @@ def compile_spec(spec, on_started=None, before_writing=None):
     cached = kernel.compiled_kernel_data_by_key.get(key)
     if cached is not None:
         outcome = {"status": "cached"}
-        if _prepare(prog, cached, outcome):
+        if id(cached) not in _DUMPED_HERE and _prepare(prog, cached, outcome):
             if before_writing is not None:
                 before_writing()
             program().dump_cache_data_to_disk()
@@ -969,6 +980,7 @@ def compile_spec(spec, on_started=None, before_writing=None):
         )
     kernel.compiled_kernel_data_by_key[key] = result.compiled_kernel_data
     program().dump_cache_data_to_disk()
+    _DUMPED_HERE[id(result.compiled_kernel_data)] = result.compiled_kernel_data
     outcome["seconds"] = time.perf_counter() - started
     return outcome
 
