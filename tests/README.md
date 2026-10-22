@@ -518,16 +518,15 @@ depending on the materialization window, so byte-identity across re-windowed
 state is unattainable. A failure writes a diff video to the suite's
 `output_errors/`.
 
-The second thing the tolerance absorbs is **split pixels**. A pixel that spawns
-three or more branches — reflective or refractive geometry under analytic AA,
-where each covered pixel takes several sub-pixel reflection taps — sums those
-branches into `pix_accum` with `ti.atomic_add` in GPU scheduling order, and
-float addition is not associative, so such a scene renders slightly differently
-every run. The recorded probe measured `|d| = 1` on tens of channel samples out of
-165M. That is an observation, not a universal bound supplied by `u8` conversion;
-rounding and encoding can amplify differences, so measure the current scene
-and backend before choosing a tolerance. It does mean a scene like that cannot be a *byte-identical* A/B parity
-fixture; `../agent_guidance/memory_perf.md` covers how to pick one, and
+**Split pixels** were a second source of run-to-run differences, and no
+longer are. A pixel that
+spawns several branches (reflective or refractive geometry under analytic AA)
+summed them into `pix_accum` with float `ti.atomic_add` in GPU scheduling
+order, and its split-sum glossy reflection went to whichever branch claimed it
+first. So such a scene rendered differently on every CUDA run, by up to 240
+levels near glass. Both are now settled by value, so two renders are
+byte-identical (`../agent_guidance/memory_perf.md`, "Split pixels are
+byte-reproducible"). `unit_tests/test_render_determinism.py` guards it, and
 `benchmarks/_split_determinism_check.py` measures a scene's own run-to-run
 floor.
 

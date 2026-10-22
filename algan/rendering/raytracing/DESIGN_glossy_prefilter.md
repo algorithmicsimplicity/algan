@@ -467,11 +467,26 @@ is not a glossy ray and meets a qualifying surface does three things:
 
 1. It takes `R = E`.
 2. It `atomic_add`s its `W` into columns 8-10.
-3. It `atomic_max`es a tiny positive mark into column 11. The one ray that
-   gets a negative value back is the claimant. It writes the radius from that
-   value's magnitude, `d_p` and the hit's magnification `m` (§3.1, with the
-   unfolded path length as `d_p`), and spawns the glossy ray into the pixel's
-   glossy row.
+3. If column 11 is still negative, it reserves its glossy ray as a pending
+   candidate. The slot carries the radius scale, the hit's magnification `m`
+   (§3.1, with the unfolded path length as `d_p`), the ray's energy and a hash
+   of its state. The ray also `atomic_max`es its energy into column 12.
+
+After the shade launch, three small kernels (`gloss_claim_tiebreak`,
+`gloss_claim_decide` and `gloss_claim_commit`) keep one candidate per pixel.
+The candidates with the most energy `atomic_max` their hashes into column 13.
+The candidate that holds both maxima then makes the claim. It `atomic_max`es a
+tiny positive mark into column 11, and the one that gets a negative value back
+writes the radius from that value's magnitude. That candidate then writes
+`d_p` and `m` into columns 12 and 13 and goes live. The other candidates retire
+untraced. Columns 12 and 13 can hold the maxima meanwhile because nothing reads
+them before a claim.
+
+The claim used to go to the first ray whose mark landed in column 11. That ray
+was chosen by GPU scheduling order: the refracted taps of one glass pixel over
+a rough floor raced for it, and two renders of
+`benchmarks/performance/graphics_scene.py` differed by up to 240 levels.
+`tests/unit_tests/test_render_determinism.py` is the guard.
 
 A zero in column 11 means the resolve never ran on this route for the pixel,
 so the drain falls back to the throttle. `gl_take` in
