@@ -18,6 +18,7 @@ These are internal helpers and deliberately excluded from
 from __future__ import annotations
 
 import functools
+import math
 import re
 from collections import defaultdict
 from math import sqrt
@@ -105,7 +106,52 @@ def cast_to_tensor(x):
         return x
 
 
-def reject_non_finite(name, value, given=None):
+#: Sentinel for "the caller did not say what ``value`` was cast from".
+_NO_SOURCE = object()
+
+
+def _plain_tensor(value):
+    """``value`` viewed as a plain :class:`torch.Tensor`.
+
+    A :class:`~algan.constants.color.Color` routes every op through
+    ``Tensor.__torch_function__``, which costs several times the op itself on
+    the tiny tensors validation sees. The view shares the data, so a check on
+    it reads exactly the same values.
+    """
+    return value if type(value) is torch.Tensor else value.as_subclass(torch.Tensor)
+
+
+def _number_casts_to_finite(source):
+    """Whether ``source`` is a plain Python number whose cast is finite.
+
+    True only for an ``int`` or ``float`` (exactly those types, so ``bool``,
+    NumPy scalars and tensors take the tensor check) whose magnitude fits the
+    default floating dtype: ``cast_to_tensor`` builds that dtype, and a finite
+    float beyond its range -- ``1e39`` in float32 -- casts to an infinity,
+    which must still be rejected. NaN and the infinities fail the comparison.
+    """
+    kind = type(source)
+    if kind is not float and kind is not int:
+        return False
+    return abs(source) <= torch.finfo(torch.get_default_dtype()).max
+
+
+def _all_finite(value):
+    """Whether every element of the floating tensor ``value`` is finite.
+
+    One reduction and one scalar read on the path every valid value takes: a
+    sum is finite only if every term is (a NaN or an infinity anywhere makes
+    it NaN or infinite). The converse can fail -- finite values large enough
+    to overflow the sum -- so a non-finite sum falls back to the exact
+    elementwise test before anything is reported.
+    """
+    value = _plain_tensor(value)
+    if math.isfinite(value.sum().item()):
+        return True
+    return bool(torch.isfinite(value).all())
+
+
+def reject_non_finite(name, value, given=None, *, cast_from=_NO_SOURCE):
     """Raise if ``value`` holds a NaN or an infinity.
 
     A NaN reaching an animatable attribute is not caught anywhere downstream:
@@ -122,6 +168,11 @@ def reject_non_finite(name, value, given=None):
         The already-cast tensor to check. Non-tensors pass through.
     given
         What the user actually wrote, when it reads better than the tensor.
+    cast_from
+        What ``value`` was cast from with :func:`cast_to_tensor`, when the
+        caller knows. A plain Python number that casts to a finite value
+        needs no look at the tensor, which is most of what authoring writes;
+        anything else is checked on ``value`` as usual.
 
     Returns
     -------
@@ -132,10 +183,12 @@ def reject_non_finite(name, value, given=None):
     AlganConfigurationError
         If any element is NaN or infinite.
     """
-    if torch.is_tensor(value) and value.is_floating_point():
-        finite = torch.isfinite(value)
-        if not bool(finite.all()):
-            what = "NaN" if bool(torch.isnan(value).any()) else "infinite"
+    if cast_from is not _NO_SOURCE and _number_casts_to_finite(cast_from):
+        return value
+    if torch.is_tensor(value):
+        plain = _plain_tensor(value)
+        if plain.is_floating_point() and not _all_finite(plain):
+            what = "NaN" if bool(torch.isnan(plain).any()) else "infinite"
             shown = value if given is None else given
             raise AlganConfigurationError(
                 f"{name} must be finite; got a {what} value: {shown!r}. A "
@@ -145,7 +198,23 @@ def reject_non_finite(name, value, given=None):
     return value
 
 
-def reject_outside_unit_interval(name, value, given=None):
+def _within_unit_interval(value):
+    """Whether the floating tensor ``value`` is finite and inside ``[0, 1]``.
+
+    The one-reduction answer for the common, valid case. ``aminmax``
+    propagates a NaN into both ends, and an infinity is outside the interval
+    anyway, so a ``True`` here needs no separate finiteness check. ``False``
+    says only "look closer": the caller then runs the exact checks, which
+    decide which error -- if any -- to raise.
+    """
+    value = _plain_tensor(value)
+    if not value.is_floating_point() or value.numel() == 0:
+        return False
+    low, high = torch.aminmax(value)
+    return low.item() >= 0.0 and high.item() <= 1.0
+
+
+def reject_outside_unit_interval(name, value, given=None, *, cast_from=_NO_SOURCE):
     """Raise if ``value`` falls outside the closed unit interval ``[0, 1]``.
 
     For the attributes documented as fractions -- opacity above all -- where a
@@ -172,6 +241,9 @@ def reject_outside_unit_interval(name, value, given=None):
         caught as well as the tensor one. Anything else passes through.
     given
         What the user actually wrote, when it reads better than the tensor.
+    cast_from
+        What ``value`` was cast from, as for :func:`reject_non_finite`: a plain
+        Python number inside the interval needs no look at the tensor.
 
     Returns
     -------
@@ -182,6 +254,15 @@ def reject_outside_unit_interval(name, value, given=None):
     AlganConfigurationError
         If any element is NaN, infinite, below 0 or above 1.
     """
+    if cast_from is not _NO_SOURCE:
+        kind = type(cast_from)
+        if (kind is float or kind is int) and 0.0 <= cast_from <= 1.0:
+            # Rounding to any floating dtype keeps a value of [0, 1] inside it.
+            return value
+    if torch.is_tensor(value) and _within_unit_interval(value):
+        return value
+    # Anything the fast answers above could not clear takes the exact checks,
+    # which decide which error -- if any -- applies.
     reject_non_finite(name, value, given=given)
     if torch.is_tensor(value):
         outside = bool(((value < 0) | (value > 1)).any())

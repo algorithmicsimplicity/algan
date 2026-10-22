@@ -71,6 +71,7 @@ from algan.geometry.geometry import (
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import (
+    _NO_SOURCE,
     cast_to_direction,
     cast_to_tensor,
     dot_product,
@@ -120,13 +121,17 @@ class _GuardedMethod:
         raise AttributeError(self._message)
 
 
-def _validate_opacity(value, *, given=None):
+def _validate_opacity(value, *, given=None, cast_from=_NO_SOURCE):
     """Validate the documented ``Mob.opacity`` unit interval at authoring time.
 
     The same check guards :meth:`~algan.constants.color.Color.set_opacity`, so
     both spellings of "make this half transparent" report the same way.
+    ``cast_from`` is what ``value`` was cast from, when known (see
+    :func:`~algan.utils.tensor_utils.reject_non_finite`).
     """
-    return reject_outside_unit_interval("opacity", value, given=given)
+    return reject_outside_unit_interval(
+        "opacity", value, given=given, cast_from=cast_from
+    )
 
 
 #: The largest :attr:`Mob.pass_index` a user may set. The object-index pass
@@ -710,9 +715,14 @@ class Mob(
         self._init_default_attr("basis", basis)
         self._init_default_attr("color", color)
         self._init_default_attr(
-            "opacity", _validate_opacity(cast_to_tensor(opacity), given=opacity)
+            "opacity",
+            _validate_opacity(
+                cast_to_tensor(opacity), given=opacity, cast_from=opacity
+            ),
         )
-        self._init_default_attr("glow", reject_non_finite("glow", cast_to_tensor(glow)))
+        self._init_default_attr(
+            "glow", reject_non_finite("glow", cast_to_tensor(glow), cast_from=glow)
+        )
         self.num_points_per_object = 1
         self.shader = None
         self._constructor_unlit = unlit
@@ -1671,9 +1681,9 @@ class Mob(
         # which replay re-enters once per frame batch. Opacity has the stronger
         # documented [0, 1] contract, so validate that range here too.
         if attr == "opacity":
-            _validate_opacity(value, given=given)
+            _validate_opacity(value, given=given, cast_from=given)
         else:
-            reject_non_finite(attr, value)
+            reject_non_finite(attr, value, cast_from=given)
 
         if self._writes_through_property_setter(attr):
             # The generic path below writes timeline rows, which for these
@@ -2321,7 +2331,9 @@ class Mob(
             This Mob, so calls can be chained.
         """
         # Calculate the new absolute scale coefficient
-        scale_factor = reject_non_finite("scale_factor", cast_to_tensor(scale_factor))
+        scale_factor = reject_non_finite(
+            "scale_factor", cast_to_tensor(scale_factor), cast_from=scale_factor
+        )
         new_scale = scale_factor * self.scale_coefficient
         # Use the 'set' method to apply the new scale coefficient, which handles animation and recursion
         return (
