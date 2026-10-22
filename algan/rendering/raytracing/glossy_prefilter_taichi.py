@@ -14,6 +14,12 @@ frames and these buffers would otherwise be the render's dominant allocation):
 ``gloss_pyramid_level``one 2x2 weighted box reduction, launched per level
 ``gloss_composite``    trilinear prefilter + ``finalize(csum + W * refl)``
 
+``gloss_finish`` is the last two plus the buffers' reset for the next frame,
+in ONE launch (``ALGAN_OPT_DISABLE=glossfuse`` restores the separate ones), and
+``gloss_clear`` is the reset alone. Every kernel here computes a texel or a
+pixel through the same ``ti.func``, so the fused launch does the same
+arithmetic, in the same order, as the launches it replaces.
+
 Nothing here runs unless ``glossy_reflection_mode() == 3``; the host does not
 allocate the buffers otherwise.
 """
@@ -564,10 +570,10 @@ def gloss_scatter(
         gl_pyr[p, GL_PYR_NEAR + _PYR_LLV] = w_near * log_scale * log_scale
 
 
-@ti.kernel
-def gloss_pyramid_level(src: int, dst: int, level_meta: ti.types.ndarray(),
-                        gl_pyr: ti.types.ndarray()):
-    """One 2x2 weighted box reduction of the reflection pyramid.
+@ti.func
+def _gloss_reduce_texel(src, dst, i, level_meta: ti.template(),
+                        gl_pyr: ti.template()):
+    """Texel ``i`` of level ``dst``: the 2x2 weighted box of level ``src``.
 
     Weighted, not plain: a texel's validity lane rides through the reduction
     with its radiance, so a level averages only the pixels that actually have a
@@ -584,21 +590,29 @@ def gloss_pyramid_level(src: int, dst: int, level_meta: ti.types.ndarray(),
     hs = level_meta[src, 2]
     off_d = level_meta[dst, 0]
     wd = level_meta[dst, 1]
-    hd = level_meta[dst, 2]
-    for i in range(wd * hd):
-        y = i // wd
-        x = i - y * wd
-        acc = ti.Vector([0.0] * GL_PYR_WIDTH)
-        for dy in ti.static(range(2)):
-            for dx in ti.static(range(2)):
-                sx = ti.min(2 * x + dx, ws - 1)
-                sy = ti.min(2 * y + dy, hs - 1)
-                s = off_s + sy * ws + sx
-                for k in ti.static(range(GL_PYR_WIDTH)):
-                    acc[k] += gl_pyr[s, k]
-        d = off_d + i
-        for k in ti.static(range(GL_PYR_WIDTH)):
-            gl_pyr[d, k] = acc[k] * 0.25
+    y = i // wd
+    x = i - y * wd
+    acc = ti.Vector([0.0] * GL_PYR_WIDTH)
+    for dy in ti.static(range(2)):
+        for dx in ti.static(range(2)):
+            sx = ti.min(2 * x + dx, ws - 1)
+            sy = ti.min(2 * y + dy, hs - 1)
+            s = off_s + sy * ws + sx
+            for k in ti.static(range(GL_PYR_WIDTH)):
+                acc[k] += gl_pyr[s, k]
+    d = off_d + i
+    for k in ti.static(range(GL_PYR_WIDTH)):
+        gl_pyr[d, k] = acc[k] * 0.25
+
+
+@ti.kernel
+def gloss_pyramid_level(src: int, dst: int, level_meta: ti.types.ndarray(),
+                        gl_pyr: ti.types.ndarray()):
+    """One 2x2 weighted box reduction of the reflection pyramid
+    (``_gloss_reduce_texel``).
+    """
+    for i in range(level_meta[dst, 1] * level_meta[dst, 2]):
+        _gloss_reduce_texel(src, dst, i, level_meta, gl_pyr)
 
 
 @ti.kernel
@@ -609,7 +623,92 @@ def gloss_composite(
         level_meta: ti.types.ndarray(),
         gl_main: ti.types.ndarray(), gl_pyr: ti.types.ndarray(),
         out: ti.types.ndarray()):
-    """``out = finalize(csum + W * prefilter(B))`` for every glossy pixel.
+    """``out = finalize(csum + W * prefilter(B))`` for every glossy pixel
+    (``_gloss_composite_pixel``).
+    """
+    sigma_max = _BOX_SIGMA * ti.cast(1 << (num_levels - 1), ti.f32)
+    for p in range(num_pixels):
+        sigma = gl_main[p, GL_MAIN_SIGMA]
+        if sigma < 0.0:
+            continue
+        _gloss_composite_pixel(p, sigma, sigma_max, width, height, num_levels,
+                               frame_rel, tonemapping, tonemap_exposure,
+                               level_meta, gl_main, gl_pyr, out)
+
+
+@ti.kernel
+def gloss_finish(
+        levels: ti.template(),
+        num_pixels: int, width: int, height: int, num_levels: int,
+        frame_rel: int,
+        tonemapping: ti.template(), tonemap_exposure: ti.f32,
+        level_meta: ti.types.ndarray(),
+        gl_main: ti.types.ndarray(), gl_pyr: ti.types.ndarray(),
+        out: ti.types.ndarray()):
+    """A finished frame's whole prefilter in one launch, and the reset.
+
+    ``levels`` is ``num_levels`` again, as a template: each unrolled level is
+    its own top-level loop, so its own offloaded task, and tasks run in order
+    -- a level reads the one below it complete, as it did when each level was
+    a launch of ``gloss_pyramid_level``. Then ``gloss_composite``'s loop, then
+    the reset ``gloss_clear`` would have done, cut to what the next frame
+    reads:
+
+    * ``gl_main``'s blur radius back to -1, written by the pixel that just
+      read it. ``gloss_scatter`` writes every column of the rows it marks
+      glossy and nothing reads an unmarked row past its radius, so the other
+      columns need no reset.
+    * Level 0 of ``gl_pyr`` back to zero, after the composite has read it
+      everywhere. Every texel of every higher level is written by the next
+      frame's own reduction before anything reads it.
+
+    ``num_levels`` stays a runtime argument because the composite's
+    arithmetic takes it as one in ``gloss_composite``.
+    """
+    for lvl in ti.static(range(1, levels)):
+        for i in range(level_meta[lvl, 1] * level_meta[lvl, 2]):
+            _gloss_reduce_texel(lvl - 1, lvl, i, level_meta, gl_pyr)
+    sigma_max = _BOX_SIGMA * ti.cast(1 << (num_levels - 1), ti.f32)
+    for p in range(num_pixels):
+        sigma = gl_main[p, GL_MAIN_SIGMA]
+        if sigma < 0.0:
+            continue
+        _gloss_composite_pixel(p, sigma, sigma_max, width, height, num_levels,
+                               frame_rel, tonemapping, tonemap_exposure,
+                               level_meta, gl_main, gl_pyr, out)
+        gl_main[p, GL_MAIN_SIGMA] = -1.0
+    for i in range(num_pixels * GL_PYR_WIDTH):
+        gl_pyr[i // GL_PYR_WIDTH, i % GL_PYR_WIDTH] = 0.0
+
+
+@ti.kernel
+def gloss_clear(num_pixels: int, gl_main: ti.types.ndarray(),
+                gl_pyr: ti.types.ndarray()):
+    """Reset the per-frame reflection buffers (``tracer._gloss_clear``).
+
+    Every ``gl_main`` element, flattened so each store is coalesced: zero,
+    and -1 in the blur radius column. A strided write of that one column
+    rewrote only part of every DRAM sector it touched. ``gl_pyr`` level 0
+    only, which is its first ``num_pixels`` texels; ``gloss_finish``'s
+    docstring has why the higher levels need nothing.
+    """
+    for i in range(num_pixels * GL_MAIN_WIDTH):
+        c = i % GL_MAIN_WIDTH
+        v = 0.0
+        if c == GL_MAIN_SIGMA:
+            v = -1.0
+        gl_main[i // GL_MAIN_WIDTH, c] = v
+    for i in range(num_pixels * GL_PYR_WIDTH):
+        gl_pyr[i // GL_PYR_WIDTH, i % GL_PYR_WIDTH] = 0.0
+
+
+@ti.func
+def _gloss_composite_pixel(p, sigma, sigma_max, width, height, num_levels,
+                           frame_rel, tonemapping: ti.template(),
+                           tonemap_exposure, level_meta: ti.template(),
+                           gl_main: ti.template(), gl_pyr: ti.template(),
+                           out: ti.template()):
+    """``out = finalize(csum + W * prefilter(B))`` for glossy pixel ``p``.
 
     The tile composite already wrote a finalized value at these pixels (its
     own, without the reflection); this overwrites it. Doing it that way rather
@@ -648,104 +747,99 @@ def gloss_composite(
     single blur exactly: a frame with no near reflection anywhere renders as
     it did before.
     """
-    sigma_max = _BOX_SIGMA * ti.cast(1 << (num_levels - 1), ti.f32)
-    for p in range(num_pixels):
-        sigma = gl_main[p, GL_MAIN_SIGMA]
-        if sigma < 0.0:
-            continue
-        py = p // width
-        px = p - py * width
+    py = p // width
+    px = p - py * width
 
-        g = gl_main[p, GL_MAIN_G]
-        scale = gl_main[p, GL_MAIN_SCALE]
-        w_near = _near_weight(g)
-        # The widest halo a near reflection can have at this pixel's scale:
-        # near content farther away than this does not reach its lobe.
-        reach = ti.min(_NEAR_G_HI * _LOBE_HALO_SIGMA * scale, sigma_max)
-        r0, r1, rf = _pyramid_taps(gl_pyr, level_meta, reach, num_levels,
+    g = gl_main[p, GL_MAIN_G]
+    scale = gl_main[p, GL_MAIN_SCALE]
+    w_near = _near_weight(g)
+    # The widest halo a near reflection can have at this pixel's scale:
+    # near content farther away than this does not reach its lobe.
+    reach = ti.min(_NEAR_G_HI * _LOBE_HALO_SIGMA * scale, sigma_max)
+    r0, r1, rf = _pyramid_taps(gl_pyr, level_meta, reach, num_levels,
+                               px, py, width, height)
+    near_in_reach = (r0[GL_PYR_NEAR + _PYR_V] * (1.0 - rf)
+                     + r1[GL_PYR_NEAR + _PYR_V] * rf)
+    refl = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    if w_near <= 0.0 and near_in_reach <= 0.0:
+        c0, c1, cf = _pyramid_taps(gl_pyr, level_meta,
+                                   sigma * _LOBE_CORE_SIGMA, num_levels,
                                    px, py, width, height)
-        near_in_reach = (r0[GL_PYR_NEAR + _PYR_V] * (1.0 - rf)
-                         + r1[GL_PYR_NEAR + _PYR_V] * rf)
-        refl = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-        if w_near <= 0.0 and near_in_reach <= 0.0:
-            c0, c1, cf = _pyramid_taps(gl_pyr, level_meta,
-                                       sigma * _LOBE_CORE_SIGMA, num_levels,
+        core, _vc = _layer_at(c0, c1, cf, GL_PYR_FAR)
+        h0, h1, hf = _pyramid_taps(gl_pyr, level_meta,
+                                   sigma * _LOBE_HALO_SIGMA, num_levels,
+                                   px, py, width, height)
+        halo, _vh = _layer_at(h0, h1, hf, GL_PYR_FAR)
+        refl = core * _LOBE_CORE_WEIGHT + halo * (1.0 - _LOBE_CORE_WEIGHT)
+    else:
+        g_far = _layer_mean_g(r0, r1, rf, GL_PYR_FAR, 1.0)
+        g_near = _layer_mean_g(r0, r1, rf, GL_PYR_NEAR, g)
+        sigma_far = sigma
+        if w_near > 0.0:
+            sigma_far = ti.min(
+                ((1.0 - w_near) * g + w_near * g_far) * scale, sigma_max)
+            # A near pixel's own ``G`` is not its near layer's radius
+            # where the pixel is only partly near: on the outline of a
+            # near reflection the glossy ray's coverage-weighted cone
+            # factor mixes the object's with the sky's, and blurring the
+            # near layer at that mix drew the outline as a bright thread.
+            # The near layer's mean ``G`` over the pixel's own near
+            # footprint is the object's alone, and is the pixel's own
+            # wherever the near reflection is uniform.
+            o0, o1, of = _pyramid_taps(
+                gl_pyr, level_meta,
+                ti.min(g * _LOBE_HALO_SIGMA * scale, sigma_max),
+                num_levels, px, py, width, height)
+            g_own = _layer_mean_g(o0, o1, of, GL_PYR_NEAR, g)
+            g_near = w_near * g_own + (1.0 - w_near) * g_near
+        sigma_near = ti.min(g_near * scale, sigma_max)
+        for lobe in ti.static(range(2)):
+            lobe_sigma = ti.static(
+                _LOBE_CORE_SIGMA if lobe == 0 else _LOBE_HALO_SIGMA)
+            lobe_weight = ti.static(
+                _LOBE_CORE_WEIGHT if lobe == 0
+                else 1.0 - _LOBE_CORE_WEIGHT)
+            f0, f1, ff = _pyramid_taps(gl_pyr, level_meta,
+                                       sigma_far * lobe_sigma, num_levels,
                                        px, py, width, height)
-            core, _vc = _layer_at(c0, c1, cf, GL_PYR_FAR)
-            h0, h1, hf = _pyramid_taps(gl_pyr, level_meta,
-                                       sigma * _LOBE_HALO_SIGMA, num_levels,
-                                       px, py, width, height)
-            halo, _vh = _layer_at(h0, h1, hf, GL_PYR_FAR)
-            refl = core * _LOBE_CORE_WEIGHT + halo * (1.0 - _LOBE_CORE_WEIGHT)
+            far, v_far = _layer_at(f0, f1, ff, GL_PYR_FAR)
+            n0, n1, nf = _pyramid_taps(gl_pyr, level_meta,
+                                       sigma_near * lobe_sigma,
+                                       num_levels, px, py, width, height)
+            near, v_near = _layer_at(n0, n1, nf, GL_PYR_NEAR)
+            # A near pixel's own near content is in its footprint, so
+            # the footprint's mean scale says little about whose the rest
+            # is, and only a far pixel is held to it.
+            same = _near_same_surface(n0, n1, nf, scale)
+            a = _near_share(n0, n1, nf) * (
+                w_near + (1.0 - w_near) * same)
+            # A layer with nothing in its footprint stands in for neither
+            # colour: the other one fills it.
+            if v_far <= 1e-6:
+                far = near
+            if v_near <= 1e-6:
+                near = far
+            refl += (a * near + (1.0 - a) * far) * lobe_weight
+
+    w_energy = ti.math.vec3(gl_main[p, GL_MAIN_W],
+                            gl_main[p, GL_MAIN_W + 1],
+                            gl_main[p, GL_MAIN_W + 2])
+    csum = ti.math.vec4(gl_main[p, GL_MAIN_CSUM],
+                        gl_main[p, GL_MAIN_CSUM + 1],
+                        gl_main[p, GL_MAIN_CSUM + 2],
+                        gl_main[p, GL_MAIN_CSUM + 3])
+    for k in ti.static(range(3)):
+        csum[k] += w_energy[k] * refl[k]
+    # The glow lane carries the reflection's bloom coverage scaled by the
+    # strongest channel of the energy, the same reduction the resolve uses
+    # to give a color weight a scalar glow.
+    csum[3] += ti.max(w_energy[0],
+                      ti.max(w_energy[1], w_energy[2])) * refl[3]
+
+    color_final = finalize_pixel_color(
+        csum, 1.0, tonemapping, tonemap_exposure)
+    for ci in ti.static(range(4)):
+        if ti.static(tonemapping == 3):
+            out[frame_rel, p, ci] = color_final[ci]
         else:
-            g_far = _layer_mean_g(r0, r1, rf, GL_PYR_FAR, 1.0)
-            g_near = _layer_mean_g(r0, r1, rf, GL_PYR_NEAR, g)
-            sigma_far = sigma
-            if w_near > 0.0:
-                sigma_far = ti.min(
-                    ((1.0 - w_near) * g + w_near * g_far) * scale, sigma_max)
-                # A near pixel's own ``G`` is not its near layer's radius
-                # where the pixel is only partly near: on the outline of a
-                # near reflection the glossy ray's coverage-weighted cone
-                # factor mixes the object's with the sky's, and blurring the
-                # near layer at that mix drew the outline as a bright thread.
-                # The near layer's mean ``G`` over the pixel's own near
-                # footprint is the object's alone, and is the pixel's own
-                # wherever the near reflection is uniform.
-                o0, o1, of = _pyramid_taps(
-                    gl_pyr, level_meta,
-                    ti.min(g * _LOBE_HALO_SIGMA * scale, sigma_max),
-                    num_levels, px, py, width, height)
-                g_own = _layer_mean_g(o0, o1, of, GL_PYR_NEAR, g)
-                g_near = w_near * g_own + (1.0 - w_near) * g_near
-            sigma_near = ti.min(g_near * scale, sigma_max)
-            for lobe in ti.static(range(2)):
-                lobe_sigma = ti.static(
-                    _LOBE_CORE_SIGMA if lobe == 0 else _LOBE_HALO_SIGMA)
-                lobe_weight = ti.static(
-                    _LOBE_CORE_WEIGHT if lobe == 0
-                    else 1.0 - _LOBE_CORE_WEIGHT)
-                f0, f1, ff = _pyramid_taps(gl_pyr, level_meta,
-                                           sigma_far * lobe_sigma, num_levels,
-                                           px, py, width, height)
-                far, v_far = _layer_at(f0, f1, ff, GL_PYR_FAR)
-                n0, n1, nf = _pyramid_taps(gl_pyr, level_meta,
-                                           sigma_near * lobe_sigma,
-                                           num_levels, px, py, width, height)
-                near, v_near = _layer_at(n0, n1, nf, GL_PYR_NEAR)
-                # A near pixel's own near content is in its footprint, so
-                # the footprint's mean scale says little about whose the rest
-                # is, and only a far pixel is held to it.
-                same = _near_same_surface(n0, n1, nf, scale)
-                a = _near_share(n0, n1, nf) * (
-                    w_near + (1.0 - w_near) * same)
-                # A layer with nothing in its footprint stands in for neither
-                # colour: the other one fills it.
-                if v_far <= 1e-6:
-                    far = near
-                if v_near <= 1e-6:
-                    near = far
-                refl += (a * near + (1.0 - a) * far) * lobe_weight
-
-        w_energy = ti.math.vec3(gl_main[p, GL_MAIN_W],
-                                gl_main[p, GL_MAIN_W + 1],
-                                gl_main[p, GL_MAIN_W + 2])
-        csum = ti.math.vec4(gl_main[p, GL_MAIN_CSUM],
-                            gl_main[p, GL_MAIN_CSUM + 1],
-                            gl_main[p, GL_MAIN_CSUM + 2],
-                            gl_main[p, GL_MAIN_CSUM + 3])
-        for k in ti.static(range(3)):
-            csum[k] += w_energy[k] * refl[k]
-        # The glow lane carries the reflection's bloom coverage scaled by the
-        # strongest channel of the energy, the same reduction the resolve uses
-        # to give a color weight a scalar glow.
-        csum[3] += ti.max(w_energy[0],
-                          ti.max(w_energy[1], w_energy[2])) * refl[3]
-
-        color_final = finalize_pixel_color(
-            csum, 1.0, tonemapping, tonemap_exposure)
-        for ci in ti.static(range(4)):
-            if ti.static(tonemapping == 3):
-                out[frame_rel, p, ci] = color_final[ci]
-            else:
-                out[frame_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            out[frame_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
