@@ -271,8 +271,9 @@ def _within_unit_interval(value):
     value = _plain_tensor(value)
     if not value.is_floating_point() or value.numel() == 0:
         return False
-    low, high = torch.aminmax(value)
-    return low.item() > 0.0 and high.item() <= 1.0
+    # Both ends in one host read.
+    low, high = torch.stack(torch.aminmax(value)).tolist()
+    return low > 0.0 and high <= 1.0
 
 
 def reject_outside_unit_interval(name, value, given=None, *, cast_from=_NO_SOURCE):

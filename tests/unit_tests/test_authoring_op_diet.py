@@ -167,10 +167,22 @@ def _reference_padding(value, sources):
     return torch.stack(aligned, dim=-3)
 
 
-@pytest.mark.parametrize("shape", [(5, 4, 3), (2, 5, 4, 3), (3, 1, 7), (6, 0, 3)])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (5, 4, 3),
+        (2, 5, 4, 3),
+        (3, 1, 7),
+        (6, 0, 3),
+        (3, 40000, 3),  # a large object: the index must not scale with it
+        (2, 2, 9000, 5),
+    ],
+)
 @pytest.mark.parametrize("grow", [1, 2, 7])
 def test_padding_an_object_batch_matches_the_per_slot_loop(shape, grow):
     value = torch.randn(shape, generator=torch.Generator().manual_seed(3))
+    if value.numel():
+        value.view(-1)[::7] = -0.0  # signed zeros survive a copy
     current = value.shape[-3]
     target = current + grow
     sources = [(slot * current) // target for slot in range(target)]
