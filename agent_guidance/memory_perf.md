@@ -332,6 +332,34 @@ on the explainer, per-frame chord counts and edges the rest -- and moves the
 explainer by up to 194 levels against the batch-wide default.
 `tests/unit_tests/test_frame_local_video.py` holds the stability.
 
+### A render's start: the collection and the arena (October 22)
+
+Two fixed costs of every render job, measured warm on an RTX 5080: the full
+`gc.collect()` before `scene_excluded_from_gc` freezes the scene (0.09-0.14
+s; it walks the whole live scene and freed no device memory on any
+workload), and sizing the arena, whose `empty_cache` handed the last job's
+6 GB arena back to the driver (~35 ms) only for it to be allocated again
+(~8 ms).
+
+- The collection is of generations 0-1 while PyTorch holds at most
+  `_FROZEN_GARBAGE_DEVICE_BYTES` (64 MiB; ~8.5 MB at a warm start) on the
+  render device -- garbage cannot hold more than is allocated -- and the host
+  is not short of memory. `ALGAN_OPT_DISABLE=rendergc` restores the full one.
+- `_cuda_arena_from_cache` reads the free figure as the driver's free memory
+  plus PyTorch's wholly free segments (equal to the post-`empty_cache`
+  reading on every render probed), and when one cached segment is exactly the
+  arena's rounded size, allocates from it before emptying the cache of the
+  rest. Nothing is held between renders that was not already in PyTorch's
+  cache. `ALGAN_OPT_DISABLE=arenareuse`; never with
+  `PYTORCH_CUDA_ALLOC_CONF`, an override, or off CUDA.
+
+Arena sizes were identical in every arm; outputs byte-identical (explainer,
+nn, graphics with `max_bounces=0` -- graphics is not run-to-run
+deterministic otherwise). Warm save_video medians, both on vs both off:
+explainer PREVIEW 0.58 vs 0.66 s, graphics PREVIEW 1.78 vs 1.88 s (pinned:
+1.38 vs 1.49 s), nn PREVIEW 1.18 vs 1.32 s.
+`tests/unit_tests/test_render_start_memory.py` covers both.
+
 ## Authoring memos (September 26)
 
 - **Circuit frames.** `from_batches` frames all of its members in one NumPy
