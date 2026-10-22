@@ -81,6 +81,37 @@ def _cast_to_tensor_recursive(x):
     return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
 
 
+#: ``Tensor.__torch_function__``'s implementation: a subclass that keeps it
+#: (``Color``) only re-types each op's result, so an op on its plain view
+#: followed by the same re-typing is the same op.
+_DEFAULT_TORCH_FUNCTION = torch.Tensor.__torch_function__.__func__
+
+
+def _with_leading_dims(x):
+    """``x`` with size-1 dimensions prepended until it has three.
+
+    One ``x[None, ...]`` index rather than one ``unsqueeze(0)`` per missing
+    dimension: indexing inserts each dimension with ``unsqueeze``, so the
+    shape, strides and storage are the ones the loop produced. A ``Color``
+    is indexed as its plain view and re-typed once, which is what its
+    ``__torch_function__`` does to every op's result anyway, rather than
+    paying that dispatch once per dimension.
+    """
+    cls = type(x)
+    if cls is torch.Tensor:
+        missing = 3 - x.dim()
+        return x[(None,) * missing] if missing > 0 else x
+    if getattr(cls.__torch_function__, "__func__", None) is _DEFAULT_TORCH_FUNCTION:
+        plain = x.as_subclass(torch.Tensor)
+        missing = 3 - plain.dim()
+        if missing <= 0:
+            return x
+        return plain[(None,) * missing].as_subclass(cls)
+    while x.dim() < 3:
+        x = x.unsqueeze(0)
+    return x
+
+
 def cast_to_tensor(x):
     """
     Converts scalars or lists of scalars into tensors, and combines lists of tensors into a single tensor.
@@ -90,11 +121,25 @@ def cast_to_tensor(x):
     if isinstance(x, np.ndarray):
         x = torch.from_numpy(x).to(dtype=torch.get_default_dtype())
     if isinstance(x, torch.Tensor):
-        while x.dim() < 3:
-            x = x.unsqueeze(0)
-        return x  # .view(-1,x.shape[-1])
+        return _with_leading_dims(x)
+    if type(x) is float:
+        dtype = torch.get_default_dtype()
+        if abs(x) <= torch.finfo(dtype).max:
+            # The common scalar, in one op. ``full`` converts a float fill
+            # value exactly as ``tensor`` converts a float element (a C cast
+            # of the double), so this is the tensor the general path below
+            # builds. ``full`` refuses a value beyond the dtype's range where
+            # ``tensor`` rounds it to an infinity, so those -- and NaN -- take
+            # the general path.
+            return torch.full((1, 1, 1), x, dtype=dtype)
     if isinstance(x, (list, tuple)):
-        x = _cast_to_tensor_recursive(x).squeeze(-1)
+        if x and all(type(item) is float or type(item) is int for item in x):
+            # A flat run of numbers: every element is stored by the same
+            # per-element conversion the recursive path applies one at a
+            # time, so one ``tensor`` call builds the same values.
+            x = torch.tensor(list(x), dtype=torch.get_default_dtype())
+        else:
+            x = _cast_to_tensor_recursive(x).squeeze(-1)
         return x.view(1, -1, x.shape[-1])
     if x is None:
         x = 0
