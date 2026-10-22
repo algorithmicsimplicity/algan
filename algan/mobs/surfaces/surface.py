@@ -1586,8 +1586,9 @@ class Surface(Mob):
 
         Assigning an image maps it over the surface's parameter domain, so it follows
         the surface as it deforms. ``None`` means the surface is drawn from its
-        per-vertex colors instead. Assigning a texture whose resolution differs from
-        the current one detaches history, since the two cannot be interpolated.
+        per-vertex colors instead. On a spawned surface, assigning ``None``, or a texture
+        with a different number of texels from the current one, detaches history,
+        since the two cannot be interpolated.
 
         Reading it back gives the image in that same ``[W, H, 5]`` layout -- not the
         flat ``W * H * 5`` row the timeline stores it as -- so arithmetic on it can

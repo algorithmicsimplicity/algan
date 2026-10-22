@@ -28,6 +28,19 @@ from algan.utils.tensor_utils import (
 
 
 def convert_points_to_path(points):
+    """Build a closed straight-edged path through a sequence of points.
+
+    Parameters
+    ----------
+    points
+        The vertices in order, shape ``(N, 2)`` or ``(N, 3)``. Each is joined to the
+        next by a straight line, and the last back to the first.
+
+    Returns
+    -------
+    Path
+        The closed path, suitable for :class:`~.TriangulatedBezierCircuit`.
+    """
     path = [Move(points[0])]
     for i in range(len(points) - 1):
         path.append(Line(points[i], points[i + 1]))
@@ -144,6 +157,30 @@ class AxesMob(Mob):
 
 
 def get_corners(start, direction, width, height, facing_direction):
+    """Get the four corners of a rectangle that grows from ``start`` along ``direction``.
+
+    Parameters
+    ----------
+    start
+        Midpoint of the rectangle's base, shape ``(*, 3)`` in world units.
+    direction
+        Direction the rectangle extends along, shape ``(*, 3)``; normally a unit
+        vector, as its length scales both ``height`` and ``width``.
+    width
+        Half the rectangle's width: the corners sit ``width`` either side of the
+        centre line.
+    height
+        Length of the rectangle along ``direction``.
+    facing_direction
+        The rectangle's normal, shape ``(*, 3)``, normally a unit vector; the width
+        runs along
+        ``direction x facing_direction``.
+
+    Returns
+    -------
+    torch.Tensor
+        The corners in order around the rectangle, shape ``(*, 4, 3)``.
+    """
     perp = broadcast_cross_product(direction, facing_direction)
     end = start + direction * height
     return torch.stack(
@@ -319,6 +356,18 @@ class FunctionPlotMob(Mob):
             self.spawn()
 
     def map_input_domain_to_scaled_domain(self, xs):
+        """Map plot-space ``x`` values to points on the horizontal axis.
+
+        Parameters
+        ----------
+        xs
+            Horizontal positions, shape ``(N,)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The points ``(x, 0, 0)``, shape ``(N, 3)``.
+        """
         def get_func_point_at_x(x):
             return torch.stack((x, torch.zeros_like(x), torch.zeros_like(x)), -1)
 
@@ -326,9 +375,36 @@ class FunctionPlotMob(Mob):
         return func_points
 
     def get_scaler(self):
+        """Get the plotted height of the function's largest value.
+
+        Returns
+        -------
+        float
+            ``1.1`` times half the axes' width; curve points taller than this are
+            clipped from the plot.
+        """
         return self.axes.width * 0.5 * 1.1
 
     def map_input_domain_to_curve_location(self, xs):
+        """Map plot-space ``x`` values to points on the plotted curve.
+
+        The function is evaluated at ``x * s`` (``s`` being twice the ``scale``
+        argument), and the results are scaled vertically so the axes'
+        ``max_value`` reaches :meth:`get_scaler`. If the axes have no
+        ``max_value`` yet, the largest ``|f(x)|`` sampled here (ignoring NaNs)
+        becomes it.
+
+        Parameters
+        ----------
+        xs
+            Horizontal positions, shape ``(N,)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The curve points ``(x, y, 0)``, shape ``(N, 3)``; ``y`` is NaN where
+            the function is.
+        """
         def get_func_point_at_x(x):
             return torch.stack(
                 (x, self.func_callable(x * self.s) / self.s, torch.zeros_like(x)), -1
@@ -350,7 +426,9 @@ class FunctionPlotMob(Mob):
         return func_points
 
     def on_create(self):
+        """Internal: spawn-in hook, called by :meth:`~.Animatable.spawn`."""
         self.spawn_tilewise_recursive()
 
     def on_destroy(self):
+        """Internal: despawn hook, called by :meth:`~.Animatable.despawn`."""
         self.despawn_tilewise_recursive()

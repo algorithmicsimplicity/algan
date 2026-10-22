@@ -53,6 +53,23 @@ def _smooth_constants(inflection):
 
 
 def smooth(t, inflection=10.0):
+    """Ease in and out along a rescaled sigmoid; the default easing.
+
+    Maps 0 to 0 and 1 to 1, and is symmetric about ``t = 0.5``.
+
+    Parameters
+    ----------
+    t
+        Normalized time, a float or tensor in ``[0, 1]``.
+    inflection
+        Steepness of the sigmoid. Higher values linger longer at the ends
+        and move faster through the middle. Defaults to ``10.0``.
+
+    Returns
+    -------
+    torch.Tensor
+        Progress, clamped to ``[0, 1]``.
+    """
     if isinstance(inflection, (int, float)):
         inflection, error, scale = _smooth_constants(float(inflection))
     else:
@@ -65,13 +82,13 @@ def smooth(t, inflection=10.0):
 
 
 def delay_fade(t):
-    """Fast initial rise followed by parabolic settling."""
+    """Rise linearly to halfway in the first 20% of the time, then accelerate to the end."""
     f = 0.2
     return ((t - f).clamp_min(0) / (1 - f)).pow(2) * 0.5 + (t / f).clamp_max(1) * 0.5
 
 
 def pulse_fade(t):
-    """Linear blend with rapid initial ramp."""
+    """Rise linearly to halfway in the first 20% of the time, then linearly to the end."""
     f = 0.2
     t_tensor = torch.as_tensor(t)
     return (t_tensor - f).clamp_min(0) * (0.5 / (1 - f)) + (t_tensor / f).clamp_max(
@@ -80,36 +97,46 @@ def pulse_fade(t):
 
 
 def inversed(f):
-    """Reverses an easing function."""
+    """Mirror an easing curve, turning an ease-in into the matching ease-out.
+
+    Returns ``lambda x: 1 - f(1 - x)``, the curve rotated half a turn about
+    ``(0.5, 0.5)``; it keeps the endpoints 0 and 1.
+    """
     return lambda x: 1 - f(1 - x)
 
 
 # --- Sine ---
 def ease_in_sine(t):
+    """Start slowly and speed up, along a quarter cosine wave."""
     t_tensor = torch.as_tensor(t)
     return 1 - torch.cos((t_tensor * math.pi) / 2)
 
 
 def ease_out_sine(t):
+    """Start fast and slow down, along a quarter sine wave."""
     t_tensor = torch.as_tensor(t)
     return torch.sin((t_tensor * math.pi) / 2)
 
 
 def ease_in_out_sine(t):
+    """Ease in and out along a half cosine wave; the gentlest in-out curve."""
     t_tensor = torch.as_tensor(t)
     return -(torch.cos(t_tensor * math.pi) - 1) / 2
 
 
 # --- Quad ---
 def ease_in_quad(t):
+    """Start slowly and speed up, as ``t ** 2``."""
     return t * t
 
 
 def ease_out_quad(t):
+    """Start fast and slow down; the mirror image of :func:`ease_in_quad`."""
     return 1 - (1 - t) * (1 - t)
 
 
 def ease_in_out_quad(t):
+    """Ease in and out with quadratic acceleration, meeting at ``t = 0.5``."""
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
     return m * (2 * t_tensor * t_tensor) + (1 - m) * (
@@ -119,14 +146,17 @@ def ease_in_out_quad(t):
 
 # --- Cubic ---
 def ease_in_cubic(t):
+    """Start slowly and speed up, as ``t ** 3``."""
     return t * t * t
 
 
 def ease_out_cubic(t):
+    """Start fast and slow down; the mirror image of :func:`ease_in_cubic`."""
     return 1 - (1 - t) ** 3
 
 
 def ease_in_out_cubic(t):
+    """Ease in and out with cubic acceleration, meeting at ``t = 0.5``."""
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
     return m * (4 * t_tensor**3) + (1 - m) * (1 - torch.pow(-2 * t_tensor + 2, 3) / 2)
@@ -134,14 +164,17 @@ def ease_in_out_cubic(t):
 
 # --- Quart ---
 def ease_in_quart(t):
+    """Start slowly and speed up, as ``t ** 4``."""
     return t**4
 
 
 def ease_out_quart(t):
+    """Start fast and slow down; the mirror image of :func:`ease_in_quart`."""
     return 1 - (1 - t) ** 4
 
 
 def ease_in_out_quart(t):
+    """Ease in and out with quartic acceleration, meeting at ``t = 0.5``."""
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
     return m * (8 * t_tensor**4) + (1 - m) * (1 - torch.pow(-2 * t_tensor + 2, 4) / 2)
@@ -149,18 +182,22 @@ def ease_in_out_quart(t):
 
 # --- Quint ---
 def ease_in_quint(t):
+    """Start slowly and speed up, as ``t ** 5``."""
     return t**5
 
 
 def ease_out_quint(t):
+    """Start fast and slow down; the mirror image of :func:`ease_in_quint`."""
     return 1 - (1 - t) ** 5
 
 
 def ease_out_quintic(t):
+    """Start fast and slow down; identical to :func:`ease_out_quint`."""
     return 1 - ((1 - t) ** 5)
 
 
 def ease_in_out_quint(t):
+    """Ease in and out with quintic acceleration, meeting at ``t = 0.5``."""
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
     return m * (16 * t_tensor**5) + (1 - m) * (1 - torch.pow(-2 * t_tensor + 2, 5) / 2)
@@ -168,6 +205,11 @@ def ease_in_out_quint(t):
 
 # --- Expo ---
 def ease_out_exp(t, scale=4):
+    """Start fast and slow down along a rescaled softplus curve.
+
+    Gentler than :func:`ease_out_expo`. Maps 0 to 0 and 1 to 1; ``scale``
+    (default ``4``) sets how sharply it decelerates.
+    """
     def f(t):
         return -torch.nn.functional.softplus(-scale * (t - 0.5))
 
@@ -177,11 +219,20 @@ def ease_out_exp(t, scale=4):
 
 
 def ease_out_exp_square(t):
+    """Square of :func:`ease_out_exp`: a gentle start, then a soft landing.
+
+    Maps 0 to 0 and 1 to 1.
+    """
     o = ease_out_exp(t)
     return o**2
 
 
 def ease_in_expo(t: float) -> float:
+    """Start slowly and speed up exponentially, as a rescaled ``2 ** (5t - 5)``.
+
+    Rescaled so it maps exactly 0 to 0 and 1 to 1. Milder than the
+    standard Penner curve, which uses ``2 ** (10t - 10)``.
+    """
     def f(t):
         s = 5
         return pow(2, s * t - s)
@@ -192,6 +243,10 @@ def ease_in_expo(t: float) -> float:
 
 
 def ease_out_expo(t: float) -> float:
+    """Start fast and slow down exponentially; the mirror image of :func:`ease_in_expo`.
+
+    Rescaled so it maps exactly 0 to 0 and 1 to 1.
+    """
     def f(t):
         s = 5
         return 1 - pow(2, -s * t)
@@ -203,16 +258,19 @@ def ease_out_expo(t: float) -> float:
 
 # --- Circ ---
 def ease_in_circ(t):
+    """Start slowly and speed up along a quarter circle; very steep at the end."""
     t_tensor = torch.as_tensor(t).clamp(0, 1)
     return 1 - torch.sqrt((1 - torch.pow(t_tensor, 2)).clamp_min(0))
 
 
 def ease_out_circ(t):
+    """Start very fast and slow down along a quarter circle."""
     t_tensor = torch.as_tensor(t).clamp(0, 1)
     return torch.sqrt((1 - torch.pow(t_tensor - 1, 2)).clamp_min(0))
 
 
 def ease_in_out_circ(t):
+    """Ease in and out along two quarter circles, steepest at ``t = 0.5``."""
     t_tensor = torch.as_tensor(t).clamp(0, 1)
     m = (t_tensor < 0.5).float()
     return m * ((1 - torch.sqrt((1 - torch.pow(2 * t_tensor, 2)).clamp_min(0))) / 2) + (
@@ -222,16 +280,31 @@ def ease_in_out_circ(t):
 
 # --- Back ---
 def ease_in_back(t, s=1.70158):
+    """Pull back slightly before speeding forward to the end.
+
+    Overshoots below 0 near the start (to about ``-0.1`` with the default
+    ``s = 1.70158``); larger ``s`` pulls back further. Ends exactly at 1.
+    """
     t_tensor = torch.as_tensor(t)
     return (s + 1) * t_tensor**3 - s * t_tensor**2
 
 
 def ease_out_back(t, s=1.70158):
+    """Speed past the end, then settle back onto it.
+
+    Overshoots above 1 near the end (to about ``1.1`` with the default
+    ``s = 1.70158``); larger ``s`` overshoots further. Starts exactly at 0.
+    """
     t_tensor = torch.as_tensor(t)
     return 1 + (s + 1) * (t_tensor - 1) ** 3 + s * (t_tensor - 1) ** 2
 
 
 def ease_in_out_back(t, s=1.70158):
+    """Pull back at the start and overshoot at the end.
+
+    Dips to about ``-0.1`` and peaks at about ``1.1`` with the default
+    ``s = 1.70158``, but starts at 0 and ends at 1.
+    """
     c2 = s * 1.525
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
@@ -244,6 +317,11 @@ def ease_in_out_back(t, s=1.70158):
 
 # --- Elastic ---
 def ease_in_elastic(t):
+    """Wind up with growing oscillations, then snap to the end.
+
+    Swings well outside ``[0, 1]`` (down to about ``-0.37``) before t = 1;
+    maps 0 to 0 and 1 to 1 exactly.
+    """
     t_tensor = torch.as_tensor(t)
     c4 = (2 * math.pi) / 3
     return torch.where(
@@ -259,6 +337,11 @@ def ease_in_elastic(t):
 
 
 def ease_out_elastic(t):
+    """Snap past the end, then wobble into place like a spring.
+
+    Overshoots to about ``1.37`` before settling; maps 0 to 0 and 1 to 1
+    exactly.
+    """
     t_tensor = torch.as_tensor(t)
     c4 = (2 * math.pi) / 3
     return torch.where(
@@ -273,6 +356,11 @@ def ease_out_elastic(t):
 
 
 def ease_in_out_elastic(t):
+    """Wobble out of the start and wobble into the end.
+
+    Swings outside ``[0, 1]`` (about ``-0.12`` to ``1.12``); maps 0 to 0
+    and 1 to 1 exactly.
+    """
     t_tensor = torch.as_tensor(t)
     c5 = (2 * math.pi) / 4.5
     m = (t_tensor < 0.5).float()
@@ -324,16 +412,19 @@ def _ease_out_bounce_tensor(x):
 
 
 def ease_out_bounce(t):
+    """Fall to the end and bounce on it, with shrinking bounces. Stays in ``[0, 1]``."""
     t_tensor = torch.as_tensor(t)
     return _ease_out_bounce_tensor(t_tensor)
 
 
 def ease_in_bounce(t):
+    """Bounce on the start with growing bounces, then leave. Stays in ``[0, 1]``."""
     t_tensor = torch.as_tensor(t)
     return 1 - _ease_out_bounce_tensor(1 - t_tensor)
 
 
 def ease_in_out_bounce(t):
+    """Bounce away from the start and bounce into the end. Stays in ``[0, 1]``."""
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
     return m * ((1 - _ease_out_bounce_tensor(1 - 2 * t_tensor)) / 2) + (1 - m) * (
@@ -348,6 +439,13 @@ slow_into = ease_out_quad
 
 
 def tan(t, scale=10):
+    """Decelerate into the middle, then accelerate out to the end.
+
+    Combines :func:`ease_out_expo` on the first half with
+    :func:`ease_in_expo` on the second. Note that the curve jumps at
+    ``t = 0.5`` (from about ``0.42`` to ``0.58``), and ``scale`` is
+    currently ignored. Maps 0 to 0 and 1 to 1.
+    """
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
     return m * ease_out_expo(t_tensor) * 0.5 + (1 - m) * (

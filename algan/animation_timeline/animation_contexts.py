@@ -702,6 +702,7 @@ class AnimationContext:
 
     @current_time.setter
     def current_time(self, value):
+        """Move the authoring cursor to ``value`` seconds."""
         self.timespan.current_time = _finite_number("current_time", value)
 
     @property
@@ -714,6 +715,7 @@ class AnimationContext:
 
     @end_time.setter
     def end_time(self, value):
+        """Set this context's end time to ``value`` seconds."""
         self.timespan.original_end = _finite_number("end_time", value)
 
     def add_exit_callback(self, callback):

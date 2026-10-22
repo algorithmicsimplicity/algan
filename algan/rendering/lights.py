@@ -800,7 +800,20 @@ class RectAreaLight(_TargetedLight):
 
     @property
     def decay(self) -> float:
-        """The fixed inverse-square exponent, 2; this is not an animation."""
+        """The light's distance-falloff exponent, always ``2`` (inverse-square).
+
+        A rect area light has physical emission, so its falloff cannot be changed;
+        use ``intensity`` to change its brightness.
+
+        Animation
+        ---------
+        Not animated. Assigning ``2`` does nothing.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            On assigning any value other than ``2``.
+        """
         return 2.0
 
     @decay.setter
@@ -813,7 +826,20 @@ class RectAreaLight(_TargetedLight):
 
     @property
     def distance(self) -> float:
-        """The fixed unlimited-range sentinel, 0; this is not an animation."""
+        """The light's cutoff range, always ``0``, meaning unlimited.
+
+        A rect area light has physical emission, so its range cannot be limited;
+        use scene geometry to block the light.
+
+        Animation
+        ---------
+        Not animated. Assigning ``0`` does nothing.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            On assigning any value other than ``0``.
+        """
         return 0.0
 
     @distance.setter
