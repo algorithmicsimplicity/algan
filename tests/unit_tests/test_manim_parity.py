@@ -9,8 +9,6 @@ import pytest
 
 from algan.mobs import manim_parity as mp
 
-pytestmark = pytest.mark.fast
-
 
 def _full_namespace():
     return {name: object() for name in mp.MANIM_MOBJECT_NAMES}

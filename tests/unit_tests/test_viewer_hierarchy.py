@@ -13,8 +13,6 @@ import torch
 from algan.animation_timeline.timeline import WIDE_ATTR_MIN_CHANNELS
 from algan.viewer import hierarchy as h
 
-pytestmark = pytest.mark.fast
-
 
 class FakeMob:
     def __init__(

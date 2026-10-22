@@ -13,8 +13,6 @@ from algan.settings import SETTINGS
 from algan.settings import shape_style_profiles as ssp
 from algan.utils import typeset_cache as tc
 
-pytestmark = pytest.mark.fast
-
 
 class _FakeColor:
     def __init__(self, rgba):

@@ -26,8 +26,6 @@ from algan.mobs.image_compat import (
 )
 from algan.mobs.plots import convert_points_to_path, get_corners
 
-pytestmark = pytest.mark.fast
-
 
 def _rand_rgba(h=4, w=6, seed=0):
     rng = np.random.default_rng(seed)

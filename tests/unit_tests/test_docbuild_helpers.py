@@ -13,8 +13,6 @@ pytest.importorskip("docutils")
 from algan.utils.docbuild import algan_directive, module_parsing  # noqa: E402
 from algan.utils.docbuild.autoaliasattr_directive import smart_replace  # noqa: E402
 
-pytestmark = pytest.mark.fast
-
 
 @pytest.fixture
 def parse(tmp_path, monkeypatch):

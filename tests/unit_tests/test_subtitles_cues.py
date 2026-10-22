@@ -17,9 +17,6 @@ from algan.sound.transcript import (
     snapshot_transcript,
 )
 
-pytestmark = pytest.mark.fast
-
-
 # ---------------------------------------------------------------- _seconds
 
 

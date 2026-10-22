@@ -16,8 +16,6 @@ from algan.settings.abstract_settings import (
     settings_aliases,
 )
 
-pytestmark = pytest.mark.fast
-
 
 @settings_aliases(fps="frames_per_second")
 @dataclass
