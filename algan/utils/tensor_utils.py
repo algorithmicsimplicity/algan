@@ -297,7 +297,53 @@ def unsqueeze_until_dim(x, dim, insert_dim=0):
     return x
 
 
+#: ``ALGAN_OPT_DISABLE=broadcastall``, resolved at the first broadcast_all.
+_BROADCAST_ALL_REFERENCE = None
+
+
 def broadcast_all(xs, ignored_dims=()):
+    """Left-pad every tensor in ``xs`` to the same rank and expand them all to
+    the elementwise largest shape, leaving ``ignored_dims`` at their own size.
+
+    Non-tensors pass through unchanged. One pass over the shapes; the
+    reference form (:func:`_broadcast_all_reference`) re-read every shape once
+    per dimension, which made this Python-bound at the sizes the primitive
+    builds and the collection merge call it at (thousands of times a batch).
+    The tensors returned are the same views: the same ``unsqueeze`` and
+    ``expand`` calls on the same inputs. ``ALGAN_OPT_DISABLE=broadcastall``
+    restores the reference form (read once, at first use).
+    """
+    global _BROADCAST_ALL_REFERENCE
+    if _BROADCAST_ALL_REFERENCE is None:
+        # Deferred: the timeline imports this module.
+        from algan.animation_timeline.timeline import _opt_disabled
+
+        _BROADCAST_ALL_REFERENCE = _opt_disabled("broadcastall")
+    if _BROADCAST_ALL_REFERENCE:
+        return _broadcast_all_reference(xs, ignored_dims)
+    dims = [x.dim() if hasattr(x, "dim") else 0 for x in xs]
+    max_dim = max(dims)
+    target = [0] * max_dim
+    padded = []
+    for x, dim in zip(xs, dims):
+        if isinstance(x, torch.Tensor):
+            while dim < max_dim:
+                x = x.unsqueeze(0)
+                dim += 1
+            for i, size in enumerate(x.shape):
+                if size > target[i]:
+                    target[i] = size
+        padded.append(x)
+    for i in ignored_dims:
+        if i < 0:
+            i += max_dim
+        if 0 <= i < max_dim:
+            target[i] = -1
+    size = torch.Size(target)
+    return [x.expand(size) if isinstance(x, torch.Tensor) else x for x in padded]
+
+
+def _broadcast_all_reference(xs, ignored_dims=()):
     max_dim = max([_.dim() if hasattr(_, "dim") else 0 for _ in xs])
     ignored_dims = [_ if _ >= 0 else _ + max_dim for _ in ignored_dims]
     xs = [
