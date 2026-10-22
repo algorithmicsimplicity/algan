@@ -1105,7 +1105,13 @@ class Mob(
                 *([-1] * (default.dim() - 2)), self.location.shape[-2], -1
             )
         current_value = self.get_animated_attribute(
-            key, include_descendants=recursive, default=default
+            key,
+            include_descendants=recursive,
+            default=default,
+            # Read uncopied: every use below is out of place, and the write at
+            # the end lands only after the last of them. A replay re-reads
+            # these rows on every frame batch, so the copy was paid each time.
+            copy=_opt_disabled_replay_bodies(),
         )
 
         # A pack's changes arrive one row per member; the union above covers
@@ -1602,6 +1608,11 @@ class Mob(
             change = change.to(device)
         if torch.is_tensor(interpolation) and interpolation.device != device:
             interpolation = interpolation.to(device)
+        if type(change) is not torch.Tensor and _replays_plain_tensors(self, change):
+            # A recorded color change is a Color, which sends both ops below
+            # through Tensor.__torch_function__ on every replay. The rows only
+            # take its values, and the plain view computes the same ones.
+            change = change.as_subclass(torch.Tensor)
         change = change * interpolation
         if recursive and scope is None:
             change = self._distribute_over_packed_subtree(attr, change, current_value)
@@ -2895,6 +2906,29 @@ def _selects_several_members(mob: Mob, rows: torch.Tensor) -> bool:
 def _selects_no_rows(mob: Mob) -> bool:
     inds = getattr(mob, "data_sub_inds", None)
     return isinstance(inds, torch.Tensor) and inds.numel() == 0
+
+
+def _opt_disabled_replay_bodies() -> bool:
+    """``ALGAN_OPT_DISABLE=replaybodies``: the replayed bodies' read shortcuts off."""
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    return _opt_disabled("replaybodies")
+
+
+def _replays_plain_tensors(mob: Mob, value) -> bool:
+    """Whether a replayed function body may compute on ``value`` as a plain tensor.
+
+    True for a tensor subclass (a recorded :class:`~algan.constants.color.Color`)
+    while frames are being replayed from the timeline, where the body's result
+    only ever lands in timeline rows: the subclass changes no value, only how
+    slowly each op dispatches. Authoring keeps the subclass, as does
+    ``ALGAN_OPT_DISABLE=replaybodies``.
+    """
+    return (
+        isinstance(value, torch.Tensor)
+        and mob.scene.timeline_manager._active_replay_event is not None
+        and not _opt_disabled_replay_bodies()
+    )
 
 
 # Verb methods that read like animatable attributes. ``mob.rotate = 90`` is the
