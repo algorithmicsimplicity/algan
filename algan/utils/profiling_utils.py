@@ -876,12 +876,17 @@ def enable_taichi_kernel_profiler():
     run before any ray-trace kernel is launched (kernels compile lazily, so
     calling it at the top of ``profile_scene`` is fine). Returns True on
     success; on any failure the profiler falls back to wall-time only.
+
+    Initialized through ``taichi_runtime.start_program``, not ``ti.init``:
+    that is what registers the exit-time kernel-cache flush. Without it a
+    profiled process wrote no ``.qdc`` for what it compiled, and every cold
+    start taken through ``profile_scene`` recompiled from nothing.
     """
     global KERNEL_PROFILER
     try:
-        from algan.rendering.taichi_runtime import taichi_init_kwargs
+        from algan.rendering.taichi_runtime import start_program
 
-        ti.init(**taichi_init_kwargs(), kernel_profiler=True)
+        start_program(kernel_profiler=True)
         # Drop the lazily-allocated global field(s) so they are rebuilt against
         # this fresh runtime on the first render rather than dangling.
         try:

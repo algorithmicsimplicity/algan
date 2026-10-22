@@ -10,9 +10,17 @@ uses `quadrants` supplied by the pinned `algan-quadrants` distribution; upstream
 Taichi is an optional comparison backend. See [api_settings.md](api_settings.md)
 and [../quadrants_patches/PYPI.md](../quadrants_patches/PYPI.md).
 
-Call `init_taichi()`, or use `taichi_init_kwargs()` when a harness must override
-initialization. Do not call bare `ti.init`: it silently reinstates compiler
-defaults for later kernels in the same process. In particular, Algan disables
+Call `init_taichi()`, or `taichi_runtime.start_program(**overrides)` when a
+harness must initialize with an extra keyword (the kernel profiler passes
+`kernel_profiler=True`). Do not call bare `ti.init`: it silently reinstates
+compiler defaults for later kernels in the same process, and even
+`ti.init(**taichi_init_kwargs(), ...)` skips the stale-lock sweep and the
+exit-time `flush_kernel_cache` -- a profiled process used to leave no `.qdc`
+behind, so every cold start measured through `profile_scene` was wrong. The
+flush is also registered when the first specialization is built, whatever
+started the program. There is deliberately no mid-process dump: Quadrants'
+`KernelCompilationManager::dump` frees the kernels it writes, so a program that
+launches again afterwards reads freed memory. In particular, Algan disables
 `advanced_optimization`; historical tonemapping regressions under the enabled
 arm motivate this default. `ALGAN_ADV_OPT=1` is a comparison switch, not evidence
 that every renderer kernel supports that configuration.
