@@ -54,11 +54,22 @@ When it runs
   script (the daemon handoff's own test, so not the ``algan`` CLI, a test
   runner, a notebook, ``python -c`` or ``-m``), for the specializations *that
   script* rendered before, when the cache does not have them for this
-  version: after an update, a kernel edit, or a cleared cache. The render
-  daemon does the same at the start of a run, while its program has not
-  touched the cache yet. Speculative work -- the built-in list, other
+  version: after an update, a kernel edit, or a cleared cache -- under the
+  settings the script last rendered with, which are not the import-time ones
+  when it sets ``SETTINGS`` itself. The render daemon does the same at the
+  start of a run, while its program has not touched the cache yet.
+* On a **first run** -- a kernel cache nothing has rendered against, so an
+  empty manifest -- for the built-in list under the current settings, when
+  there are at least :data:`_MIN_BUILTIN_WORKERS` workers to spread its slow
+  variants over. Otherwise speculative work -- the built-in list, other
   scripts' kernels -- is left to ``algan warmup``: measured, a pool compiling
-  kernels the render did not need only slowed the render's own compiles.
+  kernels the render did not need only slowed the render's own compiles on a
+  4-core box, and on a machine with a record the record is the better list.
+* At the start of a render job and at the first materialization, if the
+  settings are not the ones the running pool (if any) compiles for: the
+  script changed ``SETTINGS`` after the import. A pool for other settings is
+  stopped, and one for the current settings is started when there is work
+  for it -- late, but in parallel, where the alternative is serial.
 * From ``algan warmup`` (``rendering/kernel_warmup.py``), for every spec on
   record and the built-in common set, before any render needs them.
 
@@ -76,7 +87,18 @@ Switches
 stays on, it is what ``algan warmup`` reads). Unset, it is one fewer than the
 logical CPUs, capped by free host memory (~1.5 GB a worker), by free VRAM on
 CUDA, and at 8. The pool is Quadrants-only, like the source-keyed index it
-rests on (``utils/taichi_source_key.py``).
+rests on (``utils/taichi_source_key.py``). ``ALGAN_STARTUP_WARMUP=0`` keeps a
+first run from using the built-in list (it also turns off
+``rendering/device_warmup.py``).
+
+What a pool cannot do: its workers never launch, so on CUDA they leave the
+LLVM artifact (``.qdc``) and nothing else. The render still generates PTX and
+has the driver JIT it at each kernel's first launch -- about 14 s of a 57 s
+cold ``explainer`` render on an RTX 5080 (first launches 36 s, of which the
+backend compile was 22 s). Moving that into the workers needs a compiler entry point that
+registers a compiled kernel with the launcher without launching it; a launch
+with placeholder arguments is not an option (out-of-range reads, unbounded
+loops over garbage data).
 """
 
 from __future__ import annotations
@@ -1286,6 +1308,56 @@ def worthwhile(jobs):
     return sum(job.expected for job in jobs) >= _MIN_POOL_SECONDS and len(jobs) >= 2
 
 
+#: The fewest workers that make the built-in list worth compiling on a first
+#: run. It holds several variants of the slowest kernel and the render needs
+#: one or two, so with fewer workers than slow variants the pool serializes
+#: kernels the render never asks for in front of the one it waits on.
+_MIN_BUILTIN_WORKERS = 4
+
+
+def _script_context(manifest, script, default):
+    """The settings context ``script`` last rendered under, or ``default``.
+
+    A script that changes ``SETTINGS`` before it renders (``shadows=True`` at
+    the top, say) records its kernels under that context, not the one
+    ``import algan`` sees; judging its rows by the import-time context found
+    nothing to do, so such a script never got a pool after an update. The
+    most recently used context among its rows is the best guess at what it
+    will render under again -- and a wrong guess is caught at the first
+    materialization, which stops a pool for other settings. Only contexts
+    with this process's ``ALGAN_`` variables qualify: a worker inherits those,
+    so it could not reproduce any other.
+    """
+    latest = {}
+    contexts = manifest["contexts"]
+    for row in manifest["entries"].values():
+        if script in row.get("scripts", ()):
+            cid = row.get("context")
+            if contexts.get(cid, {}).get("env") != default.get("env"):
+                continue
+            latest[cid] = max(latest.get(cid, 0.0), float(row.get("last_used") or 0.0))
+    if not latest or context_id(default) in latest:
+        return default
+    return contexts[max(latest, key=latest.get)]
+
+
+def _builtin_on_first_run(manifest, jobs_without_builtin):
+    """Whether a first run should precompile the built-in list.
+
+    Only on a kernel cache nothing has rendered against yet (an empty
+    manifest: a new machine, a new ``ALGAN_CACHE_DIR``), where it is the only
+    record there is of what a render needs, and only with enough workers to
+    run the slow variants side by side. Anywhere else the script's own record
+    is a better list, and the built-in one would make its render wait for
+    variants it does not use. ``ALGAN_STARTUP_WARMUP=0`` turns it off.
+    """
+    if not env_flag("ALGAN_STARTUP_WARMUP", True):
+        return False
+    if manifest["entries"] or jobs_without_builtin:
+        return False
+    return worker_budget(_MIN_BUILTIN_WORKERS) >= _MIN_BUILTIN_WORKERS
+
+
 # ---------------------------------------------------------------------------
 # The process-wide pool, and the render's side of it
 # ---------------------------------------------------------------------------
@@ -1300,22 +1372,38 @@ def active_pool():
     return _POOL
 
 
-#: ``(context id, script)`` pairs already found to have nothing worth a worker
-#: in this process: what this process renders is recorded as confirmed, so the
-#: answer only changes when another process edits the manifest.
+#: ``(context id, script)`` pairs already decided in this process -- found to
+#: have nothing worth a worker, or given a pool: what this process renders is
+#: recorded as confirmed, so the answer only changes when another process
+#: edits the manifest, and a pool that ran once is not started again.
 _SETTLED = set()
 
 
-def _start_pool(context, reason, script):
-    """Start the process pool for ``script``'s specs under ``context``, if worth it."""
+def _start_pool(context, reason, script, *, guess_context=True):
+    """Start the process pool for ``script``'s specs under ``context``, if worth it.
+
+    With ``guess_context`` (the import-time decision, made before the script
+    has had a chance to change ``SETTINGS``), the context the script last
+    rendered under stands in for ``context`` when that has no rows of its own
+    (:func:`_script_context`). Without it, ``context`` is final.
+    """
     global _POOL, _POOL_CONTEXT_ID
-    cid = context_id(context)
-    if (cid, script) in _SETTLED:
+    if (context_id(context), script) in _SETTLED:
         return None
-    jobs = pending_jobs(context, include_builtin=False, script=script)
+    manifest = read_manifest()
+    settled_as = context_id(context)
+    if guess_context:
+        context = _script_context(manifest, script, context)
+    cid = context_id(context)
+    jobs = pending_jobs(
+        context, include_builtin=False, manifest=manifest, script=script
+    )
+    if _builtin_on_first_run(manifest, jobs):
+        jobs = pending_jobs(context, include_builtin=True, manifest=manifest)
+        reason = f"{reason}; a first run, so the built-in kernel list"
     workers = worker_budget(len(jobs)) if worthwhile(jobs) else 0
+    _SETTLED.add((settled_as, script))
     if workers <= 0:
-        _SETTLED.add((cid, script))
         return None
     pool = PrecompilePool(jobs, workers, reason=reason)
     from algan.rendering import kernel_progress
@@ -1326,6 +1414,7 @@ def _start_pool(context, reason, script):
             return None
         _POOL = pool
         _POOL_CONTEXT_ID = cid
+    _SETTLED.add((cid, script))
     pool.start()
     kernel_progress.pool_started(pool, workers)
     return pool
@@ -1404,22 +1493,48 @@ def start_for_script(path):
 
 
 def on_render_start():
-    """The outermost render job is starting: a last chance to start a pool.
+    """The outermost render job is starting: the settings are final now.
 
     For a script whose ``import algan`` could not tell it was one -- run by
-    ``algan render -q`` in the CLI's own process, say -- and that has not
-    touched the kernel cache yet. Otherwise the import-time decision stands.
+    ``algan render -q`` in the CLI's own process, say -- this is the first
+    decision; for one that changed ``SETTINGS`` after the import, the
+    import-time pool (if any) was for other settings and is replaced by one
+    for these. Only while the kernel cache is untouched; a no-op when the
+    import-time decision already holds for the current settings.
     """
     if skipped_reason() is not None or _program_touched():
         return
     starter = _STARTER
     if starter is not None:
         starter.join(timeout=10)
-        return
+    with contextlib.suppress(Exception):
+        _pool_for_current_settings("started at render")
+
+
+def _pool_for_current_settings(reason):
+    """The running pool, made one for this process's current settings.
+
+    A pool for other settings is stopped (its artifacts would be keyed under
+    settings this render does not have), and when the script has work under
+    the current ones -- its own record, or the built-in list on a first run --
+    a pool for that is started instead. Returns the pool that is running for
+    the current settings, or ``None``.
+    """
+    context = current_context()
+    cid = context_id(context)
+    pool = _POOL
+    if pool is not None and pool.active:
+        if cid == _POOL_CONTEXT_ID:
+            return pool
+        _stop_pool()
+    # Never from a worker (whose argv names a .py file too) or with the pool
+    # turned off.
+    if skipped_reason() is not None:
+        return None
     script = current_script()
-    if script:
-        with contextlib.suppress(Exception):
-            _start_pool(current_context(), "started at render", script)
+    if not script:
+        return None
+    return _start_pool(context, reason, script, guess_context=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1484,11 +1599,13 @@ def _wait_for_pool():
     starter = _STARTER
     if starter is not None:
         starter.join(timeout=10)
-    pool = _POOL
+    # The last moment a pool can help this program, and the settings this
+    # kernel is being traced under are the ones that count: a pool for others
+    # is replaced, and work under these that nobody started (the script set
+    # ``SETTINGS`` and launched a kernel while authoring, before any render
+    # job) is started now -- in parallel, where the alternative is serial.
+    pool = _pool_for_current_settings("started at the first kernel")
     if pool is None or not pool.active:
-        return
-    if context_id(current_context()) != _POOL_CONTEXT_ID:
-        _stop_pool()
         return
     from algan.rendering import kernel_progress
 

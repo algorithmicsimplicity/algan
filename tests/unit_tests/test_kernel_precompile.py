@@ -330,6 +330,136 @@ def test_an_implicit_pool_is_scoped_to_the_script(manifest, monkeypatch):
     assert {job.spec["kernel"] for job in theirs} == {"algan.x:k2"}
 
 
+def test_a_script_that_sets_its_settings_is_judged_by_the_context_it_rendered_under(
+    manifest, monkeypatch
+):
+    """Rows recorded after the script changed ``SETTINGS`` are found from the import."""
+    monkeypatch.setattr(kp, "environment_stamp", lambda: "now")
+    imported = kp.current_context()
+    shadows = {**imported, "raytracing": {**imported["raytracing"], "shadows": True}}
+    kp._note_entry(_spec(1), shadows, seconds=20.0, used=True, script="/s.py")
+    kp.flush_manifest()
+    data = kp.read_manifest()
+    assert kp.context_id(kp._script_context(data, "/s.py", imported)) == kp.context_id(
+        shadows
+    )
+    # A script with rows under the import-time context keeps it.
+    kp._note_entry(_spec(2), imported, seconds=20.0, used=True, script="/s.py")
+    kp.flush_manifest()
+    data = kp.read_manifest()
+    assert kp._script_context(data, "/s.py", imported) is imported
+    # A script with no rows at all keeps it too.
+    assert kp._script_context(data, "/other.py", imported) is imported
+
+
+class _RecordingPool:
+    def __init__(self, jobs, workers, reason=""):
+        self.jobs = jobs
+        self.workers = workers
+        self.reason = reason
+        self.active = True
+        self.listeners = []
+        self.terminated = False
+
+    def start(self):
+        return self
+
+    def terminate(self):
+        self.terminated = True
+        self.active = False
+
+
+@pytest.fixture
+def recorded_pools(manifest, monkeypatch):
+    """`_start_pool` with workers that are only recorded, never spawned."""
+    pools = []
+
+    def make(jobs, workers, reason=""):
+        pools.append(_RecordingPool(jobs, workers, reason))
+        return pools[-1]
+
+    monkeypatch.setattr(kp, "PrecompilePool", make)
+    monkeypatch.setattr(kp, "worker_budget", lambda count: min(count, 7))
+    monkeypatch.setattr(kp, "environment_stamp", lambda: "now")
+    monkeypatch.setattr(kp, "_POOL", None)
+    monkeypatch.setattr(kp, "_POOL_CONTEXT_ID", None)
+    monkeypatch.setattr(kp, "_SETTLED", set())
+    from algan.rendering import kernel_progress
+
+    monkeypatch.setattr(kernel_progress, "pool_started", lambda *a, **k: None)
+    kp.BUILTIN_MANIFEST.write_text(
+        json.dumps(
+            {
+                "schema": kp._MANIFEST_SCHEMA,
+                "entries": {
+                    str(n): {"spec": _spec(n), "seconds": 30.0, "requires": {}}
+                    for n in (10, 11, 12)
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return pools
+
+
+def test_a_first_run_precompiles_the_builtin_list(recorded_pools, monkeypatch):
+    monkeypatch.delenv("ALGAN_STARTUP_WARMUP", raising=False)
+    pool = kp._start_pool(kp.current_context(), "test", "/new.py")
+    assert pool is recorded_pools[0]
+    assert {job.spec["kernel"] for job in pool.jobs} == {
+        "algan.x:k10",
+        "algan.x:k11",
+        "algan.x:k12",
+    }
+    assert "built-in" in pool.reason
+
+
+def test_the_builtin_list_needs_an_empty_manifest_enough_workers_and_the_switch(
+    recorded_pools, monkeypatch
+):
+    context = kp.current_context()
+    monkeypatch.setenv("ALGAN_STARTUP_WARMUP", "0")
+    assert kp._start_pool(context, "test", "/new.py") is None
+    monkeypatch.delenv("ALGAN_STARTUP_WARMUP")
+    monkeypatch.setattr(kp, "_SETTLED", set())
+    monkeypatch.setattr(kp, "worker_budget", lambda count: min(count, 3))
+    assert kp._start_pool(context, "test", "/new.py") is None
+    # Another script's record means the cache is not new: its own list, or
+    # nothing, rather than variants it may never use.
+    monkeypatch.setattr(kp, "_SETTLED", set())
+    monkeypatch.setattr(kp, "worker_budget", lambda count: min(count, 7))
+    kp._note_entry(_spec(1), context, confirmed="now", used=True, script="/old.py")
+    kp.flush_manifest()
+    assert kp._start_pool(context, "test", "/new.py") is None
+    assert recorded_pools == []
+
+
+def test_settings_changed_after_import_replace_the_pool_at_the_first_kernel(
+    recorded_pools, monkeypatch
+):
+    """The import-time pool was for the defaults; the kernel is traced under others."""
+    monkeypatch.delenv("ALGAN_PRECOMPILE_JOBS", raising=False)
+    monkeypatch.setattr(kp, "current_script", lambda: "/s.py")
+    stale = _RecordingPool([], 1)
+    monkeypatch.setattr(kp, "_POOL", stale)
+    monkeypatch.setattr(kp, "_POOL_CONTEXT_ID", "the-import-time-context")
+    pool = kp._pool_for_current_settings("test")
+    assert stale.terminated
+    # An empty manifest: the built-in list, under the settings that count now.
+    assert pool is recorded_pools[0]
+    current = kp.context_id(kp.current_context())
+    assert current == kp._POOL_CONTEXT_ID
+    # Asked again under the same settings, it is the same pool.
+    assert kp._pool_for_current_settings("test") is pool
+
+
+def test_a_worker_never_starts_a_pool_of_its_own(recorded_pools, monkeypatch):
+    monkeypatch.setenv("ALGAN_PRECOMPILE_WORKER", "1")
+    monkeypatch.setattr(kp, "current_script", lambda: "/worker.py")
+    assert kp._pool_for_current_settings("test") is None
+    assert recorded_pools == []
+
+
 def test_scripts_are_remembered_most_recent_first_and_bounded():
     merged = kp._merge_scripts(["/new.py"], [f"/{n}.py" for n in range(10)])
     assert merged[0] == "/new.py"
