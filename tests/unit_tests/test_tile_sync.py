@@ -29,6 +29,30 @@ def _defer(on):
         aat.defer_syncs = saved
 
 
+def test_the_switch_follows_opt_disable_after_its_first_read(monkeypatch):
+    """A/B scripts swap the timeline's ``_OPT_DISABLED`` between renders, and a
+    warm daemon adopts each client's ``ALGAN_OPT_DISABLE``; neither may be
+    pinned by whichever value the first render read.
+    """
+    import algan.animation_timeline.timeline as tl
+
+    with _defer(None):
+        monkeypatch.setattr(tl, "_OPT_DISABLED", frozenset())
+        assert aat.defer_syncs_enabled()
+        monkeypatch.setattr(tl, "_OPT_DISABLED", frozenset({"tilesync"}))
+        assert not aat.defer_syncs_enabled()
+        monkeypatch.setattr(tl, "_OPT_DISABLED", frozenset())
+        assert aat.defer_syncs_enabled()
+    # An explicit assignment still overrides the environment.
+    with _defer(False):
+        monkeypatch.setattr(tl, "_OPT_DISABLED", frozenset())
+        assert not aat.defer_syncs_enabled()
+
+
+def test_large_uploads_are_not_staged_through_pinned_memory():
+    assert tracer._PINNED_STAGING_MAX_BYTES == 1 << 20
+
+
 @contextlib.contextmanager
 def _no_sync_allowed():
     """Raise on any synchronizing CUDA call inside the block."""
