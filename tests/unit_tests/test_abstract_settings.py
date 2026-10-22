@@ -334,11 +334,6 @@ def test_nested_override():
     assert v.frames_per_second == 30
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: override() restores from deep-copied to_dict(), so every "
-    "untouched field is replaced by an equal copy on exit, breaking identity",
-)
 def test_override_preserves_identity_of_untouched_fields():
     v = Video(tags=["a"])
     tags = v.tags
@@ -436,11 +431,6 @@ def test_subclass_inherits_aliases_for_set():
     assert c.fps == 10
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: settings_aliases wraps only the decorated class's __init__; a "
-    "@dataclass subclass regenerates __init__ and rejects the inherited alias",
-)
 def test_subclass_inherits_alias_in_constructor():
     @dataclass
     class Child(Video):

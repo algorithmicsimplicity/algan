@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
-import functools
 import typing
 from contextlib import contextmanager
 from copy import deepcopy
@@ -73,7 +72,21 @@ def _is_special_var(annotation) -> bool:
     )
 
 
-class Settings:
+class _SettingsMeta(type):
+    """Translate alias keywords before any ``__init__`` sees them.
+
+    A dataclass ``__init__`` knows only the declared names, and every
+    ``@dataclass`` subclass generates a new one, so wrapping ``__init__`` in
+    :func:`settings_aliases` would cover only the decorated class. Resolving
+    the aliases at the call covers its subclasses too. Everything else on the
+    class routes through set/__setattr__, which resolve them themselves.
+    """
+
+    def __call__(cls, *args, **kwargs):
+        return super().__call__(*args, **cls._canonical_keys(kwargs))
+
+
+class Settings(metaclass=_SettingsMeta):
     """Base class for validated settings sections and immutable presets.
 
     Normal settings sections are mutable: :meth:`set` validates a complete
@@ -402,12 +415,22 @@ class Settings:
             raise AlganConfigurationError(
                 "Cannot override an immutable preset in place"
             )
-        previous = self.to_dict()
+        # By reference, not through ``to_dict()``: that deep-copies, and
+        # restoring from copies would swap every field the block never touched
+        # for an equal stranger, which is what :meth:`set` takes care to avoid.
+        names = type(self)._declared_field_names()
+        previous = {name: getattr(self, name) for name in names}
         self.set(**kwargs)
         try:
             yield self
         finally:
-            self.set(**previous)
+            changed = {
+                name: value
+                for name, value in previous.items()
+                if getattr(self, name) is not value
+            }
+            if changed:
+                self.set(**changed)
 
 
 def _alias_setter(alias: str, target: str):
@@ -456,17 +479,6 @@ def settings_aliases(**aliases: str):
                 )
             merged[alias] = target
         cls._ALIASES = merged
-
-        # The dataclass __init__ knows only the declared names, so the aliases
-        # are translated on the way in. Everything else on the class routes
-        # through set/__setattr__, which resolve them themselves.
-        original_init = cls.__init__
-
-        @functools.wraps(original_init)
-        def __init__(self, *args, **kwargs):
-            original_init(self, *args, **type(self)._canonical_keys(kwargs))
-
-        cls.__init__ = __init__
 
         # A distinct function per alias rather than a second reference to the
         # declared field's setter, so that ``set_fps.__name__`` is ``set_fps``

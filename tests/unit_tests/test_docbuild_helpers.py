@@ -253,11 +253,6 @@ def test_parse_is_cached(parse, tmp_path):
     assert "n" not in second[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: data_name is not reset after its docstring, so a second "
-    "string literal records the attribute twice",
-)
 def test_parse_attribute_followed_by_two_strings_recorded_once(parse):
     _, data, _ = parse({"m.py": 'X: int = 1\n"""doc"""\n"""unrelated"""\n'})
     assert data == {"m": ["X"]}
