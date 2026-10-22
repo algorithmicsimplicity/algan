@@ -113,6 +113,12 @@ from algan.taichi_compat import ti
 # Per-ray status codes (rs_int column 2).
 _ACTIVE = 0
 _DONE = 1
+# A glossy-event reflection reserved by ``wavefront_shade`` that has not yet
+# been chosen as its pixel's one claimant, and one ``gloss_claim_decide`` chose.
+# Both live only between a shade launch and ``gloss_claim_commit``, which turns
+# them back into ``_ACTIVE`` / ``_DONE`` before the compaction reads the pool.
+_GL_PENDING = 2
+_GL_WON = 3
 
 # Nested-dielectric media stack (DESIGN_mesh_identity_open.md §H), carried in
 # rs_sca columns beyond the seven the classic layout speaks for. The gate is
@@ -1171,6 +1177,41 @@ ALLOC_TRUNC_SURFACES = 2
 ALLOC_WIDTH = 3
 
 
+# ---------------------------------------------------------------------------
+# Order-independent ``pix_accum`` deposits. On a batch whose pixels split into
+# several rays, the rays of one pixel deposit into its accumulator row with
+# ``ti.atomic_add`` from one launch, in GPU scheduling order, and float addition
+# is not associative: run to run, those rows differed in their last bit or two.
+# Such a batch's deposits go on a fixed grid of 2^-20 (the ``det_sum``
+# template of ``wavefront_shade`` and ``sheet_resolve_shade``, which the host
+# sets from ``pool_ratio > 1``). A sum of grid multiples that stays under 2^24
+# grid steps (16, sixteen times display white) is exact in float32 at every
+# partial sum, so its result does not depend on the order. Brighter
+# accumulations still round, where the output is clipped or tonemapped flat.
+# Rounding a deposit moves it by at most 2^-21: under 1/400 of an 8-bit level
+# even at black, where the sRGB curve is steepest.
+#
+# A batch that never splits has one ray per row, whose deposits are serial,
+# and compiles the variant without the grid: those renders do not change by a
+# bit. A template rather than a runtime flag so that this holds by
+# construction -- under ``fast_math`` a runtime branch can change how the
+# arithmetic beside it is fused (the projection section of
+# ``agent_guidance/rendering.md``). A splitting batch's pixels do move, by at
+# most a level on up to a thousand pixels of a PREVIEW clip, once.
+# ---------------------------------------------------------------------------
+_DET_SUM_SCALE = 1048576.0
+_DET_SUM_STEP = 1.0 / _DET_SUM_SCALE
+
+
+@ti.func
+def _det_deposit(value, det: ti.template()):
+    """``value`` as it is added to (or stored in) a ``pix_accum`` sum column."""
+    out = value
+    if ti.static(det):
+        out = ti.round(value * _DET_SUM_SCALE) * _DET_SUM_STEP
+    return out
+
+
 @ti.func
 def _reserve_continuation_slot(rs_alloc: ti.template(), capacity):
     """Append one continuation to the tile-wide shared ray pool.
@@ -1255,6 +1296,115 @@ _GLOSSY_MIN_ROUGHNESS = 1e-4
 # value marks the event taken, and it is far below any radius the claim then
 # stores, so a racing claimant's ``atomic_max`` of it never lowers that radius.
 _GL_CLAIM_MARK = 1e-30
+
+# Where a PENDING glossy claim parks its values, in its own slot's ``rs_acc``
+# columns (a new continuation's accumulated colour, zero until it hits
+# anything): the radius scale before the resolve's pixels-per-radian, the
+# reflector magnification, the energy it would carry and its state hash.
+_GL_CLAIM_SCALE = 0
+_GL_CLAIM_MAG = 1
+_GL_CLAIM_WT = 2
+_GL_CLAIM_HASH = 3
+
+
+@ti.func
+def _gl_claim_hash(org, dirn, dist):
+    """A 24-bit hash of a pending glossy reflection, as an exact float.
+
+    The tie-break between claimants that carry the same energy to the bit
+    (taps off a flat mirror can): a function of the continuation's own state,
+    so two candidates that share it would trace the same ray and either may
+    win. 24 bits so the value is an integer a float holds exactly, which lets
+    ``gloss_claim_tiebreak`` reduce it with a float ``atomic_max`` in a column
+    of the row. The multiply-xor-shift shape of ``_shadow_fan_jitter``.
+    """
+    h = ti.bit_cast(dist, ti.u32) * ti.u32(0x9E3779B1)
+    for k in ti.static(range(3)):
+        h = h ^ (ti.bit_cast(org[k], ti.u32) * ti.u32(0x85EBCA77))
+        h = (h ^ (h >> 15)) * ti.u32(0x2C1B3C6D)
+        h = h ^ (ti.bit_cast(dirn[k], ti.u32) * ti.u32(0xC2B2AE3D))
+        h = (h ^ (h >> 12)) * ti.u32(0x297A2D39)
+    h = h ^ (h >> 15)
+    return ti.cast(h >> 8, ti.f32)
+
+
+@ti.kernel
+def gloss_claim_tiebreak(
+        capacity: int, rs_acc: ti.types.ndarray(), rs_int: ti.types.ndarray(),
+        rs_alloc: ti.types.ndarray(), pix_accum: ti.types.ndarray()):
+    """Second step of a deterministic glossy claim (``gloss_claim_*``).
+
+    ``wavefront_shade`` left every PENDING candidate's energy in its row's
+    depth column through ``atomic_max``. Here the candidates that reached that
+    maximum reduce their state hashes into the row's magnification column the
+    same way. Max is order-independent, so neither column depends on which
+    thread got there first. Both columns are unused until a claim is
+    committed: the composite reads them only behind a positive radius, and a
+    glossy ray, which compares its depth to the row's, exists only after one.
+    """
+    for c in range(capacity):
+        if c < rs_alloc[ALLOC_NEXT]:
+            if rs_int[c, 2] == _GL_PENDING:
+                row = rs_int[c, 4]
+                if rs_acc[c, _GL_CLAIM_WT] == pix_accum[row, _GL_ROW_DP]:
+                    ti.atomic_max(pix_accum[row, _GL_ROW_MAG],
+                                  rs_acc[c, _GL_CLAIM_HASH])
+
+
+@ti.kernel
+def gloss_claim_decide(
+        capacity: int, rs_acc: ti.types.ndarray(), rs_int: ti.types.ndarray(),
+        rs_alloc: ti.types.ndarray(), pix_accum: ti.types.ndarray()):
+    """Third step: the candidate holding both maxima claims the row.
+
+    It turns the row's negative scale positive exactly as the first-come
+    claim did (a mark through ``atomic_max``, then the real radius), which
+    also settles a tie on energy AND hash -- two continuations with one state
+    -- to a single ray. Every other candidate retires without having traced
+    anything. The depth and magnification columns still hold the maxima the
+    others are comparing against, so the winner writes them in
+    ``gloss_claim_commit``, not here.
+    """
+    for c in range(capacity):
+        if c < rs_alloc[ALLOC_NEXT]:
+            if rs_int[c, 2] == _GL_PENDING:
+                row = rs_int[c, 4]
+                won = False
+                if rs_acc[c, _GL_CLAIM_WT] == pix_accum[row, _GL_ROW_DP]:
+                    if rs_acc[c, _GL_CLAIM_HASH] == pix_accum[row, _GL_ROW_MAG]:
+                        gl_old = ti.atomic_max(
+                            pix_accum[row, _GL_ROW_SIGMA_SCALE], _GL_CLAIM_MARK)
+                        if gl_old < 0.0:
+                            pix_accum[row, _GL_ROW_SIGMA_SCALE] = (
+                                rs_acc[c, _GL_CLAIM_SCALE] * (-gl_old))
+                            won = True
+                if won:
+                    rs_int[c, 2] = _GL_WON
+                else:
+                    rs_int[c, 2] = _DONE
+                    for k in ti.static(range(4)):
+                        rs_acc[c, k] = 0.0
+
+
+@ti.kernel
+def gloss_claim_commit(
+        capacity: int, rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
+        rs_int: ti.types.ndarray(), rs_alloc: ti.types.ndarray(),
+        pix_accum: ti.types.ndarray()):
+    """Last step: the winner writes its depth and magnification and goes live.
+
+    The depth is the continuation's own ``rs_sca[:, 4]``, bit for bit, which
+    is what the drain's ``GL_ROW_DIST`` test compares a glossy ray's start to.
+    """
+    for c in range(capacity):
+        if c < rs_alloc[ALLOC_NEXT]:
+            if rs_int[c, 2] == _GL_WON:
+                row = rs_int[c, 4]
+                pix_accum[row, _GL_ROW_DP] = rs_sca[c, 4]
+                pix_accum[row, _GL_ROW_MAG] = rs_acc[c, _GL_CLAIM_MAG]
+                for k in ti.static(range(4)):
+                    rs_acc[c, k] = 0.0
+                rs_int[c, 2] = _ACTIVE
 
 
 @ti.func
@@ -2643,6 +2793,9 @@ def wavefront_shade_arena(
         # truncation: the commit block below deposits its accumulated color
         # + leftover throughput exactly as for any other retirement.
         weight_floor_exit: ti.template(),
+        # 1 on a splitting batch: ``pix_accum`` deposits go on the fixed grid
+        # that makes their sums order-independent (``_det_deposit``).
+        det_sum: ti.template(),
         # Light slots this variant's ``vis`` payload carries -- what the batch
         # needs, not the ``max_shadow_lights`` cap. See shading_taichi.
         # shadow_vis_slots.
@@ -2935,9 +3088,10 @@ def wavefront_shade_arena(
                     if base_dist == pix_accum[accum_pix, _GL_ROW_DP]:
                         ti.atomic_add(
                             pix_accum[accum_pix, _GL_ROW_DIST],
-                            ti.max(weight[0], ti.max(weight[1], weight[2]))
-                            * ti.math.clamp(alpha, 0.0, 1.0)
-                            / ti.max(base_dist + t_hit, 1e-6))
+                            _det_deposit(
+                                ti.max(weight[0], ti.max(weight[1], weight[2]))
+                                * ti.math.clamp(alpha, 0.0, 1.0)
+                                / ti.max(base_dist + t_hit, 1e-6), det_sum))
                 # Where a continuation starts: on the surface hit, never
                 # ``ro + t_hit * rd``, which a distant camera's primary ray (an
                 # eye thousands of units out) rounds
@@ -3487,8 +3641,9 @@ def wavefront_shade_arena(
                     # are the same surface twice -- throttled, the image's
                     # share drew a dark line along every contact with the
                     # floor. Their energies sum in the row and one ray, the
-                    # first claimant's (below, or the resolve's), carries the
-                    # radiance. A non-zero radius column is what says the
+                    # claimant's (the resolve's, an earlier iteration's, or
+                    # the one ``gloss_claim_*`` keeps from this one), carries
+                    # the radiance. A non-zero radius column is what says the
                     # resolve ran on this route (it leaves
                     # ``-pixels_per_radian`` at a pixel it did not claim). A
                     # glossy ray never joins: its hits are the radiance the
@@ -3758,31 +3913,23 @@ def wavefront_shade_arena(
                         if wt_max > min_weight:
                             for k in ti.static(range(3)):
                                 ti.atomic_add(pix_accum[gl_row, _GL_ROW_W + k],
-                                              wt[k])
-                            # One claimant: the ray that turns the resolve's
-                            # negative scale positive, if the resolve did not
-                            # claim the pixel itself. The mark only has to be
-                            # positive; the claimant overwrites it with the
-                            # real radius, and a later ``atomic_max`` of the
-                            # mark cannot lower that.
-                            gl_old = ti.atomic_max(
-                                pix_accum[gl_row, _GL_ROW_SIGMA_SCALE],
-                                _GL_CLAIM_MARK)
+                                              _det_deposit(wt[k], det_sum))
+                            # One claimant, if the resolve did not claim the
+                            # pixel itself (its scale is still negative) and
+                            # no earlier drain iteration did. Every candidate
+                            # of this launch reserves its reflection and parks
+                            # it PENDING; ``gloss_claim_*`` then keep exactly
+                            # one, chosen by value -- the most energy, ties to
+                            # the larger state hash -- and retire the rest.
+                            # Taking it here, first come, made the winner
+                            # (its direction, depth, radius and
+                            # magnification) GPU scheduling order: two runs
+                            # differed by up to 240 levels wherever several
+                            # taps through glass met a rough floor. Nothing in
+                            # this launch writes the scale column, so every
+                            # candidate reads the same value.
+                            gl_old = pix_accum[gl_row, _GL_ROW_SIGMA_SCALE]
                             if gl_old < 0.0:
-                                pix_accum[gl_row, _GL_ROW_SIGMA_SCALE] = (
-                                    2.0 * rough * rough * (-gl_old))
-                                pix_accum[gl_row, _GL_ROW_DP] = (
-                                    base_dist + t_hit)
-                                # A curved reflector seen in the mirror
-                                # narrows its footprint as it does at a
-                                # primary hit; ``base_dist + t_hit`` is the
-                                # unfolded camera distance it needs.
-                                gl_mag = 1.0
-                                if htype == 1:
-                                    gl_mag = _reflector_magnification(
-                                        f, prim, rd, tri_pos, tri_norm,
-                                        base_dist + t_hit)
-                                pix_accum[gl_row, _GL_ROW_MAG] = gl_mag
                                 c, have_slot = _reserve_continuation_slot(
                                     rs_alloc, rs_ro.shape[0])
                                 if have_slot:
@@ -3792,8 +3939,6 @@ def wavefront_shade_arena(
                                     for k in ti.static(range(3)):
                                         rs_ro[c, k] = rorig[k]
                                         rs_rd[c, k] = rdr[k]
-                                    for k in ti.static(range(4)):
-                                        rs_acc[c, k] = 0.0
                                     rs_sca[c, 0] = 1.0
                                     rs_sca[c, 1] = 0.0
                                     rs_sca[c, 2] = 1e30
@@ -3803,7 +3948,7 @@ def wavefront_shade_arena(
                                     rs_sca[c, 6] = 1.0
                                     rs_int[c, 0] = bounces_left - 1
                                     rs_int[c, 1] = processed
-                                    rs_int[c, 2] = _ACTIVE
+                                    rs_int[c, 2] = _GL_PENDING
                                     rs_int[c, 3] = 0
                                     rs_pix[c] = pix
                                     if ti.static(compact):
@@ -3811,6 +3956,29 @@ def wavefront_shade_arena(
                                     _write_ior_stack(rs_sca, r, c, ior, False,
                                                      False, ior_stack)
                                     _reset_shell_segment(rs_sca, c)
+                                    # A curved reflector seen in the mirror
+                                    # narrows its footprint as it does at a
+                                    # primary hit; ``base_dist + t_hit`` is
+                                    # the unfolded camera distance it needs.
+                                    gl_mag = 1.0
+                                    if htype == 1:
+                                        gl_mag = _reflector_magnification(
+                                            f, prim, rd, tri_pos, tri_norm,
+                                            base_dist + t_hit)
+                                    # The claim rides in the slot's colour
+                                    # (zero for a new continuation) until
+                                    # ``gloss_claim_commit`` clears it.
+                                    rs_acc[c, _GL_CLAIM_SCALE] = (
+                                        2.0 * rough * rough)
+                                    rs_acc[c, _GL_CLAIM_MAG] = gl_mag
+                                    rs_acc[c, _GL_CLAIM_WT] = wt_max
+                                    rs_acc[c, _GL_CLAIM_HASH] = _gl_claim_hash(
+                                        rorig, rdr, base_dist + t_hit)
+                                    # The row's depth column is unused until
+                                    # the claim is made, so it holds the
+                                    # candidates' largest energy meanwhile.
+                                    ti.atomic_max(
+                                        pix_accum[gl_row, _GL_ROW_DP], wt_max)
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
@@ -4144,9 +4312,11 @@ def wavefront_shade_arena(
                         acc[k] += weight[k] * ec[k]
                     weight = ti.math.vec3(0.0, 0.0, 0.0)
                 for k in ti.static(range(4)):
-                    ti.atomic_add(pix_accum[accum_pix, k], acc[k])
+                    ti.atomic_add(pix_accum[accum_pix, k],
+                                  _det_deposit(acc[k], det_sum))
                 for k in ti.static(range(3)):
-                    ti.atomic_add(pix_accum[accum_pix, 4 + k], weight[k])
+                    ti.atomic_add(pix_accum[accum_pix, 4 + k],
+                                  _det_deposit(weight[k], det_sum))
         else:
             # Ray escaped to the background this segment: commit its color +
             # leftover (background) throughput, then retire.
@@ -4164,16 +4334,19 @@ def wavefront_shade_arena(
                                      env_intensity, textures)
                 for k in ti.static(range(3)):
                     ti.atomic_add(
-                        pix_accum[accum_pix, k], w_bg[k] * ec[k])
+                        pix_accum[accum_pix, k],
+                        _det_deposit(w_bg[k] * ec[k], det_sum))
                 w_bg = ti.math.vec3(0.0, 0.0, 0.0)
             if ti.static(first_iter == 0):
                 # First iteration's accumulator is implicitly zero; adding it
                 # would be a no-op, so the read is skipped entirely.
                 for k in ti.static(range(4)):
                     ti.atomic_add(
-                        pix_accum[accum_pix, k], rs_acc[r, k])
+                        pix_accum[accum_pix, k],
+                        _det_deposit(rs_acc[r, k], det_sum))
             for k in ti.static(range(3)):
-                ti.atomic_add(pix_accum[accum_pix, 4 + k], w_bg[k])
+                ti.atomic_add(pix_accum[accum_pix, 4 + k],
+                              _det_deposit(w_bg[k], det_sum))
             rs_int[r, 2] = _DONE
 
 
@@ -4227,7 +4400,7 @@ _WAVEFRONT_SHADE_PARAMS = (
     "frag_scatters", "tri_pids", "shadows", "refraction", "ior_stack",
     "refit", "has_tri", "has_bez", "deferred_shadows", "shadow_term",
     "sided_cull", "skip_unlit_normal", "direct_spec", "mem_trim", "opaque_closest",
-    "first_iter", "compact", "weight_floor_exit", "vis_lights", "tri_mat_id",
+    "first_iter", "compact", "weight_floor_exit", "det_sum", "vis_lights", "tri_mat_id",
     "tri_mat", "light_pos", "light_col", "num_lights", "time_start", "width", "height",
     "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",
     "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin", "tri_shell",

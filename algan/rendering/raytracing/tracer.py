@@ -143,6 +143,9 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     ALLOC_WIDTH,
     SCA_WIDTH_PLAIN,
     compact_ray_slots,
+    gloss_claim_commit,
+    gloss_claim_decide,
+    gloss_claim_tiebreak,
     reorder_ray_slots,
     sca_width,
     wavefront_generate_rays,
@@ -2278,8 +2281,8 @@ def render_batch_raytraced(
                         int(start),
                         0.5,
                         0.5,
-                        float(width // 2),
-                        float(height // 2),
+                        float(width / 2),
+                        float(height / 2),
                         cam_origin,
                         sp,
                         pbx,
@@ -2379,8 +2382,8 @@ def render_batch_raytraced(
                         time_end=end,
                         width=width,
                         height=height,
-                        half_screen_w=float(width // 2),
-                        half_screen_h=float(height // 2),
+                        half_screen_w=float(width / 2),
+                        half_screen_h=float(height / 2),
                         layer_offset_triangles=layer_offset_triangles,
                         has_tri=has_tri,
                         has_bez=has_bez,
@@ -2459,8 +2462,8 @@ def render_batch_raytraced(
                             int(end),
                             int(width),
                             int(height),
-                            float(width // 2),
-                            float(height // 2),
+                            float(width / 2),
+                            float(height / 2),
                             layer_offset_triangles,
                             has_tri,
                             has_bez,
@@ -3064,6 +3067,12 @@ def raytrace_render_wavefront(
     pool_ratio = _split_pool_ratio(
         refraction_flag, merged, analytic_raster, bool(frag_scatters)
     )
+    # Several rays of a pixel commit into its accumulator row from one launch
+    # only when the batch splits, so only then do the commits go on the grid
+    # that makes their sums order-independent (``_det_deposit``). Read back by
+    # the sheet resolve's launch (raster_pipeline), like ``glossy_mode``.
+    det_sum = 1 if pool_ratio > 1 else 0
+    merged["det_sum"] = det_sum
     # Read live (settings convention): runtime-mutable for tile-size A/B.
     primary_per_tile = max(1, rt_settings.wavefront_tile_rays // pool_ratio)
 
@@ -3923,6 +3932,7 @@ def raytrace_render_wavefront(
                         # (a ti.template() gate: flipping it mid-process
                         # compiles the other variant rather than reusing one).
                         int(rt_settings.weight_floor_exit),
+                        det_sum,
                         # Light slots the vis payload carries: what this batch
                         # needs, bucketed, not the 16-light cap.
                         shadow_vis_slots(num_lights),
@@ -3951,6 +3961,21 @@ def raytrace_render_wavefront(
                         cam_proj_table,
                         projected,
                     )
+                if merged.get("glossy_mode") == 3:
+                    # The shade left this iteration's glossy-event claimants
+                    # pending; keep one per pixel, by value, before the
+                    # compaction below reads the pool.
+                    with _stage(f"wavefront:   - {bounce} glossy claims", items=na):
+                        capacity = int(rs_int.shape[0])
+                        gloss_claim_tiebreak(
+                            capacity, rs_acc, rs_int, rs_alloc, pix_accum
+                        )
+                        gloss_claim_decide(
+                            capacity, rs_acc, rs_int, rs_alloc, pix_accum
+                        )
+                        gloss_claim_commit(
+                            capacity, rs_acc, rs_sca, rs_int, rs_alloc, pix_accum
+                        )
             active = compactor.select(
                 rs_int,
                 0,
@@ -4796,6 +4821,7 @@ def raytrace_render_wavefront(
                     # Post-loop weight-floor exit, read live per batch (see
                     # the sparse drain call site).
                     int(rt_settings.weight_floor_exit),
+                    det_sum,
                     # Light slots the vis payload carries: what this batch
                     # needs, bucketed, not the 16-light cap.
                     shadow_vis_slots(num_lights),

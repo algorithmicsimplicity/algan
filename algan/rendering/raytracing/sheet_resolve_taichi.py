@@ -110,6 +110,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _GLOSSY_MIN_ROUGHNESS,
     ALLOC_TRUNC_SURFACES,
+    _det_deposit,
     _material_env_brdf,
     _material_reflectance,
     _mirror_share,
@@ -194,6 +195,10 @@ def sheet_resolve_shade_arena(
         # for the same reason. So a row read in mode 2 was written in mode 1.
         # Values are copied verbatim through f32, hence byte-identical.
         memo: ti.template(),
+        # 1 on a splitting batch: the pixel's first ``pix_accum`` deposits go
+        # on the grid its pool rays add to later
+        # (``wavefront_kernels_taichi._det_deposit``). Mode 1 commits nothing.
+        det_sum: ti.template(),
         time_start: int, width: int, height: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
@@ -1411,7 +1416,8 @@ def sheet_resolve_shade_arena(
                         ti.math.vec3(1.0, 1.0, 1.0), gl_dist, gl_bounces,
                         gl_proc, pixel, r, gl_row, 1, ior_stack, 0, 0.0, 0):
                     for k in ti.static(range(3)):
-                        pix_accum[gl_row, GL_ROW_W + k] = gl_wt[k]
+                        pix_accum[gl_row, GL_ROW_W + k] = _det_deposit(
+                            gl_wt[k], det_sum)
                     pix_accum[gl_row, GL_ROW_SIGMA_SCALE] = (
                         2.0 * gl_rough * gl_rough * gl_px_per_rad)
                     pix_accum[gl_row, GL_ROW_DP] = gl_dist
@@ -1492,9 +1498,10 @@ def sheet_resolve_shade_arena(
                             acc[k] += weight[k] * ec[k]
                         weight = ti.math.vec3(0.0, 0.0, 0.0)
                 for k in ti.static(range(4)):
-                    ti.atomic_add(pix_accum[r, k], acc[k])
+                    ti.atomic_add(pix_accum[r, k], _det_deposit(acc[k], det_sum))
                 for k in ti.static(range(3)):
-                    ti.atomic_add(pix_accum[r, 4 + k], weight[k])
+                    ti.atomic_add(pix_accum[r, 4 + k],
+                                  _det_deposit(weight[k], det_sum))
 
 
 #: What ``sheet_resolve_shade`` binds through the arena, in offset-table order:
@@ -1560,7 +1567,7 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "frag_pipelines", "tri_pids", "refraction", "ior_stack",
     "skip_unlit_normal", "has_bez", "sec_aa", "sec_min_energy", "glossy",
     "env_in_composite", "direct_spec", "mode", "shadow_term", "sided_cull",
-    "memo",
+    "memo", "det_sum",
     "sheet_memo", "sheet_accept", "event_pos", "event_snrm", "event_fnrm",
     "event_frame", "event_msk", "event_dp", "event_toff", "sheet_event_id",
     "shadow_vis", "covered_idx", "time_start", "width", "height",

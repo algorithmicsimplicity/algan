@@ -343,59 +343,67 @@ sheet route's chunk, attempt and retry counts per run so an A/B can see it.
 `tests/unit_tests/test_device_shadow_glue.py` and `test_adaptive_tile_pool.py`
 hold both, byte for byte, on one CPU thread.
 
-### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
+### Split pixels are byte-reproducible; keep them that way
 
-Some scenes render slightly differently every run, with no change to the code
-or the settings, so they cannot serve as byte-identical A/B fixtures.
+A splitting batch (`_split_pool_ratio > 1`: reflective or refractive geometry
+under analytic AA, or `ANALYTIC_AA_SECONDARY_SAMPLES > 1`) gives a pixel
+several rays from the shared continuation pool. Two things those rays do
+inside one kernel launch happen in GPU scheduling order, and both used to make
+CUDA renders differ from run to run. Both are now settled by value:
 
-Every branch of a pixel commits its premultiplied colour and its leftover
-background throughput into the shared per-pixel accumulator `pix_accum` with
-`ti.atomic_add` (`wavefront_kernels_taichi.py` ~3063-3095, `raster_taichi.py`
-~4655-4665). Float atomic add is *commutative but not associative*, and the
-order in which branches of one pixel reach the accumulator is GPU scheduling
-order, which varies run to run. A pixel carrying one or two branches is
-therefore still bit-exact; a pixel carrying **three or more** is not.
+- **The split-sum glossy claim.** Pool rays of one pixel that meet a rough
+  reflector join the pixel's one prefiltered glossy event, and one of them
+  carries its radiance. That one used to be whichever ray's `atomic_max` landed
+  first. Its reflection direction, depth, radius and magnification were the
+  whole pixel's reflection, so the refracted taps of a glass ball over a rough
+  floor raced. Two renders of `benchmarks/performance/graphics_scene.py`
+  differed by up to 240 levels on 106 of 110 frames, and
+  `materials_and_lighting` by up to 40. Candidates now reserve their
+  reflection as pending, and `gloss_claim_tiebreak` / `_decide` / `_commit`
+  (`wavefront_kernels_taichi`) keep the one with the most energy, breaking
+  ties on a hash of its state (`DESIGN_glossy_prefilter.md` §4.3).
+- **The accumulator sums.** Every ray commits its premultiplied colour and
+  leftover throughput into `pix_accum` with float `ti.atomic_add`, which is not
+  associative. On a splitting batch the deposits now go on a fixed grid of
+  2^-20 (`_det_deposit`). A sum of grid multiples below 16 (2^24 steps) is
+  exact at every partial sum, so its value does not depend on arrival order. A
+  brighter sum (a highlight a glossy ray sees at throughput 1) still rounds in
+  arrival order, where the output is clipped or tonemapped flat. Rounding
+  moves a deposit by at most 2^-21, under 1/400 of an 8-bit level even at
+  black. The switch is the `det_sum` **template** of `wavefront_shade` and
+  `sheet_resolve_shade` (`merged["det_sum"]`, set from `pool_ratio > 1`), so a
+  batch that never splits compiles the variant without the grid and renders
+  exactly as before by construction. Most lit scenes do split: any reflector
+  under analytic AA gives `pool_ratio > 1` (`_secondary_split_needed`). Against
+  master, the grid moved the fast scene, the explainer and nn workloads and
+  four of the full-render scenes by at most one level, on 47 to 945 pixels
+  per clip. `manim_compat_and_plots` (ratio 1) was unchanged.
+  `materials_and_lighting` and `graphics_scene` moved further, because their
+  glossy claims now go to a different ray.
 
-Multi-branch pixels come from the shared continuation pool, which is only used
-when `_split_pool_ratio` exceeds 1 — reflective/refractive geometry *and*
-analytic AA (or `ANALYTIC_AA_SECONDARY_SAMPLES > 1`, which puts N sub-pixel
-reflection taps on one pixel). Measured on 3 cubes + 2 spheres + a reflective
-ground at MD over 60 frames (`benchmarks/_split_determinism_check.py`): every
-tile's `pix_accum` digest differs between two runs in one process, while the
-merged scene tensors feeding the kernels hash identically. Turning off any one
-ingredient — `max_bounces=0`, `analytic_aa=False`, or all-unlit materials —
-makes the digests match and the frames byte-identical.
-
-The output effect is bounded and small. `wf_composite_accum` truncates to `u8`
-(~line 1324), so a reassociation difference can move a channel by at most 1: the
-measured spread is `|d| = 1` on tens of channel samples out of 165M, and the
-encoded mp4 came out bit-identical. This is a parity-fixture constraint, not a
-rendering defect.
+`tests/unit_tests/test_render_determinism.py` renders a glass ball and a
+mirror ball on a rough slab twice on CUDA. It requires identical frames and
+identical tile accumulators below the grid's bound; master failed it.
 
 Practical rules:
 
-- Do not use a scene with reflective/refractive geometry under analytic AA as a
-  byte-identical parity fixture. Establish the arm's own run-to-run floor first,
-  or pin one of the ingredients off.
-- The CPU backend races the same way across its threads. A CPU render on ONE
-  thread is reproducible to the byte: set `cpu_max_num_threads=1` in
-  `taichi_runtime.taichi_init_kwargs()` before the first render, in a process
-  of its own. `test_tile_state_fills.py` does this. That compiles kernels
-  under their own cache key.
-- A *larger* difference than `|d| = 1` is NOT this mechanism. Branches are never
-  silently dropped: a continuation that does not fit raises the pool's overflow
-  flag, and the host discards and retries the tile with fewer primaries
-  (deterministically — verified by starving the pool to force 13 retries, which
-  changed nothing). Suspect the change under test instead. That "never" is now
-  instrumented rather than asserted: the host reads the flag on *every* tile,
-  including the split-free ones at `pool_ratio == 1` that used to short-circuit
-  past it, and counts any reservation past the capacity as
-  `RenderPlan.truncations.dropped_continuations` — which reads zero on the
-  shipped renderer and is there to catch the change that makes it stop.
-- The fix, if byte-identical A/B on reflective scenes is ever needed, is to
-  accumulate in fixed point: integer atomic add *is* associative and
-  commutative, so the sum stops depending on arrival order. That trades a scale
-  factor and a conversion for reproducibility; it has not been needed so far.
+- A reflective or refractive scene is a valid byte-identical A/B fixture again,
+  provided the batching is pinned (`available_memory_override`) as for any
+  other fixture.
+- A run-to-run difference now means a new order dependence. Look for a
+  `ti.atomic_*` whose *result* picks something (a winner, a slot whose contents
+  matter), or a float sum written outside `_det_deposit`. Reordering alone is
+  harmless: compaction (`compact_ray_slots`) and continuation-slot allocation
+  are in scheduling order, and no result may depend on a ray's slot index.
+- Branches are never silently dropped: a continuation that does not fit raises
+  the pool's overflow flag, and the host discards and retries the tile with
+  fewer primaries (deterministically: starving the pool to force 13 retries
+  changed nothing). The host reads the flag on *every* tile, including the
+  split-free ones at `pool_ratio == 1`, and counts any reservation past the
+  capacity as `RenderPlan.truncations.dropped_continuations`, which reads zero
+  on the shipped renderer. A pending glossy candidate that loses its claim
+  retires untraced but has used a pool slot, so a scene where many candidates
+  contest a claim needs a little more pool.
 
 For source-only correctness checks, at minimum run import/compile checks on modified non-Taichi modules. For visual renderer changes, render a minimal `SMOKE_TEST` scene or a single diagnostic frame. Do not run a long benchmark merely to prove that code imports.
 

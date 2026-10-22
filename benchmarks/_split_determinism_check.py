@@ -41,6 +41,15 @@ the output, so the discard-and-retry path is deterministic. A run-to-run
 difference **larger than 1 is therefore not this mechanism** -- suspect the
 change under test.
 
+Update (2026-10-22): a splitting batch now puts its ``pix_accum`` deposits on
+a fixed 2^-20 grid (``wavefront_kernels_taichi._det_deposit``), where the sums
+are exact below 16 and so independent of arrival order. ``mixed``, ``stress``
+and ``nobounce`` now render byte-identically run to run (raw frames and
+decoded mp4, 30 frames each, RTX 5080). The 240-level differences that
+``benchmarks/performance/graphics_scene.py`` showed were a different mechanism:
+a race for the split-sum glossy claim, settled by value since then
+(``gloss_claim_*``; ``tests/unit_tests/test_render_determinism.py``).
+
 Run: .venv/Scripts/python.exe benchmarks/_split_determinism_check.py [arms...]
 Env: SD_HASH_ACCUM=1      hash each tile's pix_accum before compositing
      SD_POOL_FRACTION=f   shrink the continuation pool to force overflow
@@ -203,7 +212,7 @@ def _build_scene(mode: str) -> None:
 
     # The reported differences GROW as the reflected cubes rotate, so the
     # animation has to move what the floor reflects.
-    with Sync(duration=FRAMES / FPS):
+    with Sync(runtime=FRAMES / FPS):
         cube_pbr.rotate(150, UP)
         cube_a.rotate(-120, UP)
         cube_b.rotate(100, RIGHT)
