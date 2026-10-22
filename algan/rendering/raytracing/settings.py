@@ -699,6 +699,19 @@ def set_wf_shadow_event_sort(enabled):
     wf_shadow_event_sort = bool(enabled)
 
 
+# Build, order and size the deferred shadow events on the device
+# (tracer._device_wavefront_shadows): no count read back per bounce, no dense
+# all-lit table, events binned by octree cell instead of Morton-sorted, a trace
+# sized by the row count and a shade that reads visibility through a row ->
+# slot map. Byte-identical either way. OFF by default, on measurement: on an
+# RTX 5080 (graphics UHD 0.5 s, warm) it was neutral alone (13.65/13.50 s
+# against 13.90/13.68) and cost ~0.35 s beside the adaptive tile pool (12.22/
+# 12.17 against 11.85/11.86) -- the drain there is GPU-bound, so the sync it
+# removes was not on the critical path, and its row-sized trace launch, binned
+# order and mapped reads cost GPU time. ALGAN_WF_DEVICE_SHADOW_GLUE=1 opts in.
+wf_device_shadow_glue = env_flag("ALGAN_WF_DEVICE_SHADOW_GLUE", False)
+
+
 # Compile-time material-pipeline gating. The per-hit material dispatch
 # (``shading_taichi._run_frag_pipeline``) is inlined into the shade kernels
 # with every built-in stage reachable -- including ``_stage_physical``'s
@@ -1312,32 +1325,38 @@ def set_merge_dedup_time(enabled):
 # physically correct one in both.
 #
 # Auto selects opaque-only any-hit when the batch proves there is no
-# transmission, translucent geometry or uncertain texture alpha. A mixed batch
-# with an opaque caster gets opaque-first (shadow mode 5,
-# ``raytrace_kernels_taichi._shadow_opaque_first``): one any-hit pass answers
-# every ray an opaque caster the march is certain to reach blocks, and every
-# ray that touches nothing, bit for bit as the march would, and only the rest
-# march. ``ALGAN_OPT_DISABLE=opaquefirst`` keeps those batches on the ordered
-# march (``shadow_dispatch``). The explicit True mode also allows a
-# mixed-scene prepass, which historically lost on the translucent UHD
-# benchmark; it is deliberately not used by auto. False forces the ordered
-# reference march. "gather" selects the experimental k-buffer gather-march
-# for any batch.
+# transmission, translucent geometry or uncertain texture alpha. Otherwise it
+# retains the ordered march. "opaquefirst" does what auto does and gives a
+# mixed batch with an opaque caster the opaque-first query instead (shadow
+# mode 5, ``raytrace_kernels_taichi._shadow_opaque_first``): one any-hit pass
+# settles the rays an opaque caster blocks and the rays that touch nothing,
+# and only the rest march. It is opt-in on measurement -- RTX 5080, graphics
+# UHD 0.5 s: 12.9 s with it against 11.6 s without, and its ``verify`` trace
+# counter found 56,927 shadow rays answered differently from the march, where
+# the CPU found none (``agent_guidance/rendering.md``). The explicit True mode
+# also allows a mixed-scene prepass, which historically lost on the
+# translucent UHD benchmark; it is deliberately not used by auto. False
+# forces the ordered reference march. "gather" selects the experimental
+# k-buffer gather-march for any batch.
 shadow_anyhit = env_str("ALGAN_SHADOW_ANYHIT", "auto").strip().lower()
-if shadow_anyhit not in ("auto", "gather"):
+if shadow_anyhit not in ("auto", "gather", "opaquefirst"):
     shadow_anyhit = env_flag("ALGAN_SHADOW_ANYHIT", False)
 
 
 def set_shadow_anyhit(enabled):
     """Select shadow traversal for the next batch.
 
-    The default "auto" enables any-hit for provably opaque batches and the
-    exact opaque-first query for mixed ones. True also enables the mixed opaque
-    prepass, "gather" selects the k-buffer march, and False forces the ordered
-    reference march.
+    The default "auto" enables any-hit only for provably opaque batches;
+    "opaquefirst" also gives mixed batches the opaque-first query. True also
+    enables the mixed opaque prepass, "gather" selects the k-buffer march, and
+    False forces the ordered reference march.
     """
     global shadow_anyhit
-    if isinstance(enabled, str) and enabled.strip().lower() in ("auto", "gather"):
+    if isinstance(enabled, str) and enabled.strip().lower() in (
+        "auto",
+        "gather",
+        "opaquefirst",
+    ):
         shadow_anyhit = enabled.strip().lower()
     else:
         shadow_anyhit = bool(enabled)

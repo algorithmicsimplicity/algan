@@ -10,11 +10,14 @@ every class of walk spent in sibling-group (node) tests and primitive tests::
     python benchmarks/_trace_counters_report.py --scene graphics --quality PREVIEW --seconds 6 --verify
     python benchmarks/_trace_counters_report.py --scene graphics --seconds 6 --at 3 --resolution 320x180
 
-Arms are ``ALGAN_OPT_DISABLE`` name lists, swapped in-process between renders
-(both traversal switches are read at use): the default compares the shipped
-arm ("on") with opaque-first off. ``--verify`` also re-derives every
-opaque-first answer with the ordered march and counts the rays that differ
-in any bit (``shadow_opaque_first_mismatch``, expected 0).
+Arms are ``SETTINGS.raytracing.experimental.shadow_anyhit`` values, set
+in-process between renders: the default compares the shipped ``auto`` with
+the opt-in ``opaquefirst``. The node layout is import-time
+(``ALGAN_BVH_NODE_WORDS=0`` for the original lanes), so it is one process per
+layout. ``--verify`` also re-derives every opaque-first answer with the
+ordered march and counts the rays that differ in any bit
+(``shadow_opaque_first_mismatch``; 0 on the CPU, 56,927 on an RTX 5080 at
+graphics UHD 0.5 s).
 
 Counting kernels run slower (atomics, and their source keys are poisoned so
 each pays the full frontend once): read counts from here and time with
@@ -54,9 +57,10 @@ def _parse(argv=None):
     )
     parser.add_argument(
         "--arms",
-        default="on,opaquefirst",
-        help="comma-separated arms; each is 'on' or a '+'-joined "
-        "ALGAN_OPT_DISABLE list, e.g. on,opaquefirst,nodewords",
+        default="auto,opaquefirst",
+        help="comma-separated SETTINGS.raytracing.experimental.shadow_anyhit "
+        "values, one render each (node words are import-time: "
+        "ALGAN_BVH_NODE_WORDS=0 in the environment for the lanes arm)",
     )
     parser.add_argument(
         "--verify",
@@ -88,7 +92,6 @@ def main(argv=None):
 
     import algan
     from algan import SETTINGS, Scene
-    from algan.animation_timeline import timeline
     from algan.rendering.raytracing import trace_counters_taichi as tc
     from algan.rendering.raytracing import tracer
     from algan.scene_manager import SceneManager
@@ -124,12 +127,11 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     results = {}
     for arm in args.arms.split(","):
-        disabled = frozenset() if arm == "on" else frozenset(arm.split("+"))
-        timeline._OPT_DISABLED = disabled
         SceneManager.reset()
         snapshot = SETTINGS.snapshot()
         try:
             module.scene(seconds)
+            SETTINGS.raytracing.experimental.set(shadow_anyhit=arm)
             if args.max_bounces is not None:
                 SETTINGS.raytracing.set(max_bounces=args.max_bounces)
             modes.clear()
@@ -161,7 +163,6 @@ def main(argv=None):
             f"{sorted(set(modes))}, render {elapsed:.1f} s (counting)"
         )
         print(tc.format_counts(counts), flush=True)
-    timeline._OPT_DISABLED = None
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2))
 

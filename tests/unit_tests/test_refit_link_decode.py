@@ -4,7 +4,12 @@ import pytest
 import torch
 
 from algan.rendering.raytracing.raytrace_kernels_taichi import NODE_ARG, _refit_link
-from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16
+from algan.rendering.raytracing.stbvh import (
+    bvh_arity,
+    bvh_block_f16,
+    bvh_node_words,
+    kernel_blocks,
+)
 from algan.rendering.taichi_runtime import init_taichi
 from algan.settings._startup import render_device
 from algan.taichi_compat import ti
@@ -19,18 +24,22 @@ def _decode_links(
 
 
 def _kernel_view(blocks, fmt):
-    """The block array as each node format hands it to the kernels: packed
-    int64 / int32 words (``stbvh.kernel_blocks``) or one scalar per value
-    (its ``nodewords`` kill switch).
+    """The block array as the kernels take it: ``native`` is
+    ``stbvh.kernel_blocks`` (words, or the lane vectors under
+    ``ALGAN_BVH_NODE_WORDS=0``); the others force one word format.
     """
+    if fmt == "native":
+        return kernel_blocks(blocks)
     lanes = blocks.reshape(blocks.shape[0], -1)
-    if fmt == "lanes":
+    if fmt == "scalar":
         return lanes
     return lanes.view(torch.int64 if fmt == "i64" else torch.int32)
 
 
-@pytest.mark.parametrize("fmt", ["i64", "i32", "lanes"])
+@pytest.mark.parametrize("fmt", ["native", "i64", "i32", "scalar"])
 def test_refit_links_preserve_all_bits_at_dynamic_child_indices(fmt):
+    if fmt != "native" and not bvh_node_words:
+        pytest.skip("ALGAN_BVH_NODE_WORDS=0 takes only the lane vectors")
     init_taichi()
     device = render_device()
     # Internal, invalid, leaf, opaque and non-casting link words. Several

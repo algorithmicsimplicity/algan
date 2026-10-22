@@ -1,18 +1,19 @@
 """BVH sibling blocks read as packed words decode to exactly the stored lanes.
 
 ``stbvh.kernel_blocks`` hands the traversal kernels the block bytes as int64
-(int32 on MPS) words instead of ``vector(bvh_arity, f16)`` lanes, so a node
-fetch is a few wide loads rather than one 16-bit load per child value
-(``raytrace_kernels_taichi._node_row``). ``ALGAN_OPT_DISABLE=nodewords`` hands
-them over as one scalar per value instead. Every format must decode every bit
-the lanes hold -- infinities, NaN payloads (refit link words are packed
-integers that often are f16 NaNs), negative zero -- and so give the group
-tests bit-identical masks and entry distances. Other arities and f32 blocks
-are import-time settings, so they run in a subprocess each.
+(int32 on MPS, narrower for a misaligned storage) words instead of
+``vector(bvh_arity, f16)`` lanes (``raytrace_kernels_taichi._node_row``). Every
+format must decode every bit the lanes hold -- infinities, NaN payloads (refit
+link words are packed integers that often are f16 NaNs), negative zero -- and
+so give the group tests bit-identical masks and entry distances. The original
+lane fetch is the import-time ``ALGAN_BVH_NODE_WORDS=0`` arm, and other
+arities and f32 blocks are import-time settings too, so those run in a
+subprocess each and are compared with this process's results.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -23,9 +24,14 @@ import pytest
 import torch
 from PIL import Image
 
-from algan.animation_timeline import timeline
 from algan.rendering.raytracing import raytrace_kernels_taichi as rk
-from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16, kernel_blocks
+from algan.rendering.raytracing import stbvh
+from algan.rendering.raytracing.stbvh import (
+    bvh_arity,
+    bvh_block_f16,
+    bvh_node_words,
+    kernel_blocks,
+)
 from algan.rendering.taichi_runtime import init_taichi
 from algan.settings._startup import render_device
 from algan.taichi_compat import ti
@@ -33,15 +39,13 @@ from algan.taichi_compat import ti
 _REPO = Path(__file__).resolve().parents[2]
 
 
-@pytest.fixture
-def opt_disabled():
-    saved = timeline._OPT_DISABLED
+#: The word decodes exist only under ``bvh_node_words``; the lanes arm's own
+#: checks are the subprocess comparisons below.
+words_only = pytest.mark.skipif(
+    not bvh_node_words, reason="ALGAN_BVH_NODE_WORDS=0 has no word formats"
+)
 
-    def use(*names):
-        timeline._OPT_DISABLED = frozenset(names)
-
-    yield use
-    timeline._OPT_DISABLED = saved
+_SUBPROCESS_ENV = {"ALGAN_USE_DAEMON": "0", "ALGAN_AUTO_DAEMON": "0"}
 
 
 def _random_blocks(rows, seed):
@@ -131,6 +135,7 @@ def _expected_values(blocks):
     return raw, as_f32
 
 
+@words_only
 def test_every_format_decodes_every_stored_value_exactly():
     init_taichi()
     blocks = _random_blocks(64, seed=1)
@@ -162,9 +167,7 @@ def _probe_rays(n, seed):
     return torch.cat([ro, inv, frame, t_lo, t_hi], 1).contiguous()
 
 
-@pytest.mark.parametrize("refit", [0, 1])
-def test_group_tests_are_bit_identical_across_formats(refit):
-    init_taichi()
+def _probe_blocks():
     blocks = _random_blocks(97, seed=2)
     # Plausible boxes too, so masks are not all empty: lo < hi in half the rows.
     gen = torch.Generator().manual_seed(5)
@@ -178,23 +181,42 @@ def test_group_tests_are_bit_identical_across_formats(refit):
         blocks.view(torch.int16)[:48, 7] = 0x7FFF
     else:
         blocks.view(torch.int32)[:48, 6] = 0x7FFF0000
+    return blocks
+
+
+def _probe(view, refit):
     rays = _probe_rays(4096, seed=3)
-    results = {}
-    for name, view in _formats(blocks).items():
-        out = torch.zeros(
-            (rays.shape[0], 2 + bvh_arity), dtype=torch.int32, device=render_device()
-        )
-        _group_probe(view.to(render_device()), rays.to(render_device()), out, refit)
-        results[name] = out.cpu()
+    out = torch.zeros(
+        (rays.shape[0], 2 + bvh_arity), dtype=torch.int32, device=render_device()
+    )
+    _group_probe(view.to(render_device()), rays.to(render_device()), out, refit)
+    return out.cpu()
+
+
+def probe_digest(refit):
+    """Digest of the group probe, read the way this process's kernels take
+    the blocks (``kernel_blocks``): compared across processes below.
+    """
+    init_taichi()
+    out = _probe(kernel_blocks(_probe_blocks()), refit)
+    return hashlib.sha256(out.numpy().tobytes()).hexdigest()
+
+
+@words_only
+@pytest.mark.parametrize("refit", [0, 1])
+def test_group_tests_are_bit_identical_across_formats(refit):
+    init_taichi()
+    blocks = _probe_blocks()
+    results = {name: _probe(view, refit) for name, view in _formats(blocks).items()}
     reference = results.pop("lanes")
     assert int((reference[:, 0] != 0).sum()) > 20, "the probe must hit boxes"
     for name, out in results.items():
         assert torch.equal(out, reference), name
 
 
-def test_kernel_blocks_picks_word_views_without_copying(opt_disabled):
+@words_only
+def test_kernel_blocks_picks_word_views_without_copying(monkeypatch):
     blocks = _random_blocks(10, seed=4)
-    opt_disabled()
     words = kernel_blocks(blocks)
     lane_bytes = bvh_arity * blocks.element_size()
     expected = torch.int64 if lane_bytes % 8 == 0 else torch.int32
@@ -207,12 +229,9 @@ def test_kernel_blocks_picks_word_views_without_copying(opt_disabled):
     shifted = backing[1:].view(blocks.shape)
     expect = blocks.dtype if blocks.element_size() == 2 else torch.int32
     assert kernel_blocks(shifted).dtype == expect
-    # The kill switch hands over one scalar per value: the old loads.
-    opt_disabled("nodewords")
-    lanes = kernel_blocks(blocks)
-    assert lanes.dtype == blocks.dtype
-    assert lanes.shape == (10, 8 * bvh_arity)
-    assert lanes.data_ptr() == blocks.data_ptr()
+    # The lanes arm hands over the block array itself, lane vectors and all.
+    monkeypatch.setattr(stbvh, "bvh_node_words", False)
+    assert kernel_blocks(blocks) is blocks
 
 
 _SUBPROCESS_PROBE = r"""
@@ -236,8 +255,8 @@ def test_other_block_layouts_decode_exactly(arity, f16):
         os.environ,
         ALGAN_BVH_ARITY=str(arity),
         ALGAN_BVH_BLOCK_F16=f16,
-        ALGAN_USE_DAEMON="0",
-        ALGAN_AUTO_DAEMON="0",
+        ALGAN_BVH_NODE_WORDS="1",
+        **_SUBPROCESS_ENV,
     )
     r = subprocess.run(
         [sys.executable, "-c", _SUBPROCESS_PROBE, str(Path(__file__).parent)],
@@ -249,6 +268,41 @@ def test_other_block_layouts_decode_exactly(arity, f16):
     )
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-4000:]
     assert f"ok {arity} {f16 == '1'}" in r.stdout
+
+
+def _lanes_arm(code, *args):
+    """Run ``code`` in a process with the original lane fetch."""
+    env = dict(os.environ, ALGAN_BVH_NODE_WORDS="0", **_SUBPROCESS_ENV)
+    r = subprocess.run(
+        [sys.executable, "-c", code, str(Path(__file__).parent), *args],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-4000:]
+    return r.stdout
+
+
+_LANES_PROBE = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import test_bvh_node_words as t
+assert not t.bvh_node_words
+print("DIGEST", t.probe_digest(0), t.probe_digest(1))
+"""
+
+
+@words_only
+def test_the_original_lane_fetch_gives_the_words_answers():
+    """The lanes arm is the pre-words fetch (``vector`` annotation, the
+    original ``_test_children``); its masks, entry distances and links are the
+    words' to the bit.
+    """
+    out = _lanes_arm(_LANES_PROBE)
+    line = next(ln for ln in out.splitlines() if ln.startswith("DIGEST "))
+    assert line.split()[1:] == [probe_digest(0), probe_digest(1)]
 
 
 def _render(path):
@@ -310,14 +364,55 @@ def _render(path):
         SceneManager.reset()
 
 
-def test_frames_match_the_nodewords_kill_switch(tmp_path, opt_disabled):
+_LANES_FRAME = r"""
+import hashlib, sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+import test_bvh_node_words as t
+frame = t._render(Path(sys.argv[2]) / "lanes.png")
+print("MD5", hashlib.md5(frame.tobytes()).hexdigest())
+"""
+
+
+@words_only
+def test_frames_match_the_original_lane_fetch(tmp_path):
     """Camera, shadow and mirror-bounce traversal all read the words: the
-    frame is the per-value frame to the byte (a mirror, not glass, so the
+    frame is the lanes arm's frame to the byte (a mirror, not glass, so the
     bounce does not split a pixel).
     """
-    opt_disabled()
     words = _render(tmp_path / "words.png")
-    opt_disabled("nodewords")
-    lanes = _render(tmp_path / "lanes.png")
-    assert np.array_equal(words, lanes)
+    out = _lanes_arm(_LANES_FRAME, str(tmp_path))
+    line = next(ln for ln in out.splitlines() if ln.startswith("MD5 "))
+    assert line.split()[1] == hashlib.md5(words.tobytes()).hexdigest()
     assert len(np.unique(words.reshape(-1, 4), axis=0)) > 20
+
+
+_ALIGNMENT = r"""
+import torch
+from algan.rendering.raytracing import scene_builder
+blocks = torch.zeros((4, 8, 4), dtype=torch.float16)
+group = {"tensors": [blocks], "node_blocks": True}
+print("ALIGN", scene_builder._storage_alignment(group),
+      max(2, scene_builder._upload_alignment_floor()))
+"""
+
+
+@pytest.mark.parametrize("words", ["1", "0"], ids=["words", "lanes"])
+def test_only_the_words_arm_asks_for_aligned_block_storages(words):
+    """Block storages start on 16 bytes for the 8-byte word loads; the lanes
+    arm keeps the original rule -- the element size, or the upload floor
+    where the Metal zero-copy patch is installed (16 on the published
+    Quadrants build, which makes the two arms' layouts identical there).
+    """
+    r = subprocess.run(
+        [sys.executable, "-c", _ALIGNMENT],
+        cwd=_REPO,
+        env=dict(os.environ, ALGAN_BVH_NODE_WORDS=words, **_SUBPROCESS_ENV),
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert r.returncode == 0, r.stderr[-3000:]
+    line = next(ln for ln in r.stdout.splitlines() if ln.startswith("ALIGN "))
+    got, original = (int(v) for v in line.split()[1:])
+    assert got == (max(16, original) if words == "1" else original)

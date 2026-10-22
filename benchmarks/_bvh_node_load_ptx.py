@@ -1,31 +1,30 @@
 """Dump the CUDA PTX of the BVH traversal and count its global loads by width.
 
-The question it answers: does a sibling-block (node) fetch compile to wide
-loads? Under the old ``vector(4, f16)`` lane annotation a 64-byte f16 node was
-32 scalar 16-bit loads and no vector loads; ``stbvh.kernel_blocks`` now passes
-the same bytes as 64-bit words (``raytrace_kernels_taichi._node_row``), which
-should be 8 ``ld.global*.u64``/``b64`` loads (or fewer, as ``v2``/``v4``
-vector loads, if LLVM's load vectorizer can prove the alignment).
+The question it answers: what does a sibling-block (node) fetch compile to?
+``stbvh.kernel_blocks`` passes the block bytes as 64-bit words
+(``raytrace_kernels_taichi._node_row``); ``ALGAN_BVH_NODE_WORDS=0`` (read at
+import) restores the original ``vector(4, f16)`` lanes and their fetch. On the
+RTX 5080 build both came out as 32/64-bit loads only, so the words' win is not
+a load-count one -- compare the two arms' dumps instruction by instruction.
 
 Two parts, both with ``print_kernel_asm`` on, the offline cache off and the
 source-key shortcut off, so every kernel really goes through the backend:
 
 1. **Probe kernels** (always): one sibling-group test (STBVH and refit) plus a
-   runtime-index link read, compiled once per node format -- ``i64`` words,
-   ``i32`` words and ``lanes`` (the ``ALGAN_OPT_DISABLE=nodewords`` scalars).
-   The kernel loads nothing else from global memory but its arguments, so the
-   difference between the formats is the node fetch. Expected: ``lanes`` has
-   ~32 + 2 sixteen-bit loads per group test, ``i64`` none.
+   runtime-index link read. Under words, compiled once per format the kernels
+   accept -- ``i64`` and ``i32`` words and ``scalar`` (one value per element,
+   the misaligned-storage fallback); under the lanes arm, once for the lane
+   vectors. The kernel loads nothing else from global memory but its
+   arguments, so the histograms are the node fetch.
 2. **A real render** (``--render``): a small shadowed scene (opaque, half
-   transparent and glass casters) rendered twice, words then lanes, and the
-   traversal kernels' load histograms printed per arm -- the 16-bit global load
-   count of ``raster_shadow_trace_arena``, ``shadow_queue_trace_arena``,
-   ``wavefront_traverse_events_arena`` and ``wavefront_shade_arena`` should drop
-   between the lanes arm and the words arm by the node loads they inline.
+   transparent and glass casters), and the load histograms of
+   ``raster_shadow_trace_arena``, ``shadow_queue_trace_arena``,
+   ``wavefront_traverse_events_arena`` and ``wavefront_shade_arena``.
 
-Run on the CUDA machine from the worktree root::
+Run on the CUDA machine from the worktree root, once per arm::
 
-    python benchmarks/_bvh_node_load_ptx.py --out ptx_dump [--render]
+    python benchmarks/_bvh_node_load_ptx.py --out ptx_words [--render]
+    ALGAN_BVH_NODE_WORDS=0 python benchmarks/_bvh_node_load_ptx.py --out ptx_lanes [--render]
 
 Every PTX file stays in ``--out`` for reading. On another arch it still runs
 (the dump is that arch's assembly) and says the PTX checks need CUDA.
@@ -104,7 +103,11 @@ def _report(files, wanted=None, title=""):
 
 def _probe_kernels(ti, torch, device):
     from algan.rendering.raytracing import raytrace_kernels_taichi as rk
-    from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16
+    from algan.rendering.raytracing.stbvh import (
+        bvh_arity,
+        bvh_block_f16,
+        bvh_node_words,
+    )
 
     # This module's annotations are strings (``from __future__``), resolved
     # against its globals when the kernel is declared -- so the two modules
@@ -129,11 +132,14 @@ def _probe_kernels(ti, torch, device):
     lanes = torch.randn((rows, 8, bvh_arity)).to(dtype).to(device)
     flat = lanes.reshape(rows, -1)
     out = torch.zeros(256, dtype=torch.int32, device=device)
-    formats = {
-        "i64": flat.view(torch.int64),
-        "i32": flat.view(torch.int32),
-        "lanes": flat,
-    }
+    if not bvh_node_words:
+        formats = {"lanes": lanes}
+    else:
+        formats = {
+            "i64": flat.view(torch.int64),
+            "i32": flat.view(torch.int32),
+            "scalar": flat,
+        }
     return node_probe, formats, out
 
 
@@ -143,7 +149,7 @@ def main(argv=None):
     parser.add_argument(
         "--render",
         action="store_true",
-        help="also render a small shadowed scene, words and lanes",
+        help="also render a small shadowed scene in this process's arm",
     )
     args = parser.parse_args(argv)
 
@@ -182,31 +188,24 @@ def main(argv=None):
             rows = _report(
                 _new_files(out_dir, before),
                 ("node_probe",),
-                f"probe: {name} words, refit={refit}",
+                f"probe: {name}, refit={refit}",
             )
             probe_rows[(name, refit)] = rows
 
     if args.render:
-        from algan.animation_timeline import timeline
-
-        for arm, disabled in (
-            ("words", frozenset()),
-            ("lanes", frozenset({"nodewords"})),
-        ):
-            timeline._OPT_DISABLED = disabled
-            before = {p.name for p in out_dir.iterdir()}
-            _render_small_scene(out_dir / f"scene_{arm}.png")
-            _report(
-                _new_files(out_dir, before),
-                (
-                    "raster_shadow_trace",
-                    "shadow_queue_trace",
-                    "wavefront_traverse_events",
-                    "wavefront_shade",
-                ),
-                f"render arm: {arm} (traversal kernels)",
-            )
-        timeline._OPT_DISABLED = None
+        arm = "lanes" if "lanes" in formats else "words"
+        before = {p.name for p in out_dir.iterdir()}
+        _render_small_scene(out_dir / f"scene_{arm}.png")
+        _report(
+            _new_files(out_dir, before),
+            (
+                "raster_shadow_trace",
+                "shadow_queue_trace",
+                "wavefront_traverse_events",
+                "wavefront_shade",
+            ),
+            f"render arm: {arm} (traversal kernels)",
+        )
 
     if not is_cuda:
         print(
@@ -224,17 +223,12 @@ def main(argv=None):
         return 2
     verdict = 0
     for refit in (0, 1):
-        words = sum((c for _, c, _ in probe_rows.get(("i64", refit), [])), Counter())
-        lanes = sum((c for _, c, _ in probe_rows.get(("lanes", refit), [])), Counter())
-        print(f"\nprobe refit={refit}: i64 -> {_fmt(words)}; lanes -> {_fmt(lanes)}")
-        if words.get("16", 0) != 0:
-            print("  FAIL: the i64 node fetch still issues 16-bit loads")
-            verdict = 1
-        if lanes.get("16", 0) == 0:
-            print(
-                "  NOTE: the lanes arm shows no 16-bit loads either "
-                "(f32 blocks, or the backend widened them)"
-            )
+        for name in formats:
+            got = sum((c for _, c, _ in probe_rows.get((name, refit), [])), Counter())
+            print(f"probe refit={refit}: {name} -> {_fmt(got)}")
+            if name == "i64" and got.get("16", 0) != 0:
+                print("  FAIL: the i64 node fetch still issues 16-bit loads")
+                verdict = 1
     print("\nPASS" if verdict == 0 else "\nFAIL")
     return verdict
 

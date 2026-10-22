@@ -35,10 +35,12 @@ CPU and CUDA only: the counters use 64-bit atomics.
 from algan.environment import env_str
 from algan.taichi_compat import ti
 
-_MODE = env_str("ALGAN_TRACE_COUNTERS", "").strip().lower()
-if _MODE in ("", "0", "off", "false", "no"):
+#: ``SETTINGS.raytracing.experimental.trace_counters``, frozen at import (the
+#: counting sites are ``ti.static`` gates): "" off, "1" count, "verify".
+trace_counters = env_str("ALGAN_TRACE_COUNTERS", "").strip().lower()
+if trace_counters in ("", "0", "off", "false", "no"):
     TRACE_COUNTING = 0
-elif _MODE == "verify":
+elif trace_counters == "verify":
     TRACE_COUNTING = 2
 else:
     TRACE_COUNTING = 1

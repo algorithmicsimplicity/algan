@@ -29,17 +29,6 @@ def _provably_opaque_shadow_batch(merged: Mapping[str, Any]) -> bool:
     )
 
 
-def _opaque_first_disabled():
-    """``ALGAN_OPT_DISABLE=opaquefirst``, asked at every selection (imported
-    lazily, as the tracer does: the timeline is not in the renderer's import
-    graph), so an A/B script swapping the timeline's ``_OPT_DISABLED`` takes
-    effect on the next batch.
-    """
-    from algan.animation_timeline.timeline import _opt_disabled
-
-    return _opt_disabled("opaquefirst")
-
-
 def _opaque_first_applies(merged: Mapping[str, Any]) -> bool:
     """Whether shadow mode 5 can answer this batch exactly and has anything to
     answer early: some caster must be opaque, or every ray would march anyway.
@@ -47,8 +36,7 @@ def _opaque_first_applies(merged: Mapping[str, Any]) -> bool:
     from algan.rendering.raytracing import raytrace_kernels_taichi as rk
 
     return (
-        not _opaque_first_disabled()
-        and rk.min_alpha >= _OPAQUE_FIRST_MIN_ALPHA
+        rk.min_alpha >= _OPAQUE_FIRST_MIN_ALPHA
         and rk.max_surfaces_per_ray >= _OPAQUE_FIRST_MIN_SURFACES
         and bool(merged.get("tri_has_opaque") or merged.get("bez_has_opaque"))
     )
@@ -60,13 +48,13 @@ def _select_shadow_mode(
     """0 off, 1 ordered march, 2 mixed prepass, 3 opaque any-hit, 4 gather,
     5 opaque-first.
 
-    Auto takes the opaque any-hit when every blocker is provably opaque, and
-    otherwise opaque-first (``_shadow_opaque_first``): an any-hit pass that
+    Auto never uses the mixed prepass: on an uncertain batch it retains the
+    ordered march. "opaquefirst" is auto plus, for a mixed batch it can serve,
+    the opaque-first query (``_shadow_opaque_first``): an any-hit pass that
     settles blocked and untouched rays, with the ordered march behind it for
-    the rest, bit for bit the march's answer. ``ALGAN_OPT_DISABLE=opaquefirst``
-    keeps auto's mixed batches on the plain ordered march, as before. Auto
-    never uses the mixed prepass. Explicit True and "gather" retain their
-    experimental modes; explicit False is the reference-path kill switch.
+    the rest. Opt-in, on GPU measurement (``settings.shadow_anyhit``). Explicit
+    True and "gather" retain their experimental modes; explicit False is the
+    reference-path kill switch.
     """
     if not shadows:
         return 0
@@ -76,8 +64,8 @@ def _select_shadow_mode(
         return 4
     if _provably_opaque_shadow_batch(merged):
         return 3
-    if mode == "auto":
+    if mode == "opaquefirst":
         return 5 if _opaque_first_applies(merged) else 1
-    if merged.get("has_transmissive", True):
+    if mode == "auto" or merged.get("has_transmissive", True):
         return 1
     return 2
