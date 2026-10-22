@@ -86,6 +86,25 @@ from algan.rendering.raytracing.texture_mips_taichi import (
     _mip_lod,
     _mip_table,
 )
+from algan.rendering.raytracing.trace_counters_taichi import (
+    SHADOW_MARCH_CAPPED,
+    SHADOW_OF_BLOCKED,
+    SHADOW_OF_CLEAR,
+    SHADOW_OF_MARCH,
+    SHADOW_OF_MISMATCH,
+    SHADOW_RAYS,
+    WALK_SHADOW_ANYHIT,
+    WALK_SHADOW_GATHER,
+    WALK_SHADOW_NEAREST,
+    WALK_TRACE_GATHER,
+    WALK_TRACE_NEAREST,
+)
+from algan.rendering.raytracing.trace_counters_taichi import bump as _tc_bump
+from algan.rendering.raytracing.trace_counters_taichi import count_query as _tc_query
+from algan.rendering.raytracing.trace_counters_taichi import count_visits as _tc_visits
+from algan.rendering.raytracing.trace_counters_taichi import counting as _tc_counting
+from algan.rendering.raytracing.trace_counters_taichi import tick as _tc_tick
+from algan.rendering.raytracing.trace_counters_taichi import verifying as _tc_verifying
 from algan.taichi_compat import submodule as _ti_submodule
 from algan.taichi_compat import ti
 
@@ -439,18 +458,128 @@ def _tri_hit(ro, rd, v0, v1, v2):
 kbuf = max(1, env_int("ALGAN_KBUF", 4))
 
 # Kernel-argument annotation for STBVH sibling-block arrays (see
-# stbvh._build_blocks): entry [i, lane] holds one attribute of internal node
-# i's bvh_arity children -- lanes 0-5 the box dims lo.x/lo.y/lo.z/hi.x/hi.y/
-# hi.z, lanes 6(-7) their packed frame intervals -- so one aligned 128-byte
-# (f32) or 64-byte (f16, conservatively out-rounded bounds) fetch tests a
-# whole sibling group per dependent memory round. The vector element type
-# makes Taichi issue the lanes as vector loads.
-if bvh_block_f16:
-    NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(bvh_arity, ti.f16),
-                                ndim=2)
-else:
-    NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(bvh_arity, ti.f32),
-                                ndim=2)
+# stbvh._build_blocks): each row holds one internal node's bvh_arity children
+# as eight lanes -- lanes 0-5 the box dims lo.x/lo.y/lo.z/hi.x/hi.y/hi.z,
+# lanes 6(-7) their packed frame intervals -- so one aligned 128-byte (f32) or
+# 64-byte (f16, conservatively out-rounded bounds) fetch tests a whole sibling
+# group per dependent memory round.
+#
+# The element type is left open and decides the loads (``_node_word_bits``):
+# the host passes ``stbvh.kernel_blocks``, which views the same bytes as
+# packed 64-bit words (32-bit on Metal), so a 64-byte f16 node is eight word
+# loads. The lane vector this used to be, ``vector(bvh_arity, f16)``, compiled
+# to one scalar 16-bit load per child and lane -- 32 per node, no vector loads
+# in the PTX. ``ALGAN_OPT_DISABLE=nodewords`` passes the lanes as one scalar
+# per child value instead, which is those 32 loads again; each arm is its own
+# specialization, so both run in one process.
+NODE_ARG = ti.types.ndarray(ndim=2)
+
+# Bits per stored child value: an f16 bound or tspan half, or an f32.
+_NODE_VALUE_BITS = 16 if bvh_block_f16 else 32
+
+
+def _node_word_bits(blocks):
+    """How a sibling-block argument is laid out, read at compile time off its
+    element type: 64 or 32 for packed words (``stbvh.kernel_blocks``), 0 for
+    one scalar per child value (the ``nodewords`` kill switch).
+    """
+    dtype = blocks.get_type().element_type
+    if dtype == ti.i64:
+        return 64
+    if dtype == ti.i32:
+        return 32
+    return 0
+
+
+def _node_words_per_lane(blocks):
+    """Words (or scalar values) one lane of a sibling block occupies."""
+    bits = _node_word_bits(blocks)
+    if bits == 0:
+        return bvh_arity
+    return bvh_arity * _NODE_VALUE_BITS // bits
+
+
+def _node_row_words(blocks):
+    """Words (or scalar values) in one sibling-block row."""
+    return 8 * _node_words_per_lane(blocks)
+
+
+@ti.func
+def _node_row(blocks: ti.template(), row):
+    """Every word of sibling block ``row``, each loaded once."""
+    return ti.Vector([blocks[row, i]
+                      for i in ti.static(range(_node_row_words(blocks)))])
+
+
+@ti.func
+def _node_value_bits(blocks: ti.template(), word, bit):
+    """The stored bits of one child value, as an i32 (an f16's zero-extended),
+    from the word or scalar holding it; ``bit`` is the value's offset in the
+    word (0 for a scalar).
+    """
+    out = 0
+    if ti.static(_node_word_bits(blocks) == 0):
+        if ti.static(_NODE_VALUE_BITS == 16):
+            out = ti.cast(ti.bit_cast(word, ti.u16), ti.i32)
+        else:
+            out = ti.bit_cast(word, ti.i32)
+    else:
+        # A narrowing cast truncates, so no mask: the bits above the value,
+        # an arithmetic shift's copies of the sign among them, fall away.
+        if ti.static(_NODE_VALUE_BITS == 16):
+            out = ti.cast(ti.cast(word >> bit, ti.u16), ti.i32)
+        else:
+            out = ti.cast(word >> bit, ti.i32)
+    return out
+
+
+def _row_slot(blocks, k, c):
+    """``(index, bit offset)`` of child ``c``'s lane-``k`` value in a row."""
+    bits = _node_word_bits(blocks)
+    if bits == 0:
+        return k * bvh_arity + c, 0
+    bit = c * _NODE_VALUE_BITS
+    return k * _node_words_per_lane(blocks) + bit // bits, bit % bits
+
+
+@ti.func
+def _row_bits(blocks: ti.template(), words, k: ti.template(),
+              c: ti.template()):
+    """Child ``c``'s value bits in lane ``k`` of a row :func:`_node_row`
+    loaded; the index and the shift are compile-time constants.
+    """
+    return _node_value_bits(blocks, words[ti.static(_row_slot(blocks, k, c)[0])],
+                            ti.static(_row_slot(blocks, k, c)[1]))
+
+
+@ti.func
+def _node_bits(blocks: ti.template(), row, k: ti.template(), c):
+    """Child ``c``'s value bits in lane ``k`` of sibling block ``row``, for a
+    runtime ``c`` (:func:`_refit_link`): one load, of the word holding it.
+    """
+    out = 0
+    if ti.static(_node_word_bits(blocks) == 0):
+        out = _node_value_bits(blocks, blocks[row, k * bvh_arity + c], 0)
+    else:
+        bits = ti.static(_node_word_bits(blocks))
+        per_lane = ti.static(_node_words_per_lane(blocks))
+        bit = c * _NODE_VALUE_BITS
+        out = _node_value_bits(
+            blocks, blocks[row, k * per_lane + bit // bits], bit % bits)
+    return out
+
+
+@ti.func
+def _node_bound(bits):
+    """A box bound from its value bits: exactly the f32 the block holds (an
+    f16 widens losslessly).
+    """
+    out = 0.0
+    if ti.static(_NODE_VALUE_BITS == 16):
+        out = ti.cast(ti.bit_cast(ti.cast(bits, ti.u16), ti.f16), ti.f32)
+    else:
+        out = ti.bit_cast(bits, ti.f32)
+    return out
 
 # tri_extra surface-transport block (see ``_pack_surface_extra``):
 # per-corner (reflectivity, roughness) pairs in 0-5, per-corner IOR in 6-8,
@@ -1065,34 +1194,27 @@ def _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
     cull, but the *looser* boxes shift those same boundary cracks, so f16 is
     epsilon-level non-identical and stays opt-in (``ALGAN_BVH_BLOCK_F16``).
     """
-    lox = blocks[blk, 0]
-    loy = blocks[blk, 1]
-    loz = blocks[blk, 2]
-    hix = blocks[blk, 3]
-    hiy = blocks[blk, 4]
-    hiz = blocks[blk, 5]
-    ts_a = blocks[blk, 6]
-    ts_b = blocks[blk, 7]
+    words = _node_row(blocks, blk)
     mask = 0
     near = ti.Vector([1e30] * bvh_arity)
     for c in ti.static(range(bvh_arity)):
         tspan = 0
         if ti.static(bvh_block_f16):
-            tspan = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32) | (
-                ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32) << 16)
+            tspan = _row_bits(blocks, words, 6, c) | (
+                _row_bits(blocks, words, 7, c) << 16)
         else:
-            tspan = ti.bit_cast(ts_a[c], ti.i32)
+            tspan = _row_bits(blocks, words, 6, c)
         if ((tspan & 0xFFFF) <= f) and (f <= ((tspan >> 16) & 0x7FFF)):
-            tx0 = (ti.cast(lox[c], ti.f32) - ro[0]) * inv_rd[0]
-            tx1 = (ti.cast(hix[c], ti.f32) - ro[0]) * inv_rd[0]
+            tx0 = (_node_bound(_row_bits(blocks, words, 0, c)) - ro[0]) * inv_rd[0]
+            tx1 = (_node_bound(_row_bits(blocks, words, 3, c)) - ro[0]) * inv_rd[0]
             t_near = ti.min(tx0, tx1)
             t_far = ti.max(tx0, tx1)
-            ty0 = (ti.cast(loy[c], ti.f32) - ro[1]) * inv_rd[1]
-            ty1 = (ti.cast(hiy[c], ti.f32) - ro[1]) * inv_rd[1]
+            ty0 = (_node_bound(_row_bits(blocks, words, 1, c)) - ro[1]) * inv_rd[1]
+            ty1 = (_node_bound(_row_bits(blocks, words, 4, c)) - ro[1]) * inv_rd[1]
             t_near = ti.max(t_near, ti.min(ty0, ty1))
             t_far = ti.min(t_far, ti.max(ty0, ty1))
-            tz0 = (ti.cast(loz[c], ti.f32) - ro[2]) * inv_rd[2]
-            tz1 = (ti.cast(hiz[c], ti.f32) - ro[2]) * inv_rd[2]
+            tz0 = (_node_bound(_row_bits(blocks, words, 2, c)) - ro[2]) * inv_rd[2]
+            tz1 = (_node_bound(_row_bits(blocks, words, 5, c)) - ro[2]) * inv_rd[2]
             t_near = ti.max(t_near, ti.min(tz0, tz1))
             t_far = ti.min(t_far, ti.max(tz0, tz1))
             if ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
@@ -1113,34 +1235,27 @@ def _test_children_refit(row, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
     so no temporal decode remains. The slab test itself is float-for-float
     the classic one.
     """
-    lox = blocks[row, 0]
-    loy = blocks[row, 1]
-    loz = blocks[row, 2]
-    hix = blocks[row, 3]
-    hiy = blocks[row, 4]
-    hiz = blocks[row, 5]
-    ts_a = blocks[row, 6]
-    ts_b = blocks[row, 7]
+    words = _node_row(blocks, row)
     mask = 0
     near = ti.Vector([1e30] * bvh_arity)
     for c in ti.static(range(bvh_arity)):
         w = 0
         if ti.static(bvh_block_f16):
-            w = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32) | (
-                ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32) << 16)
+            w = _row_bits(blocks, words, 6, c) | (
+                _row_bits(blocks, words, 7, c) << 16)
         else:
-            w = ti.bit_cast(ts_a[c], ti.i32)
+            w = _row_bits(blocks, words, 6, c)
         if w != -1:
-            tx0 = (ti.cast(lox[c], ti.f32) - ro[0]) * inv_rd[0]
-            tx1 = (ti.cast(hix[c], ti.f32) - ro[0]) * inv_rd[0]
+            tx0 = (_node_bound(_row_bits(blocks, words, 0, c)) - ro[0]) * inv_rd[0]
+            tx1 = (_node_bound(_row_bits(blocks, words, 3, c)) - ro[0]) * inv_rd[0]
             t_near = ti.min(tx0, tx1)
             t_far = ti.max(tx0, tx1)
-            ty0 = (ti.cast(loy[c], ti.f32) - ro[1]) * inv_rd[1]
-            ty1 = (ti.cast(hiy[c], ti.f32) - ro[1]) * inv_rd[1]
+            ty0 = (_node_bound(_row_bits(blocks, words, 1, c)) - ro[1]) * inv_rd[1]
+            ty1 = (_node_bound(_row_bits(blocks, words, 4, c)) - ro[1]) * inv_rd[1]
             t_near = ti.max(t_near, ti.min(ty0, ty1))
             t_far = ti.min(t_far, ti.max(ty0, ty1))
-            tz0 = (ti.cast(loz[c], ti.f32) - ro[2]) * inv_rd[2]
-            tz1 = (ti.cast(hiz[c], ti.f32) - ro[2]) * inv_rd[2]
+            tz0 = (_node_bound(_row_bits(blocks, words, 2, c)) - ro[2]) * inv_rd[2]
+            tz1 = (_node_bound(_row_bits(blocks, words, 5, c)) - ro[2]) * inv_rd[2]
             t_near = ti.max(t_near, ti.min(tz0, tz1))
             t_far = ti.min(t_far, ti.max(tz0, tz1))
             if ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
@@ -1169,16 +1284,15 @@ def _refit_link(row, c, blocks: ti.template()):
     child's own block index. Reads the lanes the caller's group test just
     fetched, so this is a same-cache-line load.
     """
-    # Index the ndarray's vector element directly. Materializing both whole
-    # vectors and selecting a lane through an unrolled branch chain loads
-    # sibling links this ray never uses. Keep bit_cast: these are packed
-    # integers, including half-precision NaN payloads, not numeric floats.
+    # Load only the word(s) holding child ``c`` (a runtime index): selecting
+    # it out of a whole loaded row through an unrolled branch chain loads
+    # sibling links this ray never uses. These are packed integers, including
+    # half-precision NaN payloads, so the decode stays on bits throughout.
     w = 0
     if ti.static(bvh_block_f16):
-        w = ti.cast(ti.bit_cast(blocks[row, 6][c], ti.u16), ti.i32) | (
-            ti.cast(ti.bit_cast(blocks[row, 7][c], ti.u16), ti.i32) << 16)
+        w = _node_bits(blocks, row, 6, c) | (_node_bits(blocks, row, 7, c) << 16)
     else:
-        w = ti.bit_cast(blocks[row, 6][c], ti.i32)
+        w = _node_bits(blocks, row, 6, c)
     return w
 
 
@@ -1326,6 +1440,9 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
     best_prim = -1
     best_w1 = 0.0
     best_w2 = 0.0
+    # Trace-counter tallies (trace_counters_taichi); dead unless counting.
+    tc_nodes = 0
+    tc_tris = 0
     tp = f % tri_pos.shape[0]
     row0 = 0
     if ti.static(refit != 0):
@@ -1337,6 +1454,7 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
         refit, row0, 0, f, ro, inv_rd, t_prev - depth_tie_epsilon,
         ti.min(best_t + depth_tie_epsilon,
                t_cap + depth_tie_epsilon), nodes)
+    tc_nodes = _tc_tick(tc_nodes)
     while True:
         if g_pend == 0:
             if g_sp == 0:
@@ -1350,6 +1468,7 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                 t_prev - depth_tie_epsilon,
                 ti.min(best_t + depth_tie_epsilon,
                        t_cap + depth_tie_epsilon), nodes)
+            tc_nodes = _tc_tick(tc_nodes)
             g_pend = saved_mask & fresh_mask
         else:
             g_c = _nearest_pending_child(g_pend, g_near)
@@ -1399,6 +1518,7 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
                         hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                        tc_tris = _tc_tick(tc_tris)
                         if hit_ok != 0:
                             layer = layer_offset + ti.cast(prim, ti.f32)
                             if ((t > _shadow_identity_t_min(
@@ -1422,6 +1542,9 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                     t_prev - depth_tie_epsilon,
                     ti.min(best_t + depth_tie_epsilon,
                            t_cap + depth_tie_epsilon), nodes)
+                tc_nodes = _tc_tick(tc_nodes)
+    _tc_visits(ti.static(WALK_SHADOW_NEAREST if nocast != 0
+                         else WALK_TRACE_NEAREST), tc_nodes, tc_tris, 0)
     return best_t, best_prim, best_w1, best_w2, best_layer
 
 
@@ -1447,6 +1570,8 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
     best_border = 0
     best_u = 0.0
     best_v = 0.0
+    tc_nodes = 0
+    tc_bez = 0
     num_meta_frames = circuit_meta.shape[0]
     num_edge_frames = edges_2d.shape[0]
     row0 = 0
@@ -1459,6 +1584,7 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
         refit, row0, 0, f, ro, inv_rd, t_prev - depth_tie_epsilon,
         ti.min(best_t + depth_tie_epsilon,
                t_cap + depth_tie_epsilon), nodes)
+    tc_nodes = _tc_tick(tc_nodes)
     while True:
         if g_pend == 0:
             if g_sp == 0:
@@ -1472,6 +1598,7 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                 t_prev - depth_tie_epsilon,
                 ti.min(best_t + depth_tie_epsilon,
                        t_cap + depth_tie_epsilon), nodes)
+            tc_nodes = _tc_tick(tc_nodes)
             g_pend = saved_mask & fresh_mask
         else:
             g_c = _nearest_pending_child(g_pend, g_near)
@@ -1511,6 +1638,7 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                 if (tspan & _LEAF_NOCAST_BIT) != 0:
                                     circuit = -1
                     if circuit >= 0:
+                        tc_bez = _tc_tick(tc_bez)
                         tm = f % num_meta_frames
                         n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
                                          circuit_meta[tm, circuit, _M_NORMAL + 1],
@@ -1582,6 +1710,9 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                     t_prev - depth_tie_epsilon,
                     ti.min(best_t + depth_tie_epsilon,
                            t_cap + depth_tie_epsilon), nodes)
+                tc_nodes = _tc_tick(tc_nodes)
+    _tc_visits(ti.static(WALK_SHADOW_NEAREST if nocast != 0
+                         else WALK_TRACE_NEAREST), tc_nodes, 0, tc_bez)
     return best_t, best_circuit, best_border, best_u, best_v, best_layer
 
 
@@ -2387,6 +2518,8 @@ def _nearest_surface_g(refit: ti.template(),
         w0 = 1.0 - a - b
         if ti.min(w0, ti.min(a, b)) < TRIANGLE_EDGE_EPSILON:
             edge_hit = 1
+    _tc_query(ti.static(WALK_SHADOW_NEAREST if nocast != 0
+                        else WALK_TRACE_NEAREST))
     return (found, t_hit, hit_layer, hit_prim, hit_type, a, b, border,
             edge_hit)
 
@@ -2593,6 +2726,9 @@ def _collect_hits(refit: ti.template(),
     # after it is absorbed, so gathering and traversal can stop at its depth.
     opq_t = initial_opq_t
     opq_layer = initial_opq_layer
+    tc_nodes = 0
+    tc_tris = 0
+    tc_bez = 0
 
     # --- Triangle BVH ---
     if ti.static(has_tri != 0):
@@ -2608,6 +2744,7 @@ def _collect_hits(refit: ti.template(),
         g_pend, g_near = _group_test(
             refit, t_row0, 0, f, ro, inv_rd, t_prev - depth_tie_epsilon,
             window_hi, t_nodes)
+        tc_nodes = _tc_tick(tc_nodes)
         while True:
             if g_pend == 0:
                 if g_sp == 0:
@@ -2622,6 +2759,7 @@ def _collect_hits(refit: ti.template(),
                 fresh_mask, g_near = _group_test(
                     refit, t_row0, g_cur, f, ro, inv_rd,
                     t_prev - depth_tie_epsilon, window_hi, t_nodes)
+                tc_nodes = _tc_tick(tc_nodes)
                 g_pend = saved_mask & fresh_mask
             else:
                 g_c = _nearest_pending_child(g_pend, g_near)
@@ -2676,6 +2814,7 @@ def _collect_hits(refit: ti.template(),
                                               tri_pos[tp, prim, 7],
                                               tri_pos[tp, prim, 8])
                             hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                            tc_tris = _tc_tick(tc_tris)
                             if hit_ok != 0:
                                 layer = (layer_offset_triangles
                                          + ti.cast(prim, ti.f32))
@@ -2747,6 +2886,7 @@ def _collect_hits(refit: ti.template(),
                     g_pend, g_near = _group_test(
                         refit, t_row0, g_cur, f, ro, inv_rd,
                         t_prev - depth_tie_epsilon, window_hi, t_nodes)
+                    tc_nodes = _tc_tick(tc_nodes)
 
     # --- Bezier BVH (window tightened by the triangle hits) ---
     if ti.static(has_bez != 0):
@@ -2763,6 +2903,7 @@ def _collect_hits(refit: ti.template(),
         g_pend, g_near = _group_test(
             refit, b_row0, 0, f, ro, inv_rd, t_prev - depth_tie_epsilon,
             window_hi, b_nodes)
+        tc_nodes = _tc_tick(tc_nodes)
         while True:
             if g_pend == 0:
                 if g_sp == 0:
@@ -2777,6 +2918,7 @@ def _collect_hits(refit: ti.template(),
                 fresh_mask, g_near = _group_test(
                     refit, b_row0, g_cur, f, ro, inv_rd,
                     t_prev - depth_tie_epsilon, window_hi, b_nodes)
+                tc_nodes = _tc_tick(tc_nodes)
                 g_pend = saved_mask & fresh_mask
             else:
                 g_c = _nearest_pending_child(g_pend, g_near)
@@ -2821,6 +2963,7 @@ def _collect_hits(refit: ti.template(),
                                         circuit = -1
                                 opq = 1 if tspan < 0 else 0
                         if circuit >= 0:
+                            tc_bez = _tc_tick(tc_bez)
                             tm = f % num_meta_frames
                             n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
                                              circuit_meta[tm, circuit, _M_NORMAL + 1],
@@ -2913,6 +3056,11 @@ def _collect_hits(refit: ti.template(),
                     g_pend, g_near = _group_test(
                         refit, b_row0, g_cur, f, ro, inv_rd,
                         t_prev - depth_tie_epsilon, window_hi, b_nodes)
+                    tc_nodes = _tc_tick(tc_nodes)
+    _tc_query(ti.static(WALK_SHADOW_GATHER if nocast != 0
+                        else WALK_TRACE_GATHER))
+    _tc_visits(ti.static(WALK_SHADOW_GATHER if nocast != 0
+                         else WALK_TRACE_GATHER), tc_nodes, tc_tris, tc_bez)
     return count
 
 
@@ -2940,6 +3088,8 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
     depth without changing which answer is correct.
     """
     hit = 0
+    tc_nodes = 0
+    tc_prims = 0
     tp = f % tri_pos.shape[0]
     row0 = 0
     if ti.static(refit != 0):
@@ -2950,6 +3100,7 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
     g_pend, g_near = _group_test(
         refit, row0, 0, f, ro, inv_rd, t_lo,
         max_t + depth_tie_epsilon, nodes)
+    tc_nodes = _tc_tick(tc_nodes)
     while hit == 0:
         if g_pend == 0:
             if g_sp == 0:
@@ -2961,6 +3112,7 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
             fresh_mask, g_near = _group_test(
                 refit, row0, g_cur, f, ro, inv_rd, t_lo,
                 max_t + depth_tie_epsilon, nodes)
+            tc_nodes = _tc_tick(tc_nodes)
             g_pend = saved_mask & fresh_mask
         else:
             g_c = _nearest_pending_child(g_pend, g_near)
@@ -3010,6 +3162,7 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
                         hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                        tc_prims = _tc_tick(tc_prims)
                         if hit_ok != 0:
                             if (t > _shadow_identity_t_min(
                                     f, prim, src_sid, src_prim, eps_self, eps_near, tri_obj, ident)) \
@@ -3023,6 +3176,8 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                 g_pend, g_near = _group_test(
                     refit, row0, g_cur, f, ro, inv_rd, t_lo,
                     max_t + depth_tie_epsilon, nodes)
+                tc_nodes = _tc_tick(tc_nodes)
+    _tc_visits(WALK_SHADOW_ANYHIT, tc_nodes, tc_prims, 0)
     return hit
 
 
@@ -3040,6 +3195,8 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
     hit on a flagged circuit absorbs the ray.
     """
     hit = 0
+    tc_nodes = 0
+    tc_prims = 0
     num_meta_frames = circuit_meta.shape[0]
     num_edge_frames = edges_2d.shape[0]
     row0 = 0
@@ -3051,6 +3208,7 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
     g_pend, g_near = _group_test(
         refit, row0, 0, f, ro, inv_rd, t_lo,
         max_t + depth_tie_epsilon, nodes)
+    tc_nodes = _tc_tick(tc_nodes)
     while hit == 0:
         if g_pend == 0:
             if g_sp == 0:
@@ -3062,6 +3220,7 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
             fresh_mask, g_near = _group_test(
                 refit, row0, g_cur, f, ro, inv_rd, t_lo,
                 max_t + depth_tie_epsilon, nodes)
+            tc_nodes = _tc_tick(tc_nodes)
             g_pend = saved_mask & fresh_mask
         else:
             g_c = _nearest_pending_child(g_pend, g_near)
@@ -3100,6 +3259,7 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                             if (tspan & _LEAF_NOCAST_BIT) != 0:
                                 circuit = -1
                     if (hit == 0) and (circuit >= 0):
+                        tc_prims = _tc_tick(tc_prims)
                         tm = f % num_meta_frames
                         n = ti.math.vec3(
                             circuit_meta[tm, circuit, _M_NORMAL],
@@ -3157,6 +3317,8 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                 g_pend, g_near = _group_test(
                     refit, row0, g_cur, f, ro, inv_rd, t_lo,
                     max_t + depth_tie_epsilon, nodes)
+                tc_nodes = _tc_tick(tc_nodes)
+    _tc_visits(WALK_SHADOW_ANYHIT, tc_nodes, 0, tc_prims)
     return hit
 
 
@@ -3187,6 +3349,7 @@ def _shadow_anyhit_opaque(refit: ti.template(),
     epsilon (circuits have no per-triangle identity).
     """
     hit = 0
+    _tc_query(WALK_SHADOW_ANYHIT)
     if ti.static(has_tri != 0):
         hit = _anyhit_opaque_tri(refit, ro, rd, inv_rd, f, t_lo, max_t,
                                  t_nodes, t_leaf_prim, t_leaf_tspan,
@@ -3200,6 +3363,382 @@ def _shadow_anyhit_opaque(refit: ti.template(),
                                      b_first_leaf, circuit_meta, edges_2d,
                                      edge_accel)
     return hit
+
+
+# Opaque-first shadow query (shadow mode 5): what the first pass reports.
+_OF_CLEAR = 0    # nothing a shadow ray could stop at: the ray is lit
+_OF_BLOCKED = 1  # an opaque blocker the ordered march is certain to reach
+_OF_MARCH = 2    # anything else: the ordered march answers
+
+
+@ti.func
+def _finite_f32(x) -> ti.i32:
+    """1 unless ``x`` is an infinity or a NaN, read off its exponent bits so
+    that ``fast_math``'s no-NaN/no-inf assumptions cannot fold the test away.
+    """
+    return 1 if (ti.bit_cast(x, ti.i32) & 0x7F800000) != 0x7F800000 else 0
+
+
+@ti.func
+def _first_pass_tri(refit: ti.template(), ro, rd, inv_rd, f, max_t, max_bin,
+                    nodes: ti.template(), leaf_prim: ti.template(),
+                    leaf_tspan: ti.template(), first_leaf,
+                    tri_pos: ti.template(),
+                    src_sid, src_prim, eps_self, eps_near,
+                    tri_obj: ti.template(), ident: ti.template()):
+    """Triangle arm of :func:`_shadow_opaque_first`: ``(blocked, seen)``.
+
+    One near-first any-hit walk over the shadow casters with the march's own
+    acceptance (frame interval, ``nocast``, the identity floor, ``t < max_t``)
+    and its first step's node window, ``[-depth_tie_epsilon, max_t +
+    depth_tie_epsilon]``. It ends at its first accepted hit: ``blocked`` when
+    that is one the march is certain to consume and that leaves it nothing to
+    transmit -- an interval-opaque triangle (``leaf_tspan`` bit 31 / refit
+    link bit 30), hit off its edges, so the march's seam merge, which only
+    skips edge hits, cannot fold it into an earlier surface, and in a depth
+    bin before the light's (``max_bin``), so no hit at or past ``max_t`` can
+    be ordered before it and end the march first -- and ``seen`` for any
+    other hit. Walking on past a translucent hit to look for a blocker behind
+    it was measured on the graphics workload: it found one for 0.3-1.8% of
+    the blocked rays, while every ray through glass alone paid a whole extra
+    walk for it.
+    """
+    blocked = 0
+    seen = 0
+    tc_nodes = 0
+    tc_tris = 0
+    tp = f % tri_pos.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, -depth_tie_epsilon,
+        max_t + depth_tie_epsilon, nodes)
+    tc_nodes = _tc_tick(tc_nodes)
+    while (blocked == 0) and (seen == 0):
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            saved = g_st[g_sp]
+            g_cur = saved >> bvh_arity
+            saved_mask = saved & _GROUP_MASK
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd, -depth_tie_epsilon,
+                max_t + depth_tie_epsilon, nodes)
+            tc_nodes = _tc_tick(tc_nodes)
+            g_pend = saved_mask & fresh_mask
+        else:
+            g_c = _nearest_pending_child(g_pend, g_near)
+            g_pend &= ~(1 << g_c)
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_opq = 0
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                else:
+                    l_prim = w & _REFIT_PRIM_MASK
+                    if (w & _REFIT_NOCAST_BIT) != 0:
+                        l_prim = -1
+                    l_opq = (w >> 30) & 1
+            else:
+                g_child = bvh_arity * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * bvh_leaf_size
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else bvh_leaf_size)):
+                    prim = l_prim
+                    opq = l_opq
+                    if ti.static(refit == 0):
+                        prim = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        if ((p0 >= 0) and ((tspan & 0x7FFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            prim = p0
+                            if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                prim = -1
+                            opq = 1 if tspan < 0 else 0
+                    if (blocked == 0) and (seen == 0) and (prim >= 0):
+                        v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                          tri_pos[tp, prim, 1],
+                                          tri_pos[tp, prim, 2])
+                        v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                          tri_pos[tp, prim, 4],
+                                          tri_pos[tp, prim, 5])
+                        v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                          tri_pos[tp, prim, 7],
+                                          tri_pos[tp, prim, 8])
+                        hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                        tc_tris = _tc_tick(tc_tris)
+                        if hit_ok != 0:
+                            if (t > _shadow_identity_t_min(
+                                    f, prim, src_sid, src_prim, eps_self,
+                                    eps_near, tri_obj, ident)) \
+                                    and (t < max_t):
+                                certain = 0
+                                if opq != 0:
+                                    # The march's edge rule, negated, on the
+                                    # same barycentrics: a NaN lands on the
+                                    # uncertain side.
+                                    w0 = 1.0 - w1 - w2
+                                    if (ti.min(w0, ti.min(w1, w2))
+                                            >= TRIANGLE_EDGE_EPSILON) \
+                                            and (ti.floor(
+                                                t * INV_DEPTH_TIE_EPSILON)
+                                                 < max_bin):
+                                        certain = 1
+                                if certain == 1:
+                                    blocked = 1
+                                else:
+                                    seen = 1
+            else:
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << bvh_arity) | g_pend
+                    g_sp += 1
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd, -depth_tie_epsilon,
+                    max_t + depth_tie_epsilon, nodes)
+                tc_nodes = _tc_tick(tc_nodes)
+    _tc_visits(WALK_SHADOW_ANYHIT, tc_nodes, tc_tris, 0)
+    return blocked, seen
+
+
+@ti.func
+def _first_pass_bez(refit: ti.template(), ro, rd, inv_rd, f, max_t, max_bin,
+                    pixel_size_per_t, base_dist,
+                    pixel_size_base: ti.template(),
+                    nodes: ti.template(), leaf_prim: ti.template(),
+                    leaf_tspan: ti.template(), first_leaf,
+                    circuit_meta: ti.template(), edges_2d: ti.template(),
+                    edge_accel: ti.template()):
+    """Bezier-circuit arm of :func:`_shadow_opaque_first` (see
+    :func:`_first_pass_tri`). A circuit hit is never an edge hit to the march,
+    so an opaque circuit is certain whenever its depth bin precedes the
+    light's; acceptance is :func:`_nearest_bezier_hit`'s drawn-region test.
+    """
+    blocked = 0
+    seen = 0
+    tc_nodes = 0
+    tc_bez = 0
+    num_meta_frames = circuit_meta.shape[0]
+    num_edge_frames = edges_2d.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, -depth_tie_epsilon,
+        max_t + depth_tie_epsilon, nodes)
+    tc_nodes = _tc_tick(tc_nodes)
+    while (blocked == 0) and (seen == 0):
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            saved = g_st[g_sp]
+            g_cur = saved >> bvh_arity
+            saved_mask = saved & _GROUP_MASK
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd, -depth_tie_epsilon,
+                max_t + depth_tie_epsilon, nodes)
+            tc_nodes = _tc_tick(tc_nodes)
+            g_pend = saved_mask & fresh_mask
+        else:
+            g_c = _nearest_pending_child(g_pend, g_near)
+            g_pend &= ~(1 << g_c)
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_opq = 0
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                else:
+                    l_prim = w & _REFIT_PRIM_MASK
+                    if (w & _REFIT_NOCAST_BIT) != 0:
+                        l_prim = -1
+                    l_opq = (w >> 30) & 1
+            else:
+                g_child = bvh_arity * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * bvh_leaf_size
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else bvh_leaf_size)):
+                    circuit = l_prim
+                    opq = l_opq
+                    if ti.static(refit == 0):
+                        circuit = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        if ((p0 >= 0) and ((tspan & 0x7FFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            circuit = p0
+                            if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                circuit = -1
+                            opq = 1 if tspan < 0 else 0
+                    if (blocked == 0) and (seen == 0) and (circuit >= 0):
+                        tc_bez = _tc_tick(tc_bez)
+                        tm = f % num_meta_frames
+                        n = ti.math.vec3(
+                            circuit_meta[tm, circuit, _M_NORMAL],
+                            circuit_meta[tm, circuit, _M_NORMAL + 1],
+                            circuit_meta[tm, circuit, _M_NORMAL + 2])
+                        denom = rd.dot(n)
+                        if ti.abs(denom) > 1e-9:
+                            center = ti.math.vec3(
+                                circuit_meta[tm, circuit, _M_CENTER],
+                                circuit_meta[tm, circuit, _M_CENTER + 1],
+                                circuit_meta[tm, circuit, _M_CENTER + 2])
+                            t = (center - ro).dot(n) / denom
+                            if (t > min_hit_distance) and (t < max_t):
+                                hp = ro + t * rd - center
+                                bu = ti.math.vec3(
+                                    circuit_meta[tm, circuit, _M_BASIS_U],
+                                    circuit_meta[tm, circuit, _M_BASIS_U + 1],
+                                    circuit_meta[tm, circuit, _M_BASIS_U + 2])
+                                bv = ti.math.vec3(
+                                    circuit_meta[tm, circuit, _M_BASIS_V],
+                                    circuit_meta[tm, circuit, _M_BASIS_V + 1],
+                                    circuit_meta[tm, circuit, _M_BASIS_V + 2])
+                                u = hp.dot(bu)
+                                v = hp.dot(bv)
+                                pixel_size = pixel_size_per_t * (base_dist + t)
+                                if ti.static(_given(pixel_size_base)):
+                                    pixel_size = pixel_size_base + pixel_size
+                                border_w = (
+                                    circuit_meta[tm, circuit, _M_BORDER_W]
+                                    * pixel_size)
+                                outline_w = 0.6 * pixel_size
+                                filled = (circuit_meta[tm, circuit, _M_FILLED]
+                                          > 0.5)
+                                centered = (circuit_meta[
+                                    tm, circuit, _M_BORDER_CENTERED] > 0.5)
+                                query_radius = _circuit_query_radius(
+                                    border_w, outline_w, filled, centered)
+                                te = f % num_edge_frames
+                                (crossings, min_dist_sq, _ccu, _ccv, _e1x,
+                                     _e1y, _sg1, _s2, _s2u, _s2v, _e2x, _e2y,
+                                     _sg2) = _bezier_point_metrics(
+                                    circuit, te, u, v, query_radius,
+                                    circuit_meta.shape[1], edges_2d,
+                                    edge_accel)
+                                inside, in_border = _circuit_point_region(
+                                    border_w, outline_w, filled, centered,
+                                    crossings, min_dist_sq)
+                                if inside:
+                                    if (opq != 0) and (ti.floor(
+                                            t * INV_DEPTH_TIE_EPSILON)
+                                                       < max_bin):
+                                        blocked = 1
+                                    else:
+                                        seen = 1
+            else:
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << bvh_arity) | g_pend
+                    g_sp += 1
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd, -depth_tie_epsilon,
+                    max_t + depth_tie_epsilon, nodes)
+                tc_nodes = _tc_tick(tc_nodes)
+    _tc_visits(WALK_SHADOW_ANYHIT, tc_nodes, 0, tc_bez)
+    return blocked, seen
+
+
+@ti.func
+def _shadow_opaque_first(refit: ti.template(),
+                         has_tri: ti.template(),
+                         has_bez: ti.template(),
+                         ro, rd, inv_rd, f, max_t,
+                         pixel_size_per_t, base_dist,
+                         pixel_size_base: ti.template(),
+                         t_nodes: ti.template(), t_leaf_prim: ti.template(),
+                         t_leaf_tspan: ti.template(), t_first_leaf,
+                         tri_pos: ti.template(),
+                         b_nodes: ti.template(), b_leaf_prim: ti.template(),
+                         b_leaf_tspan: ti.template(), b_first_leaf,
+                         circuit_meta: ti.template(),
+                         edges_2d: ti.template(),
+                         edge_accel: ti.template(),
+                         src_sid, src_prim, eps_self, eps_near,
+                         tri_obj: ti.template(),
+                         ident: ti.template()) -> ti.i32:
+    """The first pass of shadow mode 5: ``_OF_CLEAR``, ``_OF_BLOCKED`` or
+    ``_OF_MARCH``. Each answer is the one the ordered march would give.
+
+    * ``_OF_BLOCKED``: some opaque caster the march is certain to reach (see
+      :func:`_first_pass_tri`). Everything the march peels before it only
+      scales a transmittance that this hit then takes to zero -- with alpha
+      at least ``1 - 1e-6`` and pass-through at most ``1e-6`` (the
+      primitives' own opacity flag), what is left is under ``min_alpha``,
+      which the host requires to be at least ``1e-5`` before it selects this
+      mode -- so the march returns exactly 1.
+    * ``_OF_CLEAR``: no accepted hit of any kind before ``max_t``. The walk
+      tests every leaf the march's first step could (same predicates, a node
+      window at least as wide), so that step finds nothing before ``max_t``
+      and the march returns exactly 0.
+    * ``_OF_MARCH``: the walk met a translucent hit, or an opaque one that is
+      not certain, before any certain blocker; or the ray is non-finite
+      (origin, direction or ``max_t``) and skips the walk, so that whatever
+      such a ray does it does in the reference code.
+
+    What it does not reproduce: a march that stops at ``max_surfaces_per_ray``
+    before reaching the blocker (the host requires the default 256 or more;
+    the ``shadow_march_capped`` trace counter shows whether any march hit it),
+    a march whose node windows lose a hit to rounding at ``depth_tie_epsilon``
+    boundaries, and a translucent surface whose colour or transmission data is
+    NaN in front of a blocker, which the march turns into a NaN occlusion and
+    this into a full one. ``ALGAN_TRACE_COUNTERS=verify`` counts, per render,
+    every ray where any of that happened.
+    """
+    outcome = _OF_MARCH
+    finite = (_finite_f32(ro[0]) & _finite_f32(ro[1]) & _finite_f32(ro[2])
+              & _finite_f32(rd[0]) & _finite_f32(rd[1]) & _finite_f32(rd[2])
+              & _finite_f32(max_t))
+    if finite == 1:
+        max_bin = ti.floor(max_t * INV_DEPTH_TIE_EPSILON)
+        blocked = 0
+        seen = 0
+        if ti.static(has_tri != 0):
+            blocked, seen = _first_pass_tri(
+                refit, ro, rd, inv_rd, f, max_t, max_bin,
+                t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
+                src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+        if ti.static(has_bez != 0):
+            if (blocked == 0) and (seen == 0):
+                blocked, seen = _first_pass_bez(
+                    refit, ro, rd, inv_rd, f, max_t, max_bin,
+                    pixel_size_per_t, base_dist, pixel_size_base,
+                    b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                    circuit_meta, edges_2d, edge_accel)
+        outcome = _OF_CLEAR
+        if blocked != 0:
+            outcome = _OF_BLOCKED
+        elif seen != 0:
+            outcome = _OF_MARCH
+        _tc_query(WALK_SHADOW_ANYHIT)
+    return outcome
 
 
 @ti.func
@@ -3243,7 +3782,10 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
     opaque any-hit early-out: 3 (chosen when the batch provably contains no
     translucent geometry, so any march hit would be fully opaque and a miss
     proves the ray lit) runs ONLY :func:`_shadow_anyhit_opaque` -- the march
-    is compiled out entirely. 2 (mixed batches) marches normally and, after
+    is compiled out entirely. 5 (auto's choice for mixed batches) asks
+    :func:`_shadow_opaque_first` first and marches only the rays it cannot
+    settle, giving the march's answer bit for bit outside the corners that
+    function lists. 2 (explicit ``shadow_anyhit=True``) marches normally and, after
     the FIRST partially transparent surface, spends one any-hit walk over
     the remaining range: an opaque blocker further along forces the final
     occlusion to exactly 1.0 no matter what lies between, so a hit retires
@@ -3261,6 +3803,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
     inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                           _safe_inverse(rd[2]))
     occluded = ti.math.vec3(0.0)
+    _tc_bump(SHADOW_RAYS, 1)
     if ti.static(anyhit == 3):
         # The any-hit answer is binary, so its RGB payload is that one bit
         # broadcast: a blocker blocks every channel (which is exactly what the
@@ -3274,6 +3817,57 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
             circuit_meta, edges_2d, edge_accel,
             src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
         occluded = ti.math.vec3(ti.cast(opaque_hit, ti.f32))
+    elif ti.static(anyhit == 5):
+        # Opaque-first (mixed batches): one any-hit pass settles every ray
+        # an opaque caster blocks and every ray nothing touches; only rays
+        # that meet translucent geometry and no certain blocker pay for the
+        # ordered march, which then runs exactly as mode 1's.
+        outcome = _shadow_opaque_first(
+            refit, has_tri, has_bez, ro, rd, inv_rd, f, max_t,
+            pixel_size_per_t, base_dist, pixel_size_base,
+            t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
+            b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+            circuit_meta, edges_2d, edge_accel,
+            src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+        if outcome == _OF_BLOCKED:
+            occluded = ti.math.vec3(1.0)
+            _tc_bump(SHADOW_OF_BLOCKED, 1)
+        elif outcome == _OF_MARCH:
+            occluded = _shadow_march_occluded(
+                refit, 1, ro, rd, inv_rd, f, ff, max_t,
+                pixel_size_per_t, base_dist, pixel_size_base,
+                layer_offset_triangles, has_tri, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
+                textures, tri_extra, num_colored_triangles,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                b_first_leaf, circuit_meta, circuit_colors,
+                circuit_border_colors, edges_2d, edge_accel,
+                src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+            _tc_bump(SHADOW_OF_MARCH, 1)
+        else:
+            _tc_bump(SHADOW_OF_CLEAR, 1)
+        if ti.static(_tc_verifying()):
+            # Diagnostic arm (ALGAN_TRACE_COUNTERS=verify): the reference
+            # march for every ray, compared bit for bit. The answer kept is
+            # the opaque-first one, so the image is the counted arm's.
+            ref = _shadow_march_occluded(
+                refit, 1, ro, rd, inv_rd, f, ff, max_t,
+                pixel_size_per_t, base_dist, pixel_size_base,
+                layer_offset_triangles, has_tri, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
+                textures, tri_extra, num_colored_triangles,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                b_first_leaf, circuit_meta, circuit_colors,
+                circuit_border_colors, edges_2d, edge_accel,
+                src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+            differs = 0
+            for c in ti.static(range(3)):
+                if ti.bit_cast(occluded[c], ti.i32) \
+                        != ti.bit_cast(ref[c], ti.i32):
+                    differs = 1
+            _tc_bump(SHADOW_OF_MISMATCH, differs)
     else:
         if ti.static(anyhit == 4):
             occluded = _shadow_gather_occluded(
@@ -3405,6 +3999,9 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
         if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
             t_prev = t_hit
             layer_prev = hit_layer
+            if ti.static(_tc_counting()):
+                if step >= max_surfaces_per_ray:
+                    _tc_bump(SHADOW_MARCH_CAPPED, 1)
             continue
         seam_t = t_hit if edge_hit == 1 else -1e30
         # Color + alpha from ONE fetch: alpha gates the covered share, and
@@ -3491,6 +4088,11 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                     break
         t_prev = t_hit
         layer_prev = hit_layer
+        if ti.static(_tc_counting()):
+            # The cap ends a march that still had light to pass: a
+            # truncated answer (see _shadow_opaque_first).
+            if step >= max_surfaces_per_ray:
+                _tc_bump(SHADOW_MARCH_CAPPED, 1)
     return one3 - transmitted
 
 

@@ -1312,11 +1312,17 @@ def set_merge_dedup_time(enabled):
 # physically correct one in both.
 #
 # Auto selects opaque-only any-hit when the batch proves there is no
-# transmission, translucent geometry or uncertain texture alpha. Otherwise it
-# retains the ordered march. The explicit True mode also allows a mixed-scene
-# prepass, which historically lost on the translucent UHD benchmark; it is
-# deliberately not used by auto. False forces the ordered reference march.
-# "gather" selects the experimental k-buffer gather-march for any batch.
+# transmission, translucent geometry or uncertain texture alpha. A mixed batch
+# with an opaque caster gets opaque-first (shadow mode 5,
+# ``raytrace_kernels_taichi._shadow_opaque_first``): one any-hit pass answers
+# every ray an opaque caster the march is certain to reach blocks, and every
+# ray that touches nothing, bit for bit as the march would, and only the rest
+# march. ``ALGAN_OPT_DISABLE=opaquefirst`` keeps those batches on the ordered
+# march (``shadow_dispatch``). The explicit True mode also allows a
+# mixed-scene prepass, which historically lost on the translucent UHD
+# benchmark; it is deliberately not used by auto. False forces the ordered
+# reference march. "gather" selects the experimental k-buffer gather-march
+# for any batch.
 shadow_anyhit = env_str("ALGAN_SHADOW_ANYHIT", "auto").strip().lower()
 if shadow_anyhit not in ("auto", "gather"):
     shadow_anyhit = env_flag("ALGAN_SHADOW_ANYHIT", False)
@@ -1325,9 +1331,10 @@ if shadow_anyhit not in ("auto", "gather"):
 def set_shadow_anyhit(enabled):
     """Select shadow traversal for the next batch.
 
-    The default "auto" enables any-hit only for provably opaque batches.
-    True also enables the mixed opaque prepass, "gather" selects the k-buffer
-    march, and False forces the ordered reference march.
+    The default "auto" enables any-hit for provably opaque batches and the
+    exact opaque-first query for mixed ones. True also enables the mixed opaque
+    prepass, "gather" selects the k-buffer march, and False forces the ordered
+    reference march.
     """
     global shadow_anyhit
     if isinstance(enabled, str) and enabled.strip().lower() in ("auto", "gather"):

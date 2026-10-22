@@ -195,6 +195,41 @@ def _build_blocks(nodes, first_leaf):
     return blk.contiguous()
 
 
+def _node_words_disabled():
+    """``ALGAN_OPT_DISABLE=nodewords``, asked at every launch (imported lazily,
+    as the tracer does: the timeline is not in the renderer's import graph).
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    return _opt_disabled("nodewords")
+
+
+def kernel_blocks(blocks):
+    """``blocks`` as the traversal kernels take it (``NODE_ARG`` in
+    ``raytrace_kernels_taichi``): a view, nothing is copied.
+
+    The same bytes as packed words, ``[rows, 8 * words per lane]``: ``int64``
+    when a lane is a whole number of 8-byte words that start 8-byte aligned,
+    ``int32`` otherwise and on MPS (Metal shaders get no 64-bit loads from
+    this), so a default 64-byte f16 node is eight word loads where the lane
+    vectors compiled to 32 scalar 16-bit ones. The kernels pick the decode
+    from the element type, and every word decodes to exactly the bits a lane
+    held. With ``ALGAN_OPT_DISABLE=nodewords`` it is one scalar per child
+    value, ``[rows, 8 * bvh_arity]``: the old per-value loads, for A/B.
+    """
+    rows = blocks.shape[0]
+    lanes = blocks.reshape(rows, -1)
+    if _node_words_disabled():
+        return lanes
+    lane_bytes = blocks.shape[-1] * blocks.element_size()
+    offset = blocks.storage_offset() * blocks.element_size()
+    if lane_bytes % 8 == 0 and offset % 8 == 0 and blocks.device.type != "mps":
+        return lanes.view(torch.int64)
+    if lane_bytes % 4 == 0 and offset % 4 == 0:
+        return lanes.view(torch.int32)
+    return lanes
+
+
 class STBVH:
     """Flat tensor representation of the spatio-temporal BVH.
 
@@ -275,6 +310,11 @@ class STBVH:
     @property
     def num_nodes(self):
         return self.nodes.shape[0]
+
+    @property
+    def kernel_blocks(self):
+        """:attr:`blocks` as the traversal kernels take it (:func:`kernel_blocks`)."""
+        return kernel_blocks(self.blocks)
 
     def get_memory_used(self):
         return sum(

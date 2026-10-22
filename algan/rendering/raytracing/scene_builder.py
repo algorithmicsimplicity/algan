@@ -294,8 +294,12 @@ def gpu_project_input_bytes(primitives):
     return total
 
 
-def _collect_scene_tensors(scene):
-    """Return each tensor object reachable from a merged scene exactly once."""
+def _collect_scene_tensors(scene, node_blocks=None):
+    """Return each tensor object reachable from a merged scene exactly once.
+
+    ``node_blocks``, a set, also receives the ``id`` of every BVH's sibling
+    blocks (:func:`_storage_alignment` says why they are told apart).
+    """
     tensors = []
     seen_tensors = set()
     seen_containers = set()
@@ -312,6 +316,8 @@ def _collect_scene_tensors(scene):
             if key in seen_containers:
                 return
             seen_containers.add(key)
+            if node_blocks is not None:
+                node_blocks.add(id(value.blocks))
             for field in _STBVH_TENSOR_FIELDS:
                 visit(getattr(value, field))
             return
@@ -338,15 +344,18 @@ def _collect_scene_tensors(scene):
 def _scene_storage_groups(scene):
     """Group scene tensor views by their underlying untyped storage."""
     groups = {}
-    for tensor in _collect_scene_tensors(scene):
+    node_blocks = set()
+    for tensor in _collect_scene_tensors(scene, node_blocks):
         storage = tensor.untyped_storage()
         # ``untyped_storage()`` may return a fresh Python wrapper; ``_cdata``
         # identifies the actual TensorImpl storage and also distinguishes
         # separate zero-byte storages (whose data_ptr values are all zero).
         key = storage._cdata
         if key not in groups:
-            groups[key] = {"storage": storage, "tensors": []}
+            groups[key] = {"storage": storage, "tensors": [], "node_blocks": False}
         groups[key]["tensors"].append(tensor)
+        if id(tensor) in node_blocks:
+            groups[key]["node_blocks"] = True
     return list(groups.values())
 
 
@@ -371,12 +380,14 @@ def _storage_is_arena(storage, memory):
 #:
 #: A kernel there binds torch's own ``MTLBuffer`` at the storage's byte offset,
 #: and a **vector-element** array is loaded as one vector: the BVH's sibling
-#: blocks are ``ndarray(dtype=vector(4, f16))``, an 8-byte element. Aligning to
-#: the scalar element (2 bytes for f16) is not enough for that, and it is not
-#: hypothetical -- the triangle BVH's blocks landed at byte 799066188, a
-#: multiple of 4 and not of 8, so ``mps_zero_copy`` refused to import them and
-#: they went back on Taichi's host-staging path: four copies and a stream sync
-#: per launch, on the widest array the tracer reads.
+#: blocks were ``ndarray(dtype=vector(4, f16))``, an 8-byte element (they are
+#: packed words now, ``stbvh.kernel_blocks``, which :data:`_NODE_BLOCK_ALIGNMENT`
+#: aligns on every backend). Aligning to the scalar element (2 bytes for f16)
+#: was not enough for that, and it was not hypothetical -- the triangle BVH's
+#: blocks landed at byte 799066188, a multiple of 4 and not of 8, so
+#: ``mps_zero_copy`` refused to import them and they went back on Taichi's
+#: host-staging path: four copies and a stream sync per launch, on the widest
+#: array the tracer reads.
 #: (``DESIGN_mps_zero_copy.md`` §3.3 asks for this.)
 #:
 #: 16 covers every vector element Metal binds as one (up to 4 x f32). A wider
@@ -406,9 +417,21 @@ def _upload_alignment_floor():
     return _UPLOAD_ALIGNMENT_FLOOR
 
 
+#: Byte boundary a BVH's sibling blocks start on, on every backend: the
+#: traversal kernels read them as packed 64-bit words (``stbvh.kernel_blocks``),
+#: and a 2-byte-aligned f16 storage -- all the element size asks for -- would
+#: be a misaligned 8-byte load on CUDA (and a view torch refuses to make). 16
+#: also covers a vector-element bind. Applied whatever the ``nodewords``
+#: switch says, so the two arms of that A/B share one arena layout.
+_NODE_BLOCK_ALIGNMENT = 16
+
+
 def _storage_alignment(group):
     element = max((tensor.element_size() for tensor in group["tensors"]), default=1)
-    return max(element, _upload_alignment_floor())
+    floor = _upload_alignment_floor()
+    if group.get("node_blocks"):
+        floor = max(floor, _NODE_BLOCK_ALIGNMENT)
+    return max(element, floor)
 
 
 def _group_needs_arena_copy(group, memory):
