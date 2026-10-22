@@ -399,13 +399,15 @@ def _device_shadow_glue(device):
     """Whether the bounce drain builds and sizes its shadow events on the
     device (``_device_wavefront_shadows``) rather than reading their count back.
 
-    ``ALGAN_OPT_DISABLE=devshadow`` keeps the host glue. So does the parallel
-    shadow queue (``shadow_ray_parallel``), which chunks its work by an event
-    count the host holds, its OptiX arm (``optix``), and Metal, where the int
-    views and the int32 prefix sum this leans on are unverified.
+    Opt-in (``SETTINGS.raytracing.experimental.wf_device_shadow_glue``,
+    ``ALGAN_WF_DEVICE_SHADOW_GLUE``; off on measurement, see ``settings``).
+    Even then the parallel shadow queue (``shadow_ray_parallel``), which chunks
+    its work by an event count the host holds, keeps the host glue, and so do
+    its OptiX arm (``optix``) and Metal, where the int views and the int32
+    prefix sum this leans on are unverified.
     """
     return (
-        not _tracer_opt_disabled("devshadow")
+        bool(rt_settings.wf_device_shadow_glue)
         and not rt_settings.shadow_ray_parallel
         and torch.device(device).type in ("cuda", "cpu")
         # The OptiX shadow arm is a queue arm too (shadow_queue.py).
@@ -583,8 +585,6 @@ def _tracer_opt_disabled(name):
     rows (or only the rows a consumer reads) instead of strided columns.
     ``glossfuse`` -- ``gloss_finish`` prefilters, composites and resets a
     finished frame in one launch.
-    ``devshadow`` -- the bounce drain compacts and traces its shadow events
-    on the device, reading no count back (``_device_wavefront_shadows``).
     ``adaptivepool`` -- the sheet route sizes its tiles from what this
     render job's tiles have used (``_TileDemand``).
     """

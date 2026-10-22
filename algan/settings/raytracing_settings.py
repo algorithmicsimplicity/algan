@@ -73,6 +73,7 @@ _STORAGE_MODULES = (
     "algan.rendering.raytracing.bezier_acceleration",
     "algan.rendering.primitives.bezier_circuit_primitive",
     "algan.rendering.memory_model",
+    "algan.rendering.raytracing.trace_counters_taichi",
 )
 
 #: ``field -> the module that stores it``, and ``field -> the type it ships
@@ -279,7 +280,8 @@ _INERT_FIELDS: dict[str, str] = {}
 #: documented, captured in a snapshot -- but writing one is refused rather than
 #: silently ignored, because each has something derived from it at import that a
 #: later write cannot reach: an ndarray element type the kernels are annotated
-#: with (``bvh_arity``, ``bvh_block_f16``), a reciprocal
+#: with (``bvh_arity``, ``bvh_block_f16``, ``bvh_node_words``),
+#: ``ti.static`` counting sites (``trace_counters``), a reciprocal
 #: (``depth_tie_epsilon`` -> ``INV_DEPTH_TIE_EPSILON``), a packed header layout
 #: the kernels decode by fixed offsets (``bezier_scan_bins``,
 #: ``bezier_spatial_grid``), or a ``ti.static`` payload width
@@ -302,6 +304,8 @@ _IMPORT_FROZEN_FIELDS = {
     for field, variable in (
         ("bvh_arity", "ALGAN_BVH_ARITY"),
         ("bvh_block_f16", "ALGAN_BVH_BLOCK_F16"),
+        ("bvh_node_words", "ALGAN_BVH_NODE_WORDS"),
+        ("trace_counters", "ALGAN_TRACE_COUNTERS"),
         ("bvh_leaf_size", "ALGAN_STBVH_LEAF_SIZE"),
         ("kbuf", "ALGAN_KBUF"),
         ("max_shadow_lights", "ALGAN_MAX_SHADOW_LIGHTS"),
@@ -318,7 +322,7 @@ _IMPORT_FROZEN_FIELDS = {
 _POLYMORPHIC_FIELDS = frozenset(
     {
         "shadow_terminator",  # bool, plus "relax" for the third state
-        "shadow_anyhit",  # bool, "auto" (opaque proof), or "gather"
+        "shadow_anyhit",  # bool, "auto" (opaque proof), "gather" or "opaquefirst"
         "wf_gen_fused",  # str "auto", plus True/False forcing the mode
     }
 )

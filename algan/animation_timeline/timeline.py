@@ -189,9 +189,9 @@ def _opt_disabled(name):
     gridcross,gridsoup,audiomix,audioprobe,staticbg,margindecay,strokesheets,
     strokepixels,solobands,packedfragsort,binfragsort,fusedbinkeys,hostbackoff,
     writerrepeats,writerview,unrecordedset,rendergc,arenareuse,tilesync,loopsync,
-    bgupload,exactfills,glossfuse,opaquefirst,nodewords,devshadow,adaptivepool
-    disables individual optimizations (read once, first use). Two more,
-    optixshadow and optixgather, keep one half of the OptiX side path
+    bgupload,exactfills,glossfuse,adaptivepool disables individual
+    optimizations (read once, first use). Two more, optixshadow and
+    optixgather, keep one half of the OptiX side path
     (SETTINGS.raytracing.experimental.optix) on the software walk.
     ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion A/B
     timeslice/lazyzeros through this; ``benchmarks/_query_rowdedup_parity.py``

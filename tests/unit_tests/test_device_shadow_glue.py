@@ -1,15 +1,19 @@
-"""The bounce drain's shadow events are compacted and traced on the device
-(``ALGAN_OPT_DISABLE=devshadow`` restores the host glue).
+"""The bounce drain's shadow events can be compacted and traced on the device
+(``SETTINGS.raytracing.experimental.wf_device_shadow_glue``; off by default).
 
 ``tracer._device_wavefront_shadows`` replaces a ``nonzero`` readback, a dense
 all-lit visibility table and a dozen count-sized gathers per bounce with a
 binned compaction (``shadow_event_bins`` / ``shadow_event_scatter``), a trace
 sized by the row count with the event count on the device
 (``deferred_shadow_trace``) and a row -> slot map the shade kernel reads
-(``deferred_shadows == 2``). Two promises carry it, held here:
+(``deferred_shadows == 2``). Three promises carry it, held here:
 
 * the compaction gives every accepted row exactly one slot, grouped by bin in
   bin order, and maps every other row to -1;
+* the trace writes every slot below the count, the same values under either
+  lane schedule, and nothing above it -- the table is sized for every row, so
+  the rest is whatever the arena held (an earlier bounce's ``-1`` map words
+  read as NaN), which only a map entry could lead the shade to, and none does;
 * the image is the one the host glue renders, byte for byte -- each arm in a
   child process of its own on one CPU thread, where a render through glass
   and over a mirror is reproducible (``agent_guidance/memory_perf.md``), at
@@ -182,14 +186,18 @@ def _scene(scene_cls):
     glass.move(RIGHT * 0.3)
 
 
-def _render(disabled):
-    """The scene's frames, and what the drain's shadow path did."""
+def _render(device_glue, trace_check=None):
+    """The scene's frames, and what the drain's shadow path did.
+
+    ``trace_check(trace, args)``, if given, launches the device trace in
+    place of the render's own launch.
+    """
     import pytest
     import torch
 
     from algan import SMOKE_TEST, Scene, SceneManager
-    from algan.animation_timeline import timeline as timeline_module
     from algan.rendering.raytracing import raster_taichi, tracer
+    from algan.rendering.raytracing import settings as rt_module
 
     seen = {"device": 0, "host": 0, "events": 0}
     gate = tracer._device_shadow_glue
@@ -202,12 +210,15 @@ def _render(disabled):
         return on
 
     def counted_trace(*args):
-        trace(*args)
+        if trace_check is None:
+            trace(*args)
+        else:
+            trace_check(trace, list(args))
         seen["events"] += int(args[params.index("event_count")][0])
 
     SceneManager.reset()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(timeline_module, "_OPT_DISABLED", frozenset(disabled))
+        mp.setattr(rt_module, "wf_device_shadow_glue", bool(device_glue))
         mp.setattr(tracer, "_device_shadow_glue", counted_gate)
         mp.setattr(raster_taichi, "deferred_shadow_trace", counted_trace)
         try:
@@ -247,7 +258,7 @@ def _render_arm(glue, config, out_path):
         SETTINGS.raytracing.set(samples_per_pixel=1, shadows=True, max_bounces=3)
         for knob, value in _CONFIGS[config].items():
             mp.setattr(rt_module, knob, value)
-        frames, seen = _render({"devshadow"} if glue == "host" else set())
+        frames, seen = _render(glue == "device")
     torch.save(frames, out_path)
     return seen
 
@@ -260,7 +271,7 @@ def _child(glue, config, out_path):
     """
     env = dict(os.environ)
     for name in list(env):
-        if name.startswith(("ALGAN_OPT_DISABLE", "ALGAN_WF_", "ALGAN_SHADOW")):
+        if name.startswith(("ALGAN_WF_", "ALGAN_SHADOW")):
             env.pop(name)
     env.update(
         ALGAN_RENDER_DEVICE="cpu",
@@ -301,6 +312,44 @@ def test_the_device_glue_renders_what_the_host_glue_renders(config, tmp_path):
     assert device_seen["events"] > 0, device_seen
     assert float(host.float().std()) > 1.0
     assert torch.equal(host, device), int((host != device).sum())
+
+
+def test_both_lane_schedules_write_every_slot_below_the_count_and_none_above():
+    """Event-major and light-major traces agree, slot for slot.
+
+    The table is poisoned with NaN before each launch: below the count every
+    cell must be written (no NaN left) and match bit for bit, above it every
+    cell must still be poison. The CUDA comparison that first raised this read
+    the whole table, unwritten rows included.
+    """
+    from algan import SETTINGS
+    from algan.rendering.raytracing import raster_taichi
+
+    params = raster_taichi._DEFERRED_SHADOW_TRACE_PARAMS
+    vis, order = params.index("shadow_vis"), params.index("light_major")
+    count = params.index("event_count")
+    checked = []
+
+    def both_schedules(trace, args):
+        table = args[vis]
+        n = int(args[count][0])
+        results = []
+        for light_major in (False, True):
+            table.fill_(float("nan"))
+            args[order] = light_major
+            trace(*args)
+            results.append(table.clone())
+        event_major, lane_major = results
+        assert not bool(torch.isnan(event_major[:n]).any())
+        assert torch.equal(event_major[:n], lane_major[:n])
+        assert bool(torch.isnan(event_major[n:]).all())
+        assert bool(torch.isnan(lane_major[n:]).all())
+        checked.append(n)
+
+    SETTINGS.raytracing.set(samples_per_pixel=1, shadows=True, max_bounces=3)
+    _frames, seen = _render(True, trace_check=both_schedules)
+    assert seen["events"] > 0, seen
+    assert checked, seen
 
 
 if __name__ == "__main__":

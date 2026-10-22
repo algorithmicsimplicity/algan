@@ -7,6 +7,7 @@ import torch
 
 from algan import SETTINGS
 from algan.rendering.raytracing import raster_taichi as kernels
+from algan.rendering.raytracing import settings as rt_module
 from algan.rendering.raytracing import shadow_queue
 from algan.settings._startup import render_device
 
@@ -33,10 +34,16 @@ def test_light_major_dispatch_keeps_small_and_non_cuda_queues(
 
 
 @pytest.mark.parametrize(
-    ("scene_name", "budget"), [("soft", 0), ("soft", 16), ("graphics", 16)]
+    ("scene_name", "budget", "device_glue"),
+    [
+        ("soft", 0, False),
+        ("soft", 16, False),
+        ("graphics", 16, False),
+        ("graphics", 16, True),
+    ],
 )
 def test_light_major_keeps_primary_and_secondary_visibility_exact(
-    monkeypatch, tmp_path, scene_name, budget
+    monkeypatch, tmp_path, scene_name, budget, device_glue
 ):
     if render_device().type != "cuda":
         pytest.skip("CUDA scheduling optimization")
@@ -65,24 +72,32 @@ def test_light_major_keeps_primary_and_secondary_visibility_exact(
 
         return trace
 
-    # The bounce drain's events trace on the device (tracer.
-    # _device_wavefront_shadows) unless ALGAN_OPT_DISABLE=devshadow: the same
-    # fan, sized by the row count, scheduled the same two ways.
+    # With the device glue (wf_device_shadow_glue) the bounce drain's events
+    # trace through deferred_shadow_trace: the same fan, launched over every
+    # event row with the count on the device, scheduled the same two ways. Its
+    # table is sized for every row and written below the count only; the rest
+    # is whatever the arena held (an earlier bounce's -1 map words read as NaN),
+    # so only the written slots are compared.
     deferred = kernels.deferred_shadow_trace
     deferred_params = kernels._DEFERRED_SHADOW_TRACE_PARAMS
     deferred_vis = deferred_params.index("shadow_vis")
     deferred_order = deferred_params.index("light_major")
+    deferred_count = deferred_params.index("event_count")
 
     def checked_deferred(*call):
         args = list(call)
+        written = int(args[deferred_count][0])
         args[deferred_order] = False
         deferred(*args)
-        expected = args[deferred_vis].clone()
+        expected = args[deferred_vis][:written].clone()
         args[deferred_order] = True
         deferred(*args)
-        torch.testing.assert_close(args[deferred_vis], expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            args[deferred_vis][:written], expected, rtol=0, atol=0
+        )
         counts[1] += 1
 
+    monkeypatch.setattr(rt_module, "wf_device_shadow_glue", device_glue)
     monkeypatch.setattr(shadow_queue, "make_shadow_tracer", make_checked)
     monkeypatch.setattr(kernels, "deferred_shadow_trace", checked_deferred)
     try:

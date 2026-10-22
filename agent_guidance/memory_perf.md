@@ -204,7 +204,7 @@ but wall time moved only ~1%: the bounce drain is GPU-bound (the host now
 waits at the compaction count instead, mostly for `raster_shadow_trace`).
 The syncs that remain (compaction counts, sparse-discovery sizes) size the
 next launch and need a device-side count to go away; the drain's shadow-event
-`nonzero` has one now (below).
+`nonzero` can be replaced by one (below), which measured no faster.
 When attributing host blocking from a Kineto trace, count blocking
 `cudaMemcpyAsync` (pageable D2H/H2D) as well as `*Synchronize`; torch's
 sync-debug warnings are delivered after the operation returns, so they count
@@ -258,8 +258,9 @@ both routes by rendering with every tile's state poisoned, and
 
 ### The bounce drain's shadow events, and tiles planned from what they used (October 22)
 
-**Shadow events on the device** (`tracer._device_wavefront_shadows`;
-`ALGAN_OPT_DISABLE=devshadow` restores the host glue). The sheet route's drain
+**Shadow events on the device** (`tracer._device_wavefront_shadows`; opt-in:
+`SETTINGS.raytracing.experimental.wf_device_shadow_glue`,
+`ALGAN_WF_DEVICE_SHADOW_GLUE=1`). The sheet route's drain
 used to read back each bounce's accepted shadow events (`ev_accept.nonzero()`,
 a stream drain) to size the trace, after filling a dense all-lit
 `[rows, 3 * vis_lights]` table (192 B a row at the graphics workload's 16
@@ -283,7 +284,17 @@ The parallel shadow queue (`shadow_ray_parallel`), Metal, and a bounce whose
 rows would overflow the kernels' i32 ranges keep the host glue. The table is
 sized for every row (the count is not on the host), 152 B a row at 12 traced
 lights against the old 192, and only the accepted rows' part is touched: 13%
-of rows at the graphics workload's first bounce.
+of rows at the graphics workload's first bounce. The slots past the count keep
+whatever the arena held -- often an earlier bounce's `-1` map words, NaN as
+floats -- which no map entry points at; a check that compares the whole table
+compares that (`test_device_shadow_glue.py` poisons it and checks both lane
+schedules below the count only). It is off by default on measurement: on the
+RTX 5080, graphics UHD 0.5 s warm, it was neutral alone (13.65 and 13.50 s
+against 13.90 and 13.68) and cost about 0.35 s beside the adaptive tile pool
+(12.22 and 12.17 against 11.85 and 11.86). That drain is GPU-bound, so the
+readback it removes was off the critical path, while the row-sized trace
+launch, the binned order and the mapped reads cost GPU time; which of them,
+nobody has profiled. Byte-identical either way.
 
 **Tiles from observed demand** (`tracer._TileDemand`;
 `ALGAN_OPT_DISABLE=adaptivepool`). `_split_pool_ratio` sizes a splitting
@@ -314,7 +325,11 @@ reserve safe. Only tiles of at least 65536 primaries read as scratch rates
 (below that the fixed part dominates). On one CPU thread, graphics at 384x216
 over 6 frames in a 160 MB arena took 47 tile attempts and 2 memory retries
 instead of 53 and 7; a glass-heavy 160x120 scene in 20 MB took 28 and 6 (and
-one overflow retry) instead of 36 and 12; both byte-identical.
+one overflow retry) instead of 36 and 12; both byte-identical. On the RTX
+5080, graphics UHD 0.5 s warm went from 13.72 s to 11.85 s (-13.6%): 9-10
+chunks instead of 32, 151-167 tile attempts instead of 186 and 2 memory
+retries instead of 34, no overflow retries. PREVIEW, explainer UHD and nn
+moved within noise, and all nine deterministic scenes stayed byte-identical.
 
 Tiles partition pixels, but two things tie a splitting pixel's last bits to
 its tile's size, so A/B both switches on non-splitting fixtures

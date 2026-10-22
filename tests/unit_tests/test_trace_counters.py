@@ -26,13 +26,11 @@ import hashlib, json, sys
 sys.path.insert(0, sys.argv[1])
 from pathlib import Path
 import test_opaque_first_shadows as scene
-from algan.animation_timeline import timeline
 from algan.rendering.raytracing import trace_counters_taichi as tc
 out = {}
-for arm, disabled in (("on", ()), ("off", ("opaquefirst",))):
-    timeline._OPT_DISABLED = frozenset(disabled)
+for arm, mode in (("on", "opaquefirst"), ("off", "auto")):
     tc.reset()
-    frame = scene._render(Path(sys.argv[2]) / f"{arm}.png")
+    frame = scene._render(Path(sys.argv[2]) / f"{arm}.png", shadow_anyhit=mode)
     out[arm] = {"counts": tc.read(), "md5": hashlib.md5(frame.tobytes()).hexdigest()}
 print("COUNTS " + json.dumps(out))
 """
@@ -90,8 +88,11 @@ def test_counts_add_up_verify_finds_no_mismatch_and_pixels_do_not_move(tmp_path)
     assert on["shadow_anyhit_tri_tests"] > 0
     assert on["shadow_anyhit_bez_tests"] > 0
 
-    # The kill-switch arm: the same rays, all marched.
-    assert off["shadow_rays"] == rays
+    # Auto's arm: the same rays, all marched -- give or take the adaptive fan:
+    # it skips a pixel's second tap pair when the first pair agrees exactly,
+    # and the two arms are different kernels, whose fast_math arithmetic can
+    # differ by an ulp (agent_guidance/rendering.md, "Node words").
+    assert abs(off["shadow_rays"] - rays) <= rays // 1000
     assert off["shadow_opaque_first_blocked"] == off["shadow_opaque_first_march"] == 0
     assert off["shadow_anyhit_walks"] == 0
     assert off["shadow_nearest_walks"] >= rays
