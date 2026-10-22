@@ -232,8 +232,13 @@ def _upload_table(values, device):
     run, so it is safe to drop here. The values are the same either way.
     """
     if device.type == "cuda" and defer_syncs_enabled():
-        host = torch.tensor(values, dtype=torch.int32, pin_memory=True)
-        return host.to(device, non_blocking=True)
+        try:
+            host = torch.tensor(values, dtype=torch.int32, pin_memory=True)
+        except RuntimeError:
+            # A host may be unable to lock more pages; pinning is optional.
+            pass
+        else:
+            return host.to(device, non_blocking=True)
     return torch.tensor(values, dtype=torch.int32, device=device)
 
 
