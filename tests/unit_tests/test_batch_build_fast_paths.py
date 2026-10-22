@@ -74,6 +74,11 @@ def test_host_frame_windows_decline_what_they_cannot_reproduce():
     # A bound that is not a Python number is left to the tensor path.
     assert host.window(torch.tensor(0.05), 0.15) is None
     assert host.window(np.float32(0.05), 0.15) is None
+    # A NaN start selects nothing in the mask but would bisect to frame 0.
+    assert host.window(math.nan, 0.15) is None
+    # A NaN end selects nothing either way: an empty window.
+    first, stop = host.window(0.05, math.nan)
+    assert first == stop
 
 
 def _author():
