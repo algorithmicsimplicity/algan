@@ -190,6 +190,25 @@ while both reduced compaction time; pooled total time improved 1.7%, with
 substantial variability. Set
 `SETTINGS.raytracing.experimental.sheet_packed_sort = False` for A/B checks.
 
+The sparse tile path keeps host work from draining the stream where it needs
+no value back (`arena_args_taichi.defer_syncs`; `ALGAN_OPT_DISABLE=tilesync`
+restores the blocking paths, and an A/B script may assign the module flag).
+A copy from pageable memory synchronizes, so missed `pack()` tables and
+`tracer._arena_copy` uploads are staged in pinned memory and copied
+non-blocking; scalar stores into device tensors are slice fills; the sheet
+resolve reads back only its tiles' CSR boundaries; the tile's overflow poll
+and allocator readback ride on the compaction count reads
+(`_ArenaRayCompactor.select(also_read=...)`). On graphics UHD this removed
+~1,400 of ~5,800 syncs and cut host time blocked in syncs from 11 s to 2 s,
+but wall time moved only ~1%: the bounce drain is GPU-bound (the host now
+waits at the compaction count instead, mostly for `raster_shadow_trace`).
+The syncs that remain (compaction counts, event `nonzero`s, sparse-discovery
+sizes) size the next launch and need a device-side count to go away.
+When attributing host blocking from a Kineto trace, count blocking
+`cudaMemcpyAsync` (pageable D2H/H2D) as well as `*Synchronize`; torch's
+sync-debug warnings are delivered after the operation returns, so they count
+syncs but cannot time them.
+
 ### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
 
 Some scenes render slightly differently every run, with no change to the code

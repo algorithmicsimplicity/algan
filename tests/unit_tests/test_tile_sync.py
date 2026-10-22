@@ -186,3 +186,32 @@ def test_pack_uploads_a_missed_table_without_synchronizing():
         assert ashp.tolist() == ashp_ref.tolist() == [2, 3, 8]
     finally:
         aat.clear_pack_cache()
+
+
+# --- compaction counts carrying the tile's allocator words --------------------
+
+
+def test_compaction_count_carries_the_extra_words():
+    """``select(also_read=...)`` returns the same slots and reads the words."""
+    from algan.rendering.taichi_runtime import init_taichi
+    from algan.settings._startup import render_device
+    from algan.utils.memory_utils import ManualMemory
+
+    init_taichi()
+    device = render_device()
+    memory = ManualMemory(0, device=device, num_bytes=4096)
+    memory.data.zero_()
+    rs_int = memory.get_tensor((6, 5), torch.int32)
+    rs_int.zero_()
+    rs_int[:, 2].copy_(torch.tensor([0, 1, 0, 1, 1, 0], dtype=torch.int32))
+    words = memory.get_tensor((3,), torch.int32)
+    words.copy_(torch.tensor([5, 0, 2], dtype=torch.int32))
+
+    plain = tracer._ArenaRayCompactor(memory, 6)
+    reference = sorted(plain.select(rs_int, 0, scan_pool=True).tolist())
+    assert plain.also_values is None
+
+    carried = tracer._ArenaRayCompactor(memory, 6)
+    got = carried.select(rs_int, 0, scan_pool=True, also_read=words)
+    assert sorted(got.tolist()) == reference == [0, 2, 5]
+    assert carried.also_values == [5, 0, 2]
