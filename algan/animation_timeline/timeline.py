@@ -24,6 +24,7 @@ source's id, and therefore its rows and its lifespan; a clone gets a new id.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import copy
 import functools
@@ -187,8 +188,8 @@ def _opt_disabled(name):
     timeslice,lazyzeros,compactstate,rowdedup,clonememo,collate,gridnormals,
     gridcross,gridsoup,audiomix,audioprobe,staticbg,margindecay,strokesheets,
     strokepixels,solobands,packedfragsort,binfragsort,fusedbinkeys,hostbackoff,
-    writerrepeats,writerview disables individual optimizations (read once,
-    first use).
+    writerrepeats,writerview,framewindows disables individual optimizations
+    (read once, first use).
     ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion A/B
     timeslice/lazyzeros through this; ``benchmarks/_query_rowdedup_parity.py``
     A/Bs rowdedup; ``benchmarks/_updater_clone_memo_parity.py`` A/Bs clonememo;
@@ -251,6 +252,59 @@ def _events_overlapping(index, times):
     if lo >= hi:
         return order[:0]
     return order[lo:hi]
+
+
+#: Torch -> numpy scalar types for :class:`_SortedFrameTimes`: the dtypes whose
+#: comparison against a Python number it reproduces exactly.
+_FRAME_TIME_SCALAR = {torch.float32: np.float32, torch.float64: np.float64}
+
+
+class _SortedFrameTimes:
+    """A batch's ascending frame times, for locating replay windows on the host.
+
+    Replay re-executes every recorded function over the frames inside its
+    window ``[start, replay_end)``. Finding them took a mask, ``nonzero``, two
+    scalar reads (the slice test in :func:`_contiguous_time_selector`) and a
+    gather per function application -- ten-odd small tensor ops, and on a CUDA
+    animation device three host syncs, each -- and an explainer batch replays
+    hundreds. Over ascending times the window is one contiguous run, located
+    here by bisection on a host copy of the times read once per batch.
+
+    Exact, not approximate: a comparison between a tensor and a Python number
+    rounds the number to the tensor's dtype first (``s <= times`` is
+    ``float32(s) <= times`` for float32 times), so comparing the same rounded
+    bound against the times' exact values reproduces every mask bit for bit.
+    :meth:`window` returns ``None`` for a bound it cannot round that way, and
+    :meth:`for_times` declines unsorted times or other dtypes; both fall back
+    to the tensor path.
+    """
+
+    __slots__ = ("values", "scalar")
+
+    def __init__(self, values, scalar):
+        self.values = values
+        self.scalar = scalar
+
+    @classmethod
+    def for_times(cls, times):
+        scalar = _FRAME_TIME_SCALAR.get(times.dtype)
+        if scalar is None or times.dim() != 1 or _opt_disabled("framewindows"):
+            return None
+        values = times.tolist()
+        # ``not a <= b`` also rejects a NaN, which no mask ever selects.
+        if any(not a <= b for a, b in zip(values, values[1:])) or any(
+            v != v for v in values[:1]
+        ):
+            return None
+        return cls(values, scalar)
+
+    def window(self, start, end):
+        """``(first, stop)``: the frames with ``start <= t < end``, or ``None``."""
+        if not (isinstance(start, (int, float)) and isinstance(end, (int, float))):
+            return None
+        first = bisect.bisect_left(self.values, float(self.scalar(start)))
+        stop = bisect.bisect_left(self.values, float(self.scalar(end)))
+        return first, max(first, stop)
 
 
 def _contiguous_time_selector(inds):
@@ -1293,13 +1347,16 @@ class AttributeTimeline:
                 b, e = key.pairs[0]
                 span = self._compact_span(b, e)
                 if span is not None:
-                    block = self.active_state[:, span[0] : span[1]]
                     t = self.active_time_inds
                     if self.active_state is self.current_state:
                         t = self._effective_time_inds()
+                    # Frames and rows in one indexing op: the same view (or
+                    # gather) as slicing the rows first and the frames after,
+                    # for one op's dispatch instead of two on the hottest read.
                     if isinstance(t, slice):
-                        return block[t].clone() if copy else block[t]
-                    return block[t.view(-1)]
+                        block = self.active_state[t, span[0] : span[1]]
+                        return block.clone() if copy else block
+                    return self.active_state[t.view(-1), span[0] : span[1]]
             key = key.tensor()
         columns, live = self._compact_index(key)
         t = self.active_time_inds
@@ -4282,6 +4339,14 @@ class AnimationTimeline:
                 exclude_rows=exclude_rows.get(attr_name),
             )
 
+        # Replay windows located on the host (see _SortedFrameTimes); None
+        # keeps the tensor path, as do still batches replayed frame by frame
+        # and the timeslice bisect switch, which both need index tensors.
+        frame_times = (
+            None
+            if self.replay_frame_by_frame or _opt_disabled("timeslice")
+            else _SortedFrameTimes.for_times(times)
+        )
         for f in self._in_execution_order(functions, plain_writes):
             if isinstance(f, tuple):
                 # A plain write inside an earlier animation's window: its
@@ -4304,17 +4369,30 @@ class AnimationTimeline:
             s = f.time.start
             e = f.time.end
             replay_end = _replay_window_end(f)
-            all_time_inds = ((s <= times) & (times < replay_end)).nonzero()
-            for active_time_inds in self._replay_frame_groups(all_time_inds):
-                time_selector = (
-                    active_time_inds
-                    if _opt_disabled("timeslice")
-                    else _contiguous_time_selector(active_time_inds)
+            window = None if frame_times is None else frame_times.window(s, replay_end)
+            if window is not None:
+                # One contiguous run of frames: the slice the tensor path's
+                # _contiguous_time_selector would have made, read off the host.
+                first, stop = window
+                groups = (
+                    ((slice(first, stop), times[first:stop]),) if stop > first else ()
                 )
+            else:
+                all_time_inds = ((s <= times) & (times < replay_end)).nonzero()
+                groups = (
+                    (
+                        active_time_inds
+                        if _opt_disabled("timeslice")
+                        else _contiguous_time_selector(active_time_inds),
+                        times[active_time_inds.squeeze(-1)],
+                    )
+                    for active_time_inds in self._replay_frame_groups(all_time_inds)
+                )
+            for time_selector, group_times in groups:
                 for timeline in self.attr_to_timeline.values():
                     timeline.set_active_time_inds(time_selector)
 
-                elapsed = times[active_time_inds.squeeze(-1)] - s
+                elapsed = group_times - s
                 a = (elapsed / (e - s + 1e-6)).view(-1, 1, 1)
                 if replay_end > e:
                     # Frames past the function's own end (reachable only while
