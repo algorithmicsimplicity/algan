@@ -21,9 +21,6 @@ from algan.utils.api_renames import (
 from algan.utils.lazy_import import LazyModule, isinstance_if_loaded
 from algan.utils.singleton import Singleton
 
-pytestmark = pytest.mark.fast
-
-
 # --------------------------------------------------------------------------
 # api_renames
 # --------------------------------------------------------------------------
