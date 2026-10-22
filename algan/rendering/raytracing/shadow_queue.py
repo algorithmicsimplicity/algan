@@ -68,21 +68,34 @@ def _fan_layout(light_col, num_lights, sec_aa, secondary):
     return offsets, layout_tensor, starts[-1]
 
 
-def _event_capacity(memory, events, fan_slots, sort_rays):
+def _event_capacity(memory, events, fan_slots, sort_rays, extra_bytes_per_ray=0):
     # All queue payloads, sort indices and keys are arena-backed. Leave the
     # allocator's existing external headroom for the backend sort workspace.
-    bytes_per_ray = 28 + 4 + 12 + (16 if sort_rays else 0)
+    bytes_per_ray = 28 + 4 + 12 + (16 if sort_rays else 0) + extra_bytes_per_ray
     budget = min(_SCRATCH_LIMIT, max(0, memory.get_num_bytes_remaining() - 256))
     return min(events, budget // max(1, fan_slots * bytes_per_ray))
 
 
-def make_shadow_tracer(memory, sort_sources=None):
+def make_shadow_tracer(memory, sort_sources=None, merged=None):
     """Bind a job arena without changing the established kernel call contract.
 
     ``sort_sources`` is scheduling metadata, NOT shadow identity. In particular,
     bounce events retain their historical -1 acceptance identity while being
     ordered by the real source triangle and actual light-ray direction.
+
+    ``merged`` is the batch's merged scene. With it, and
+    ``SETTINGS.raytracing.experimental.optix`` on, the queue traces on RT
+    cores (``optix/shadows.py``), falling back per launch to the tracer this
+    function returns otherwise.
     """
+    if merged is not None and rt_settings.optix:
+        from algan.rendering.raytracing.optix.shadows import make_optix_shadow_tracer
+
+        optix_trace = make_optix_shadow_tracer(
+            memory, merged, make_shadow_tracer(memory, sort_sources)
+        )
+        if optix_trace is not None:
+            return optix_trace
     if not rt_settings.shadow_ray_parallel:
         return kernels.raster_shadow_trace
 

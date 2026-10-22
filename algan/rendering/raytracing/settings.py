@@ -1613,6 +1613,20 @@ frame_local_video_batches = env_flag("ALGAN_FRAME_LOCAL_VIDEO_BATCHES", False)
 shadow_ray_parallel = env_flag("ALGAN_SHADOW_RAY_PARALLEL", False)
 shadow_secondary_sort = env_flag("ALGAN_SHADOW_SECONDARY_SORT", True)
 
+# Hardware ray tracing (NVIDIA OptiX on RT cores) for the deterministic
+# renderer's triangle shadow rays and its reflection/refraction gather. A side
+# path between Quadrants kernels (``algan/rendering/raytracing/optix``): the
+# driver's own OptiX runtime through ctypes, programs compiled with torch's
+# NVRTC, one triangle GAS per batch frame. Anything it cannot do -- no CUDA, no
+# RT cores, no driver support, Bezier circuits in the batch -- keeps the
+# software walk, so turning it on never fails a render.
+#
+# OFF by default: the RT cores' watertight triangle test is not Algan's
+# float32 ``_tri_hit`` bit for bit, so turning it on moves shadow-edge and
+# reflection pixels at the last-bit level and needs its own baselines. Read
+# live at every shadow dispatch (host-side only; no kernel folds it in).
+optix = env_flag("ALGAN_OPTIX", False)
+
 
 def set_shadow_ray_budget(rays):
     """Set the soft-shadow rays one light may spend per primary shading event
