@@ -24,24 +24,24 @@ cannot silently regress):
 * ``ALGAN_TI_FULL_TRACEBACK=1`` -> ``print_full_traceback``: the compiler's
   own frames in a kernel compile error, instead of the trimmed user-facing one.
 
-There is no register-cap setting, and that is now a *choice* rather than a
-limitation. On taichi 1.7.4 it was a limitation: ``gpu_max_reg`` (and the
+There is no module-wide register cap. On taichi 1.7.4 ``gpu_max_reg`` (and the
 ``ALGAN_GPU_MAX_REG`` that fed it) never reached ptxas -- the field was read
 only by the cache key. ``quadrants_patches/0005-cuda-max-reg.patch`` makes
 ``qd.loop_config(max_reg=N)`` a per-kernel PTX ``.maxnreg`` (confirmed in PTX
 on sm_61, 2026-09-05, by ``quadrants_patches/verify_cuda_patches.py``). On the
 1.3.0 wheel it also turned ``gpu_max_reg`` into ``CU_JIT_MAX_REGISTERS``;
 Quadrants 1.3.1 deleted that field (#890), so on the 1.3.3 rebase only the
-per-loop cap exists, and ``qd.init`` rejects ``gpu_max_reg``. Nothing in
-``algan/`` sets either, so **0005 is inert on every render today**; it is a
-lever for the register-pressure work in ``taichi_patches/PLAN.md`` §8-§9, and
-turning it on means adding it here and measuring.
+per-loop cap exists, and ``qd.init`` rejects ``gpu_max_reg``. The per-loop cap
+is ``SETTINGS.raytracing.experimental.megakernel_max_reg``
+(``ALGAN_MEGAKERNEL_MAX_REG``), on the four CUDA megakernels only and **0 --
+no cap -- by default**: a lever for the register-pressure work in
+``taichi_patches/PLAN.md`` §8-§9, not a measured win.
 
-The same is true of ``readonly_ndarray_ldg``
-(``0006-cuda-readonly-ndarray-ldg.patch``): the compiler defaults it off and
-this dict does not set it. ``invariant_arg_loads`` (0004) defaults **on**, and
-``fast_math`` below is what makes 0007's fast ``expf`` live, so those two are
-the patches an Algan render actually runs through.
+``readonly_ndarray_ldg`` (``0006-cuda-readonly-ndarray-ldg.patch``) is likewise
+off unless ``ALGAN_READONLY_NDARRAY_LDG=1``, and then set on CUDA only (see
+:func:`taichi_init_kwargs`). ``invariant_arg_loads`` (0004) defaults **on**,
+and ``fast_math`` below is what makes 0007's fast ``expf`` live, so those two
+are the patches an Algan render runs through by default.
 """
 
 from __future__ import annotations
@@ -859,6 +859,15 @@ def taichi_init_kwargs():
     opt_level = env_int("ALGAN_OPT_LEVEL", 0)
     if opt_level > 0:
         kwargs["opt_level"] = opt_level
+    # Quadrants patch 0006: loads from an ndarray argument the offloaded task
+    # never writes go through the read-only cache (`ld.global.nc`). OFF unless
+    # ALGAN_READONLY_NDARRAY_LDG=1, and only asked for on CUDA, the one arch
+    # whose codegen reads it: the flag is in the compiler's config key (and so
+    # in the source key's config fingerprint) on every arch, so passing it
+    # elsewhere would only fork the CPU cache. Not passed at all when off, so
+    # the off arm's init -- and every key -- is what it was before the switch.
+    if kwargs["arch"] == ti.cuda and env_flag("ALGAN_READONLY_NDARRAY_LDG", False):
+        kwargs["readonly_ndarray_ldg"] = True
     kwargs.update(_INIT_OVERRIDES)
     if kwargs["arch"] == ti.metal:
         queue = _torch_mps_command_queue()

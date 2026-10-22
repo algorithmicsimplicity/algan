@@ -32,6 +32,7 @@ import warnings
 from algan.environment import env_flag, env_float, env_int, env_is_set, env_str
 from algan.errors import (
     AlganConfigurationError,
+    AlganWarning,
     UnsupportedFeatureError,
     UnsupportedFeatureWarning,
 )
@@ -80,6 +81,9 @@ KERNEL_COMPILED_IN_FIELDS = (
     # raster_taichi._bez_anisotropic: whether _bez_pixel_hit measures circuit
     # coverage through the plane's projection or in camera-facing pixels.
     "analytic_aa_bez_anisotropic",
+    # The four CUDA megakernels: whether their main loop carries a
+    # ``loop_config(max_reg=...)``, and which cap (Quadrants patch 0005).
+    "megakernel_max_reg",
 )
 
 
@@ -1390,6 +1394,72 @@ def set_rgb_shadow_tint(enabled):
     """
     global rgb_shadow_tint
     rgb_shadow_tint = bool(enabled)
+
+
+#: The ``.maxnreg`` values PTX accepts; 0 means no cap.
+_MAXNREG_RANGE = (16, 255)
+
+
+def _max_reg_problem(value):
+    """Why ``value`` cannot be ``megakernel_max_reg``, or ``None`` when it can."""
+    if value == 0:
+        return None
+    low, high = _MAXNREG_RANGE
+    if not low <= value <= high:
+        return (
+            f"a register cap is 0 (none) or {low}-{high}, the range PTX's "
+            f".maxnreg accepts; got {value}"
+        )
+    from algan.taichi_compat import BACKEND
+
+    if BACKEND != "quadrants":
+        return f"a register cap needs Quadrants patch 0005, and {BACKEND} has no such option"
+    return None
+
+
+def _seeded_max_reg(value):
+    problem = _max_reg_problem(value)
+    if problem is None:
+        return value
+    warnings.warn(
+        f"ALGAN_MEGAKERNEL_MAX_REG ignored: {problem}.", AlganWarning, stacklevel=2
+    )
+    return 0
+
+
+# Per-kernel CUDA register cap on the four megakernels (sheet_resolve_shade,
+# wavefront_traverse_events, wavefront_shade and pt_shade, each as its
+# ``_arena`` kernel), through Quadrants patch 0005: ``ti.loop_config(max_reg=N)``
+# ahead of a kernel's main loop becomes that kernel's PTX ``.maxnreg``. 0, the
+# default, is no cap and traces no ``loop_config`` call at all (the gate is a
+# ``ti.static``), so the off arm compiles exactly the kernels, under exactly
+# the compiler keys, that it did before this switch existed.
+#
+# A lever without a known good value. Below what a kernel needs, ptxas spills
+# to local memory; a well-chosen cap raises occupancy instead, and which of the
+# two a given cap does to the 161-register megakernel is an open question in
+# ``taichi_patches/PLAN.md`` (sections 8-9: read ``ptxas -v`` first). Both
+# arms are expected to render the same bytes: the directive constrains
+# register allocation in PTX that is otherwise identical, and a spill stores
+# and reloads an exact value.
+#
+# 16-255 or 0, as ``.maxnreg`` itself; anything else would fail inside ptxas
+# at the kernel's first launch, so the setter refuses it. Quadrants only (the
+# Taichi backend's ``loop_config`` has no ``max_reg``), and the kernels see it
+# on the CUDA arch only (``raytrace_kernels_taichi.megakernel_register_cap``):
+# another arch would ignore the cap yet key its artifacts on it. Compiled in,
+# hence in KERNEL_COMPILED_IN_FIELDS. Seeded by ALGAN_MEGAKERNEL_MAX_REG.
+# DEFAULT 0.
+megakernel_max_reg = _seeded_max_reg(env_int("ALGAN_MEGAKERNEL_MAX_REG", 0))
+
+
+def set_megakernel_max_reg(value):
+    """Cap the CUDA megakernels' registers per thread (see ``megakernel_max_reg``)."""
+    problem = _max_reg_problem(value)
+    if problem is not None:
+        raise AlganConfigurationError(problem)
+    global megakernel_max_reg
+    megakernel_max_reg = value
 
 
 # Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). A
