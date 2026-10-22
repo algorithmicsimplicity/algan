@@ -53,7 +53,7 @@ unchanged; the kernels select the walk with a compile-time ``refit`` template.
 Topology uses vectorized PyTorch: one batched binned-SAH split pass per binary
 level across every node of that level -- or, for a small tree or a CPU build,
 the same passes in NumPy (``refit_host_topology_max_columns``). The
-``refit_pack_kernel`` path (default on) fuses each bottom-up refit level with
+``refit_pack_kernel`` path (default on, except on MPS) fuses each bottom-up refit level with
 traversal-block packing on a local Taichi backend, retaining only node unions
 and final blocks; the torch path is the fallback for non-local tensor/backend
 pairs and the A/B arm.
@@ -94,7 +94,8 @@ bvh_sah_bins = max(2, env_int("ALGAN_SAH_BINS", 16))
 # 5080 under WDDM, where the build is launch-bound, it took 15 ms off a
 # 10k-triangle tree's and a 110k-triangle tree's builds and 4-10 ms off a
 # small one's; an earlier UHD A/B on a GPU-bound render saw no end-to-end
-# change. ALGAN_REFIT_PACK_KERNEL=0 is the torch arm.
+# change. ALGAN_REFIT_PACK_KERNEL=0 is the torch arm. Never on MPS, where it
+# has not been validated (see the gate in ``_refit_blocks``).
 refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", True)
 
 # Column count up to which a device build runs its topology (the binned-SAH
@@ -538,9 +539,13 @@ def build_refit_bvh(
             )
         ulo = host[pids, 0:3]
         uhi = host[pids, 3:6]
-        child_kind, child_ref, levels = _build_topology_host(
-            M, (ulo + uhi) * np.float32(0.5), ulo, uhi, bvh_arity
-        )
+        # Torch is silent where a coordinate past ~1e19 overflows a product;
+        # NumPy warns. The values -- inf, and the inf the cost masks anyway --
+        # are the same either way.
+        with np.errstate(over="ignore", invalid="ignore"):
+            child_kind, child_ref, levels = _build_topology_host(
+                M, (ulo + uhi) * np.float32(0.5), ulo, uhi, bvh_arity
+            )
         if M:
             child_ref = np.where(
                 child_kind == 1, pids[np.maximum(child_ref, 0)], child_ref
@@ -548,8 +553,8 @@ def build_refit_bvh(
         return _refit_blocks(
             vlo,
             vhi,
-            torch.from_numpy(child_kind).to(device, non_blocking=True),
-            torch.from_numpy(child_ref).to(device, non_blocking=True),
+            _upload_table(child_kind, device),
+            _upload_table(child_ref, device),
             levels,
             Tc,
             N,
@@ -576,8 +581,8 @@ def build_refit_bvh(
     return _refit_blocks(
         vlo,
         vhi,
-        child_kind.to(device, non_blocking=True),
-        child_ref.to(device, non_blocking=True),
+        child_kind.to(device),
+        child_ref.to(device),
         levels,
         Tc,
         N,
@@ -585,6 +590,18 @@ def build_refit_bvh(
         casts,
         leaf_prim,
     )
+
+
+def _upload_table(table, device):
+    """A host-built tree table on ``device``.
+
+    Without a stream synchronisation only on CUDA, where the driver stages
+    pageable memory before the copy call returns, so the NumPy array is free
+    to go the moment it does. Other backends (MPS) may read the host memory
+    after the call -- by when the array may be freed and its storage reused by
+    the next tree's build -- so they copy synchronously.
+    """
+    return torch.from_numpy(table).to(device, non_blocking=device.type == "cuda")
 
 
 def _build_topology(M, cent, ulo, uhi, a):
@@ -757,6 +774,9 @@ def _refit_blocks(
 
     if (
         refit_pack_kernel
+        # Validated against the torch path on CUDA and on the CPU arch only:
+        # on Metal (local through the zero-copy hook) the torch path runs.
+        and device.type != "mps"
         and _live_arch() is not None
         and taichi_launch_is_local(device)
         and vlo.dtype == torch.float32

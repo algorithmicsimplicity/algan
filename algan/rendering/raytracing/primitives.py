@@ -93,6 +93,11 @@ from algan.utils.python_utils import callable_signature
 
 _SAMPLE_TENSOR_CACHE = {}
 
+#: Elements of ``[T, Q, K]`` probe scratch the inward-sign probe allows per
+#: chunk (``_circuit_edge_inward_signs``). Module-level so a test can shrink it
+#: to force a contour set through several chunks.
+_INWARD_SIGN_PROBE_BUDGET = 4_000_000
+
 
 def _camera_projection(camera, num_frames, device):
     """``[T, 2]`` ``(persp, spread)`` rows of a camera snapshot, or ``None``.
@@ -2514,6 +2519,8 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return value[:1], True
 
     def _dice_logical_pn(self, camera):
+        # Read once: the switch is live, and the dice's branches must agree.
+        diet = bool(rt_settings.pn_dice_launch_diet)
         num_frames = int(camera.ray_origin.shape[0])
         source_corners = self.corners.float()
         source_normals = self.normals.float()
@@ -2727,7 +2734,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         shape_keys = (
             levels * (self.max_subdivision_level + 1) + across_levels
         ) * 3 + apex_levels
-        if rt_settings.pn_dice_launch_diet and shape_keys.numel():
+        if diet and shape_keys.numel():
             # Every shape's (frame, patch) list from one stable sort and one
             # readback, rather than a comparison, a ``nonzero`` and a device
             # synchronisation per shape. Within a shape the sort keeps the
@@ -2782,7 +2789,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             # against 0.97x on the deforming half of a real scene's dice calls.
             # The writes are disjoint and ``index_copy_`` does not care about
             # order, so the diced output is the same either way.
-            if rt_settings.pn_dice_launch_diet and shape_keys.numel():
+            if diet and shape_keys.numel():
                 selected = shape_rows[key]
             else:
                 trying = shape_keys == key
@@ -2799,16 +2806,21 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             chunk = max(1, int(self.max_scratch_triangles) // num_triangles)
             # Built once per dice shape rather than per chunk and per attribute:
             # the dice is launch-bound on a GPU, and these were a quarter of its
-            # launches. The same tensors reach the same arithmetic.
-            vertex_weights = triangle_uv_to_barycentric(vertex_uv)
-            snap_levels = torch.tensor(
-                pattern.edge_levels, dtype=edge_levels.dtype, device=device
+            # launches. The same tensors reach the same arithmetic. Off, every
+            # call builds its own, as it always did.
+            vertex_weights = triangle_uv_to_barycentric(vertex_uv) if diet else None
+            snap_levels = (
+                torch.tensor(
+                    pattern.edge_levels, dtype=edge_levels.dtype, device=device
+                )
+                if diet
+                else pattern.edge_levels
             )
             # The patch weights, likewise, when the evaluation runs eagerly
             # (``logical_pn_basis``); a compiled one fuses them into its kernel.
             basis = (
                 logical_pn_basis(vertex_uv)
-                if rt_settings.pn_dice_launch_diet and not torch_compile_enabled()
+                if diet and not torch_compile_enabled()
                 else None
             )
 
@@ -2839,7 +2851,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 normal_controls, _ = chunk_rows.rows_of(
                     normal_control_points, geometry_static
                 )
-                if rt_settings.pn_dice_launch_diet:
+                if diet:
                     if basis is None:
                         patch_positions = evaluate_logical_pn(controls, vertex_uv)
                         patch_normals = evaluate_logical_pn_normals(
@@ -3142,7 +3154,7 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     # 0.02-unit stem needs eps*|e| < 0.01), and an unresolved wall falls back
     # to the single half-plane exactly where the wedge was meant to help.
     eps = 0.05
-    budget = 4_000_000
+    budget = _INWARD_SIGN_PROBE_BUDGET
     if rt_settings.inward_signs_host_plan:
         _probe_inward_signs_host_planned(
             edges,
@@ -3221,6 +3233,10 @@ def _probe_inward_signs_host_planned(
     """
     T = edges.shape[0]
     device = edges.device
+    # Index uploads skip the stream sync only on CUDA, whose driver stages a
+    # pageable host tensor before the copy call returns; another backend may
+    # read it after this loop has dropped it.
+    asynchronous = device.type == "cuda"
     circ = vert_circuit.cpu()
     order = torch.argsort(circ, stable=True)
     counts_all = torch.bincount(circ, minlength=int(circ.max()) + 1)
@@ -3253,7 +3269,7 @@ def _probe_inward_signs_host_planned(
                 cnt = edge_count[sel_host]
                 Q = sel_host.numel()
                 slot_valid = (slots.view(1, -1) < cnt.view(-1, 1)).to(
-                    device, non_blocking=True
+                    device, non_blocking=asynchronous
                 )
                 # Padding slots re-read the circuit's last edge and are masked
                 # out of the parity count by slot_valid.
@@ -3261,7 +3277,7 @@ def _probe_inward_signs_host_planned(
                     slots.view(1, -1), (cnt - 1).view(-1, 1)
                 )
                 plan = torch.cat((sel_host, order[gidx].view(-1))).to(
-                    device, non_blocking=True
+                    device, non_blocking=asynchronous
                 )
                 sel, flat = plan[:Q], plan[Q:]
                 gathered = corners[:, flat]  # [T, Q * K, 4]

@@ -570,3 +570,32 @@ def test_host_planned_inward_signs_match_the_device_loop(device):
     assert bool((reference == 1).any())
     assert bool((reference == -1).any())
     assert bool((reference[:, -2:] == 0).all())
+
+
+@pytest.mark.parametrize("host_plan", [False, True], ids=["device", "host"])
+@pytest.mark.parametrize("device", _inward_sign_devices(), ids=str)
+def test_inward_signs_do_not_depend_on_the_probe_chunking(
+    device, host_plan, monkeypatch
+):
+    """A budget small enough to split every size class into several chunks
+    gives the signs one chunk per class gives, on both probe paths.
+    """
+    import algan.rendering.raytracing.primitives as primitives
+    from algan.settings import SETTINGS
+
+    edges, circuit = _contour_edges(device)
+    with SETTINGS.raytracing.experimental.override(inward_signs_host_plan=host_plan):
+        reference = primitives._circuit_edge_inward_signs(edges, circuit)
+        calls = []
+        original = primitives._circuit_parity_gathered
+        monkeypatch.setattr(
+            primitives,
+            "_circuit_parity_gathered",
+            lambda *args: calls.append(1) or original(*args),
+        )
+        # Room for a couple of queries per chunk at the widest class.
+        monkeypatch.setattr(primitives, "_INWARD_SIGN_PROBE_BUDGET", 2000)
+        chunked = primitives._circuit_edge_inward_signs(edges, circuit)
+    assert torch.equal(chunked, reference)
+    # Every edge probed in chunks of a few: many more chunks than classes.
+    assert len(calls) > 20, len(calls)

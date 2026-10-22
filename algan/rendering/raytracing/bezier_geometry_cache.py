@@ -211,7 +211,11 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
         np.flatnonzero(~circuit_flags),
         np.flatnonzero(~segment_flags),
     ]
-    uploaded = torch.from_numpy(np.concatenate(lists)).to(device, non_blocking=True)
+    # Without a sync only where the driver stages pageable memory before the
+    # call returns (CUDA); elsewhere the host array may be gone by the read.
+    uploaded = torch.from_numpy(np.concatenate(lists)).to(
+        device, non_blocking=device.type == "cuda"
+    )
     bounds = np.cumsum([0] + [len(part) for part in lists])
     lists = [uploaded[bounds[i] : bounds[i + 1]] for i in range(4)]
 

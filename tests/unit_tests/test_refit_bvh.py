@@ -261,3 +261,26 @@ def test_host_topology_builds_the_device_tree(monkeypatch, device):
         )
     assert trees[0].num_blocks == trees[1].num_blocks
     assert torch.equal(_block_bits(trees[0]), _block_bits(trees[1]))
+
+
+def test_host_topology_is_quiet_about_huge_coordinates():
+    """NumPy warns where a product of ~1e19 coordinates overflows; torch is
+    silent there, and the overflow is masked out of the costs either way.
+    """
+    import warnings
+
+    from algan.rendering.raytracing import refit_bvh
+
+    torch.manual_seed(3)
+    lo = torch.rand(1, 64, 3) * 1e20
+    hi = lo + torch.rand(1, 64, 3) * 1e20
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        host = build_refit_bvh(lo, hi)
+    device = refit_bvh.refit_host_topology_max_columns
+    try:
+        refit_bvh.refit_host_topology_max_columns = 0
+        reference = build_refit_bvh(lo, hi)
+    finally:
+        refit_bvh.refit_host_topology_max_columns = device
+    assert torch.equal(_block_bits(host), _block_bits(reference))
