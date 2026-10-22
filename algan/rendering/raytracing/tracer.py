@@ -44,6 +44,7 @@ from algan.rendering.mps_compat import clamp_floor, index_copy_rows
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.projection import is_pinhole, kernel_projection
+from algan.rendering.raytracing.arena_args_taichi import defer_syncs_enabled
 from algan.rendering.raytracing.float32_rounding import (
     DEPTH_ORDER_RECORDS,
     attach_depth_order,
@@ -233,6 +234,20 @@ def _arena_copy(memory, tensor, dtype=None):
     """
     dtype = tensor.dtype if dtype is None else dtype
     out = memory.get_tensor(tensor.shape, dtype)
+    if out.is_cuda and tensor.device.type == "cpu" and defer_syncs_enabled():
+        # A blocking copy from pageable memory synchronizes the stream, and a
+        # chunk makes about ten of these (camera rows, lights, generation and
+        # layer tables), each waiting out whatever the previous chunk left
+        # queued. Stage the bytes in page-locked memory instead and copy
+        # without blocking. The host converts and lays the source out exactly
+        # as the blocking copy does (dtype conversion on the CPU, then a
+        # contiguous copy), so the bytes that land are the same; the caching
+        # host allocator keeps the staging block until the copy has run.
+        src = tensor.to(dtype).contiguous()
+        staged = torch.empty(src.shape, dtype=dtype, pin_memory=True)
+        staged.copy_(src)
+        out.copy_(staged, non_blocking=True)
+        return out
     out.copy_(tensor)
     return out
 
@@ -342,7 +357,13 @@ def _gloss_frame_bounds(covered_idx, pixels_per_frame, num_frames):
     a contiguous ordinal range and one searchsorted finds every boundary. The
     tile loop clamps to these so a per-frame reflection buffer is complete
     before it is prefiltered.
+
+    The first boundary is always 0 and the last always ``len(covered_idx)``
+    (every index lies in ``[0, num_frames * pixels_per_frame)``), so a
+    one-frame window -- every chunk of a UHD render -- needs no readback.
     """
+    if int(num_frames) == 1 and defer_syncs_enabled():
+        return [0, int(covered_idx.numel())]
     edges = torch.arange(
         num_frames + 1, device=covered_idx.device, dtype=covered_idx.dtype
     ) * int(pixels_per_frame)
@@ -3631,10 +3652,22 @@ def raytrace_render_wavefront(
                                 # so the zero the clear leaves is what a glossy
                                 # ray that never hits anything should read as:
                                 # a reflection infinitely far, fully blurred.
-                                layer_offsets_t[7] = float(attempt_primary)
+                                # ``fill_`` on a one-element slice, not item
+                                # assignment: assigning a Python scalar into a
+                                # CUDA tensor copies a CPU scalar tensor
+                                # through pageable memory, which synchronizes
+                                # the stream (twice per tile, with the line
+                                # below). The stored value is the same.
+                                if defer_syncs_enabled():
+                                    layer_offsets_t[7:8].fill_(float(attempt_primary))
+                                else:
+                                    layer_offsets_t[7] = float(attempt_primary)
                             rs_int[:, 2].fill_(1)
                             rs_alloc.zero_()
-                            rs_alloc[0] = attempt_primary
+                            if defer_syncs_enabled():
+                                rs_alloc[0:1].fill_(attempt_primary)
+                            else:
+                                rs_alloc[0] = attempt_primary
 
                         with memory.temp():
                             covered_idx = shade_sparse_raster_coverage(
