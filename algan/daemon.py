@@ -1290,6 +1290,12 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     _console()  # the real stdout, before any run can redirect it
+    # The daemon's first run pays torch's lazy CUDA kernel loading like any
+    # fresh process; load them while it waits for, and authors, that run
+    # (rendering/device_warmup.py). Its first render job joins the thread.
+    from algan.rendering.device_warmup import start as _start_device_warmup
+
+    _start_device_warmup("daemon")
 
     script = os.path.abspath(args.script) if args.script else None
     if script is not None and not os.path.isfile(script):

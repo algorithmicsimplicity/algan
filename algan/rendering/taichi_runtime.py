@@ -1126,6 +1126,13 @@ def render_job_holding_the_arch():
         # Optimizations and reporting: nothing here may fail a render, and an
         # exception before the `try` would leave the job count stuck.
         with contextlib.suppress(Exception):
+            from algan.rendering import device_warmup
+
+            # The start-up warm-up thread issues device work of its own; the
+            # render must not share the device with it (its memory peaks and
+            # arena preflight are measured), so it ends here.
+            device_warmup.finish()
+        with contextlib.suppress(Exception):
             from algan.rendering import kernel_precompile, kernel_progress
 
             kernel_progress.render_started()

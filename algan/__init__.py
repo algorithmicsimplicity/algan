@@ -86,6 +86,16 @@ from algan.settings._startup import _ANIMATION_DEVICE, render_device
 if _ANIMATION_DEVICE.type != "cpu":
     torch.set_default_device(_ANIMATION_DEVICE)
 torch.set_default_dtype(torch.float32)
+
+# As early as the render device is known: in a scene-script process rendering
+# on CUDA, load the torch kernels the renderer uses on a background thread, so
+# the rest of this import and the script's authoring hide what the first
+# render would otherwise pay for loading them (rendering/device_warmup.py).
+# A no-op on CPU and MPS, outside scene scripts and with
+# ALGAN_STARTUP_WARMUP=0; the first render job joins the thread.
+from algan.rendering.device_warmup import start_at_import as _start_device_warmup
+
+_start_device_warmup()
 from algan.errors import *
 from algan.logging.logger import get_logger, set_log_level, set_progress_style
 
