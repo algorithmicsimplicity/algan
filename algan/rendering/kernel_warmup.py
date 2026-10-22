@@ -52,6 +52,13 @@ class Variant:
 VARIANTS = {
     "2d": Variant("2-D shapes, strokes and text-like outlines"),
     "3d": Variant("3-D solids and surfaces under lights and PBR materials"),
+    # The shading megakernels specialize on the light count (rounded up to a
+    # power of two, ``shading_taichi.shadow_vis_slots``), so the lit scene's
+    # four slots do not serve the far commoner scene that keeps the default
+    # rig's one light -- measured: a cold ``explainer`` render then compiled
+    # both of its megakernels itself (25 s) after the first-run pool had
+    # compiled every other kernel it needed.
+    "3d-default-light": Variant("the same 3-D scene under the default light alone"),
     "shadows": Variant("the 3-D scene with shadows on", {"shadows": True}),
     "glass": Variant("glass, mirror and metal"),
 }
@@ -97,7 +104,11 @@ def _lights():
         )
 
 
-def _scene_3d():
+def _scene_3d_default_light():
+    _scene_3d(lights=False)
+
+
+def _scene_3d(lights=True):
     from algan import (
         BLUE,
         DOWN,
@@ -115,7 +126,8 @@ def _scene_3d():
         Sync,
     )
 
-    _lights()
+    if lights:
+        _lights()
     Prism(width=10, height=0.2, depth=6).set_material(
         MeshLambertMaterial(color=GREEN)
     ).move(DOWN * 1.6).spawn()
@@ -179,6 +191,7 @@ def _scene_glass():
 _SCENES = {
     "2d": _scene_2d,
     "3d": _scene_3d,
+    "3d-default-light": _scene_3d_default_light,
     "shadows": _scene_3d,
     "glass": _scene_glass,
 }

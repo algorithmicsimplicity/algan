@@ -246,6 +246,111 @@ def get_num_available_bytes(device=torch.device("cuda")):
         return SETTINGS.computing.cpu_render_memory_budget
 
 
+#: PyTorch's caching allocator rounds a request above this many bytes up to a
+#: whole number of ``_CUDA_LARGE_SEGMENT_ROUND`` and gives it a segment of its
+#: own (``get_allocation_size`` in c10/cuda/CUDACachingAllocator.cpp).
+_CUDA_LARGE_SEGMENT_MIN = 10 << 20
+_CUDA_LARGE_SEGMENT_ROUND = 2 << 20
+
+
+def _cached_arena_bytes(free_bytes, segments, index, portion, stream=None):
+    """The arena size :func:`_cuda_arena_from_cache` can take from the cache.
+
+    ``free_bytes`` is the driver's free memory and ``segments`` PyTorch's
+    ``memory_snapshot()``. The size is ``portion`` of the free memory once
+    every wholly free segment on device ``index`` is returned -- what
+    :func:`get_num_available_bytes` measures after its ``empty_cache`` -- and
+    it is returned only when one of those segments is exactly the segment the
+    allocator would carve for it, from the default pool on ``stream`` (the
+    current stream's handle; ``None`` accepts any); otherwise ``None``.
+
+    A wholly free segment that is expandable or belongs to a private pool (a
+    CUDA graph's) is released on terms of its own, so its presence means the
+    free figure cannot be read this way at all: ``None`` then too.
+    """
+    releasable = []
+    for segment in segments:
+        if segment.get("device") != index:
+            continue
+        if segment.get("allocated_size") != 0 or segment.get("active_size") != 0:
+            continue
+        if segment.get("is_expandable") or tuple(
+            segment.get("segment_pool_id", (0, 0))
+        ) != (0, 0):
+            return None
+        releasable.append(segment)
+    free_bytes = int(free_bytes) + sum(int(s["total_size"]) for s in releasable)
+    num_bytes = int(free_bytes * portion)
+    if num_bytes <= _CUDA_LARGE_SEGMENT_MIN:
+        return None
+    segment_bytes = (
+        -(-num_bytes // _CUDA_LARGE_SEGMENT_ROUND) * _CUDA_LARGE_SEGMENT_ROUND
+    )
+    if not any(
+        int(segment["total_size"]) == segment_bytes
+        and segment.get("segment_type") == "large"
+        and (stream is None or segment.get("stream") == stream)
+        for segment in releasable
+    ):
+        return None
+    return num_bytes
+
+
+def _cuda_arena_from_cache(device, portion):
+    """Size a CUDA arena as :func:`get_num_available_bytes` would, and take it
+    from PyTorch's cache when the last render's arena is still sitting there.
+
+    A render releases its arena into PyTorch's cache, not to the driver, so
+    the next render's sizing used to hand the whole block back
+    (``empty_cache``, ~35 ms on Windows for a 6 GB arena) only to allocate the
+    same size again (~8 ms). The free figure the sizing reads is the driver's
+    free memory once every wholly free cached segment is returned -- which is
+    the driver's free memory now plus those segments' sizes, so it can be read
+    without returning them. When one of those segments is exactly the size the
+    arena needs, it becomes the arena, and only the others are returned: every
+    allocation and the driver's free memory end up as they would have.
+
+    Returns the arena tensor, or ``None`` to take the ordinary path (no such
+    segment, a custom allocator configuration, allocation-history recording,
+    an unreadable snapshot, or ``ALGAN_OPT_DISABLE=arenareuse``).
+    """
+    import os
+
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    if _opt_disabled("arenareuse"):
+        return None
+    # Expandable segments and the asynchronous backend do not keep one
+    # segment per large block; any custom configuration takes the old path.
+    if os.environ.get("PYTORCH_CUDA_ALLOC_CONF") or os.environ.get(
+        "PYTORCH_ALLOC_CONF"
+    ):
+        return None
+    device = torch.device(device)
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    try:
+        # With history recording on, the snapshot carries every recorded
+        # allocation's trace: hundreds of thousands of entries in a memory
+        # benchmark, far dearer than the round trip this saves.
+        history = getattr(torch._C, "_cuda_isHistoryEnabled", None)
+        if history is None or history():
+            return None
+        with torch.cuda.device(index):
+            free_bytes, _ = torch.cuda.mem_get_info(index)
+            segments = torch.cuda.memory_snapshot()
+            stream = torch.cuda.current_stream(index).cuda_stream
+    except Exception:  # noqa: BLE001 -- an optimization: fall back, never fail
+        return None
+    num_bytes = _cached_arena_bytes(free_bytes, segments, index, portion, stream)
+    if num_bytes is None:
+        return None
+    with torch.cuda.device(index):
+        data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
+        # Return every other wholly free segment, as the sizing would have.
+        torch.cuda.empty_cache()
+    return data
+
+
 def _gpu_memory_pressure(threshold=0.8):
     """True when the active render GPU exceeds ``threshold`` of its memory.
 
@@ -674,6 +779,77 @@ def release_torch_memory(force_gc=True):
         _note_host_reclaim(host_status, _windows_memory_status())
 
 
+#: Render-device bytes PyTorch may hold in segments with a live block at the
+#: start of a render while the collection before its freeze stays
+#: young-generation only (see :func:`scene_excluded_from_gc`). A warm benchmark
+#: render on CUDA starts with about 8.5 MB allocated.
+_FROZEN_GARBAGE_DEVICE_BYTES = 64 << 20
+
+#: Scenes whose contents were thrown away (``Scene.reset``, or a Scene
+#: replaced on the SceneManager's stack), and how many of them the last full
+#: pre-render collection had seen. See :func:`note_scene_discarded`.
+_scene_discards = 0
+_scene_discards_collected = 0
+
+
+def note_scene_discarded():
+    """Record that a Scene's contents may now be garbage.
+
+    A Scene is a web of cycles -- Mobs, timelines, spans, row ranges -- so what
+    a discarded one leaves is cyclic garbage that only a full collection
+    reaches, and it scales with the scene. The next render's collection before
+    its freeze is a full one (:func:`_pre_render_collection_is_full`), as it
+    always was; a render of the same Scene again, or of the only one, keeps
+    the cheap one.
+    """
+    global _scene_discards
+    _scene_discards += 1
+
+
+def _render_device_bytes_held():
+    """Render-device bytes that garbage could keep from the next arena.
+
+    On CUDA, the bytes in segments that hold at least one live block:
+    ``empty_cache`` returns only wholly free segments, so a small tensor kept
+    by garbage in the free tail of the last render's multi-gigabyte arena
+    segment keeps all of it -- allocated bytes alone would say a megabyte. On
+    MPS, the allocated bytes, which are what its free figure subtracts. Zero
+    for a CPU render: its arena size is a setting, and host memory is
+    :func:`_pre_render_collection_is_full`'s other question.
+    """
+    device = render_device()
+    if device.type == "cuda":
+        stats = torch.cuda.memory_stats(device)
+        return int(stats.get("allocated_bytes.all.current", 0)) + int(
+            stats.get("inactive_split_bytes.all.current", 0)
+        )
+    if device.type == "mps":
+        from algan.rendering.mps_arena import allocated_bytes as external_mps_bytes
+
+        return int(torch.mps.current_allocated_memory()) + int(external_mps_bytes())
+    return 0
+
+
+def _pre_render_collection_is_full():
+    """Whether the collection before a render's freeze must be a full one.
+
+    Full when garbage could hold enough render-device memory to change the
+    arena's size, when a Scene has been discarded since the last full one
+    (its cycles would otherwise stay allocated, frozen, through the render),
+    when the host is short of memory (frozen garbage is out of reach of the
+    pressure reclaims), or when ``ALGAN_OPT_DISABLE=rendergc`` asks for the old
+    behaviour.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    return (
+        _opt_disabled("rendergc")
+        or _scene_discards != _scene_discards_collected
+        or _render_device_bytes_held() > _FROZEN_GARBAGE_DEVICE_BYTES
+        or _host_memory_pressure()
+    )
+
+
 @contextmanager
 def scene_excluded_from_gc():
     """Keep the authored scene out of every collection made inside the block.
@@ -695,13 +871,31 @@ def scene_excluded_from_gc():
     the ordinary generations on the way out (including on an error, so a failed
     render does not leave the process with collection disabled for its scene).
     The one collection before freezing keeps pre-existing garbage collectable.
-    It is a full collection on purpose: the render job sizes a fresh arena from
-    the memory free just after it, so cyclic garbage frozen here instead would
-    stay allocated through that sizing. A finished render's arena used to be
-    exactly such garbage (``render_batch_raytraced`` now breaks that cycle), and
-    a young-generation collection did not reach it.
+    The render job sizes a fresh arena from the memory free just after it, so
+    cyclic garbage frozen here instead would stay allocated through that
+    sizing. A finished render's arena used to be exactly such garbage
+    (``render_batch_raytraced`` now breaks that cycle), and a young-generation
+    collection did not reach it.
+
+    It is a full collection only when old garbage could matter
+    (:func:`_pre_render_collection_is_full`), because a full collection walks
+    the whole live scene too: 0.09-0.11 s of a 0.7 s explainer render on an RTX
+    5080, 0.28-0.42 s on a T4, freeing no device memory at all on the
+    benchmarks. Garbage can keep from the next arena at most the device memory
+    in segments that hold a live block (a CPU render sizes its arena from a
+    setting), so while that is at most :data:`_FROZEN_GARBAGE_DEVICE_BYTES`, no
+    Scene has been discarded since the last full collection and the host is
+    not short of memory, the collection is of generations 0 and 1 -- the first
+    render of a script, and a render of the same Scene again.
+    ``ALGAN_OPT_DISABLE=rendergc`` restores the unconditional full collection.
     """
-    gc.collect()
+    global _scene_discards_collected
+    discards = _scene_discards
+    if _pre_render_collection_is_full():
+        gc.collect()
+        _scene_discards_collected = discards
+    else:
+        gc.collect(1)
     gc.freeze()
     try:
         yield
@@ -1233,6 +1427,18 @@ class ManualMemory:
             self._recorder = AllocationRecorder()
             _RECORDED_ARENAS.append(self)
 
+        cached = None
+        if (
+            managed
+            and num_bytes is None
+            and torch.device(device).type == "cuda"
+            and SETTINGS.computing.available_memory_override is None
+        ):
+            # The last render's arena, still in PyTorch's cache, when this one
+            # needs exactly its size (see _cuda_arena_from_cache).
+            cached = _cuda_arena_from_cache(device, portion_of_available_memory_used)
+            if cached is not None:
+                num_bytes = len(cached)
         if num_bytes is None:
             num_bytes = (
                 int(get_num_available_bytes(device) * portion_of_available_memory_used)
@@ -1244,7 +1450,9 @@ class ManualMemory:
         # that pins a larger arena (``available_memory_override``, a benchmark
         # fixture) would otherwise abort the process rather than get an error.
         num_bytes = _addressable_arena_bytes(device, num_bytes)
-        if managed and num_bytes > 0 and torch.device(device).type == "mps":
+        if cached is not None:
+            self.data = cached
+        elif managed and num_bytes > 0 and torch.device(device).type == "mps":
             from algan.rendering.mps_arena import allocate
 
             if torch.device(device).index not in (None, 0):

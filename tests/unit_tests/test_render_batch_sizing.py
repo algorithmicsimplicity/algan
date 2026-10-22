@@ -635,6 +635,70 @@ def test_fetch_window_carries_the_arena_verdict_into_the_next_batch(monkeypatch)
     assert requested_windows == [20, 10, 5, 5, 5, 5]
 
 
+def _split_scene(monkeypatch, preflight, first_batch_frames, prefetch=True):
+    import algan.rendering.raytracing.settings as rt_settings
+
+    rendered, requested = [], []
+    scene = _make_preflight_scene(monkeypatch, preflight, rendered, requested)
+    monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", str(int(prefetch)))
+    monkeypatch.setenv("ALGAN_PREFETCH_MERGE", "0")
+    monkeypatch.setattr(rt_settings, "first_batch_frames", first_batch_frames)
+    return scene, rendered, requested
+
+
+@pytest.mark.parametrize("first_batch_frames", [0, 3])
+def test_a_split_first_batch_hands_the_rest_to_the_prefetch_worker(
+    monkeypatch, first_batch_frames
+):
+    # first_batch_frames holds a job's first fetch to a few frames, so the
+    # prefetch worker prepares the rest while they render. The rest is
+    # fetched as a job's first fetch is -- whole -- rather than through the
+    # growth limit an arena-fitted batch would set (3 * 1.6 frames).
+    scene, rendered, requested = _split_scene(
+        monkeypatch, lambda *_args: True, first_batch_frames
+    )
+
+    frames = list(scene.get_frames(0, 20, post_processes=(), manual_memory=False))
+
+    expected = [3, 17] if first_batch_frames else [20]
+    assert rendered == expected
+    assert requested == expected
+    assert [len(frame) for frame in frames] == expected
+
+
+def test_the_rest_of_a_split_clip_is_still_fitted_to_the_arena(monkeypatch):
+    scene, rendered, requested = _split_scene(
+        monkeypatch, lambda duration, _require_estimates_fit: duration <= 5, 3
+    )
+
+    list(scene.get_frames(0, 20, post_processes=(), manual_memory=False))
+
+    assert sum(rendered) == 20
+    assert rendered[0] == 3
+    assert max(rendered) <= 5
+    assert requested[:2] == [3, 17]
+
+
+def test_a_first_batch_is_not_split_without_a_prefetch_worker(monkeypatch):
+    # Serial preparation has nothing to overlap the first window's render
+    # with: splitting would only add a batch.
+    scene, rendered, _requested = _split_scene(
+        monkeypatch, lambda *_args: True, 3, prefetch=False
+    )
+
+    list(scene.get_frames(0, 20, post_processes=(), manual_memory=False))
+
+    assert rendered == [20]
+
+
+def test_a_clip_no_longer_than_the_first_batch_is_one_batch(monkeypatch):
+    scene, rendered, _requested = _split_scene(monkeypatch, lambda *_args: True, 3)
+
+    list(scene.get_frames(0, 3, post_processes=(), manual_memory=False))
+
+    assert rendered == [3]
+
+
 @pytest.mark.parametrize("exit_path", ["complete", "error", "close"])
 def test_render_releases_circuit_cache_on_every_exit(monkeypatch, exit_path):
     from algan.rendering.raytracing.bezier_geometry_cache import _BezierGeometryCache

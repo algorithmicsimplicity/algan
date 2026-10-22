@@ -3176,6 +3176,46 @@ def prepare_sparse_raster_coverage(
     return result
 
 
+def _sheet_slice_bounds(coverage, c0, c1):
+    """``sheet_offsets[c0]`` and ``sheet_offsets[c1]`` as host ints.
+
+    The tile loop resolves a chunk's covered pixels in consecutive slices,
+    normally of one size, so the first call reads the offsets at every
+    boundary of that tiling at once -- ``c0``, then ``c1`` onwards in steps of
+    ``c1 - c0``, then the end -- and the later slices find theirs cached. A
+    slice the guess did not foresee (an overflow retry shrinks the tile) reads
+    its own grid the same way. Each read is one small gather and one transfer;
+    reading the whole CSR instead copied ``num_covered + 1`` ints through
+    pageable memory per chunk (33 MB for a fully covered UHD frame).
+    Off with the rest of ``arena_args_taichi.defer_syncs``.
+    """
+    from algan.rendering.raytracing.arena_args_taichi import defer_syncs_enabled
+
+    so = coverage["sheet_offsets"]
+    if not defer_syncs_enabled():
+        so_host = coverage.get("sheet_offsets_host")
+        if so_host is None:
+            so_host = so.cpu()
+            coverage["sheet_offsets_host"] = so_host
+        return int(so_host[c0]), int(so_host[c1])
+    known = coverage.setdefault("sheet_offsets_at", {})
+    if c0 not in known or c1 not in known:
+        n = int(so.shape[0]) - 1
+        step = max(1, c1 - c0)
+        # Device-side index (fills and an arange): building it on the host
+        # would cost a host-to-device copy, which synchronizes too.
+        index = torch.cat(
+            (
+                torch.full((1,), c0, dtype=torch.int64, device=so.device),
+                torch.arange(c1, n, step, dtype=torch.int64, device=so.device),
+                torch.full((1,), n, dtype=torch.int64, device=so.device),
+            )
+        )
+        positions = [c0, *range(c1, n, step), n]
+        known.update(zip(positions, so.index_select(0, index).tolist()))
+    return int(known[c0]), int(known[c1])
+
+
 def shade_sparse_raster_coverage(
     coverage,
     covered_start,
@@ -3257,12 +3297,7 @@ def shade_sparse_raster_coverage(
         sheet_resolve_shade,
     )
 
-    so_host = coverage.get("sheet_offsets_host")
-    if so_host is None:
-        so_host = coverage["sheet_offsets"].cpu()
-        coverage["sheet_offsets_host"] = so_host
-    s_start = int(so_host[c0])
-    s_end = int(so_host[c1])
+    s_start, s_end = _sheet_slice_bounds(coverage, c0, c1)
     sheet_offsets = _arena_tensor(memory, (num_covered + 1,), torch.int32)
     torch.sub(coverage["sheet_offsets"][c0 : c1 + 1], s_start, out=sheet_offsets)
     (rs_ro, rs_rd, rs_acc, rs_sca, rs_int, *_stubs) = state

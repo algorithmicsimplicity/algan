@@ -1278,6 +1278,10 @@ _ENV_NOT_IN_KEY = frozenset(
         # and must write entries under exactly the keys the render computes.
         "ALGAN_PRECOMPILE_JOBS",
         "ALGAN_PRECOMPILE_WORKER",
+        # When start-up work happens (rendering/device_warmup.py, the
+        # first-run pool), never what a kernel compiles to.
+        "ALGAN_STARTUP_WARMUP",
+        "ALGAN_FIRST_RUN_POOL",
         # Exit-time housekeeping: it decides when the artifacts this index
         # points at are written to disk, never what any of them contain.
         "ALGAN_FLUSH_KERNEL_CACHE",

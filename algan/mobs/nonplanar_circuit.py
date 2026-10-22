@@ -344,7 +344,7 @@ def subpath_bounds(corners):
     gaps = _cubics_disconnected(
         corners[1:, :1, :] - corners[:-1, 3:, :], scale
     ).reshape(-1)
-    starts.extend(int(index) + 1 for index in gaps.nonzero().reshape(-1))
+    starts.extend(index + 1 for index in gaps.nonzero().reshape(-1).tolist())
     starts.append(num_segments)
     return [(starts[i], starts[i + 1] - starts[i]) for i in range(len(starts) - 1)]
 

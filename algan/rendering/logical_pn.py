@@ -414,6 +414,62 @@ def evaluate_logical_pn(control_points, uv):
     )
 
 
+def logical_pn_basis(uv, batch_dims=1):
+    """The weights :func:`evaluate_logical_pn` multiplies each control point by.
+
+    ``(position, normal)``: the ten cubic weights and the six quadratic ones of
+    :func:`_evaluate_logical_pn_normals_fused`, each shaped to broadcast against
+    control points with ``batch_dims`` leading dimensions, exactly as those
+    functions shape them. Every term is spelled exactly as they spell it, so
+    :func:`evaluate_logical_pn_from_basis` is their arithmetic on the same
+    values, bit for bit.
+
+    The weights depend on the dice's parameters alone, never on a patch, and
+    eager torch rebuilds them -- forty-odd launches -- on every call. The dice
+    calls once per chunk of patches for every dice shape it uses, so it builds
+    them once per shape instead (only while :func:`compiled` runs eagerly; a
+    compiled evaluation is one fused kernel, weights and all).
+    """
+    uv_shape = (1,) * batch_dims + uv.shape[:-1] + (1,)
+    u = uv[..., 0].view(*uv_shape)
+    v = uv[..., 1].view(*uv_shape)
+    w = 1.0 - u - v
+    position = (
+        w * w * w,
+        u * u * u,
+        v * v * v,
+        3.0 * w * w * u,
+        3.0 * w * u * u,
+        3.0 * u * u * v,
+        3.0 * u * v * v,
+        3.0 * w * v * v,
+        3.0 * w * w * v,
+        6.0 * w * u * v,
+    )
+    normal = (w * w, u * u, v * v, 2.0 * w * u, 2.0 * u * v, 2.0 * w * v)
+    return position, normal
+
+
+def evaluate_logical_pn_from_basis(control_points, weights, extra_dims=1):
+    """:func:`evaluate_logical_pn` (ten weights) or the unnormalized normal
+    patch (six), from weights :func:`logical_pn_basis` built.
+
+    ``extra_dims`` is the parameter array's dimension count less its trailing
+    ``(u, v)`` axis -- 1 for the dice's ``[V, 2]`` vertex list.
+    """
+    count = len(weights)
+    controls = control_points.view(
+        *control_points.shape[:-2],
+        *((1,) * extra_dims),
+        count,
+        3,
+    )
+    total = weights[0] * controls[..., 0, :]
+    for index in range(1, count):
+        total = total + weights[index] * controls[..., index, :]
+    return total
+
+
 def evaluate_logical_pn_per_patch(control_points, uv):
     """Evaluate cubic logical PN position patches, one ``uv`` per patch.
 
@@ -1038,11 +1094,15 @@ def interpolate_patch_attribute(values, triangle_uv):
     return torch.einsum("mak,pkc->pmac", weights, values)
 
 
-def interpolate_patch_vertex_attribute(values, vertex_uv):
+def interpolate_patch_vertex_attribute(values, vertex_uv, weights=None):
     """Interpolate per-corner patch attributes onto the *shared* dice vertices.
 
     ``values`` is ``[K, 3, C]`` and ``vertex_uv`` is ``[V, 2]``; the result is
-    ``[K, V, C]``.  Gathering that through :func:`subdivision_triangle_indices`
+    ``[K, V, C]``.  ``weights`` is ``triangle_uv_to_barycentric(vertex_uv)``,
+    which a caller interpolating several attributes onto one dice builds once
+    and passes to each (the same tensor, so the same arithmetic): on a GPU the
+    dice is launch-bound, and rebuilding it per attribute per chunk was a sixth
+    of the dice's launches.  Gathering that through :func:`subdivision_triangle_indices`
     reproduces :func:`interpolate_patch_attribute` -- a microtriangle's corners
     *are* these vertices, and :func:`subdivision_triangle_uvs` is literally this
     vertex list gathered through those indices -- for a sixth of the arithmetic,
@@ -1052,7 +1112,8 @@ def interpolate_patch_vertex_attribute(values, vertex_uv):
     :func:`interpolate_patch_attribute` for why, and why an attribute (unlike a
     position) does not need more than that.
     """
-    weights = triangle_uv_to_barycentric(vertex_uv)
+    if weights is None:
+        weights = triangle_uv_to_barycentric(vertex_uv)
     return torch.einsum("vk,pkc->pvc", weights, values)
 
 
@@ -1065,9 +1126,11 @@ __all__ = [
     "dice_triangle_count",
     "evaluate_cubic_curve",
     "evaluate_logical_pn",
+    "evaluate_logical_pn_from_basis",
     "evaluate_logical_pn_normals",
     "interpolate_patch_attribute",
     "interpolate_patch_vertex_attribute",
+    "logical_pn_basis",
     "logical_pn_control_points",
     "logical_pn_edge_control_points",
     "logical_pn_normal_control_points",

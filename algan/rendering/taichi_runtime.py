@@ -699,9 +699,10 @@ def taichi_launch_is_local(device):
       default and have no device gate of their own, so ``key_run_order``,
       ``pixel_group_order`` and ``rank_groups`` run on Metal once the
       zero-copy hook is installed.
-    * ``ALGAN_REFIT_PACK_KERNEL``, ``ALGAN_SHEET_METADATA_KERNEL`` and
-      ``ALGAN_DEVICE_RADIX_SORT`` ask this too, but are opt-in on every
-      device, so their kernels stay off on Metal unless asked for.
+    * ``ALGAN_SHEET_METADATA_KERNEL`` and ``ALGAN_DEVICE_RADIX_SORT`` ask
+      this too, but are opt-in on every device, so their kernels stay off on
+      Metal unless asked for; ``ALGAN_REFIT_PACK_KERNEL`` (on by default) is
+      gated off on MPS by ``refit_bvh`` itself.
     * The PN level searches are decided first by
       ``pn_criterion_kernel_active``, which wants a CUDA render device or the
       CPU arch and so still answers no there; this function only vets their
@@ -1125,6 +1126,14 @@ def render_job_holding_the_arch():
     if _RENDER_JOBS_ACTIVE == 1:
         # Optimizations and reporting: nothing here may fail a render, and an
         # exception before the `try` would leave the job count stuck.
+        with contextlib.suppress(Exception):
+            from algan.rendering import device_warmup
+
+            # The start-up warm-up thread issues device work of its own; the
+            # render must not share the device with it (its memory peaks and
+            # arena preflight are measured), so it ends here -- reported if
+            # its step in flight outlasts the wait.
+            device_warmup.finish(log=True)
         with contextlib.suppress(Exception):
             from algan.rendering import kernel_precompile, kernel_progress
 

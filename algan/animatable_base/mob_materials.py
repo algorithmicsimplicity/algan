@@ -404,11 +404,19 @@ class MobMaterialsMixin:
             if material.applies_color and material.color is not None
             else None
         )
+        opacity = material.opacity
+        kind = type(opacity)
+        if not ((kind is float or kind is int) and 0.0 <= opacity <= 1.0):
+            # Anything but a plain in-range number is handed over as the
+            # tensor it always was, so an invalid one is reported naming that
+            # tensor, as before. A plain number casts to the same tensor
+            # inside the write and is validated without building one.
+            opacity = None
         for d in reversed(self.get_descendants()):
             d.set_non_recursive(**params)
             if color5 is not None:
                 d.color = color5
-            d.opacity = cast_to_tensor(material.opacity)
+            d.opacity = cast_to_tensor(material.opacity) if opacity is None else opacity
             d.material = material
 
         material.emit_warnings(self._forward_material_textures(material))

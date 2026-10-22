@@ -731,7 +731,9 @@ class TriangleVertices(Mob):
         return self
 
     def _get_memory_used_per_timestep(self):
-        n = self.location.shape[-2]
+        # Read uncopied: only the row count is wanted (``location`` is this
+        # very read, plus a defensive clone nothing here keeps).
+        n = self.get_animated_attribute("location", copy=False).shape[-2]
         # Source/animation-device state only: location(3) + color(5) +
         # normal(3), plus the primitive's cloned color(5). Ray-tracing bounds,
         # packed geometry and BVHs are built on the source device and their
@@ -745,10 +747,18 @@ class TriangleVertices(Mob):
         return PURE_RED
 
     def get_render_primitives(self):
+        # Read once: the corners and the normal frame below are the same
+        # values, and each property read is a timeline query and a copy.
+        location = self.location
         locations, c, o, n, g = broadcast_all(
             [
-                self.location,
-                self.color,
+                location,
+                # Plain tensor, not the Color subclass the public property
+                # returns: the primitive only does arithmetic on these numbers,
+                # and a subclass sends every operation it and the collection
+                # merge apply through __torch_function__ (see the matching note
+                # in Surface._build_render_primitive).
+                self.color.as_subclass(torch.Tensor),
                 self.opacity,
                 self.normals,
                 self.glow,
@@ -762,8 +772,7 @@ class TriangleVertices(Mob):
             c,
             o,
             F.normalize(
-                map_local_to_global_coords(self.location, self.basis, n)
-                - self.location,
+                map_local_to_global_coords(location, self.basis, n) - location,
                 p=2,
                 dim=-1,
             ),

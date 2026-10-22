@@ -18,6 +18,7 @@ These are internal helpers and deliberately excluded from
 from __future__ import annotations
 
 import functools
+import math
 import re
 from collections import defaultdict
 from math import sqrt
@@ -80,6 +81,37 @@ def _cast_to_tensor_recursive(x):
     return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
 
 
+#: ``Tensor.__torch_function__``'s implementation: a subclass that keeps it
+#: (``Color``) only re-types each op's result, so an op on its plain view
+#: followed by the same re-typing is the same op.
+_DEFAULT_TORCH_FUNCTION = torch.Tensor.__torch_function__.__func__
+
+
+def _with_leading_dims(x):
+    """``x`` with size-1 dimensions prepended until it has three.
+
+    One ``x[None, ...]`` index rather than one ``unsqueeze(0)`` per missing
+    dimension: indexing inserts each dimension with ``unsqueeze``, so the
+    shape, strides and storage are the ones the loop produced. A ``Color``
+    is indexed as its plain view and re-typed once, which is what its
+    ``__torch_function__`` does to every op's result anyway, rather than
+    paying that dispatch once per dimension.
+    """
+    cls = type(x)
+    if cls is torch.Tensor:
+        missing = 3 - x.dim()
+        return x[(None,) * missing] if missing > 0 else x
+    if getattr(cls.__torch_function__, "__func__", None) is _DEFAULT_TORCH_FUNCTION:
+        plain = x.as_subclass(torch.Tensor)
+        missing = 3 - plain.dim()
+        if missing <= 0:
+            return x
+        return plain[(None,) * missing].as_subclass(cls)
+    while x.dim() < 3:
+        x = x.unsqueeze(0)
+    return x
+
+
 def cast_to_tensor(x):
     """
     Converts scalars or lists of scalars into tensors, and combines lists of tensors into a single tensor.
@@ -89,11 +121,25 @@ def cast_to_tensor(x):
     if isinstance(x, np.ndarray):
         x = torch.from_numpy(x).to(dtype=torch.get_default_dtype())
     if isinstance(x, torch.Tensor):
-        while x.dim() < 3:
-            x = x.unsqueeze(0)
-        return x  # .view(-1,x.shape[-1])
+        return _with_leading_dims(x)
+    if type(x) is float:
+        dtype = torch.get_default_dtype()
+        if abs(x) <= torch.finfo(dtype).max:
+            # The common scalar, in one op. ``full`` converts a float fill
+            # value exactly as ``tensor`` converts a float element (a C cast
+            # of the double), so this is the tensor the general path below
+            # builds. ``full`` refuses a value beyond the dtype's range where
+            # ``tensor`` rounds it to an infinity, so those -- and NaN -- take
+            # the general path.
+            return torch.full((1, 1, 1), x, dtype=dtype)
     if isinstance(x, (list, tuple)):
-        x = _cast_to_tensor_recursive(x).squeeze(-1)
+        if x and all(type(item) is float or type(item) is int for item in x):
+            # A flat run of numbers: every element is stored by the same
+            # per-element conversion the recursive path applies one at a
+            # time, so one ``tensor`` call builds the same values.
+            x = torch.tensor(list(x), dtype=torch.get_default_dtype())
+        else:
+            x = _cast_to_tensor_recursive(x).squeeze(-1)
         return x.view(1, -1, x.shape[-1])
     if x is None:
         x = 0
@@ -105,7 +151,63 @@ def cast_to_tensor(x):
         return x
 
 
-def reject_non_finite(name, value, given=None):
+#: Sentinel for "the caller did not say what ``value`` was cast from".
+_NO_SOURCE = object()
+
+
+def _plain_tensor(value):
+    """``value`` viewed as a plain :class:`torch.Tensor`.
+
+    A :class:`~algan.constants.color.Color` routes every op through
+    ``Tensor.__torch_function__``, which costs several times the op itself on
+    the tiny tensors validation sees. The view shares the data, so a check on
+    it reads exactly the same values.
+    """
+    return value if type(value) is torch.Tensor else value.as_subclass(torch.Tensor)
+
+
+def _number_casts_to_finite(source):
+    """Whether ``source`` is plain Python numbers whose cast is finite.
+
+    True only for an ``int`` or ``float`` -- or a flat, non-empty tuple or list
+    of them, which ``cast_to_tensor`` casts element by element -- (exactly
+    those types, so ``bool``, NumPy scalars, tensors and nested sequences take
+    the tensor check) whose magnitudes fit the default floating dtype:
+    ``cast_to_tensor`` builds that dtype, and a finite float beyond its range
+    -- ``1e39`` in float32 -- casts to an infinity, which must still be
+    rejected. NaN and the infinities fail the comparison.
+    """
+    kind = type(source)
+    if kind is tuple or kind is list:
+        if not source:
+            return False
+        limit = torch.finfo(torch.get_default_dtype()).max
+        for item in source:
+            kind = type(item)
+            if (kind is not float and kind is not int) or not abs(item) <= limit:
+                return False
+        return True
+    if kind is not float and kind is not int:
+        return False
+    return abs(source) <= torch.finfo(torch.get_default_dtype()).max
+
+
+def _all_finite(value):
+    """Whether every element of the floating tensor ``value`` is finite.
+
+    One reduction and one scalar read on the path every valid value takes: a
+    sum is finite only if every term is (a NaN or an infinity anywhere makes
+    it NaN or infinite). The converse can fail -- finite values large enough
+    to overflow the sum -- so a non-finite sum falls back to the exact
+    elementwise test before anything is reported.
+    """
+    value = _plain_tensor(value)
+    if math.isfinite(value.sum().item()):
+        return True
+    return bool(torch.isfinite(value).all())
+
+
+def reject_non_finite(name, value, given=None, *, cast_from=_NO_SOURCE):
     """Raise if ``value`` holds a NaN or an infinity.
 
     A NaN reaching an animatable attribute is not caught anywhere downstream:
@@ -122,6 +224,11 @@ def reject_non_finite(name, value, given=None):
         The already-cast tensor to check. Non-tensors pass through.
     given
         What the user actually wrote, when it reads better than the tensor.
+    cast_from
+        What ``value`` was cast from with :func:`cast_to_tensor`, when the
+        caller knows. A plain Python number that casts to a finite value
+        needs no look at the tensor, which is most of what authoring writes;
+        anything else is checked on ``value`` as usual.
 
     Returns
     -------
@@ -132,10 +239,12 @@ def reject_non_finite(name, value, given=None):
     AlganConfigurationError
         If any element is NaN or infinite.
     """
-    if torch.is_tensor(value) and value.is_floating_point():
-        finite = torch.isfinite(value)
-        if not bool(finite.all()):
-            what = "NaN" if bool(torch.isnan(value).any()) else "infinite"
+    if cast_from is not _NO_SOURCE and _number_casts_to_finite(cast_from):
+        return value
+    if torch.is_tensor(value):
+        plain = _plain_tensor(value)
+        if plain.is_floating_point() and not _all_finite(plain):
+            what = "NaN" if bool(torch.isnan(plain).any()) else "infinite"
             shown = value if given is None else given
             raise AlganConfigurationError(
                 f"{name} must be finite; got a {what} value: {shown!r}. A "
@@ -145,7 +254,29 @@ def reject_non_finite(name, value, given=None):
     return value
 
 
-def reject_outside_unit_interval(name, value, given=None):
+def _within_unit_interval(value):
+    """Whether the floating tensor ``value`` is finite and inside ``[0, 1]``.
+
+    The one-reduction answer for the common, valid case. ``aminmax``
+    propagates a NaN into both ends, and an infinity is outside the interval
+    anyway, so a ``True`` here needs no separate finiteness check. ``False``
+    says only "look closer": the caller then runs the exact checks, which
+    decide which error -- if any -- to raise.
+
+    The lower end must be strictly positive. With denormals flushed (a thread
+    whose floating-point mode some library set), the reduction can return a
+    negative denormal as ``-0.0`` while the exact comparison still sees it
+    below zero, so a zero minimum is left to that comparison.
+    """
+    value = _plain_tensor(value)
+    if not value.is_floating_point() or value.numel() == 0:
+        return False
+    # Both ends in one host read.
+    low, high = torch.stack(torch.aminmax(value)).tolist()
+    return low > 0.0 and high <= 1.0
+
+
+def reject_outside_unit_interval(name, value, given=None, *, cast_from=_NO_SOURCE):
     """Raise if ``value`` falls outside the closed unit interval ``[0, 1]``.
 
     For the attributes documented as fractions -- opacity above all -- where a
@@ -172,6 +303,9 @@ def reject_outside_unit_interval(name, value, given=None):
         caught as well as the tensor one. Anything else passes through.
     given
         What the user actually wrote, when it reads better than the tensor.
+    cast_from
+        What ``value`` was cast from, as for :func:`reject_non_finite`: a plain
+        Python number inside the interval needs no look at the tensor.
 
     Returns
     -------
@@ -182,6 +316,15 @@ def reject_outside_unit_interval(name, value, given=None):
     AlganConfigurationError
         If any element is NaN, infinite, below 0 or above 1.
     """
+    if cast_from is not _NO_SOURCE:
+        kind = type(cast_from)
+        if (kind is float or kind is int) and 0.0 <= cast_from <= 1.0:
+            # Rounding to any floating dtype keeps a value of [0, 1] inside it.
+            return value
+    if torch.is_tensor(value) and _within_unit_interval(value):
+        return value
+    # Anything the fast answers above could not clear takes the exact checks,
+    # which decide which error -- if any -- applies.
     reject_non_finite(name, value, given=given)
     if torch.is_tensor(value):
         outside = bool(((value < 0) | (value > 1)).any())
@@ -297,7 +440,56 @@ def unsqueeze_until_dim(x, dim, insert_dim=0):
     return x
 
 
+#: ``ALGAN_OPT_DISABLE=broadcastall``, resolved at the first broadcast_all and
+#: cached here rather than asked of ``_opt_disabled`` per call (the deferred
+#: import would cost more than the call saves). A test that patches the
+#: timeline's ``_OPT_DISABLED`` must also reset this to ``None``.
+_BROADCAST_ALL_REFERENCE = None
+
+
 def broadcast_all(xs, ignored_dims=()):
+    """Left-pad every tensor in ``xs`` to the same rank and expand them all to
+    the elementwise largest shape, leaving ``ignored_dims`` at their own size.
+
+    Non-tensors pass through unchanged. One pass over the shapes; the
+    reference form (:func:`_broadcast_all_reference`) re-read every shape once
+    per dimension, which made this Python-bound at the sizes the primitive
+    builds and the collection merge call it at (thousands of times a batch).
+    The tensors returned are the same views: the same ``unsqueeze`` and
+    ``expand`` calls on the same inputs. ``ALGAN_OPT_DISABLE=broadcastall``
+    restores the reference form (read once, at first use).
+    """
+    global _BROADCAST_ALL_REFERENCE
+    if _BROADCAST_ALL_REFERENCE is None:
+        # Deferred: the timeline imports this module.
+        from algan.animation_timeline.timeline import _opt_disabled
+
+        _BROADCAST_ALL_REFERENCE = _opt_disabled("broadcastall")
+    if _BROADCAST_ALL_REFERENCE:
+        return _broadcast_all_reference(xs, ignored_dims)
+    dims = [x.dim() if hasattr(x, "dim") else 0 for x in xs]
+    max_dim = max(dims)
+    target = [0] * max_dim
+    padded = []
+    for x, dim in zip(xs, dims):
+        if isinstance(x, torch.Tensor):
+            while dim < max_dim:
+                x = x.unsqueeze(0)
+                dim += 1
+            for i, size in enumerate(x.shape):
+                if size > target[i]:
+                    target[i] = size
+        padded.append(x)
+    for i in ignored_dims:
+        if i < 0:
+            i += max_dim
+        if 0 <= i < max_dim:
+            target[i] = -1
+    size = torch.Size(target)
+    return [x.expand(size) if isinstance(x, torch.Tensor) else x for x in padded]
+
+
+def _broadcast_all_reference(xs, ignored_dims=()):
     max_dim = max([_.dim() if hasattr(_, "dim") else 0 for _ in xs])
     ignored_dims = [_ if _ >= 0 else _ + max_dim for _ in ignored_dims]
     xs = [

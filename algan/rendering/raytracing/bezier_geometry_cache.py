@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from threading import Lock
 
+import numpy as np
 import torch
 
 
@@ -151,7 +152,9 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
     corners, samples, segments, next_inds, centers, basis_u, basis_v = args
     device = corners.device
     circuit_ids = torch.repeat_interleave(
-        torch.arange(len(segments), device=device), segments
+        torch.arange(len(segments), device=device),
+        segments,
+        output_size=corners.shape[1],
     )
     static = _constant_rows(basis_u) & _constant_rows(basis_v)
     segment_static = _rigid_segments(corners, centers, circuit_ids) & _constant_rows(
@@ -162,7 +165,17 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
         .scatter_reduce_(0, circuit_ids, segment_static.int(), "amin")
         .bool()
     )
-    if not bool(static.any()):
+    # Every decision below in one readback: none, all, or a partition the
+    # circuits' own links respect.
+    segment_static = static[circuit_ids]
+    any_static, all_static, closed = torch.stack(
+        (
+            static.any(),
+            static.all(),
+            (segment_static[next_inds] == segment_static.unsqueeze(0)).all(),
+        )
+    ).tolist()
+    if not any_static:
         return build(*args, inward_signs)
 
     cache = None
@@ -172,7 +185,7 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
             cache = scene.__dict__.setdefault(
                 "_bezier_geometry_cache", _BezierGeometryCache()
             )
-    if bool(static.all()):
+    if all_static:
         single = (
             corners[:1],
             samples,
@@ -186,16 +199,30 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
 
     # Ordinary circuits connect only within themselves. Keep the original path
     # for an exotic cross-circuit link that would cross this partition.
-    segment_static = static[circuit_ids]
-    if not bool((segment_static[next_inds] == segment_static.unsqueeze(0)).all()):
+    if not closed:
         return build(*args, inward_signs)
+
+    # The partition's index lists, from one readback of the two flag tables.
+    flags = torch.cat((static, segment_static)).cpu().numpy()
+    circuit_flags, segment_flags = flags[: static.shape[0]], flags[static.shape[0] :]
+    lists = [
+        np.flatnonzero(circuit_flags),
+        np.flatnonzero(segment_flags),
+        np.flatnonzero(~circuit_flags),
+        np.flatnonzero(~segment_flags),
+    ]
+    # Without a sync only where the driver stages pageable memory before the
+    # call returns (CUDA); elsewhere the host array may be gone by the read.
+    uploaded = torch.from_numpy(np.concatenate(lists)).to(
+        device, non_blocking=device.type == "cuda"
+    )
+    bounds = np.cumsum([0] + [len(part) for part in lists])
+    lists = [uploaded[bounds[i] : bounds[i + 1]] for i in range(4)]
 
     parts = []
     counts = torch.empty_like(segments)
     for is_static in (True, False):
-        selected = static if is_static else ~static
-        circuits = selected.nonzero().flatten()
-        indices = selected[circuit_ids].nonzero().flatten()
+        circuits, indices = lists[:2] if is_static else lists[2:]
         remap = torch.empty(corners.shape[1], dtype=torch.long, device=device)
         remap[indices] = torch.arange(len(indices), device=device)
         time = slice(0, 1) if is_static else slice(None)
@@ -219,10 +246,15 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
 
     offsets = torch.cat((segments.new_zeros(1), counts.cumsum(0)))
     num_frames = max(edges.shape[0] for _, edges, _ in parts)
-    result = corners.new_empty((num_frames, int(offsets[-1]), 6))
+    # The parts' edge counts are their tables' widths: ``offsets[-1]`` without
+    # reading it back.
+    total = sum(edges.shape[1] for _, edges, _ in parts)
+    result = corners.new_empty((num_frames, total, 6))
     for circuits, edges, part_offsets in parts:
         destinations = torch.repeat_interleave(
-            offsets[circuits] - part_offsets[:-1], part_offsets[1:] - part_offsets[:-1]
+            offsets[circuits] - part_offsets[:-1],
+            part_offsets[1:] - part_offsets[:-1],
+            output_size=edges.shape[1],
         ) + torch.arange(edges.shape[1], device=device)
         result[:, destinations] = edges
     return result, offsets.to(torch.int32)

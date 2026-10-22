@@ -1334,6 +1334,10 @@ class Scene(RenderLoopMixin):
         :class:`~.Scene`
             This Scene, so calls can be chained.
         """
+        from algan.utils.memory_utils import note_scene_discarded
+
+        # What was recorded is now cyclic garbage the next render must collect.
+        note_scene_discarded()
         if not rebuild_timeline:
             return self._rebuild_contents()
         self.current_time = 0

@@ -15,14 +15,17 @@ from algan.rendering.logical_pn import (
     dice_triangle_count,
     evaluate_cubic_curve,
     evaluate_logical_pn,
+    evaluate_logical_pn_from_basis,
     evaluate_logical_pn_normals,
     interpolate_patch_vertex_attribute,
+    logical_pn_basis,
     logical_pn_control_points,
     logical_pn_edge_control_points,
     logical_pn_normal_control_points,
     mean_patch_edge_length,
     normalize_pixel_tolerance,
     snap_boundary_values,
+    triangle_uv_to_barycentric,
 )
 from algan.rendering.mps_compat import (
     accumulate_dtype,
@@ -78,6 +81,7 @@ from algan.rendering.shaders.material_shaders import SHADER_FIXED_PARAM_COUNT
 from algan.settings import SETTINGS
 from algan.utils.memory_utils import release_torch_memory
 from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, unsquish
+from algan.utils.torch_compile import torch_compile_enabled
 
 # rt_settings values are mutable module globals (set_samples_per_pixel etc.);
 # read them live as rt_settings.X -- importing them by value freezes them at
@@ -88,6 +92,11 @@ from algan.settings.kernel_settings import KERNEL_REGISTRY
 from algan.utils.python_utils import callable_signature
 
 _SAMPLE_TENSOR_CACHE = {}
+
+#: Elements of ``[T, Q, K]`` probe scratch the inward-sign probe allows per
+#: chunk (``_circuit_edge_inward_signs``). Module-level so a test can shrink it
+#: to force a contour set through several chunks.
+_INWARD_SIGN_PROBE_BUDGET = 4_000_000
 
 
 def _camera_projection(camera, num_frames, device):
@@ -173,7 +182,7 @@ class _PatchChunk(NamedTuple):
         """Expand per-distinct-patch ``values`` back to one row per pair."""
         return values.index_select(0, self.inverse) if deduped else values
 
-    def diced_attribute(self, source, vertex_uv, triangle_indices):
+    def diced_attribute(self, source, vertex_uv, triangle_indices, weights=None):
         """Interpolate a per-corner attribute onto this chunk's triangle soup.
 
         Interpolating on the shared subdivision vertices and gathering through
@@ -189,7 +198,7 @@ class _PatchChunk(NamedTuple):
         the trade to pay.
         """
         values = source[self.frames, self.patches]
-        values = interpolate_patch_vertex_attribute(values, vertex_uv)
+        values = interpolate_patch_vertex_attribute(values, vertex_uv, weights)
         return values[:, triangle_indices]
 
 
@@ -466,6 +475,75 @@ def _resolve_surface_identity(members, counts, *, track_members=False):
     return torch.cat(blocks).contiguous(), next_id, keys, first_member
 
 
+def _member_surface_param_reference(member, name):
+    """One collection member's surface param ``name``, broadcast the merge's way.
+
+    The reference recipe: the param (or its default fill) broadcast against the
+    member's first frame of corners, colors and normals, ignoring channels, then
+    cut to one channel.
+    """
+    v = getattr(member, name, None)
+    if v is None:
+        fill = -1.0 if name == "reflectivity" else 0.0
+        v = torch.full_like(member.colors[:1, ..., :1], fill)
+    return broadcast_all(
+        [member.corners[:1], member.colors[:1], member.normals[:1], v],
+        ignored_dims=[-1],
+    )[-1][..., :1]
+
+
+def _gather_member_surface_params(members, names):
+    """``{name: [per-member view]}`` of every member's surface params.
+
+    The views :func:`_member_surface_param_reference` makes, from the same
+    ``unsqueeze`` / ``expand`` / slice calls on the same tensors, but with each
+    member's broadcast target -- the elementwise largest of its first frame of
+    corners, colors and normals -- worked out once from the shapes instead of
+    re-broadcasting those three tensors for every one of the eight params.
+    Members whose shapes the shortcut does not describe (a reference that is
+    not a tensor, a param of higher rank than the references) take the
+    reference recipe, as does everything under ``ALGAN_OPT_DISABLE=mergeshapes``.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    gathered = {name: [] for name in names}
+    if _opt_disabled("mergeshapes"):
+        for member in members:
+            for name in names:
+                gathered[name].append(_member_surface_param_reference(member, name))
+        return gathered
+    for member in members:
+        refs = (member.corners, member.colors, member.normals)
+        if not all(isinstance(r, torch.Tensor) for r in refs):
+            for name in names:
+                gathered[name].append(_member_surface_param_reference(member, name))
+            continue
+        rank = max(r.dim() for r in refs)
+        target = [0] * rank
+        for r in refs:
+            # ``r[:1]``'s shape, left-padded to ``rank``.
+            shape = (1,) * (rank - r.dim()) + (min(r.shape[0], 1),) + tuple(r.shape[1:])
+            for i, size in enumerate(shape):
+                if size > target[i]:
+                    target[i] = size
+        for name in names:
+            v = getattr(member, name, None)
+            if v is None:
+                fill = -1.0 if name == "reflectivity" else 0.0
+                v = torch.full_like(member.colors[:1, ..., :1], fill)
+            dim = v.dim()
+            if dim > rank:
+                gathered[name].append(_member_surface_param_reference(member, name))
+                continue
+            while dim < rank:
+                v = v.unsqueeze(0)
+                dim += 1
+            size = [max(t, s) for t, s in zip(target, v.shape)]
+            size[-1] = -1
+            gathered[name].append(v.expand(torch.Size(size))[..., :1])
+    return gathered
+
+
 def _declares_no_shadow_cast(primitive):
     """Whether this primitive declined to cast, as one bool for the whole mob.
 
@@ -735,23 +813,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # line up -- except along time: the references are sliced to a
             # single frame so a static parameter (the usual case) stays
             # single-frame instead of being expanded to the batch length.
+            gathered = _gather_member_surface_params(
+                triangle_collection, self._surface_params
+            )
             for name in self._surface_params:
-                values = []
-                for triangle in triangle_collection:
-                    v = getattr(triangle, name, None)
-                    if v is None:
-                        fill = -1.0 if name == "reflectivity" else 0.0
-                        v = torch.full_like(triangle.colors[:1, ..., :1], fill)
-                    v = broadcast_all(
-                        [
-                            triangle.corners[:1],
-                            triangle.colors[:1],
-                            triangle.normals[:1],
-                            v,
-                        ],
-                        ignored_dims=[-1],
-                    )[-1][..., :1]
-                    values.append(v)
+                values = gathered[name]
                 # A registered (animatable) surface param on an *animated* mob
                 # materializes per batch timestep ([T, ...]) while static
                 # mobs' params stay single-frame; unify the time dims before
@@ -2510,6 +2576,8 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return value[:1], True
 
     def _dice_logical_pn(self, camera):
+        # Read once: the switch is live, and the dice's branches must agree.
+        diet = bool(rt_settings.pn_dice_launch_diet)
         num_frames = int(camera.ray_origin.shape[0])
         source_corners = self.corners.float()
         source_normals = self.normals.float()
@@ -2723,7 +2791,41 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         shape_keys = (
             levels * (self.max_subdivision_level + 1) + across_levels
         ) * 3 + apex_levels
-        for key in shape_keys.unique(sorted=True).tolist():
+        if diet and shape_keys.numel():
+            # Every shape's (frame, patch) list from one stable sort and one
+            # readback, rather than a comparison, a ``nonzero`` and a device
+            # synchronisation per shape. Within a shape the sort keeps the
+            # rows in ascending order of the flattened index -- patch-major
+            # where the dedup wants it (see below), frame-major otherwise --
+            # which is exactly the order ``nonzero`` lists them in.
+            key_frames, key_patches = shape_keys.shape
+            flat_keys = (
+                shape_keys.t().reshape(-1)
+                if geometry_static
+                else shape_keys.reshape(-1)
+            )
+            sorted_rows = torch.argsort(flat_keys, stable=True)
+            distinct, members = torch.unique_consecutive(
+                flat_keys[sorted_rows], return_counts=True
+            )
+            if geometry_static:
+                sorted_rows = torch.stack(
+                    (sorted_rows % key_frames, sorted_rows // key_frames), -1
+                )
+            else:
+                sorted_rows = torch.stack(
+                    (sorted_rows // key_patches, sorted_rows % key_patches), -1
+                )
+            plan = torch.cat((distinct, members)).tolist()
+            dice_shapes = plan[: len(plan) // 2]
+            shape_rows = {}
+            first = 0
+            for key, count in zip(dice_shapes, plan[len(plan) // 2 :]):
+                shape_rows[key] = sorted_rows[first : first + count]
+                first += count
+        else:
+            dice_shapes = shape_keys.unique(sorted=True).tolist()
+        for key in dice_shapes:
             key = int(key)
             pattern = dice_pattern(
                 key // (3 * (self.max_subdivision_level + 1)),
@@ -2744,18 +2846,40 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             # against 0.97x on the deforming half of a real scene's dice calls.
             # The writes are disjoint and ``index_copy_`` does not care about
             # order, so the diced output is the same either way.
-            trying = shape_keys == key
-            selected = (
-                trying.t().contiguous().nonzero().flip(-1)
-                if geometry_static
-                else trying.nonzero()
-            )
+            if diet and shape_keys.numel():
+                selected = shape_rows[key]
+            else:
+                trying = shape_keys == key
+                selected = (
+                    trying.t().contiguous().nonzero().flip(-1)
+                    if geometry_static
+                    else trying.nonzero()
+                )
             vertex_uv = pattern.vertex_uv
             triangle_indices = pattern.triangle_indices
             boundary = pattern.boundary
             num_triangles = triangle_indices.shape[0]
             columns = torch.arange(num_triangles, device=device)
             chunk = max(1, int(self.max_scratch_triangles) // num_triangles)
+            # Built once per dice shape rather than per chunk and per attribute:
+            # the dice is launch-bound on a GPU, and these were a quarter of its
+            # launches. The same tensors reach the same arithmetic. Off, every
+            # call builds its own, as it always did.
+            vertex_weights = triangle_uv_to_barycentric(vertex_uv) if diet else None
+            snap_levels = (
+                torch.tensor(
+                    pattern.edge_levels, dtype=edge_levels.dtype, device=device
+                )
+                if diet
+                else pattern.edge_levels
+            )
+            # The patch weights, likewise, when the evaluation runs eagerly
+            # (``logical_pn_basis``); a compiled one fuses them into its kernel.
+            basis = (
+                logical_pn_basis(vertex_uv)
+                if diet and not torch_compile_enabled()
+                else None
+            )
 
             for start in range(0, selected.shape[0], chunk):
                 rows = selected[start : start + chunk]
@@ -2781,31 +2905,67 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 # levels, which two frames dicing the same patch need not
                 # share.
                 controls, deduped = chunk_rows.rows_of(control_points, geometry_static)
-                positions = snap_boundary_values(
-                    chunk_rows.fan_out(
-                        evaluate_logical_pn(controls, vertex_uv),
-                        deduped,
-                    ),
-                    pattern.edge_levels,
-                    edges,
-                    boundary,
-                )
-                normal_controls, deduped = chunk_rows.rows_of(
+                normal_controls, _ = chunk_rows.rows_of(
                     normal_control_points, geometry_static
                 )
-                vertex_normals = F.normalize(
-                    snap_boundary_values(
+                if diet:
+                    if basis is None:
+                        patch_positions = evaluate_logical_pn(controls, vertex_uv)
+                        patch_normals = evaluate_logical_pn_normals(
+                            normal_controls, vertex_uv
+                        )
+                    else:
+                        patch_positions = evaluate_logical_pn_from_basis(
+                            controls, basis[0]
+                        )
+                        patch_normals = F.normalize(
+                            evaluate_logical_pn_from_basis(normal_controls, basis[1]),
+                            p=2,
+                            dim=-1,
+                        )
+                    # Positions and normals share every index the snap
+                    # computes (a level per boundary curve, a knot pair and a
+                    # blend per vertex), and the snap itself is a per-channel
+                    # gather and blend, so one call over the six channels is
+                    # the two calls' arithmetic on the same values -- with one
+                    # fan-out, one early-exit readback and one index chain
+                    # instead of two of each.
+                    surface = snap_boundary_values(
                         chunk_rows.fan_out(
-                            evaluate_logical_pn_normals(normal_controls, vertex_uv),
+                            torch.cat((patch_positions, patch_normals), -1),
                             deduped,
                         ),
-                        pattern.edge_levels,
+                        snap_levels,
                         edges,
                         boundary,
-                    ),
-                    p=2,
-                    dim=-1,
-                )
+                    )
+                    positions = surface[..., :3]
+                    vertex_normals = F.normalize(
+                        surface[..., 3:].contiguous(), p=2, dim=-1
+                    )
+                else:
+                    positions = snap_boundary_values(
+                        chunk_rows.fan_out(
+                            evaluate_logical_pn(controls, vertex_uv),
+                            deduped,
+                        ),
+                        snap_levels,
+                        edges,
+                        boundary,
+                    )
+                    vertex_normals = F.normalize(
+                        snap_boundary_values(
+                            chunk_rows.fan_out(
+                                evaluate_logical_pn_normals(normal_controls, vertex_uv),
+                                deduped,
+                            ),
+                            snap_levels,
+                            edges,
+                            boundary,
+                        ),
+                        p=2,
+                        dim=-1,
+                    )
                 # Each selected (frame, patch) writes a *contiguous run* of
                 # columns, which a two-index advanced-index scatter cannot
                 # exploit -- it lowers to an ``index_put_`` over a
@@ -2827,7 +2987,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 for output, source in attribute_outputs:
                     _scatter_diced_rows(
                         output,
-                        chunk_rows.diced_attribute(source, vertex_uv, triangle_indices),
+                        chunk_rows.diced_attribute(
+                            source, vertex_uv, triangle_indices, vertex_weights
+                        ),
                         targets,
                     )
 
@@ -2905,7 +3067,9 @@ def _uniform_cubic_subcurves(corners, num_subdivisions):
     return torch.stack((q0, q1, q2, q3), dim=-2)
 
 
-def _packed_uniform_cubic_parameters(chord_counts, dtype, vertex_counts=None):
+def _packed_uniform_cubic_parameters(
+    chord_counts, dtype, vertex_counts=None, total=None
+):
     """The exact ``k / n`` parameters used for packed polyline vertices.
 
     ``vertex_counts`` defaults to ``chord_counts``, which samples ``k < n`` only
@@ -2913,11 +3077,24 @@ def _packed_uniform_cubic_parameters(chord_counts, dtype, vertex_counts=None):
     vertex.  A segment that closes an open subpath does not share its endpoint
     with anything and asks for one extra vertex, giving it ``k == n`` (``t = 1``)
     as well.
+
+    ``total`` is ``vertex_counts.sum()`` when the caller already holds it on
+    the host; without it each expansion below reads the size back itself.
     """
     if vertex_counts is None:
         vertex_counts = chord_counts
-    repeated_counts = torch.repeat_interleave(chord_counts, vertex_counts)
-    return batch_arange(vertex_counts).to(dtype) / repeated_counts.to(dtype)
+    if total is None:
+        repeated_counts = torch.repeat_interleave(chord_counts, vertex_counts)
+        return batch_arange(vertex_counts).to(dtype) / repeated_counts.to(dtype)
+    repeated_counts = torch.repeat_interleave(
+        chord_counts, vertex_counts, output_size=total
+    )
+    # ``batch_arange`` with the size known: the same integers.
+    starts = torch.repeat_interleave(
+        vertex_counts.cumsum(0) - vertex_counts, vertex_counts, output_size=total
+    )
+    steps = torch.arange(total, device=vertex_counts.device) - starts
+    return steps.to(dtype) / repeated_counts.to(dtype)
 
 
 def _point_to_segment_distance_squared(point, start, delta, length_squared):
@@ -3034,7 +3211,22 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     # 0.02-unit stem needs eps*|e| < 0.01), and an unresolved wall falls back
     # to the single half-plane exactly where the wedge was meant to help.
     eps = 0.05
-    budget = 4_000_000
+    budget = _INWARD_SIGN_PROBE_BUDGET
+    if rt_settings.inward_signs_host_plan:
+        _probe_inward_signs_host_planned(
+            edges,
+            vert_circuit,
+            mx,
+            my,
+            length,
+            lnx,
+            lny,
+            sigma,
+            unresolved,
+            eps,
+            budget,
+        )
+        return sigma
     for _attempt in range(6):
         idx = unresolved.any(0).nonzero(as_tuple=True)[0]
         if idx.numel() == 0:
@@ -3074,6 +3266,102 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
                 unresolved[:, sel] &= ~settled
         eps *= 0.5
     return sigma
+
+
+def _probe_inward_signs_host_planned(
+    edges, vert_circuit, mx, my, length, lnx, lny, sigma, unresolved, eps, budget
+):
+    """:func:`_circuit_edge_inward_signs`' probe loop, planned on the host.
+
+    The device loop reads back its plan piece by piece -- the unresolved edge
+    list, its size classes, each class's members and gather width -- a
+    synchronisation each, and builds every chunk's gather indices out of a
+    dozen small launches. All of that is integer bookkeeping over the circuit
+    table, which never changes, plus one flag per edge per attempt. So the
+    table goes to the host once, each attempt reads back one ``[V]`` flag, and
+    a chunk's indices are built there and uploaded. Both sides of an edge are
+    probed in one pass of the parity arithmetic, stacked on a leading axis.
+
+    Every (query, edge) pair the device loop evaluates is evaluated here with
+    the same arithmetic on the same values, and the parity is an exact count,
+    so ``sigma`` comes out bit for bit the same; only the chunk boundaries
+    move, and no chunk reads another's result. ``sigma`` and ``unresolved``
+    are updated in place.
+    """
+    T = edges.shape[0]
+    device = edges.device
+    # Index uploads skip the stream sync only on CUDA, whose driver stages a
+    # pageable host tensor before the copy call returns; another backend may
+    # read it after this loop has dropped it.
+    asynchronous = device.type == "cuda"
+    circ = vert_circuit.cpu()
+    order = torch.argsort(circ, stable=True)
+    counts_all = torch.bincount(circ, minlength=int(circ.max()) + 1)
+    starts_all = torch.cumsum(counts_all, 0) - counts_all
+    edge_start = starts_all[circ]
+    edge_count = counts_all[circ]
+    # The bucketing key of the device loop (see there); bucketing never
+    # changes a result, only how the work is split.
+    size_class = torch.ceil(torch.log2(edge_count.to(accumulate_dtype()))).to(
+        torch.long
+    )
+    corners = edges[..., :4]
+    # One gather per chunk for every per-query input. ``(eps * length) * lnx``
+    # below is the device loop's ``eps * length * lnx`` term for term.
+    query = torch.stack((mx, my, length, lnx, lny), -1)
+    for _attempt in range(6):
+        idx = unresolved.any(0).cpu().nonzero(as_tuple=True)[0]
+        if idx.numel() == 0:
+            break
+        classes = size_class[idx]
+        for cls in torch.unique(classes).tolist():
+            idx_b = idx[classes == cls]
+            K = int(edge_count[idx_b].max())
+            # Both probes share the [2, T, Q, K] scratch, so half the queries
+            # per chunk keeps its peak where the device loop's was.
+            chunk = max(1, budget // max(2 * T * K, 1))
+            slots = torch.arange(K)
+            for start in range(0, idx_b.numel(), chunk):
+                sel_host = idx_b[start : start + chunk]
+                cnt = edge_count[sel_host]
+                Q = sel_host.numel()
+                slot_valid = (slots.view(1, -1) < cnt.view(-1, 1)).to(
+                    device, non_blocking=asynchronous
+                )
+                # Padding slots re-read the circuit's last edge and are masked
+                # out of the parity count by slot_valid.
+                gidx = edge_start[sel_host].view(-1, 1) + torch.minimum(
+                    slots.view(1, -1), (cnt - 1).view(-1, 1)
+                )
+                plan = torch.cat((sel_host, order[gidx].view(-1))).to(
+                    device, non_blocking=asynchronous
+                )
+                sel, flat = plan[:Q], plan[Q:]
+                gathered = corners[:, flat]  # [T, Q * K, 4]
+                gex0 = gathered[..., 0].view(T, Q, K)
+                gey0 = gathered[..., 1].view(T, Q, K)
+                gex1 = gathered[..., 2].view(T, Q, K)
+                gey1 = gathered[..., 3].view(T, Q, K)
+                q = query[:, sel]  # [T, Q, 5]
+                reach = eps * q[..., 2]
+                off_x = reach * q[..., 3]
+                off_y = reach * q[..., 4]
+                qx, qy = q[..., 0], q[..., 1]
+                both = _circuit_parity_gathered(
+                    torch.stack((qx + off_x, qx - off_x)),
+                    torch.stack((qy + off_y, qy - off_y)),
+                    gex0,
+                    gey0,
+                    gex1,
+                    gey1,
+                    slot_valid,
+                )
+                left, right = both[0], both[1]
+                settled = (left != right) & unresolved[:, sel]
+                s = torch.where(left, 1.0, -1.0)
+                sigma[:, sel] = torch.where(settled, s, sigma[:, sel])
+                unresolved[:, sel] &= ~settled
+        eps *= 0.5
 
 
 class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
@@ -3356,7 +3644,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         )  # [T, C, 3]
         num_segments = self.num_segments_per_object.to(corners.device).view(-1).long()
         circuit_of_segment = torch.repeat_interleave(
-            torch.arange(num_segments.shape[0], device=corners.device), num_segments
+            torch.arange(num_segments.shape[0], device=corners.device),
+            num_segments,
+            output_size=corners.shape[-3],
         )
         # [T, S, 3] * [1, S, 1] -> [T, S, 3], one displacement per segment.
         offset = direction[:, circuit_of_segment, :] * bias[..., circuit_of_segment, :]
@@ -3446,7 +3736,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 if num_subdivisions == self.max_samples_per_segment:
                     break
                 resolved = max_error_squared <= tolerance_squared
-                chord_counts[active[resolved]] = num_subdivisions
+                # A masked write rather than a masked gather: the level's one
+                # readback is then the ``nonzero`` that shrinks ``active``.
+                chord_counts[active] = torch.where(
+                    resolved, num_subdivisions, chord_counts[active]
+                )
                 active = active[~resolved]
                 num_subdivisions = min(
                     num_subdivisions * 2, self.max_samples_per_segment
@@ -3556,8 +3850,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         """Build polylines from geometry alone; materials are packed separately."""
         device = corners.device
         C = len(num_segments)
+        # Every expansion below is given its output size, which the host
+        # already holds or reads back once, rather than reading it back itself.
         circuit_of_segment = torch.repeat_interleave(
-            torch.arange(C, device=device), num_segments
+            torch.arange(C, device=device), num_segments, output_size=corners.shape[1]
         )
         # A redirected edge is an invisible fill closure only when the cubic's
         # true endpoint and the selected next cubic's start are discontinuous.
@@ -3583,13 +3879,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # contributes a zero-length edge to neither metric.
         needs_endpoint = (~connection_visible).any(0).long()
         verts_per_segment = num_samples + needs_endpoint
-        vert_circuit = torch.repeat_interleave(circuit_of_segment, verts_per_segment)
         V = int(verts_per_segment.sum())
+        vert_circuit = torch.repeat_interleave(
+            circuit_of_segment, verts_per_segment, output_size=V
+        )
 
         t_params = _packed_uniform_cubic_parameters(
-            num_samples, corners.dtype, verts_per_segment
+            num_samples, corners.dtype, verts_per_segment, total=V
         )
-        ctrl = torch.repeat_interleave(corners, verts_per_segment, dim=1)
+        ctrl = torch.repeat_interleave(corners, verts_per_segment, dim=1, output_size=V)
         verts = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
 
         # A cubic that is a point -- authored that way, or collapsed by a partial
@@ -3598,7 +3896,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # which is what keeps a HUD's tiny real cubics from being taken for one.
         scale = _circuit_scale(corners, circuit_of_segment)  # [Tc, S]
         degenerate = _degenerate_cubics(corners, scale)
-        edge_degenerate = torch.repeat_interleave(degenerate, verts_per_segment, dim=1)
+        edge_degenerate = torch.repeat_interleave(
+            degenerate, verts_per_segment, dim=1, output_size=V
+        )
 
         # Absolute polyline index of the first sample of each segment, and of
         # the sample each segment's last sample connects to (closing each
@@ -3672,7 +3972,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         edge_degenerate_e[:, seg_ends] &= ~keep
         edges5 = torch.where(
             edge_degenerate_e.unsqueeze(-1),
-            torch.tensor([1e9, 1e9, 1e9, 1e9, 0.0], device=device),
+            _sample_tensor((1e9, 1e9, 1e9, 1e9, 0.0), device, torch.float32),
             edges5,
         )
         # Column 5: the edge's INWARD SIGN sigma (DESIGN_analytic_aa_v2.md
@@ -3724,7 +4024,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         C = num_segments.shape[0]
 
         circuit_of_segment = torch.repeat_interleave(
-            torch.arange(C, device=device), num_segments
+            torch.arange(C, device=device), num_segments, output_size=S
         )
 
         nsi = (
