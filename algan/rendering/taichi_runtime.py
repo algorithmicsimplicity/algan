@@ -24,24 +24,24 @@ cannot silently regress):
 * ``ALGAN_TI_FULL_TRACEBACK=1`` -> ``print_full_traceback``: the compiler's
   own frames in a kernel compile error, instead of the trimmed user-facing one.
 
-There is no register-cap setting, and that is now a *choice* rather than a
-limitation. On taichi 1.7.4 it was a limitation: ``gpu_max_reg`` (and the
+There is no module-wide register cap. On taichi 1.7.4 ``gpu_max_reg`` (and the
 ``ALGAN_GPU_MAX_REG`` that fed it) never reached ptxas -- the field was read
 only by the cache key. ``quadrants_patches/0005-cuda-max-reg.patch`` makes
 ``qd.loop_config(max_reg=N)`` a per-kernel PTX ``.maxnreg`` (confirmed in PTX
 on sm_61, 2026-09-05, by ``quadrants_patches/verify_cuda_patches.py``). On the
 1.3.0 wheel it also turned ``gpu_max_reg`` into ``CU_JIT_MAX_REGISTERS``;
 Quadrants 1.3.1 deleted that field (#890), so on the 1.3.3 rebase only the
-per-loop cap exists, and ``qd.init`` rejects ``gpu_max_reg``. Nothing in
-``algan/`` sets either, so **0005 is inert on every render today**; it is a
-lever for the register-pressure work in ``taichi_patches/PLAN.md`` §8-§9, and
-turning it on means adding it here and measuring.
+per-loop cap exists, and ``qd.init`` rejects ``gpu_max_reg``. The per-loop cap
+is ``SETTINGS.raytracing.experimental.megakernel_max_reg``
+(``ALGAN_MEGAKERNEL_MAX_REG``), on the four CUDA megakernels only and **0 --
+no cap -- by default**: a lever for the register-pressure work in
+``taichi_patches/PLAN.md`` §8-§9, not a measured win.
 
-The same is true of ``readonly_ndarray_ldg``
-(``0006-cuda-readonly-ndarray-ldg.patch``): the compiler defaults it off and
-this dict does not set it. ``invariant_arg_loads`` (0004) defaults **on**, and
-``fast_math`` below is what makes 0007's fast ``expf`` live, so those two are
-the patches an Algan render actually runs through.
+``readonly_ndarray_ldg`` (``0006-cuda-readonly-ndarray-ldg.patch``) is likewise
+off unless ``ALGAN_READONLY_NDARRAY_LDG=1``, and then set on CUDA only (see
+:func:`taichi_init_kwargs`). ``invariant_arg_loads`` (0004) defaults **on**,
+and ``fast_math`` below is what makes 0007's fast ``expf`` live, so those two
+are the patches an Algan render runs through by default.
 """
 
 from __future__ import annotations
@@ -390,8 +390,14 @@ def _install_taichi_compile_logger():
         # serve, so it holds kernel data the offline cache may not. Only
         # `flush_kernel_cache` reads this, and only to skip the flush entirely
         # for a process that compiled nothing.
-        global _BUILT_A_SPECIALIZATION
+        global _BUILT_A_SPECIALIZATION, _COMPILED_SINCE_DUMP
         _BUILT_A_SPECIALIZATION = True
+        # And so the flush is registered here too, not only by `start_program`:
+        # whatever brought this program up, the kernel it just built reaches
+        # the disk at exit.
+        _register_kernel_cache_flush()
+        if not cache_hit:
+            _COMPILED_SINCE_DUMP = True
         backend_seconds = time.perf_counter() - backend_started
         total_seconds = frontend_seconds + backend_seconds
         _emit_compile_record(
@@ -409,7 +415,10 @@ def _install_taichi_compile_logger():
         )
         kernel_progress.compiled(meta["owner"], name, total_seconds, not cache_hit)
         kernel_precompile.note_materialized(
-            meta["spec"], seconds=total_seconds, compiled=not cache_hit
+            meta["spec"],
+            seconds=total_seconds,
+            compiled=not cache_hit,
+            cache_key=getattr(result, "cache_key", None),
         )
         return result
 
@@ -850,6 +859,15 @@ def taichi_init_kwargs():
     opt_level = env_int("ALGAN_OPT_LEVEL", 0)
     if opt_level > 0:
         kwargs["opt_level"] = opt_level
+    # Quadrants patch 0006: loads from an ndarray argument the offloaded task
+    # never writes go through the read-only cache (`ld.global.nc`). OFF unless
+    # ALGAN_READONLY_NDARRAY_LDG=1, and only asked for on CUDA, the one arch
+    # whose codegen reads it: the flag is in the compiler's config key (and so
+    # in the source key's config fingerprint) on every arch, so passing it
+    # elsewhere would only fork the CPU cache. Not passed at all when off, so
+    # the off arm's init -- and every key -- is what it was before the switch.
+    if kwargs["arch"] == ti.cuda and env_flag("ALGAN_READONLY_NDARRAY_LDG", False):
+        kwargs["readonly_ndarray_ldg"] = True
     kwargs.update(_INIT_OVERRIDES)
     if kwargs["arch"] == ti.metal:
         queue = _torch_mps_command_queue()
@@ -915,7 +933,7 @@ def shared_torch_queue():
     Read off the program's own config rather than off what
     :func:`taichi_init_kwargs` asked for, because ``init`` is what decides: a
     ``QD_ARCH`` override, a backend that refused the queue, or a program
-    started by something other than :func:`_start_program` would all leave the
+    started by something other than :func:`start_program` would all leave the
     kwargs and the truth apart. ``False`` when no program is up, on the Taichi
     backend, and whenever the config cannot be read -- the separate-queue
     fences are the safe answer, so a doubt resolves to them.
@@ -1002,14 +1020,30 @@ def _remove_stale_offline_cache_locks(
     return removed
 
 
-def _start_program():
-    """``ti.init`` with Algan's config, and the housekeeping that precedes it.
+def start_program(**overrides):
+    """``ti.init`` with Algan's config, and the housekeeping around it.
 
     The lock sweep goes first because ``init`` is what takes the lock: it reads
     the cache index under it, and a stale one makes that read fail quietly.
+
+    ``overrides`` are ``ti.init`` keywords merged over
+    :func:`taichi_init_kwargs`, for a harness that needs one more -- the kernel
+    profiler's ``kernel_profiler=True`` (:mod:`algan.utils.profiling_utils`).
+    Such a harness must come through here rather than call ``ti.init`` itself:
+    a bare ``init`` skips the sweep and the exit-time :func:`flush_kernel_cache`,
+    and every cold start measured through the profiler then left no ``.qdc``
+    behind for the next process to load. Unlike ``_INIT_OVERRIDES``, nothing
+    passed here is left out of the source key: ``kernel_profiler`` is in the
+    compiler's own key, so a profiled process and a plain one never share
+    artifacts, and the source key must not be the less config-sensitive of
+    the two.
+
+    A re-init through :func:`ensure_taichi_for_render` (an arch change, a
+    compiled-in setting moving) uses Algan's config alone, so an override does
+    not survive one.
     """
     _remove_stale_offline_cache_locks(_TAICHI_CACHE_DIRECTORY)
-    ti.init(**taichi_init_kwargs())
+    ti.init(**{**taichi_init_kwargs(), **overrides})
     _forget_compiled_in_settings()
     _install_taichi_compile_logger()
     _register_kernel_cache_flush()
@@ -1026,7 +1060,7 @@ def init_taichi():
     if _already_initialized():
         _install_taichi_compile_logger()
         return
-    _start_program()
+    start_program()
 
 
 def ensure_taichi_for_render():
@@ -1084,7 +1118,7 @@ def ensure_taichi_for_render():
             "time, so nothing short of recompiling them reaches the change.",
             _describe_compiled_in_move(),
         )
-    _start_program()
+    start_program()
     _ARCH_READY_FOR = wanted
     return True
 
@@ -1150,6 +1184,10 @@ def render_job_holding_the_arch():
                 from algan.rendering import kernel_precompile, kernel_progress
 
                 kernel_progress.render_finished()
+                # What this job compiled, on disk now rather than at exit --
+                # and before the manifest, which confirms a spec only once
+                # its artifact exists.
+                dump_new_kernels()
                 # The specializations this job used, for the next process's
                 # pool and for `algan warmup` (rendering/kernel_precompile.py).
                 kernel_precompile.flush_manifest()
@@ -1205,7 +1243,13 @@ def render_is_active():
 #: under-setting would lose kernels, which is the bug this exists for.
 _BUILT_A_SPECIALIZATION = False
 
-#: One ``atexit`` registration per process, from :func:`_start_program`.
+#: A specialization the offline cache did *not* serve was compiled since the
+#: last dump, so the program holds an artifact the disk does not. Narrower than
+#: :data:`_BUILT_A_SPECIALIZATION`: an offline-cache hit is on disk already.
+_COMPILED_SINCE_DUMP = False
+
+#: One ``atexit`` registration per process, from :func:`start_program` or, for
+#: a program something else brought up, from the first specialization built.
 _FLUSH_REGISTERED = False
 
 
@@ -1220,6 +1264,57 @@ def _register_kernel_cache_flush():
     _FLUSH_REGISTERED = True
 
 
+def dump_new_kernels():
+    """Write the kernels compiled since the last dump, keeping the program.
+
+    Called as the outermost render job ends. :func:`flush_kernel_cache` writes
+    them at exit by tearing the program down, which a process killed before
+    exit never reaches, and nor does a daemon between runs -- so the next
+    process recompiled what this one had already paid for.
+    ``Program.dump_cache_data_to_disk`` is the compiler's own non-destructive
+    write (the precompile workers call it after every spec). Checked on the CPU
+    arch with Quadrants 1.3.3: it writes the new ``.qdc`` and the index, a
+    process killed straight after it leaves an artifact the next process
+    loads, it does not rewrite an artifact an earlier dump wrote, and with
+    nothing new it takes well under a millisecond.
+
+    The flush's conditions without its teardown: off under
+    ``ALGAN_FLUSH_KERNEL_CACHE=0`` (the destructor-only A/B arm), and only on
+    the main thread while no render holds the arch.
+
+    Returns whether a dump ran.
+    """
+    global _COMPILED_SINCE_DUMP
+    if not _COMPILED_SINCE_DUMP:
+        return False
+    if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    if render_is_active() or not _already_initialized():
+        return False
+    from algan.taichi_compat import program
+
+    dump = getattr(program(), "dump_cache_data_to_disk", None)
+    if dump is None:
+        return False
+    started = time.perf_counter()
+    try:
+        dump()
+    except Exception as exc:
+        # Exit still flushes; this only moved the write earlier.
+        get_logger().log(PERF, "Saving newly compiled kernels failed: %r", exc)
+        return False
+    _COMPILED_SINCE_DUMP = False
+    get_logger().log(
+        PERF,
+        "Saved newly compiled kernels to %s in %.2f s.",
+        _TAICHI_CACHE_DIRECTORY,
+        time.perf_counter() - started,
+    )
+    return True
+
+
 def _reset_after_interruption():
     """Discard possibly half-initialized compiler state after a cancelled job.
 
@@ -1229,11 +1324,13 @@ def _reset_after_interruption():
     run even if initialization did not finish or no kernel was compiled.
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
+    global _COMPILED_SINCE_DUMP
     if render_is_active() or threading.current_thread() is not threading.main_thread():
         raise RuntimeError("Cannot recover the compiler while a render is active")
     ti.reset()
     _ARCH_READY_FOR = None
     _BUILT_A_SPECIALIZATION = False
+    _COMPILED_SINCE_DUMP = False
     _PRESSURE_RESET_PENDING = False
     _forget_compiled_in_settings()
 
@@ -1274,6 +1371,7 @@ def reset_quadrants_for_memory_pressure():
     therefore mean "not applicable", "declined" or "safely deferred".
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
+    global _COMPILED_SINCE_DUMP
     if BACKEND != "quadrants":
         return False
     if not _already_initialized():
@@ -1303,6 +1401,7 @@ def reset_quadrants_for_memory_pressure():
         get_logger().log(PERF, "Quadrants pressure reset failed: %r", exc)
         return False
     _BUILT_A_SPECIALIZATION = False
+    _COMPILED_SINCE_DUMP = False
     _ARCH_READY_FOR = None
     _PRESSURE_RESET_PENDING = False
     _forget_compiled_in_settings()
@@ -1340,10 +1439,13 @@ def flush_kernel_cache(*, force=False):
     So Algan asks for the write instead of inheriting it. ``ti.reset()`` calls
     ``prog.finalize()``, and that dumps: the same probe counted the artifact
     directory either side of a mid-process ``reset`` and saw the two kernels it
-    had just compiled appear. Registered on ``atexit`` at first ``ti.init``,
-    which also covers the interrupted case -- a ``KeyboardInterrupt`` unwinds
-    ``render_job_holding_the_arch`` normally, so an hour of compilation
-    survives a Ctrl-C instead of evaporating.
+    had just compiled appear. Registered on ``atexit`` by :func:`start_program`
+    and, for a program something else initialized, when its first
+    specialization is built. That also covers the interrupted case -- a
+    ``KeyboardInterrupt`` unwinds ``render_job_holding_the_arch`` normally, so
+    an hour of compilation survives a Ctrl-C instead of evaporating. A process
+    killed outright still loses whatever it compiled after its last render job
+    ended; :func:`dump_new_kernels` writes the rest at the end of each job.
 
     Safe for the same reason :func:`ensure_taichi_for_render` may re-init:
     Algan holds no ``ti.field`` or ``ti.Ndarray``, every kernel argument being a
@@ -1367,7 +1469,7 @@ def flush_kernel_cache(*, force=False):
     bool
         Whether the runtime was actually torn down (and therefore dumped).
     """
-    global _BUILT_A_SPECIALIZATION, _ARCH_READY_FOR
+    global _BUILT_A_SPECIALIZATION, _ARCH_READY_FOR, _COMPILED_SINCE_DUMP
     if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
         return False
     if not (force or _BUILT_A_SPECIALIZATION):
@@ -1392,6 +1494,7 @@ def flush_kernel_cache(*, force=False):
         get_logger().log(PERF, "Kernel cache flush failed: %r", exc)
         return False
     _BUILT_A_SPECIALIZATION = False
+    _COMPILED_SINCE_DUMP = False
     _ARCH_READY_FOR = None
     _forget_compiled_in_settings()
     get_logger().log(
@@ -1400,6 +1503,13 @@ def flush_kernel_cache(*, force=False):
         _TAICHI_CACHE_DIRECTORY,
         time.perf_counter() - started,
     )
+    # The manifest confirms a compiled spec only once its artifact exists, and
+    # for what this process compiled since its last render job ended, that is
+    # now (rendering/kernel_precompile.py).
+    with contextlib.suppress(Exception):
+        from algan.rendering import kernel_precompile
+
+        kernel_precompile.flush_manifest()
     return True
 
 

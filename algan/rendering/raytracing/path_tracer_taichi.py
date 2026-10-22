@@ -235,6 +235,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
     kbuf,
     max_surfaces_per_ray,
+    megakernel_register_cap,
     min_weight,
 )
 from algan.rendering.raytracing.shading_taichi import (
@@ -2291,6 +2292,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[38], (ashp[79], ashp[80])))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
+    # Quadrants patch 0005's per-kernel register cap, off unless
+    # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
+    if ti.static(megakernel_register_cap()):
+        ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
     for i in range(num_active):
         r = active[i]
         num_hits = rs_int[r, 3]

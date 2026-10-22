@@ -359,7 +359,7 @@ def test_starting_a_program_sweeps_the_cache_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(taichi_runtime.ti, "init", lambda **kwargs: None)
     monkeypatch.setattr(taichi_runtime, "_install_taichi_compile_logger", lambda: None)
 
-    taichi_runtime._start_program()
+    taichi_runtime.start_program()
 
     assert not lock.exists()
 
@@ -440,7 +440,7 @@ print("KERNELS", len(_impl.get_runtime().kernels))
 
 
 def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
-    """Wired into ``_start_program``, and not re-registered on a re-init."""
+    """Wired into ``start_program``, and not re-registered on a re-init."""
     import atexit
 
     from algan.rendering import taichi_runtime
@@ -454,10 +454,158 @@ def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
         taichi_runtime, "_remove_stale_offline_cache_locks", lambda p: []
     )
 
-    taichi_runtime._start_program()
-    taichi_runtime._start_program()
+    taichi_runtime.start_program()
+    taichi_runtime.start_program()
 
     assert registered == [taichi_runtime.flush_kernel_cache]
+
+
+def test_the_kernel_profiler_starts_through_the_runtime(monkeypatch):
+    """``enable_taichi_kernel_profiler`` gets the sweep and the exit flush too.
+
+    It used to call ``ti.init`` itself, so a profiled process registered no
+    flush and wrote no ``.qdc``: every cold start measured through
+    ``profile_scene`` recompiled what the run before it had compiled. A real
+    re-init on whatever arch the suite runs, then back to Algan's own config.
+    """
+    import atexit
+
+    from algan.rendering import taichi_runtime
+    from algan.utils import profiling_utils
+
+    registered = []
+    swept = []
+    monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: registered.append(fn))
+    monkeypatch.setattr(taichi_runtime, "_FLUSH_REGISTERED", False)
+    monkeypatch.setattr(
+        taichi_runtime,
+        "_remove_stale_offline_cache_locks",
+        lambda directory: swept.append(directory) or [],
+    )
+    monkeypatch.setattr(profiling_utils, "KERNEL_PROFILER", False)
+    try:
+        assert profiling_utils.enable_taichi_kernel_profiler() is True
+        assert program().config().kernel_profiler
+        assert taichi_runtime._FLUSH_REGISTERED is True
+        assert registered == [taichi_runtime.flush_kernel_cache]
+        assert swept == [taichi_runtime._TAICHI_CACHE_DIRECTORY]
+    finally:
+        taichi_runtime.start_program()
+    assert not program().config().kernel_profiler
+
+
+def test_building_a_specialization_registers_the_flush(monkeypatch):
+    """Whatever brought the program up, the first kernel it builds reaches disk.
+
+    Defence in depth for a harness that initializes the compiler some other
+    way: the flush is registered at the compile boundary as well as at init.
+    The salt is a template value new to every run, so the kernel is a real
+    compile, never a cache hit.
+    """
+    import atexit
+
+    from algan.rendering import kernel_precompile, taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    registered = []
+    keys = []
+    note = kernel_precompile.note_materialized
+    monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: registered.append(fn))
+    monkeypatch.setattr(taichi_runtime, "_FLUSH_REGISTERED", False)
+    monkeypatch.setattr(taichi_runtime, "_COMPILED_SINCE_DUMP", False)
+    monkeypatch.setattr(
+        kernel_precompile,
+        "note_materialized",
+        lambda token, **kwargs: keys.append(kwargs.get("cache_key"))
+        or note(token, **kwargs),
+    )
+
+    @ti.kernel
+    def _salted(out: ti.types.ndarray(), salt: ti.template()):
+        out[0] += salt
+
+    _salted(torch.zeros(1), time.time_ns() % 1_000_000_007)
+
+    assert registered == [taichi_runtime.flush_kernel_cache]
+    assert taichi_runtime._COMPILED_SINCE_DUMP is True
+    if BACKEND != "quadrants":
+        return
+    # The end of a render job writes it without tearing the program down.
+    live = program()
+    artifact = (
+        Path(taichi_runtime._TAICHI_CACHE_DIRECTORY)
+        / "kernel_compilation_manager"
+        / f"{keys[-1]}.qdc"
+    )
+    assert not artifact.exists()
+    assert taichi_runtime.dump_new_kernels() is True
+    assert artifact.exists()
+    assert program() is live
+    assert taichi_runtime._COMPILED_SINCE_DUMP is False
+    assert taichi_runtime.dump_new_kernels() is False
+
+
+def test_the_job_dump_keeps_the_flushs_conditions(monkeypatch):
+    """Off as the A/B arm, and never under a running render."""
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    dumps = []
+    monkeypatch.setattr(
+        type(program()), "dump_cache_data_to_disk", lambda self: dumps.append(self)
+    )
+    monkeypatch.setattr(taichi_runtime, "_COMPILED_SINCE_DUMP", False)
+    assert taichi_runtime.dump_new_kernels() is False
+
+    monkeypatch.setattr(taichi_runtime, "_COMPILED_SINCE_DUMP", True)
+    monkeypatch.setenv("ALGAN_FLUSH_KERNEL_CACHE", "0")
+    assert taichi_runtime.dump_new_kernels() is False
+    monkeypatch.delenv("ALGAN_FLUSH_KERNEL_CACHE")
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: True)
+    assert taichi_runtime.dump_new_kernels() is False
+    assert dumps == []
+    assert taichi_runtime._COMPILED_SINCE_DUMP is True
+
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
+    assert taichi_runtime.dump_new_kernels() is True
+    assert dumps == [program()]
+    assert taichi_runtime._COMPILED_SINCE_DUMP is False
+
+
+def test_the_outermost_render_job_dumps_before_writing_the_manifest(monkeypatch):
+    """The manifest confirms a compiled spec only once its ``.qdc`` exists."""
+    from algan.rendering import kernel_precompile, taichi_runtime
+
+    calls = []
+    monkeypatch.setattr(
+        taichi_runtime, "dump_new_kernels", lambda: calls.append("dump")
+    )
+    monkeypatch.setattr(
+        kernel_precompile, "flush_manifest", lambda: calls.append("manifest")
+    )
+    with taichi_runtime.render_job_holding_the_arch():
+        with taichi_runtime.render_job_holding_the_arch():
+            pass
+        assert calls == []
+    assert calls == ["dump", "manifest"]
+
+
+def test_the_exit_flush_confirms_what_it_wrote(monkeypatch):
+    """After the teardown dumps, the manifest is written again to confirm it."""
+    from algan.rendering import kernel_precompile, taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    calls = []
+    monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(
+        kernel_precompile, "flush_manifest", lambda: calls.append("manifest")
+    )
+    # Restored afterwards: the stubbed reset leaves the program running.
+    for name in ("_ARCH_READY_FOR", "_BUILT_A_SPECIALIZATION", "_COMPILED_SINCE_DUMP"):
+        monkeypatch.setattr(taichi_runtime, name, getattr(taichi_runtime, name))
+    monkeypatch.setattr(taichi_runtime, "_forget_compiled_in_settings", lambda: None)
+    assert taichi_runtime.flush_kernel_cache(force=True) is True
+    assert calls == ["reset", "manifest"]
 
 
 def test_a_process_that_compiled_nothing_does_not_flush(monkeypatch):

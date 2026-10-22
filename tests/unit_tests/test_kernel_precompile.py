@@ -215,6 +215,7 @@ def manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(kp, "manifest_path", lambda: path)
     monkeypatch.setattr(kp, "_PENDING", {})
     monkeypatch.setattr(kp, "_PENDING_CONTEXTS", {})
+    monkeypatch.setattr(kp, "_AWAITING_ARTIFACT", {})
     monkeypatch.setattr(kp, "BUILTIN_MANIFEST", tmp_path / "builtin.json")
     return path
 
@@ -248,6 +249,58 @@ def test_rows_merge_across_writers_and_the_file_is_bounded(manifest, monkeypatch
 def test_an_unreadable_manifest_reads_as_empty(manifest):
     manifest.write_text("{not json", encoding="utf-8")
     assert kp.read_manifest()["entries"] == {}
+
+
+@quadrants_only
+def test_a_compiled_spec_is_confirmed_once_its_artifact_exists(
+    manifest, tmp_path, monkeypatch
+):
+    """A real compile is on disk only after a dump, so its row waits for the file.
+
+    Confirming it at once let a process that never flushed -- the kernel
+    profiler's, a killed one -- record specs as cached whose ``.qdc`` was never
+    written: the next process's pool skipped them and its render compiled them.
+    """
+    from algan.settings import _startup
+
+    monkeypatch.setattr(_startup, "_TAICHI_CACHE_DIRECTORY", tmp_path)
+    monkeypatch.setattr(kp, "environment_stamp", lambda: "now")
+    artifacts = tmp_path / "kernel_compilation_manager"
+    artifacts.mkdir()
+    (artifacts / "Tdumped.qdc").write_bytes(b"")
+
+    def confirmations():
+        return {
+            row["spec"]["kernel"]: row.get("confirmed")
+            for row in kp.read_manifest()["entries"].values()
+        }
+
+    # Confirmed by an earlier process, then compiled here anyway: the artifact
+    # was not in the cache this process read, so the confirmation goes.
+    kp._note_entry(_spec(1), kp.current_context(), confirmed="now")
+    assert kp.flush_manifest()
+    kp.note_materialized(_spec(1), seconds=2.0, compiled=True, cache_key="Tnew")
+    # Served from a cache: on disk already.
+    kp.note_materialized(_spec(2), seconds=0.1, compiled=False, cache_key="Tserved")
+    # Compiled, but another process had already written the same artifact.
+    kp.note_materialized(_spec(3), seconds=2.0, compiled=True, cache_key="Tdumped")
+    # No key to look for (the Taichi backend): the old rule.
+    kp.note_materialized(_spec(4), seconds=2.0, compiled=True, cache_key=None)
+    assert kp.flush_manifest()
+    assert confirmations() == {
+        "algan.x:k1": False,
+        "algan.x:k2": "now",
+        "algan.x:k3": "now",
+        "algan.x:k4": "now",
+    }
+    compiled = kp.entry_id(_spec(1), kp.current_context())
+    assert kp.read_manifest()["entries"][compiled]["seconds"] == 2.0
+
+    assert not kp.flush_manifest(), "nothing new to write while the file is missing"
+    (artifacts / "Tnew.qdc").write_bytes(b"")
+    assert kp.flush_manifest()
+    assert confirmations()["algan.x:k1"] == "now"
+    assert kp._AWAITING_ARTIFACT == {}
 
 
 def test_pending_work_is_what_the_current_stamp_has_not_confirmed(

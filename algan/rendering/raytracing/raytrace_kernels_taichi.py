@@ -118,6 +118,40 @@ def rgb_shadow_tint():
 
     return bool(rt_settings.rgb_shadow_tint)
 
+
+def megakernel_register_cap():
+    """The register cap the CUDA megakernels compile under; 0 for none.
+
+    ``rt_settings.megakernel_max_reg`` (Quadrants patch 0005) where it can take
+    effect, Quadrants on the CUDA arch, and 0 everywhere else: another arch
+    ignores ``max_reg`` but would still key its kernels on it, and the Taichi
+    backend's ``loop_config`` has no such argument. A megakernel spends it as::
+
+        if ti.static(megakernel_register_cap()):
+            ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
+        for ...:  # the kernel's main loop
+
+    ``loop_config`` decorates the next ``for`` traced, and a static branch is
+    traced in line, so the cap lands on that loop: on the CPU arch the gated
+    form and a bare ``loop_config`` before the loop compile under the same key,
+    and with 0 the branch traces nothing and the key is the uncapped kernel's.
+    Called in ``ti.static`` scope, like :func:`rgb_shadow_tint`, because the
+    compiler warns about any other call to a plain function; the field is in
+    ``rt_settings.KERNEL_COMPILED_IN_FIELDS``.
+
+    The source key (``utils/taichi_source_key.py``) walks everything this
+    references, so it reads the arch off the compiler's own config -- a leaf
+    to that walk -- rather than through ``taichi_runtime.taichi_arch_is_cuda``,
+    whose helpers end in ``importlib`` and poisoned the key of every kernel
+    calling this: each would have paid its full frontend in every process.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.taichi_compat import BACKEND, ti
+
+    if BACKEND != "quadrants" or ti.lang.impl.current_cfg().arch != ti.cuda:
+        return 0
+    return int(rt_settings.megakernel_max_reg)
+
 # Taichi is NOT initialized here. The arch depends on
 # ``SETTINGS.computing.render_device``, which a script may still change at
 # this point, so the program is created at the start of a render by
