@@ -91,8 +91,9 @@ bvh_sah_bins = max(2, env_int("ALGAN_SAH_BINS", 16))
 refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", False)
 
 # Column count up to which a device build runs its topology (the binned-SAH
-# level loop below) on the host, in NumPy (``_build_topology_host``); 0 keeps
-# it on the device always. The loop is ~60 tiny tensor ops per binary pass
+# level loop below) on the host, in NumPy (``_build_topology_host``); a CPU
+# build takes NumPy at any size, and 0 keeps every build in torch on its own
+# device. The loop is ~60 tiny tensor ops per binary pass
 # plus a host readback or two per pass to size the next one, so on a GPU it is
 # launch-bound, nearly whatever its size: ~5000 launches, 70 ms of host time
 # against 13 ms of device work, for a 10k-triangle tree on a 5080 under WDDM,
@@ -508,8 +509,11 @@ def build_refit_bvh(
     union_lo = vlo.amin(0)  # [N, 3]
     union_hi = vhi.amax(0)
     if (
-        0 < N <= refit_host_topology_max_columns
-        and device.type != "cpu"
+        refit_host_topology_max_columns > 0
+        and N > 0
+        # NumPy beats torch's own host ops at every size (a 110k-column tree:
+        # 0.8 s against 1.25 s), so a CPU render takes it whatever the bound.
+        and (refit_host_topology_max_columns >= N or device.type == "cpu")
         and union_lo.dtype == torch.float32
     ):
         # One readback carries everything the topology reads, and the tree

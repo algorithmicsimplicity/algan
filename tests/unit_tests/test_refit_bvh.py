@@ -235,20 +235,25 @@ def test_host_topology_is_the_device_topology(n, kind):
         assert np.array_equal(ref_d.cpu().numpy(), ref_h), device
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_host_topology_builds_the_device_tree(monkeypatch):
+@pytest.mark.parametrize(
+    "device",
+    ["cpu"] + (["cuda"] if torch.cuda.is_available() else []),
+)
+def test_host_topology_builds_the_device_tree(monkeypatch, device):
     """Through ``build_refit_bvh``: moving visibility, flags and slivers."""
     from algan.rendering.raytracing import refit_bvh
 
     generator = torch.Generator().manual_seed(5)
-    lo = (torch.randn(6, 700, 3, generator=generator) * 4).cuda()
-    hi = lo + torch.rand(6, 700, 3, generator=generator).cuda()
+    lo = (torch.randn(6, 700, 3, generator=generator) * 4).to(device)
+    hi = lo + torch.rand(6, 700, 3, generator=generator).to(device)
     lo[2, ::5], hi[2, ::5] = 1e17, -1e17
     lo[:, ::97], hi[:, ::97] = 1e17, -1e17  # never visible
-    opaque = (torch.rand(6, 700, generator=generator) > 0.3).cuda()
-    casts = (torch.rand(700, generator=generator) > 0.2).cuda()
-    leaf_prim = (torch.arange(700) // 2).cuda()
+    opaque = (torch.rand(6, 700, generator=generator) > 0.3).to(device)
+    casts = (torch.rand(700, generator=generator) > 0.2).to(device)
+    leaf_prim = (torch.arange(700) // 2).to(device)
     trees = []
+    # 0 keeps the topology on the tensors' own device; the second arm takes
+    # the NumPy build (a CPU render takes it at any bound above 0).
     for bound in (0, 1 << 20):
         monkeypatch.setattr(refit_bvh, "refit_host_topology_max_columns", bound)
         trees.append(
