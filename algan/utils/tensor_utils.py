@@ -440,7 +440,10 @@ def unsqueeze_until_dim(x, dim, insert_dim=0):
     return x
 
 
-#: ``ALGAN_OPT_DISABLE=broadcastall``, resolved at the first broadcast_all.
+#: ``ALGAN_OPT_DISABLE=broadcastall``, resolved at the first broadcast_all and
+#: cached here rather than asked of ``_opt_disabled`` per call (the deferred
+#: import would cost more than the call saves). A test that patches the
+#: timeline's ``_OPT_DISABLED`` must also reset this to ``None``.
 _BROADCAST_ALL_REFERENCE = None
 
 

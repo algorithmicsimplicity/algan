@@ -307,6 +307,10 @@ class _SortedFrameTimes:
         """``(first, stop)``: the frames with ``start <= t < end``, or ``None``."""
         if not (isinstance(start, (int, float)) and isinstance(end, (int, float))):
             return None
+        if start != start:
+            # A NaN start selects nothing in the mask (``nan <= t`` is False),
+            # but bisects to 0; leave it to the tensor path.
+            return None
         first = bisect.bisect_left(self.values, float(self.scalar(start)))
         stop = bisect.bisect_left(self.values, float(self.scalar(end)))
         return first, max(first, stop)
