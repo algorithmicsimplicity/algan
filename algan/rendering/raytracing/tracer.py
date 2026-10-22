@@ -31,6 +31,7 @@ On out-of-memory the frame window is halved and retried
 
 from __future__ import annotations
 
+import math
 import sys
 import traceback
 from dataclasses import dataclass
@@ -99,6 +100,17 @@ _MEM_TRIM_ENGAGED = [0]
 # Number of tile attempts discarded and retried after the shared continuation
 # allocator reported overflow. Kept as a list for low-overhead in-process tests.
 _WAVEFRONT_POOL_RETRIES = [0]
+# Diagnostics: the sheet route's chunks, its tile attempts, those accepted,
+# and the retries split by cause -- the pool overflowed, or the arena ran out.
+# Read (and reset) by benchmarks/performance/e2e_scene.py per run; a chunk
+# count that differs between two arms says their batch windows did.
+_WAVEFRONT_TILE_STATS = {
+    "chunks": 0,
+    "attempts": 0,
+    "accepted": 0,
+    "overflow_retries": 0,
+    "oom_retries": 0,
+}
 # Diagnostics: the material-pipeline gate masks of the most recently rendered
 # batch (ALL_PIDS = ungated), so an A/B can confirm the gate actually engaged
 # instead of inferring it from timings (benchmarks/_frag_pid_gate_ab.py).
@@ -363,6 +375,42 @@ def _deferred_shadow_sample_count(samples, light_columns):
     return samples
 
 
+#: The bounce drain's device-side shadow events are ordered by bin, and there
+#: are at most ``2 ** _SHADOW_EVENT_BIN_LOG2`` bins: the window's frames times
+#: an octree of the scene box, as fine as that leaves room for (64 cells to an
+#: axis for a one-frame window). Bin counts and their prefix sum are two
+#: arrays of that many words, a megabyte each.
+_SHADOW_EVENT_BIN_LOG2 = 18
+
+#: Launch ranges and flat offsets the drain's kernels compute are i32.
+_INT32_INDEX_LIMIT = 2**31
+
+
+def _shadow_event_bin_bits(frames, rows):
+    """Morton bits of a shadow-event bin for a window of ``frames`` frames
+    and ``rows`` event rows (``wavefront_kernels_taichi._shadow_event_bin``):
+    no more bins than rows, so a small iteration's tables stay small.
+    """
+    log2 = min(_SHADOW_EVENT_BIN_LOG2, (max(1, int(rows)) - 1).bit_length())
+    return max(0, min(30, log2 - (int(frames) - 1).bit_length()))
+
+
+def _device_shadow_glue(device):
+    """Whether the bounce drain builds and sizes its shadow events on the
+    device (``_device_wavefront_shadows``) rather than reading their count back.
+
+    ``ALGAN_OPT_DISABLE=devshadow`` keeps the host glue. So does the parallel
+    shadow queue (``shadow_ray_parallel``), which chunks its work by an event
+    count the host holds, and Metal, where the int views and the int32 prefix
+    sum this leans on are unverified.
+    """
+    return (
+        not _tracer_opt_disabled("devshadow")
+        and not rt_settings.shadow_ray_parallel
+        and torch.device(device).type in ("cuda", "cpu")
+    )
+
+
 def _ray_sort_key_format(frame_count, device):
     # Sparse slots retain indices into the full frame window, not the ray
     # pool. Bound frame bits from that window even when coverage is tiny.
@@ -402,6 +450,10 @@ def _tracer_opt_disabled(name):
     rows (or only the rows a consumer reads) instead of strided columns.
     ``glossfuse`` -- ``gloss_finish`` prefilters, composites and resets a
     finished frame in one launch.
+    ``devshadow`` -- the bounce drain compacts and traces its shadow events
+    on the device, reading no count back (``_device_wavefront_shadows``).
+    ``adaptivepool`` -- the sheet route sizes its tiles from what this
+    render job's tiles have used (``_TileDemand``).
     """
     from algan.animation_timeline.timeline import _opt_disabled
 
@@ -717,6 +769,180 @@ def _overflow_retry_primary(attempt_primary, slots_wanted, pool):
         return max(1, attempt_primary // 2)
     scaled = int(attempt_primary * pool * pool_retry_safety / slots_wanted)
     return max(1, min(scaled, attempt_primary - 1))
+
+
+#: Headroom over the largest demand a tile has shown, for the tiles planned
+#: from it (``_TileDemand``). Slots: per-pixel demand varies across a frame and
+#: a tile that outgrows its pool is discarded and retried. Scratch: the rate is
+#: charged to every pool slot, and the pool already carries the slots'
+#: headroom, so only a tile denser than any seen yet can reach the reserve's
+#: edge, and margins on both compound into tiles smaller than the halving
+#: retry left (graphics on one CPU thread at 384x216 in a 160 MB arena: 49
+#: accepted tiles with 1.25 here, 45 with 1.0, 46 from the estimate alone).
+_POOL_DEMAND_MARGIN = 1.25
+_SCRATCH_DEMAND_MARGIN = 1.0
+#: Only a tile of at least this many primaries reads as a scratch RATE: below
+#: it the fixed part (bin tables, compaction words, the resolve's own tables)
+#: is a large share, and charging that to every primary of the next tile would
+#: shrink it, and the next reading would be larger still.
+_SCRATCH_SAMPLE_PRIMARIES = 1 << 16
+
+
+class _TileDemand:
+    """What the sheet route's tiles have actually used, over one render job.
+
+    ``_split_pool_ratio`` is an estimate fixed before anything is traced -- 8
+    for glass under four secondary samples -- and a tile is sized by it: the
+    pool is that many slots per primary, so the primaries a tile holds, and the
+    tile count, scale with it. A tile's allocator says what it really wanted
+    (``rs_alloc[ALLOC_NEXT]``, read with the drain's last compaction count):
+    about 2.2 slots per primary on the graphics workload. And a tile sized to
+    the arena's last byte has no room for the drain's own scratch -- traversal
+    hits, shadow events and their visibility -- so its first attempt runs out
+    of memory after a whole resolve and is retried at half size, in every
+    chunk, because nothing carried the lesson to the next.
+
+    This carries it: the most slots per primary any planned-size tile attempt
+    of the job asked for (``_plans_like``), and the most scratch per slot any
+    used. The job's later chunks plan their tiles from them: a pool ratio of
+    ``_POOL_DEMAND_MARGIN`` times the slots, and a reserve of
+    ``_SCRATCH_DEMAND_MARGIN`` times the scratch charged to every pool slot.
+
+    The ratio never rises above the estimate: one ratio serves every tile, and
+    a tile that happens to lie over the glass asks several times what the rest
+    do, so a ratio raised to it would shrink every other tile below what the
+    estimate gave them -- such a tile is the overflow retry's, as it always
+    was. The scratch is kept per slot, not per primary, for the same reason:
+    the drain's scratch follows its active rays, so a tile over the glass
+    used several times the scratch per primary one over the floor did (0.5 to
+    2.9 KB on a CPU test scene) but about the same per slot it asked for (0.22
+    to 0.29 KB), and the pool the reserve rides on bounds the slots. An
+    attempt that runs out of arena records a lower bound
+    (``_note_scratch_overrun``). The estimate still plans the first chunk, the
+    overflow retry still makes a short pool exact, and the out-of-memory
+    halving still makes a short reserve safe.
+
+    It lives on the render job's arena (``ManualMemory``), which is what scopes
+    a render job here; ``ALGAN_OPT_DISABLE=adaptivepool`` sizes every tile from
+    the estimate and the free bytes, as before. Tiles partition pixels and no
+    pixel's arithmetic depends on its tile, so the image does not change.
+    """
+
+    __slots__ = ("slots_per_primary", "scratch_per_slot")
+
+    def __init__(self):
+        self.slots_per_primary = 0.0
+        self.scratch_per_slot = 0.0
+
+    def observe_slots(self, primaries, slots_wanted):
+        self.slots_per_primary = max(
+            self.slots_per_primary, int(slots_wanted) / max(1, int(primaries))
+        )
+
+    def observe_scratch(self, scratch_bytes, slots):
+        self.scratch_per_slot = max(
+            self.scratch_per_slot, int(scratch_bytes) / max(1, int(slots))
+        )
+
+    def pool_ratio(self, estimate):
+        """Slots per primary to size a splitting tile's pool with."""
+        estimate = int(estimate)
+        if estimate <= 1 or self.slots_per_primary <= 0.0:
+            return estimate
+        wanted = math.ceil(self.slots_per_primary * _POOL_DEMAND_MARGIN)
+        return max(2, min(wanted, estimate))
+
+    def scratch_reserve(self):
+        """Bytes per pool slot to leave free beside a tile's state."""
+        return math.ceil(self.scratch_per_slot * _SCRATCH_DEMAND_MARGIN)
+
+
+def _note_scratch_overrun(demand, tile_peak, memory, attempt_primary, planned, pool):
+    """Record what a tile attempt that ran out of arena did learn.
+
+    It needed more scratch than was free beside its state, and asked for at
+    most its ``pool`` slots, so that much per slot is a lower bound on the rate,
+    and a plan from the record will not hand the next chunk's first tile the
+    same failure. Nothing to learn where the state itself did not fit (no peak
+    was started), or the attempt was not a planned-size one (``_plans_like``)
+    or too small to read as a rate.
+    """
+    if demand is None or tile_peak is None:
+        return
+    if attempt_primary >= _SCRATCH_SAMPLE_PRIMARIES and _plans_like(
+        attempt_primary, planned
+    ):
+        demand.observe_scratch(len(memory) - tile_peak.base, pool)
+
+
+def _plans_like(attempt_primary, planned_primary):
+    """Whether a tile attempt speaks for the tiles a plan makes.
+
+    A tile covers a run of covered pixels, so a small one -- a chunk's last,
+    or one cut down by retries -- covers a small region, and one over a glass
+    sphere asks several times what a planned tile averages. Planning every
+    later tile from it would shrink them all, so only an attempt at least half
+    the size the arena allows (``_auto_primary_per_tile``'s answer, before the
+    chunk's own pixel count clamps it) is recorded; the overflow retry is what
+    covers the rest.
+    """
+    return int(attempt_primary) >= int(planned_primary) // 2
+
+
+def _tile_demand(memory, pool_ratio):
+    """This render job's :class:`_TileDemand` for batches whose pool estimate
+    is ``pool_ratio``, or None where tiles are sized as before:
+    ``ALGAN_OPT_DISABLE=adaptivepool``, and wherever tiles are not sized from
+    the arena at all (``_auto_primary_per_tile``: an unmanaged arena, or
+    ``wavefront_tile_auto`` off, which asks for fixed tiles).
+
+    Kept per estimate: a batch that does not split (estimate 1) asks for one
+    slot a primary and far less scratch than one with glass in it, and a job
+    that turns from one into the other must not size the glass from the
+    rest.
+    """
+    if (
+        _tracer_opt_disabled("adaptivepool")
+        or not rt_settings.wavefront_tile_auto
+        or not getattr(memory, "managed", False)
+    ):
+        return None
+    by_ratio = getattr(memory, "_algan_tile_demand", None)
+    if by_ratio is None:
+        by_ratio = memory._algan_tile_demand = {}
+    return by_ratio.setdefault(int(pool_ratio), _TileDemand())
+
+
+def _arena_in_use(memory):
+    """Bytes held at both ends of the arena, as ``max_pointer`` counts them."""
+    return memory.current_pointer + len(memory) - memory.current_reverse_pointer
+
+
+class _TileScratchPeak:
+    """The arena's high-water mark over one tile attempt, above the tile's state.
+
+    The render loop baselines ``max_pointer`` per chunk and reads it after;
+    this baselines it once more at the tile's state and hands the loop back
+    the larger of the two marks at :meth:`end`, so the chunk's reading is what
+    it would have been. An attempt that raises out of the tile loop takes its
+    chunk down with it, and the loop re-baselines the next chunk.
+    """
+
+    __slots__ = ("memory", "saved", "base", "peak")
+
+    def __init__(self, memory):
+        self.memory = memory
+        self.saved = memory.max_pointer
+        self.base = _arena_in_use(memory)
+        memory.max_pointer = self.base
+        self.peak = None
+
+    def end(self):
+        """Restore the chunk's mark; return this attempt's bytes above its state."""
+        if self.peak is None:
+            self.peak = max(self.base, self.memory.max_pointer)
+            self.memory.max_pointer = max(self.saved, self.memory.max_pointer)
+        return self.peak - self.base
 
 
 def analytic_raster_route_active(
@@ -3321,6 +3547,207 @@ def raytrace_render_wavefront(
         index_copy_rows(vis_tab, acc_idx, filled)
         return vis_tab
 
+    def _device_wavefront_shadows(
+        active, na, hit_f, hit_i, rs_ro, rs_rd, rs_int, rs_pix
+    ):
+        """:func:`_deferred_wavefront_shadows` without reading anything back.
+
+        Returns the flat buffer the shade kernel's ``deferred_shadows == 2``
+        arm reads -- ``na * kbuf`` words mapping each event row to its slot
+        (an i32 stored in f32; -1 for none), then one RGB triple per traced
+        light per slot -- or None where this batch keeps the host glue.
+
+        The old glue paid a stream drain every bounce (``ev_accept.nonzero``)
+        to size the trace, a dense ``[rows, 3 * vis_lights]`` all-lit fill, a
+        Morton argsort and a dozen gathers and fills sized by the count it
+        read. Here the count never leaves the device: the accepted rows are
+        binned by an octree cell of their position (the event sort, cut short;
+        ``_shadow_event_bin_bits``) and scattered into a slot list and a
+        row -> slot map, the trace runs over every row with the count on the
+        device (``deferred_shadow_trace``), and nothing is filled but the
+        map. Every launch is sized by ``na``, which the host already holds.
+        Each event's visibility is the same fan on the same payload, so the
+        image is unchanged; only the order the trace takes the events in is.
+        """
+        from algan.rendering.raytracing.raster_pipeline import (
+            _shadow_identity_epsilons,
+        )
+        from algan.rendering.raytracing.raster_taichi import deferred_shadow_trace
+        from algan.rendering.raytracing.shadow_queue import _use_light_major
+        from algan.rendering.raytracing.wavefront_kernels_taichi import (
+            shadow_event_bins,
+            shadow_event_scatter,
+        )
+
+        rows = na * kbuf
+        traced = min(int(num_lights), shadow_vis_slots(num_lights))
+        if rows * (1 + 3 * traced) >= _INT32_INDEX_LIMIT:
+            # Launch ranges and flat offsets are i32 in the kernels.
+            return None
+        term_mode = int(rt_settings.shadow_terminator_mode())
+        ev_accept = memory.get_tensor((rows,), i32)
+        ev_pos = memory.get_tensor((rows, 3), f32)
+        ev_snrm = memory.get_tensor((rows, 3), f32)
+        ev_fnrm = memory.get_tensor((rows, 3), f32)
+        ev_frame = memory.get_tensor((rows,), i32)
+        ev_msk = memory.get_tensor((rows,), i32)
+        ev_toff = memory.get_tensor((rows if term_mode == 1 else 1, 3), f32)
+        ev_sort = 1 if rt_settings.wf_shadow_event_sort else 0
+        ev_key = memory.get_tensor((rows if ev_sort else 1,), torch.int64)
+        lo3, inv3 = _scene_sort_bounds() if ev_sort else ([0.0] * 3, [1.0] * 3)
+        wavefront_shadow_events(
+            active,
+            na,
+            rs_ro,
+            rs_rd,
+            rs_int,
+            rs_pix,
+            hit_f,
+            hit_i,
+            a_pos,
+            a_norm,
+            a_uvs,
+            a_meta,
+            merged["textures"],
+            int(merged["num_colored_triangles"]),
+            a_matid,
+            a_mat,
+            int(mem_trim),
+            int(rt_settings.shadow_sided_cull),
+            term_mode,
+            int(time_start),
+            int(width),
+            int(height),
+            0,
+            ev_accept,
+            ev_pos,
+            ev_snrm,
+            ev_fnrm,
+            ev_frame,
+            ev_msk,
+            ev_toff,
+            ev_sort,
+            ev_key,
+            lo3[0],
+            lo3[1],
+            lo3[2],
+            inv3[0],
+            inv3[1],
+            inv3[2],
+        )
+        frames = max(1, int(time_end) - int(time_start))
+        bits = _shadow_event_bin_bits(frames, rows) if ev_sort else 0
+        nbins = (frames << bits) if ev_sort else 1
+        bin_count = memory.get_tensor((nbins,), i32)
+        bin_count.zero_()
+        shadow_event_bins(
+            rows, ev_accept, ev_sort, ev_key, int(time_start), frames, bits, bin_count
+        )
+        bin_end = memory.get_tensor((nbins,), i32)
+        torch.cumsum(bin_count, 0, dtype=i32, out=bin_end)
+        ev_list = memory.get_tensor((rows,), i32)
+        vis_flat = memory.get_tensor((rows * (1 + 3 * traced),), f32)
+        shadow_event_scatter(
+            rows,
+            ev_accept,
+            ev_sort,
+            ev_key,
+            int(time_start),
+            frames,
+            bits,
+            bin_count,
+            bin_end,
+            ev_list,
+            vis_flat[:rows].view(i32),
+        )
+        if traced == 0:
+            # No light to trace: every row reads as all-lit, which the map's
+            # slots cannot change with nothing stored behind them.
+            return vis_flat
+        sec_aa = _deferred_shadow_sample_count(
+            rt_settings.effective_analytic_aa_secondary_samples(), light_col.shape[2]
+        )
+        # One row every event shares: the zero footprint and the -1 source
+        # identity the drain's events have always carried.
+        ev_dp = memory.get_tensor((1, 6), f32)
+        ev_dp.zero_()
+        dummy_i = memory.get_tensor((1,), i32)
+        dummy_i.zero_()
+        identity_on = bool(rt_settings.shadow_identity_reject)
+        if identity_on:
+            ev_src = memory.get_tensor((1,), i32)
+            ev_src.fill_(-1)
+            eps_self, eps_near = _shadow_identity_epsilons(merged)
+        else:
+            ev_src = dummy_i
+            from algan.rendering.raytracing.raytrace_kernels_taichi import (
+                min_hit_distance,
+            )
+
+            eps_self, eps_near = float(min_hit_distance), 0.0
+        deferred_shadow_trace(
+            rows,
+            bin_end[nbins - 1 :],
+            ev_list,
+            ev_pos,
+            ev_snrm,
+            ev_fnrm,
+            ev_frame,
+            ev_msk,
+            t_bvh.blocks,
+            t_bvh.node_miss,
+            t_bvh.leaf_prim,
+            t_bvh.leaf_tspan,
+            int(t_bvh.first_leaf),
+            merged["tri_pos"],
+            merged["tri_colors"],
+            merged["tri_uvs"],
+            merged["tri_tex_meta"],
+            merged["textures"],
+            merged["tri_extra"],
+            int(merged["num_colored_triangles"]),
+            bez_bvh.blocks,
+            bez_bvh.node_miss,
+            bez_bvh.leaf_prim,
+            bez_bvh.leaf_tspan,
+            int(bez_bvh.first_leaf),
+            merged["circuit_meta"],
+            merged["circuit_colors"],
+            merged["circuit_border_colors"],
+            merged["edges_2d"],
+            merged["edge_accel"],
+            light_pos,
+            light_col,
+            int(num_lights),
+            traced,
+            pixel_world_scale,
+            float(layer_offset_triangles),
+            1 if bvh_refit else 0,
+            int(has_tri),
+            int(has_bez),
+            ev_dp,
+            ev_toff,
+            sec_aa,
+            vis_flat[rows:].view(rows, traced, 3),
+            int(shadow_flag),
+            # A [frames, triangles] table: its dummy keeps both dimensions.
+            merged["tri_obj"] if identity_on else dummy_i.view(1, 1),
+            ev_src,
+            eps_self,
+            eps_near,
+            1 if identity_on else 0,
+            term_mode,
+            1 if rt_settings.shadow_adaptive_taps else 0,
+            # Every event of the drain loop is a SECONDARY hit; see
+            # _deferred_wavefront_shadows.
+            1,
+            # Scheduling only, decided on the bound: the count is not here.
+            _use_light_major(rows, traced, ev_pos.device),
+            cam_proj_table,
+            projected,
+        )
+        return vis_flat
+
     def _drain_sparse_secondary(
         active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis, alloc_words=None
     ):
@@ -3437,9 +3864,19 @@ def raytrace_render_wavefront(
                 if shadow_flag and frag_flag and rt_settings.wf_deferred_shadows:
                     deferred = 1
                     with _stage(f"wavefront:   - {bounce} shadow events", items=na):
-                        rs_vis_arg = _deferred_wavefront_shadows(
-                            active, na, hit_f, hit_i, rs_ro, rs_rd, rs_int, rs_pix
-                        )
+                        device_vis = None
+                        if _device_shadow_glue(rs_int.device):
+                            device_vis = _device_wavefront_shadows(
+                                active, na, hit_f, hit_i, rs_ro, rs_rd, rs_int, rs_pix
+                            )
+                        if device_vis is not None:
+                            # The shade reads it through its row -> slot map.
+                            deferred = 2
+                            rs_vis_arg = device_vis
+                        else:
+                            rs_vis_arg = _deferred_wavefront_shadows(
+                                active, na, hit_f, hit_i, rs_ro, rs_rd, rs_int, rs_pix
+                            )
                 with _stage(f"wavefront:   - {bounce} shade", items=na):
                     wavefront_shade(
                         active,
@@ -3650,6 +4087,7 @@ def raytrace_render_wavefront(
                     return
 
                 num_covered_total = int(coverage["num_covered"])
+                _WAVEFRONT_TILE_STATS["chunks"] += 1
 
                 # SPLIT-SUM GLOSSY (DESIGN_glossy_prefilter.md). Two buffers per
                 # FRAME -- never per batch, which is many frames and would make
@@ -3710,10 +4148,25 @@ def raytrace_render_wavefront(
                 pix_accum_rows, pix_accum_cols = (
                     (2, GL_ROW_WIDTH) if gl_active else (1, 8)
                 )
+                # What this render job's earlier chunks' tiles used, or None
+                # (ALGAN_OPT_DISABLE=adaptivepool): see _TileDemand. Read
+                # here, once a chunk: a chunk's tiles cover every region of
+                # its frames, so the most any of them asked bounds the next
+                # chunk's, where a tile seen mid-chunk speaks for its own
+                # corner of the frame alone. The first chunk plans from the
+                # estimate, as every chunk did.
+                demand = _tile_demand(memory, pool_ratio)
+                tile_peak = None
+                plan_ratio = pool_ratio
+                scratch_reserve = 0
+                if demand is not None:
+                    plan_ratio = demand.pool_ratio(pool_ratio)
+                    scratch_reserve = demand.scratch_reserve()
                 sparse_primary = _auto_primary_per_tile(
                     memory,
-                    pool_ratio,
+                    plan_ratio,
                     primary_per_tile,
+                    extra_bytes_per_slot=scratch_reserve,
                     extra_bytes_per_primary=(
                         (pix_accum_rows * pix_accum_cols - 7) * torch.float32.itemsize
                     ),
@@ -3723,7 +4176,7 @@ def raytrace_render_wavefront(
                 )
                 primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
                 shared_pool_capacity = _shared_pool_slots(
-                    primary_capacity, sparse_primary, pool_ratio, analytic_raster
+                    primary_capacity, sparse_primary, plan_ratio, analytic_raster
                 )
                 learned_primary_cap = primary_capacity
                 covered_start = 0
@@ -3747,6 +4200,11 @@ def raytrace_render_wavefront(
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
+                    if tile_peak is not None:
+                        # The last attempt's, whichever way it ended.
+                        tile_peak.end()
+                        tile_peak = None
+                    _WAVEFRONT_TILE_STATS["attempts"] += 1
                     try:
                         with _stage("wavefront:   - tile state alloc"):
                             state_ptrs = memory.get_pointers()
@@ -3827,6 +4285,10 @@ def raytrace_render_wavefront(
                                 rs_alloc[0:1].fill_(attempt_primary)
                             else:
                                 rs_alloc[0] = attempt_primary
+                        if demand is not None:
+                            # Everything the resolve and the drain allocate
+                            # from here is the attempt's scratch.
+                            tile_peak = _TileScratchPeak(memory)
 
                         with memory.temp():
                             covered_idx = shade_sparse_raster_coverage(
@@ -3884,8 +4346,17 @@ def raytrace_render_wavefront(
                                 "covered pixel. Lower the resolution or "
                                 "transparency complexity." + path_tracer_fallback_hint()
                             ) from exc
+                        _note_scratch_overrun(
+                            demand,
+                            tile_peak,
+                            memory,
+                            attempt_primary,
+                            sparse_primary,
+                            pool,
+                        )
                         next_primary = max(1, attempt_primary // 2)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
+                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         # A splitting batch holds the pool fixed across the
@@ -3951,8 +4422,17 @@ def raytrace_render_wavefront(
                                 "one covered pixel. Lower the resolution or "
                                 "transparency complexity." + path_tracer_fallback_hint()
                             ) from poll_oom
+                        _note_scratch_overrun(
+                            demand,
+                            tile_peak,
+                            memory,
+                            attempt_primary,
+                            sparse_primary,
+                            pool,
+                        )
                         next_primary = max(1, attempt_primary // 2)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
+                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
@@ -3976,14 +4456,21 @@ def raytrace_render_wavefront(
                                 "surfaces overlapping in that pixel."
                                 + path_tracer_fallback_hint()
                             )
-                        next_primary = _overflow_retry_primary(
-                            attempt_primary,
+                        wanted = (
                             polled[ALLOC_NEXT]
                             if alloc_words is not None
-                            else int(rs_alloc[ALLOC_NEXT].item()),
-                            pool,
+                            else int(rs_alloc[ALLOC_NEXT].item())
+                        )
+                        if demand is not None and _plans_like(
+                            attempt_primary, sparse_primary
+                        ):
+                            # The resolve's demand alone: a lower bound.
+                            demand.observe_slots(attempt_primary, wanted)
+                        next_primary = _overflow_retry_primary(
+                            attempt_primary, wanted, pool
                         )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
+                        _WAVEFRONT_TILE_STATS["overflow_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
@@ -4023,8 +4510,17 @@ def raytrace_render_wavefront(
                                 "one covered pixel. Lower the resolution or "
                                 "transparency complexity." + path_tracer_fallback_hint()
                             ) from exc
+                        _note_scratch_overrun(
+                            demand,
+                            tile_peak,
+                            memory,
+                            attempt_primary,
+                            sparse_primary,
+                            pool,
+                        )
                         next_primary = max(1, attempt_primary // 2)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
+                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
@@ -4053,14 +4549,37 @@ def raytrace_render_wavefront(
                                 "surfaces overlapping in that pixel."
                                 + path_tracer_fallback_hint()
                             )
+                        if demand is not None and _plans_like(
+                            attempt_primary, sparse_primary
+                        ):
+                            demand.observe_slots(attempt_primary, alloc[ALLOC_NEXT])
                         next_primary = _overflow_retry_primary(
                             attempt_primary, alloc[ALLOC_NEXT], pool
                         )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
+                        _WAVEFRONT_TILE_STATS["overflow_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
                     _record_tile_truncations(alloc, pool)
+                    _WAVEFRONT_TILE_STATS["accepted"] += 1
+                    scratch = None
+                    if tile_peak is not None:
+                        scratch = tile_peak.end()
+                        tile_peak = None
+                    if demand is not None and _plans_like(
+                        attempt_primary, sparse_primary
+                    ):
+                        demand.observe_slots(attempt_primary, alloc[ALLOC_NEXT])
+                        # A small tile's scratch is mostly the fixed part (bin
+                        # tables, compaction words), not a rate.
+                        if (
+                            scratch is not None
+                            and attempt_primary >= _SCRATCH_SAMPLE_PRIMARIES
+                        ):
+                            demand.observe_scratch(
+                                scratch, max(attempt_primary, alloc[ALLOC_NEXT])
+                            )
 
                     with _stage("wavefront:   - tile composite"):
                         if gl_active:

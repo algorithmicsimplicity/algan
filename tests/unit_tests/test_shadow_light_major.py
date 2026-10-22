@@ -65,7 +65,26 @@ def test_light_major_keeps_primary_and_secondary_visibility_exact(
 
         return trace
 
+    # The bounce drain's events trace on the device (tracer.
+    # _device_wavefront_shadows) unless ALGAN_OPT_DISABLE=devshadow: the same
+    # fan, sized by the row count, scheduled the same two ways.
+    deferred = kernels.deferred_shadow_trace
+    deferred_params = kernels._DEFERRED_SHADOW_TRACE_PARAMS
+    deferred_vis = deferred_params.index("shadow_vis")
+    deferred_order = deferred_params.index("light_major")
+
+    def checked_deferred(*call):
+        args = list(call)
+        args[deferred_order] = False
+        deferred(*args)
+        expected = args[deferred_vis].clone()
+        args[deferred_order] = True
+        deferred(*args)
+        torch.testing.assert_close(args[deferred_vis], expected, rtol=0, atol=0)
+        counts[1] += 1
+
     monkeypatch.setattr(shadow_queue, "make_shadow_tracer", make_checked)
+    monkeypatch.setattr(kernels, "deferred_shadow_trace", checked_deferred)
     try:
         SETTINGS.raytracing.experimental.set(
             shadow_ray_budget=budget, shadow_bounce_rays=0 if budget == 0 else 1

@@ -2649,6 +2649,75 @@ def wavefront_shadow_events(
             ev_accept[e] = accept
 
 
+@ti.func
+def _shadow_event_bin(key, time_start, frames, bits):
+    """The bin of an accepted event's ``wavefront_shadow_events`` sort key.
+
+    The key is ``frame << 32`` over a 30-bit Morton code of the event's
+    position; the bin is the frame within the window (clamped into it), then
+    the code's top ``bits`` bits -- an octree cell of the batch's scene box,
+    ``2 ** (bits / 3)`` to an axis. Ordering the events by bin is the event
+    sort cut short at that depth: what the trace's coherence needs is that a
+    warp's events lie close together, which a cell gives.
+    """
+    frame = ti.cast(key >> 32, ti.i32) - time_start
+    frame = ti.min(ti.max(frame, 0), frames - 1)
+    code = ti.cast(key & 0x3FFFFFFF, ti.i32)
+    return (frame << bits) | (code >> (30 - bits))
+
+
+@ti.kernel
+def shadow_event_bins(
+        num_rows: int, ev_accept: ti.types.ndarray(),
+        sort_keys: ti.template(), ev_key: ti.types.ndarray(),
+        time_start: int, frames: int, bits: int,
+        bin_count: ti.types.ndarray()):
+    """Count the accepted rows of ``wavefront_shadow_events`` per bin.
+
+    The first pass of the bounce drain's device-side event compaction
+    (``tracer._device_wavefront_shadows``); ``bin_count`` arrives zeroed. With
+    ``sort_keys`` 0 every event is in bin 0 and the count is the total.
+    """
+    for e in range(num_rows):
+        if ev_accept[e] != 0:
+            b = 0
+            if ti.static(sort_keys != 0):
+                b = _shadow_event_bin(ev_key[e], time_start, frames, bits)
+            ti.atomic_add(bin_count[b], 1)
+
+
+@ti.kernel
+def shadow_event_scatter(
+        num_rows: int, ev_accept: ti.types.ndarray(),
+        sort_keys: ti.template(), ev_key: ti.types.ndarray(),
+        time_start: int, frames: int, bits: int,
+        bin_count: ti.types.ndarray(), bin_end: ti.types.ndarray(),
+        ev_list: ti.types.ndarray(), ev_slot: ti.types.ndarray()):
+    """Give every accepted row a slot, bin by bin, and map rows to slots.
+
+    ``bin_end`` is the inclusive prefix sum of :func:`shadow_event_bins`'
+    counts, so bin ``b`` owns slots ``[bin_end[b] - n_b, bin_end[b])`` and the
+    last entry is the event count. Each accepted row takes one of its bin's
+    slots by counting ``bin_count[b]`` back down (to zero, which nothing reads
+    after), writes its row into ``ev_list[slot]`` for the trace and its slot
+    into ``ev_slot[row]`` for the shade; a row with no event maps to ``-1``.
+
+    Which slot of its bin a row takes follows the order the atomics land in,
+    so it is not reproducible on a parallel device. Nothing downstream can
+    tell: the trace computes each event from its row alone and writes it at
+    its own slot, and the shade reads it back through the same map.
+    """
+    for e in range(num_rows):
+        slot = -1
+        if ev_accept[e] != 0:
+            b = 0
+            if ti.static(sort_keys != 0):
+                b = _shadow_event_bin(ev_key[e], time_start, frames, bits)
+            slot = bin_end[b] - ti.atomic_sub(bin_count[b], 1)
+            ev_list[slot] = e
+        ev_slot[e] = slot
+
+
 @ti.kernel
 def wavefront_shade_arena(
         active: ti.types.ndarray(), num_active: int,
@@ -3076,12 +3145,29 @@ def wavefront_shade_arena(
                         # in ``rs_vis[i * kbuf + slot, 3 * li + c]``. Rows of
                         # slots that built no event hold the all-lit default.
                         row = i * kbuf + sel
-                        for li in range(num_lights):
-                            if li < vis_lights:
-                                base = light_vis_index(li, 0)
-                                vis[base] = rs_vis[row, 3 * li]
-                                vis[base + 1] = rs_vis[row, 3 * li + 1]
-                                vis[base + 2] = rs_vis[row, 3 * li + 2]
+                        if ti.static(deferred_shadows == 2):
+                            # The same visibility, compacted on the device
+                            # (tracer._device_wavefront_shadows): ``rs_vis`` is
+                            # flat, its first ``num_active * kbuf`` words the
+                            # row -> event-slot map (an i32 in f32 storage, -1
+                            # for no event: ``vis`` keeps its all-lit start),
+                            # then one RGB triple per traced light per slot.
+                            ev_slot = ti.bit_cast(rs_vis[row], ti.i32)
+                            if ev_slot >= 0:
+                                ev_lights = ti.min(num_lights, vis_lights)
+                                ev_at = num_active * kbuf + ev_slot * (3 * ev_lights)
+                                for li in range(ev_lights):
+                                    base = light_vis_index(li, 0)
+                                    vis[base] = rs_vis[ev_at + 3 * li]
+                                    vis[base + 1] = rs_vis[ev_at + 3 * li + 1]
+                                    vis[base + 2] = rs_vis[ev_at + 3 * li + 2]
+                        else:
+                            for li in range(num_lights):
+                                if li < vis_lights:
+                                    base = light_vis_index(li, 0)
+                                    vis[base] = rs_vis[row, 3 * li]
+                                    vis[base + 1] = rs_vis[row, 3 * li + 1]
+                                    vis[base + 2] = rs_vis[row, 3 * li + 2]
                     if ti.static((shadows != 0) and (deferred_shadows == 0)):
                         # Shadow visibility is skipped exactly where it cannot
                         # reach the output: an UNLIT hit never consumes ``vis``
