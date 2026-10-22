@@ -86,6 +86,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shade_tri_hit,
     _tri_surface_point,
     max_surfaces_per_ray,
+    megakernel_register_cap,
     min_alpha,
     min_weight,
 )
@@ -281,6 +282,10 @@ def sheet_resolve_shade_arena(
     env_intensity = layer_offsets[4]
     far_clip = layer_offsets[5]
     max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
+    # Quadrants patch 0005's per-kernel register cap, off unless
+    # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
+    if ti.static(megakernel_register_cap()):
+        ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
     for t in range(num_covered):
         r = t
         pixel = covered_idx[t]

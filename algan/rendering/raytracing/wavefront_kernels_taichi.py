@@ -78,6 +78,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     kbuf,
     max_shadow_lights,
     max_surfaces_per_ray,
+    megakernel_register_cap,
     min_alpha,
     min_weight,
 )
@@ -2319,6 +2320,10 @@ def wavefront_traverse_events_arena(
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[22], (ashp[32], ashp[33])))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
+    # Quadrants patch 0005's per-kernel register cap, off unless
+    # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
+    if ti.static(megakernel_register_cap()):
+        ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
     for i in range(num_active):
         r = active[i]
         ro = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2842,6 +2847,10 @@ def wavefront_shade_arena(
     gloss_base = 0
     if layer_offsets.shape[0] > 7:
         gloss_base = ti.cast(layer_offsets[7] + 0.5, ti.i32)
+    # Quadrants patch 0005's per-kernel register cap, off unless
+    # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
+    if ti.static(megakernel_register_cap()):
+        ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
     for i in range(num_active):
         r = active[i]
         pix = r

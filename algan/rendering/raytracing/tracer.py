@@ -114,7 +114,9 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_MAIN_WIDTH,
     GL_PYR_WIDTH,
     GL_ROW_WIDTH,
+    gloss_clear,
     gloss_composite,
+    gloss_finish,
     gloss_pyramid_level,
     gloss_scatter,
 )
@@ -390,13 +392,37 @@ def _gloss_frame_bounds(covered_idx, pixels_per_frame, num_frames):
     return torch.searchsorted(covered_idx, edges).tolist()
 
 
+def _tracer_opt_disabled(name):
+    """``ALGAN_OPT_DISABLE`` for this module's GPU-time shortcuts, asked at
+    every use so an A/B script swapping the timeline's ``_OPT_DISABLED`` and a
+    warm daemon adopting a client's value both take effect (imported lazily,
+    as ``sheets.py`` does: the timeline is not in the renderer's import graph).
+
+    ``exactfills`` -- the tile state and reflection buffer fills write whole
+    rows (or only the rows a consumer reads) instead of strided columns.
+    ``glossfuse`` -- ``gloss_finish`` prefilters, composites and resets a
+    finished frame in one launch.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    return _opt_disabled(name)
+
+
 def _gloss_clear(gl_main, gl_pyr):
     """Reset the per-frame reflection buffers.
 
     The blur radius column is initialised NEGATIVE, not zero: it is what marks
     a pixel as having a prefiltered glossy branch at all, and zero is a legal
     radius (a reflection in contact with its reflector).
+
+    ``gloss_clear`` writes the same bytes into ``gl_main`` in one coalesced
+    pass, and zeroes only level 0 of ``gl_pyr``: each higher level is written
+    whole by the frame's own reduction before anything reads it. The fallback
+    (``ALGAN_OPT_DISABLE=exactfills``) is the strided column write.
     """
+    if not _tracer_opt_disabled("exactfills"):
+        gloss_clear(int(gl_main.shape[0]), gl_main, gl_pyr)
+        return
     gl_main.zero_()
     gl_main[:, GL_MAIN_SIGMA] = -1.0
     gl_pyr.zero_()
@@ -405,13 +431,34 @@ def _gloss_clear(gl_main, gl_pyr):
 def _gloss_finish_frame(
     frame_rel, gl_levels, gl_main, gl_pyr, width, height, tonemapping, out
 ):
-    """Prefilter one frame's reflection buffer and composite it.
+    """Prefilter one frame's reflection buffer, composite it, and reset the
+    buffers for the next frame.
 
     The pyramid is built bottom-up (each level from the one below), then every
     glossy pixel fetches it trilinearly at the level matching its own blur
     radius and overwrites the value the tile composite wrote for it.
+
+    ``gloss_finish`` does all of it in one launch, where the separate kernels
+    took one per pyramid level, one for the composite and the clear's own
+    (``ALGAN_OPT_DISABLE=glossfuse`` restores those).
     """
     num_levels = int(gl_levels.shape[0])
+    if not _tracer_opt_disabled("glossfuse"):
+        gloss_finish(
+            num_levels,
+            int(width) * int(height),
+            int(width),
+            int(height),
+            num_levels,
+            int(frame_rel),
+            int(tonemapping),
+            float(rt_settings.tonemap_exposure),
+            gl_levels,
+            gl_main,
+            gl_pyr,
+            out,
+        )
+        return
     for lvl in range(1, num_levels):
         gloss_pyramid_level(lvl - 1, lvl, gl_levels, gl_pyr)
     gloss_composite(
@@ -427,6 +474,7 @@ def _gloss_finish_frame(
         gl_pyr,
         out,
     )
+    _gloss_clear(gl_main, gl_pyr)
 
 
 def _batch_glossy_mode(merged):
@@ -2007,8 +2055,8 @@ def render_batch_raytraced(
                         int(start),
                         0.5,
                         0.5,
-                        float(width // 2),
-                        float(height // 2),
+                        float(width / 2),
+                        float(height / 2),
                         cam_origin,
                         sp,
                         pbx,
@@ -2108,8 +2156,8 @@ def render_batch_raytraced(
                         time_end=end,
                         width=width,
                         height=height,
-                        half_screen_w=float(width // 2),
-                        half_screen_h=float(height // 2),
+                        half_screen_w=float(width / 2),
+                        half_screen_h=float(height / 2),
                         layer_offset_triangles=layer_offset_triangles,
                         has_tri=has_tri,
                         has_bez=has_bez,
@@ -2188,8 +2236,8 @@ def render_batch_raytraced(
                             int(end),
                             int(width),
                             int(height),
-                            float(width // 2),
-                            float(height // 2),
+                            float(width / 2),
+                            float(height / 2),
                             layer_offset_triangles,
                             has_tri,
                             has_bez,
@@ -2509,7 +2557,21 @@ def _run_wavefront_tiles(
                             # magnitude more work. The generate kernel is left
                             # alone: its write_const block only runs when
                             # pool_ratio == 1, which the stack gate excludes.
-                            rs_sca[:, _SCA_IOR_DEPTH:].zero_()
+                            #
+                            # Only the primaries' rows, though: a primary is
+                            # the one ray that reads a stack (and shell words)
+                            # the host wrote. Every continuation slot gets both
+                            # written where it is spawned (``_write_ior_stack``
+                            # and ``_reset_shell_segment`` at each site), and
+                            # nothing reads a slot before it is spawned. The
+                            # pool is several times the primaries on a
+                            # splitting batch, which every nested-IOR batch
+                            # is. ``ALGAN_OPT_DISABLE=exactfills`` zeroes the
+                            # whole pool again.
+                            if _tracer_opt_disabled("exactfills"):
+                                rs_sca[:, _SCA_IOR_DEPTH:].zero_()
+                            else:
+                                rs_sca[:attempt_primary, _SCA_IOR_DEPTH:].zero_()
 
                         if gen_fused:
                             pix_accum.zero_()
@@ -3720,10 +3782,19 @@ def raytrace_render_wavefront(
                                 rs_vis = memory.get_tensor((1,), i32)
                                 compactor = _ArenaRayCompactor(memory, pool, i32)
                             rs_int = state[4]
+                            exact_fills = not _tracer_opt_disabled("exactfills")
                             if state_sca_width != SCA_WIDTH_PLAIN:
                                 # Same per-tile stack zeroing as the dense tile
                                 # above (DESIGN_mesh_identity_open.md §H).
-                                state[3][:, _SCA_IOR_DEPTH:].zero_()
+                                if exact_fills:
+                                    # Its primaries' rows only, as there, and
+                                    # whole rows, so one contiguous memset: the
+                                    # resolve writes columns 0-6 of a primary
+                                    # it bounces before anything reads them,
+                                    # and nothing reads a retired one's.
+                                    state[3][:attempt_primary].zero_()
+                                else:
+                                    state[3][:, _SCA_IOR_DEPTH:].zero_()
                             pix_accum.zero_()
                             if gl_active:
                                 # ``GL_ROW_DIST`` sums coverage over distance,
@@ -3740,7 +3811,17 @@ def raytrace_render_wavefront(
                                     layer_offsets_t[7:8].fill_(float(attempt_primary))
                                 else:
                                     layer_offsets_t[7] = float(attempt_primary)
-                            rs_int[:, 2].fill_(1)
+                            if exact_fills:
+                                # Every slot starts DONE, and the whole buffer
+                                # is filled, contiguously, rather than its one
+                                # strided status column. Only the compactor
+                                # reads a slot nothing has spawned, and it
+                                # reads the status alone; columns 0, 1, 3 and
+                                # 4 are read only of an active ray, and every
+                                # site that activates one writes them first.
+                                rs_int.fill_(1)
+                            else:
+                                rs_int[:, 2].fill_(1)
                             rs_alloc.zero_()
                             if defer_syncs_enabled():
                                 rs_alloc[0:1].fill_(attempt_primary)
@@ -4040,8 +4121,9 @@ def raytrace_render_wavefront(
                                 covered_start = part_end
                                 if covered_start >= frame_end:
                                     # Frame complete: prefilter its reflection
-                                    # buffer and composite the glossy pixels over
-                                    # the values just written for them.
+                                    # buffer, composite the glossy pixels over
+                                    # the values just written for them, and
+                                    # clear the buffers for the next frame.
                                     _gloss_finish_frame(
                                         gl_frame,
                                         gl_levels,
@@ -4052,7 +4134,6 @@ def raytrace_render_wavefront(
                                         t_val_sparse,
                                         out,
                                     )
-                                    _gloss_clear(gl_main, gl_pyr)
                                     gl_frame += 1
                             memory.set_pointers(state_ptrs)
                             break

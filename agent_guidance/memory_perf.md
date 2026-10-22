@@ -209,6 +209,52 @@ When attributing host blocking from a Kineto trace, count blocking
 sync-debug warnings are delivered after the operation returns, so they count
 syncs but cannot time them.
 
+The batching loop's own syncs follow the same rule on CUDA
+(`render_loop._batch_boundary_sync`; `ALGAN_OPT_DISABLE=loopsync` restores
+them). It used to drain the devices at the top of every batch, after its fetch
+and after its render, only so the `Batch fetch took` / `Rendered frames`
+timings counted device work. Nothing else relies on them: torch and Quadrants
+share one stream; every host read of a device result synchronizes as it
+reads; the chunk model's peaks, torch's peak counters and the preflight are
+host bookkeeping; and a prefetched batch's device work is queued on that
+stream ahead of anything the render thread enqueues after the handover. The
+viewer already ran the loop without them, on a worker thread where
+`_sync_devices` is a no-op. MPS and the CPU keep them.
+
+A tensor background is uploaded and prepared once per render job, not per
+chunk (`_prepare_background_for_chunk(cache=...)`, the job's
+`_chunk_background_cache`; `ALGAN_OPT_DISABLE=bgupload`). The per-chunk upload
+was a pageable copy, so the host waited at every chunk for everything queued
+ahead of it, at a batch's first chunk the scene upload included. The entry is keyed on the source
+tensor's identity and `_version`, so an in-place write misses, and it is CUDA
+only. A prepared value over `_BACKGROUND_CACHE_MAX_BYTES` (64 MiB, a
+super-sampled UHD image) is still prepared per chunk, so it never sits beside
+the between-batch GPU merge, whose headroom is computed from device totals
+and cannot see it. A first upload up to `tracer._PINNED_STAGING_MAX_BYTES` is
+staged in pinned memory and copied without blocking.
+
+The per-chunk frame readback (`post_process._frames_to_host`) still
+synchronizes the stream before it returns. Overlapping it with the next chunk
+means yielding frames that are not yet host-ready, which changes the contract
+of every consumer of `get_frames`: the video writer, `save_frame`, the viewer,
+stills, camera-view captures and public `Scene.get_frames` callers.
+
+The tile's state fills and the glossy reset are whole-row writes, and only of
+the rows something reads (`ALGAN_OPT_DISABLE=exactfills` restores the strided
+column fills). A strided write of one column rewrites part of every DRAM
+sector it touches; a whole-row write of the same buffer costs less. Only a
+tile's primaries read the nested-IOR stack and shell words the host zeroes:
+every continuation slot has both written where it is spawned. So the zero
+covers the primaries' rows alone, which is a fraction of the pool on any
+splitting batch. Only the compactor reads a slot nothing has activated, and it
+reads the status alone, so `rs_int` is filled whole. `_gloss_clear` is one
+coalesced `gloss_clear` launch. A finished glossy frame is one `gloss_finish`
+launch (`ALGAN_OPT_DISABLE=glossfuse`), not one per pyramid level plus the
+composite and the clear; `DESIGN_glossy_prefilter.md` has why its reset is
+exact. `tests/unit_tests/test_tile_state_fills.py` holds the state fills on
+both routes by rendering with every tile's state poisoned, and
+`test_glossy_fused_finish.py` holds the glossy kernels the same way.
+
 ### Split pixels are byte-reproducible; keep them that way
 
 A splitting batch (`_split_pool_ratio > 1`: reflective or refractive geometry

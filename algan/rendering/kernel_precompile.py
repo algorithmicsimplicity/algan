@@ -559,6 +559,10 @@ _MANIFEST_LOCK = threading.Lock()
 _PENDING = {}
 _PENDING_CONTEXTS = {}
 _PENDING_OVERRIDES = {}
+#: Specs this process compiled whose artifact was not yet on disk when last
+#: looked for: ``entry id -> (spec, context, .qdc path)``. Confirmed by
+#: :func:`flush_manifest` once the file exists (see :func:`note_materialized`).
+_AWAITING_ARTIFACT = {}
 
 #: The settings context a script started from: captured when ``import algan``
 #: finishes in a scene-script process (and when the daemon starts a run), so
@@ -644,6 +648,7 @@ def flush_manifest(path=None):
     rows; bounded to the most recently used :data:`_MANIFEST_MAX_ENTRIES`, and
     contexts no row refers to any more are dropped.
     """
+    _confirm_written_artifacts()
     with _MANIFEST_LOCK:
         if not _PENDING:
             return False
@@ -767,31 +772,83 @@ def note_materializing(kernel, args):
     return spec
 
 
-def note_materialized(token, *, seconds, compiled):
+def note_materialized(token, *, seconds, compiled, cache_key=None):
     """The specialization is ready. ``compiled`` when it went through a real compile.
 
-    Recorded under the current context with the current stamp as confirmed:
-    whatever produced it, the artifact now exists (or will, at this process's
-    cache flush). The time is kept only for a real compile -- it is what the
-    pool schedules by and what ``algan warmup`` estimates from.
+    Recorded under the current context. One the source-keyed index or the
+    offline cache served is confirmed under the current stamp at once: its
+    artifact is on disk. One compiled here is not on disk until the exit
+    flush writes it, so its row is left unconfirmed and :func:`flush_manifest`
+    confirms it once the ``.qdc`` that ``cache_key`` names exists. Confirming
+    it at once ("it will exist, at this process's cache flush") was wrong for
+    every process that never flushed -- the kernel profiler's, a killed one:
+    the next process's pool skipped a spec whose artifact was not there, and
+    its render compiled it again.
+
+    Without a ``cache_key`` (the Taichi backend reports none) the old rule
+    stands. The time is kept only for a real compile -- it is what the pool
+    schedules by and what ``algan warmup`` estimates from.
     """
     if token is None:
         return
     try:
         context = current_context()
+        artifact = _artifact_path(cache_key) if compiled else None
+        waiting = artifact is not None and not artifact.exists()
         # `True` stands for "the current stamp", resolved when the row is
         # written: the stamp walks the package sources, which a render should
-        # not pay for in the middle of its first kernel.
-        _note_entry(
+        # not pay for in the middle of its first kernel. `False` withdraws a
+        # confirmation an earlier process made: this one had to compile the
+        # spec, so the artifact was not in the cache it read.
+        eid = _note_entry(
             token,
             context,
             seconds=seconds if compiled else None,
-            confirmed=True,
+            confirmed=not waiting,
             used=True,
             script=current_script(),
         )
+        if waiting:
+            with _MANIFEST_LOCK:
+                _AWAITING_ARTIFACT[eid] = (token, context, artifact)
     except Exception:  # noqa: BLE001 -- recording must never fail a render
         pass
+
+
+def _artifact_path(cache_key):
+    """The ``.qdc`` the offline cache keeps ``cache_key``'s kernel in, or ``None``.
+
+    ``CompileResult.cache_key`` is the artifact's file name under
+    ``kernel_compilation_manager/`` (Quadrants 1.3.3, checked by compiling on
+    the CPU arch).
+    """
+    from algan.taichi_compat import BACKEND
+
+    if not cache_key or BACKEND != "quadrants":
+        return None
+    from algan.settings._startup import _TAICHI_CACHE_DIRECTORY
+
+    return (
+        Path(_TAICHI_CACHE_DIRECTORY)
+        / "kernel_compilation_manager"
+        / f"{cache_key}.qdc"
+    )
+
+
+def _confirm_written_artifacts():
+    """Confirm the specs :func:`note_materialized` left waiting whose ``.qdc`` now exists."""
+    with _MANIFEST_LOCK:
+        waiting = list(_AWAITING_ARTIFACT.items())
+    for eid, (spec, context, artifact) in waiting:
+        try:
+            written = artifact.exists()
+        except OSError:
+            written = False
+        if not written:
+            continue
+        with _MANIFEST_LOCK:
+            _AWAITING_ARTIFACT.pop(eid, None)
+        _note_entry(spec, context, confirmed=True)
 
 
 # ---------------------------------------------------------------------------

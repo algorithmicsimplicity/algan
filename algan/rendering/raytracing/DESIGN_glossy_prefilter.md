@@ -538,7 +538,22 @@ At the frame boundary:
   write `out[f, p] = finalize(csum + W · prefiltered)`. A pixel with no near
   content within reach makes three trilinear fetches (the reach probe, core,
   halo); one beside near content makes up to six.
-* zero both buffers for the next frame.
+* reset both buffers for the next frame.
+
+`gloss_finish` does all three in ONE launch: each pyramid level is its own
+top-level loop (so its own offloaded task, run in order), then the composite's
+loop, then the reset. Every kernel here computes a texel or a pixel through the
+same `ti.func`, so the arithmetic and its order are the separate launches'. The
+reset is cut to what the next frame reads: the composite puts each glossy
+pixel's `sigma_px` back to -1 after reading it (the scatter writes every
+`gl_main` column of a pixel it marks, and nothing reads an unmarked pixel past
+`sigma_px`), and a last loop zeroes level 0 of `gl_pyr` (each higher level is
+written whole by the next frame's reduction before anything reads it). The
+reset before a chunk's first frame, `gloss_clear`, writes `gl_main` whole in
+one coalesced pass and zeroes level 0 alone. `ALGAN_OPT_DISABLE=glossfuse`
+restores the separate launches and `ALGAN_OPT_DISABLE=exactfills` the
+strided clear; `tests/unit_tests/test_glossy_fused_finish.py` holds both to
+them bit for bit, with everything the new reset skips poisoned.
 
 `finalize` is `finalize_pixel_color` with the same tonemapping template value
 and exposure the tile composite used, so a glossy pixel takes the identical

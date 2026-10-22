@@ -606,6 +606,16 @@ Quadrants' own `offline_cache_util.cpp`** — that claim is 1.7.4's, carried ove
 register-pressure effect on the 161-register megakernel as an open question and
 a cap chosen without the spill numbers is as likely to cost as to pay.
 
+**Wired since 2026-10-22, off by default.**
+`SETTINGS.raytracing.experimental.megakernel_max_reg` (seeded by
+`ALGAN_MEGAKERNEL_MAX_REG`) puts `loop_config(max_reg=N)` ahead of the main loop
+of the four megakernels above, each as its `_arena` kernel, on Quadrants and the
+CUDA arch only (`raytrace_kernels_taichi.megakernel_register_cap`). At 0, the
+default, the gate traces nothing, so the kernels and their keys are unchanged.
+The setter takes only 0 or 16-255, which closes the range-check finding below
+for this path. The field is in `KERNEL_COMPILED_IN_FIELDS`, so changing it
+between renders rebuilds the program. No CUDA render has measured a cap yet.
+
 **Review findings.** Two are real work, the rest are "check on the first build":
 
 * **The two-argument `add_module` is assumed, not shown.** No hunk in 0005
@@ -774,6 +784,12 @@ resembles a 20-argument megakernel.
   a measurement opts in per process with `qd.init(readonly_ndarray_ldg=True)`
   (what `verify_cuda_patches.py`'s `on` arm does), and Algan's
   `taichi_init_kwargs()` will set it only once a CUDA full-render run has.
+
+**Wired since 2026-10-22, off by default.** `ALGAN_READONLY_NDARRAY_LDG=1`
+makes `taichi_init_kwargs()` pass `readonly_ndarray_ldg=True`, on the CUDA arch
+only; unset, the keyword is not passed at all. Read when `ti.init` runs, like
+`ALGAN_ADV_OPT`. The aliasing, element-type and arena findings above still
+stand, and no CUDA render has been taken with it on.
 
 ## 0007 — fast `expf` under `fast_math`
 
