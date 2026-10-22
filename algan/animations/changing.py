@@ -102,6 +102,39 @@ class AnimatedBoundary(Group):
     Parameters mirror Manim Community's ``AnimatedBoundary`` where practical.
     The returned object is an ordinary Algan :class:`~algan.mobs.group.Group`;
     call ``spawn()`` to display it and :meth:`stop` to freeze the updater.
+
+    Parameters
+    ----------
+    vmobject
+        The Mob to outline. Every non-empty cubic Bezier curve among it and its
+        descendants gets a boundary, which follows that curve as it changes.
+    colors
+        Colors to cycle through, one per cycle, in any form a Mob's color
+        accepts (Manim colors too). Defaults to
+        ``(BLUE_D, BLUE_B, BLUE_E, GREY_BROWN)``.
+    max_stroke_width
+        Stroke width of the travelling highlight, in Algan's units (half of
+        Manim's for the same number). Defaults to ``3``.
+    cycle_rate
+        Cycles per second of elapsed time. In each cycle the highlight is drawn
+        along the curve in the next color while the previous cycle's outline
+        fades and thins out. Defaults to ``0.5``.
+    back_and_forth
+        Whether every other cycle draws the highlight from the end of the curve
+        back towards its start, rather than from the start. Defaults to True.
+    draw_easing
+        Easing of the drawing within each cycle. Defaults to ``easings.smooth``.
+    fade_easing
+        Easing of the fade within each cycle. Defaults to ``easings.smooth``.
+    **kwargs
+        Passed on to :class:`~algan.mobs.group.Group`.
+
+    Raises
+    ------
+    TypeError
+        If ``vmobject`` is not a Mob or contains no cubic Bezier geometry.
+    :class:`.AlganConfigurationError`
+        If ``colors`` is empty.
     """
 
     def __init__(

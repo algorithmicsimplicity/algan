@@ -121,9 +121,9 @@ class MobHierarchyMixin:
             If ``other_mob`` is not an
             :class:`~algan.animatable_base.animatable.Animatable`.
         :class:`.HierarchyError`
-            If ``other_mob`` is this Mob, belongs to another Scene, or is
-            already somewhere below it -- any of which would make the graph a
-            cycle.
+            If ``other_mob`` is this Mob or is already somewhere below it --
+            either of which would make the graph a cycle -- or belongs to
+            another Scene.
         """
         if not isinstance(other_mob, Animatable):
             raise TypeError(
@@ -198,7 +198,10 @@ class MobHierarchyMixin:
         Returns
         -------
         list[:class:`~algan.animatable_base.mob.Mob`]
-            The children at that generation. The Mobs are live, not copies.
+            The children at that generation. The Mobs are live, not copies;
+            with the defaults (``generation=0, include_components=True``) the
+            list returned is this Mob's own ``children`` list, so do not mutate
+            it -- use the ``add_children`` / ``remove_child`` methods instead.
 
         See Also
         --------
@@ -227,8 +230,10 @@ class MobHierarchyMixin:
         Returns
         -------
         list[:class:`~algan.animatable_base.mob.Mob`]
-            This Mob (unless excluded) followed by its children, their children,
-            and so on. The Mobs are live, not copies.
+            This Mob (unless excluded) followed by each child's own descendants
+            in turn (depth-first). The Mobs are live, not copies. A Mob reachable
+            along more than one path (it has several parents under this one)
+            appears once per path; the list is not de-duplicated.
         """
         cache = getattr(self, "_descendants_cache", None)
         if (
@@ -423,8 +428,8 @@ class MobHierarchyMixin:
 
         Raises
         ------
-        ValueError
-            If ``mob`` is not a child of this Mob.
+        :class:`~algan.errors.AlganConfigurationError`
+            If ``mob`` is not a child of this Mob (a ``ValueError`` subclass).
         """
         if not self._drop_child(mob):
             raise AlganConfigurationError(

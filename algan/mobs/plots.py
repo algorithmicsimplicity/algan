@@ -368,6 +368,7 @@ class FunctionPlotMob(Mob):
         torch.Tensor
             The points ``(x, 0, 0)``, shape ``(N, 3)``.
         """
+
         def get_func_point_at_x(x):
             return torch.stack((x, torch.zeros_like(x), torch.zeros_like(x)), -1)
 
@@ -405,6 +406,7 @@ class FunctionPlotMob(Mob):
             The curve points ``(x, y, 0)``, shape ``(N, 3)``; ``y`` is NaN where
             the function is.
         """
+
         def get_func_point_at_x(x):
             return torch.stack(
                 (x, self.func_callable(x * self.s) / self.s, torch.zeros_like(x)), -1

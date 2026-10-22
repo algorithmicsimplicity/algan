@@ -117,8 +117,10 @@ class MobMaterialsMixin:
     def set_shader(self, shader) -> Mob:
         """Set the per-vertex lighting shader for this Mob and its descendants.
 
-        The shader decides how the Mob responds to light. Its parameters become
-        animatable attributes on the Mob, so a shader with a ``roughness``
+        The shader decides how the Mob responds to light. Its material
+        parameters (those after the nine fixed ones) become animatable
+        attributes on the Mob and its descendants, set to the shader's defaults
+        (``0`` where a parameter has none), so a shader with a ``roughness``
         parameter gives you ``mob.roughness`` to animate. Most scenes should set a
         :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
         instead, which picks the matching shader and
@@ -243,7 +245,9 @@ class MobMaterialsMixin:
         ----------
         shader
             A fragment stage, a built-in material shader, or a list of these
-            forming a pipeline. ``None`` clears the fragment shader.
+            forming a pipeline. ``None`` clears the shader on this Mob and its
+            descendants -- whichever kind was set, vertex or fragment -- leaving
+            them unlit.
 
         Returns
         -------
@@ -294,8 +298,11 @@ class MobMaterialsMixin:
 
         The material's numeric and color properties land on the Mob as animatable
         attributes -- ``mob.roughness``, ``mob.emissive_intensity`` and so on -- so
-        they can be animated afterwards like any other. Its color drives the Mob's
-        base color and its ``opacity`` the Mob's maximum opacity.
+        they can be animated afterwards like any other. Its ``color``, when given,
+        sets the Mob's color (materials that ignore base color, such as
+        :class:`~algan.rendering.shaders.materials.MeshNormalMaterial` and
+        :class:`~algan.rendering.shaders.materials.MeshDepthMaterial`, never
+        repaint it), and its ``opacity`` sets the Mob's opacity.
 
         The material is also the sole public source of ray-transport
         properties. ``metalness`` and ``roughness`` drive reflections, while a
@@ -348,6 +355,10 @@ class MobMaterialsMixin:
 
         Raises
         ------
+        :class:`.AlganConfigurationError`
+            If ``material`` is not a
+            :class:`~algan.rendering.shaders.materials.Material` (e.g. a color
+            such as ``GOLD``).
         :class:`.ModifiedProtectedAttributeError`
             If called on a Mob that has already been spawned.
 

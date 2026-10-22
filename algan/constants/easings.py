@@ -210,6 +210,7 @@ def ease_out_exp(t, scale=4):
     Gentler than :func:`ease_out_expo`. Maps 0 to 0 and 1 to 1; ``scale``
     (default ``4``) sets how sharply it decelerates.
     """
+
     def f(t):
         return -torch.nn.functional.softplus(-scale * (t - 0.5))
 
@@ -233,6 +234,7 @@ def ease_in_expo(t: float) -> float:
     Rescaled so it maps exactly 0 to 0 and 1 to 1. Milder than the
     standard Penner curve, which uses ``2 ** (10t - 10)``.
     """
+
     def f(t):
         s = 5
         return pow(2, s * t - s)
@@ -247,6 +249,7 @@ def ease_out_expo(t: float) -> float:
 
     Rescaled so it maps exactly 0 to 0 and 1 to 1.
     """
+
     def f(t):
         s = 5
         return 1 - pow(2, -s * t)

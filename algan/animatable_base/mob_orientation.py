@@ -126,7 +126,8 @@ class MobOrientationMixin:
         Parameters
         ----------
         angle
-            How far to rotate, counter-clockwise when looking down ``axis``, in
+            How far to rotate, counter-clockwise when seen from the tip of
+            ``axis`` looking back at the origin (right-hand rule), in
             degrees unless ``degrees`` is False. Accepts a tensor of shape
             ``(*, 1)`` to give each Mob of a batch its own angle.
         axis
@@ -208,8 +209,9 @@ class MobOrientationMixin:
         Parameters
         ----------
         angle
-            How far around to travel, counter-clockwise when looking down
-            ``axis``, in degrees unless ``degrees`` is False.
+            How far around to travel, counter-clockwise when seen from the tip
+            of ``axis`` (right-hand rule), in degrees unless ``degrees`` is
+            False. Accepts a tensor of shape ``(*, 1)`` for per-Mob angles.
         axis
             Axis to orbit around; need not be normalized. Defaults to ``OUTWARD``
             (the +z axis, out of the screen).
