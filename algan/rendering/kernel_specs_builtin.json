@@ -2,7 +2,7 @@
  "entries": {
   "16ffc9d9c17ef9c2caa008cc0cadc7b6": {
    "requires": {},
-   "seconds": 0.29,
+   "seconds": 0.39,
    "spec": {
     "args": [
      [
@@ -110,6 +110,61 @@
     "3d-default-light",
     "shadows",
     "glass"
+   ]
+  },
+  "27972e7e500437a3a2b4a29f03507afc": {
+   "requires": {
+    "shadows": true
+   },
+   "seconds": 0.03,
+   "spec": {
+    "args": [
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.wavefront_kernels_taichi:shadow_event_bins"
+   },
+   "variants": [
+    "shadows"
    ]
   },
   "2a5476330b7d5d11a61d29925d9d94e9": {
@@ -307,7 +362,7 @@
   },
   "2b339bbf55f53022e49200c315d50fc2": {
    "requires": {},
-   "seconds": 0.28,
+   "seconds": 0.34,
    "spec": {
     "args": [
      [
@@ -418,7 +473,7 @@
   },
   "320cdaff70656736fe08a922094c4533": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -504,7 +559,7 @@
   },
   "3a51f1b4d759ebbc617f1fef931deb17": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -594,7 +649,7 @@
   },
   "3d4b29ed8eea0e128c56cb27076a6dab": {
    "requires": {},
-   "seconds": 0.02,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -718,7 +773,7 @@
   },
   "48a46811026513dd762b150e531cacf7": {
    "requires": {},
-   "seconds": 0.02,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -751,7 +806,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 16.65,
+   "seconds": 16.71,
    "spec": {
     "args": [
      [
@@ -995,7 +1050,7 @@
   },
   "65263531ef3e007c706431aead1e8619": {
    "requires": {},
-   "seconds": 0.41,
+   "seconds": 0.42,
    "spec": {
     "args": [
      [
@@ -1164,7 +1219,7 @@
   },
   "69f22f7c5b2fdf7ba6cdf2e53a055fa0": {
    "requires": {},
-   "seconds": 0.34,
+   "seconds": 0.4,
    "spec": {
     "args": [
      [
@@ -1367,9 +1422,325 @@
     "glass"
    ]
   },
+  "6fc4e5d36681b35e70c9a789208bd59c": {
+   "requires": {
+    "shadows": true
+   },
+   "seconds": 4.32,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float16",
+      3,
+      [
+       4
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float16",
+      3,
+      [
+       4
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "tuple",
+       []
+      ]
+     ],
+     [
+      "T",
+      [
+       "tuple",
+       []
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       -1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       2
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      3,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.wavefront_kernels_taichi:wavefront_shade_arena"
+   },
+   "variants": [
+    "shadows"
+   ]
+  },
   "72259646438f3aa3cbb37ae237efa3d0": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -1514,7 +1885,7 @@
   },
   "76f89507cbc42303d4e231fb2f6536bc": {
    "requires": {},
-   "seconds": 0.03,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -1545,7 +1916,7 @@
   },
   "7ddfd827b075660c8ccaed3ca3bf779d": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -1589,7 +1960,7 @@
   },
   "7e5667092e02b311d7c89bc721b5814c": {
    "requires": {},
-   "seconds": 0.02,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -1645,7 +2016,7 @@
   },
   "809fa45a1572b41cf1390260919aa936": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -1717,7 +2088,7 @@
   },
   "8622a1b18bff0cff7b09f39ef442299e": {
    "requires": {},
-   "seconds": 0.88,
+   "seconds": 0.96,
    "spec": {
     "args": [
      [
@@ -1933,7 +2304,7 @@
   },
   "8ba98f143a3fb210c0e20fdaa3ba87a3": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.1,
    "spec": {
     "args": [
      [
@@ -1990,7 +2361,7 @@
   },
   "9145fb1b3375f853f9da4b08cf7b46a9": {
    "requires": {},
-   "seconds": 1.25,
+   "seconds": 1.31,
    "spec": {
     "args": [
      [
@@ -2174,9 +2545,239 @@
     "glass"
    ]
   },
+  "93e7ad594be1596a979a3e4f9a850b06": {
+   "requires": {
+    "shadows": true
+   },
+   "seconds": 1.26,
+   "spec": {
+    "args": [
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float16",
+      3,
+      [
+       4
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float16",
+      3,
+      [
+       4
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      3,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.raster_taichi:deferred_shadow_trace_arena"
+   },
+   "variants": [
+    "shadows"
+   ]
+  },
   "99662f0b46624b6662612e07c7321bd7": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -2330,7 +2931,7 @@
   },
   "9aebfd8ff120e602766606cdef899193": {
    "requires": {},
-   "seconds": 0.21,
+   "seconds": 0.22,
    "spec": {
     "args": [
      [
@@ -2476,7 +3077,7 @@
   },
   "9c6a8ec057ab597e7e4603d70dc522e2": {
    "requires": {},
-   "seconds": 0.14,
+   "seconds": 0.2,
    "spec": {
     "args": [
      [
@@ -2578,7 +3179,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 13.71,
+   "seconds": 13.7,
    "spec": {
     "args": [
      [
@@ -2822,7 +3423,7 @@
   },
   "9d38abbc23e299e6e71dd2adc7517910": {
    "requires": {},
-   "seconds": 3.93,
+   "seconds": 3.95,
    "spec": {
     "args": [
      [
@@ -3136,7 +3737,7 @@
   },
   "9fd18930082054fab591e6f9f8c3d301": {
    "requires": {},
-   "seconds": 0.03,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -3335,7 +3936,7 @@
   },
   "a4cd8299362737fdb84b6d40c9a1d34a": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.1,
    "spec": {
     "args": [
      [
@@ -3362,7 +3963,7 @@
   },
   "b5c5e0b51f55bac2489a0c47e8b9713a": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.09,
    "spec": {
     "args": [
      [
@@ -3454,7 +4055,7 @@
   },
   "b6587aa489926967dc7a41ab6571da8f": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.08,
    "spec": {
     "args": [
      [
@@ -3533,7 +4134,7 @@
   },
   "b8f1979d09e7292bd7e7ad5a063bc39b": {
    "requires": {},
-   "seconds": 0.11,
+   "seconds": 0.16,
    "spec": {
     "args": [
      [
@@ -3707,7 +4308,7 @@
   },
   "bcebc0e9c8680001a2f93b52fb78a3ff": {
    "requires": {},
-   "seconds": 0.67,
+   "seconds": 0.64,
    "spec": {
     "args": [
      [
@@ -3914,7 +4515,7 @@
   },
   "c4648153df9190f14f4e38cd235f9428": {
    "requires": {},
-   "seconds": 0.03,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -3973,7 +4574,7 @@
   },
   "c73defcc9e8a5c00ab2fa6b94776260b": {
    "requires": {},
-   "seconds": 0.03,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -4167,7 +4768,7 @@
   },
   "d234d7577202e0e7254398b87f118e08": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -4229,325 +4830,9 @@
     "glass"
    ]
   },
-  "de854f83aa8fc88fb1845d8b220fc4ba": {
-   "requires": {
-    "shadows": true
-   },
-   "seconds": 3.95,
-   "spec": {
-    "args": [
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float16",
-      3,
-      [
-       4
-      ]
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float16",
-      3,
-      [
-       4
-      ]
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "tuple",
-       []
-      ]
-     ],
-     [
-      "T",
-      [
-       "tuple",
-       []
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       -1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       4
-      ]
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      3,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      3,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "bool",
-       false
-      ]
-     ],
-     [
-      "A",
-      "float32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ]
-    ],
-    "kernel": "algan.rendering.raytracing.wavefront_kernels_taichi:wavefront_shade_arena"
-   },
-   "variants": [
-    "shadows"
-   ]
-  },
   "e511268c779e3b8cc2d2d2e4556cedd0": {
    "requires": {},
-   "seconds": 3.96,
+   "seconds": 4.42,
    "spec": {
     "args": [
      [
@@ -4898,7 +5183,7 @@
   },
   "ee57917c78ee5ee2ab5a412758168673": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.11,
    "spec": {
     "args": [
      [
@@ -4941,7 +5226,7 @@
   },
   "f195648f8def54d5eaf9369dbc30beda": {
    "requires": {},
-   "seconds": 14.57,
+   "seconds": 15.58,
    "spec": {
     "args": [
      [
@@ -5187,7 +5472,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 1.36,
+   "seconds": 1.37,
    "spec": {
     "args": [
      [
@@ -5399,7 +5684,7 @@
   },
   "f19cf3c5d2031560b7aa593f375c5ff0": {
    "requires": {},
-   "seconds": 16.68,
+   "seconds": 17.74,
    "spec": {
     "args": [
      [
@@ -5643,7 +5928,7 @@
   },
   "f21db71c8c91eef0c9471f33c387487a": {
    "requires": {},
-   "seconds": 1.11,
+   "seconds": 1.24,
    "spec": {
     "args": [
      [
@@ -5720,7 +6005,7 @@
   },
   "f45688fd25324e74de94c5dd59a03ad2": {
    "requires": {},
-   "seconds": 17.44,
+   "seconds": 17.75,
    "spec": {
     "args": [
      [
@@ -5964,7 +6249,7 @@
   },
   "f6d13eb7cb37fab8bb60a43ffc70bcd5": {
    "requires": {},
-   "seconds": 16.68,
+   "seconds": 17.84,
    "spec": {
     "args": [
      [
@@ -6208,7 +6493,7 @@
   },
   "f850c38dc3b91d40a6a6b4ea6fb00208": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -6292,7 +6577,7 @@
   },
   "f8b0941f5382429798f443dd78c63c5c": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -6339,7 +6624,7 @@
   },
   "f96b04cf50794dd1ca2d42247a952145": {
    "requires": {},
-   "seconds": 3.92,
+   "seconds": 4.12,
    "spec": {
     "args": [
      [
@@ -6651,11 +6936,84 @@
     "glass"
    ]
   },
+  "fa9b2e09e5d61b17d15c35dba1e378c4": {
+   "requires": {
+    "shadows": true
+   },
+   "seconds": 0.03,
+   "spec": {
+    "args": [
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.wavefront_kernels_taichi:shadow_event_scatter"
+   },
+   "variants": [
+    "shadows"
+   ]
+  },
   "ff6d615cd60228a6e751e8e330a59eb3": {
    "requires": {
     "shadows": true
    },
-   "seconds": 1.1,
+   "seconds": 1.14,
    "spec": {
     "args": [
      [
