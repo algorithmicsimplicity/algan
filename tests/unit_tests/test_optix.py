@@ -591,6 +591,9 @@ def test_the_device_shadow_glue_stays_where_optix_cannot_run(monkeypatch):
 
     monkeypatch.setattr(timeline, "_OPT_DISABLED", frozenset())
     monkeypatch.setattr(rt_settings, "shadow_ray_parallel", False)
+    # The device glue is opt-in; turn it on, so what is checked is only that
+    # OptiX withdraws it where (and only where) its own arm will run.
+    monkeypatch.setattr(rt_settings, "wf_device_shadow_glue", True)
 
     monkeypatch.setattr(rt_settings, "optix", True)
     # A CPU render never takes the OptiX arm, so its glue is unchanged.
