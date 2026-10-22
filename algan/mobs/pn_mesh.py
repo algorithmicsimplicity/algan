@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
@@ -79,7 +80,9 @@ class PNMesh(Mob):
                 self.set_non_recursive(**common)
 
     def get_render_primitives(self):
-        colors = self.color.clone()
+        # Plain tensor, not the Color subclass the public property returns (see
+        # the matching note in Surface._build_render_primitive).
+        colors = self.color.as_subclass(torch.Tensor).clone()
         colors[..., -1:] *= self.opacity
         colors[..., -2:-1] += self.glow
         normals = F.normalize(self.normals, p=2, dim=-1)

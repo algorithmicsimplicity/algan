@@ -462,7 +462,11 @@ class TriangleMesh(Mob):
         if normals is None:
             normals = torch.zeros_like(corners)
 
-        grid_color = self.grid.color.clone()
+        # Plain tensor, not the Color subclass the public property returns: a
+        # subclass sends every operation the primitive and the collection
+        # merge apply through __torch_function__ (see the matching note in
+        # Surface._build_render_primitive).
+        grid_color = self.grid.color.as_subclass(torch.Tensor).clone()
         grid_color[..., -1:] = grid_color[..., -1:] * self.grid.opacity
         grid_color[..., -2:-1] = grid_color[..., -2:-1] + self.grid.glow
         colors = grid_color
