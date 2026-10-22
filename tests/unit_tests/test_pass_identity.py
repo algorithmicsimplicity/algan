@@ -560,16 +560,31 @@ def test_the_fallback_builders_carry_sources_too(monkeypatch, env, mesh_id):
         SETTINGS.raytracing.experimental.set(mesh_id=previous)
 
 
-@pytest.mark.parametrize("prefetch", ["1", "0"], ids=["prefetch", "serial"])
-def test_the_tables_reach_the_render_on_both_batch_paths(monkeypatch, prefetch):
+@pytest.mark.parametrize(
+    ("prefetch", "gpu_prep"),
+    [("1", "0"), ("1", "1"), ("0", "0")],
+    ids=["prefetch", "prefetch-gpu-prep", "serial"],
+)
+def test_the_tables_reach_the_render_on_both_batch_paths(
+    monkeypatch, prefetch, gpu_prep
+):
     """A real ``get_frames`` loop with the render kernel replaced by a probe.
 
     One frame per batch, so with prefetch on every batch after the first is
-    prepared (and, on the CPU, merged) on the worker thread.
+    prepared on the worker thread. Whether it is merged there too depends on
+    where the merge runs: on the CPU, always; on the render device (CUDA, under
+    ``merge_on_gpu``) the merge is left to the render thread unless
+    ``prefetch_gpu_prep`` lets the worker overlap it, which it does from the
+    second batch, once the first has calibrated the peak predictors.
     """
     from algan.rendering.raytracing import scene_builder
 
     monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", prefetch)
+    monkeypatch.setenv("ALGAN_PREFETCH_GPU_PREP", gpu_prep)
+    rt = SETTINGS.raytracing
+    merges_on_worker = prefetch == "1" and (
+        not rt.merge_on_gpu_active() or (gpu_prep == "1" and rt.project_on_gpu_active())
+    )
     merged_on = []
     original_merge = scene_builder._merge_scene
 
@@ -620,12 +635,11 @@ def test_the_tables_reach_the_render_on_both_batch_paths(monkeypatch, prefetch):
         assert set(tri_sources.tolist()) - {-1} == {cube.id}
         assert circuit_sources.tolist() == [square.id]
     assert registry == {square.id: square, cube.id: cube}
-    if prefetch == "1":
-        assert any(name.startswith("algan-batch-prep") for name in merged_on), (
-            "no batch was merged on the prefetch worker"
-        )
-    else:
-        assert not any(name.startswith("algan-batch-prep") for name in merged_on)
+    on_worker = any(name.startswith("algan-batch-prep") for name in merged_on)
+    assert on_worker == merges_on_worker, (
+        f"merged on {sorted(set(merged_on))}; expected the prefetch worker "
+        f"{'among them' if merges_on_worker else 'not among them'}"
+    )
 
 
 # ---------------------------------------------------------------------------
