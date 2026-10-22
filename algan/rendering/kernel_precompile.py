@@ -1309,10 +1309,12 @@ def worthwhile(jobs):
 
 
 #: The fewest workers that make the built-in list worth compiling on a first
-#: run. It holds several variants of the slowest kernel and the render needs
-#: one or two, so with fewer workers than slow variants the pool serializes
+#: run. Under default settings it holds seven slow specializations (four
+#: ``sheet_resolve_shade`` variants at 25-45 s, three ``wavefront_shade`` at
+#: ~8 s) of which a render needs one of each, and the render waits for the
+#: whole pool, so with fewer workers than slow jobs the pool serializes
 #: kernels the render never asks for in front of the one it waits on.
-_MIN_BUILTIN_WORKERS = 4
+_MIN_BUILTIN_WORKERS = 6
 
 
 def _script_context(manifest, script, default):
