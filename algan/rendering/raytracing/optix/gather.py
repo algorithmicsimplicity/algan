@@ -172,17 +172,22 @@ VERIFY_STATS = {
 
 
 def _order_keys(hit_f, counts, na):
-    """``_comes_after`` order of each ray's buffer, one float64 key per slot.
+    """``_comes_after`` order of each ray's buffer, one wide-float key per slot.
 
-    Depth bin, then descending layer; ``+inf`` past the ray's count.
+    Depth bin, then descending layer; ``+inf`` past the ray's count. The key
+    needs float64 to stay exact; it is taken from ``mps_compat`` (the only
+    module allowed to name it), which gives float64 on CUDA, the one device
+    the OptiX path runs on.
     """
+    from algan.rendering.mps_compat import accumulate_dtype
     from algan.rendering.raytracing.raytrace_kernels_taichi import (
         INV_DEPTH_TIE_EPSILON,
     )
 
+    wide = accumulate_dtype()
     t = hit_f[:, 0, :na]
-    layer = hit_f[:, 1, :na].double()
-    bins = torch.floor(t * float(INV_DEPTH_TIE_EPSILON)).double()
+    layer = hit_f[:, 1, :na].to(wide)
+    bins = torch.floor(t * float(INV_DEPTH_TIE_EPSILON)).to(wide)
     key = bins * 1e9 - layer
     slot = torch.arange(hit_f.shape[0], device=hit_f.device)[:, None]
     return torch.where(slot < counts[None], key, torch.full_like(key, float("inf")))
