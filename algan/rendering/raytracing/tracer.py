@@ -413,6 +413,97 @@ def _device_shadow_glue(device):
     )
 
 
+def _optix_gather(
+    memory,
+    merged,
+    active,
+    na,
+    a_pos,
+    has_tri,
+    has_bez,
+    opaque_closest,
+    opaque_prepass,
+    gen_first,
+    time_start,
+    width,
+    height,
+    ray_offset,
+    rs_ro,
+    rs_rd,
+    rs_sca,
+    rs_int,
+    hit_f,
+    hit_i,
+    rs_pix,
+    layer_offset,
+    software,
+):
+    """Fill this iteration's k-buffer on RT cores; False keeps the software walk.
+
+    ``SETTINGS.raytracing.experimental.optix``'s gather (``optix/gather.py``):
+    the hit set ``wavefront_traverse_events`` gathers, for continuation rays.
+    Triangles go to the RT cores; a batch's Bezier circuits are gathered by
+    the software traversal with the triangle tree compiled out
+    (``software(0)``) and the two k-buffers merged (``optix_gather_merge``).
+    Rays the traverse kernel generates itself (``gen_first``), the
+    opaque-closest and prepass variants and the memory-trimmed geometry stay
+    in software. ``software(has_tri)`` runs this iteration's software
+    traversal; with ``optix.gather.VERIFY`` set the full one runs after the
+    hardware gather too, and the two are compared per ray.
+    """
+    if not rt_settings.optix or _tracer_opt_disabled("optixgather"):
+        return False
+    if gen_first or opaque_closest or opaque_prepass or not has_tri:
+        return False
+    if a_pos is not merged.get("tri_pos") or rs_ro.device.type != "cuda":
+        return False
+    if active.dtype != torch.int32 or rs_pix.dtype != torch.int32:
+        return False
+    from algan.rendering.raytracing.optix import gather_kbuf, runtime_for
+
+    if gather_kbuf() != kbuf:
+        return False
+    runtime = runtime_for(rs_ro.device)
+    if runtime is None:
+        return False
+    from algan.rendering.raytracing.optix import gather as optix_gather
+
+    gas = optix_gather.gather_gas(runtime, merged, a_pos)
+    if gas is None:
+        return False
+    tri_f, tri_i = hit_f, hit_i
+    if has_bez:
+        tri_f = memory.get_tensor((kbuf, 4, na), torch.float32)
+        tri_i = memory.get_tensor((kbuf, 2, na), torch.int32)
+    optix_gather.gather(
+        runtime,
+        gas,
+        active=active,
+        num_active=na,
+        rs_ro=rs_ro,
+        rs_rd=rs_rd,
+        rs_sca=rs_sca,
+        rs_int=rs_int,
+        rs_pix=rs_pix,
+        hit_f=tri_f,
+        hit_i=tri_i,
+        time_start=time_start,
+        ray_offset=ray_offset,
+        pixels_per_frame=int(width) * int(height),
+        layer_offset=layer_offset,
+    )
+    if has_bez:
+        from algan.rendering.raytracing.optix_gather_taichi import optix_gather_merge
+
+        tri_count = memory.get_tensor((na,), torch.int32)
+        torch.index_select(rs_int[:, 3], 0, active[:na], out=tri_count)
+        software(0)
+        optix_gather_merge(active, na, rs_int, tri_count, tri_f, tri_i, hit_f, hit_i)
+    if optix_gather.VERIFY:
+        optix_gather.verify(active, na, rs_int, hit_f, hit_i, lambda: software(1))
+    return True
+
+
 def _ray_sort_key_format(frame_count, device):
     # Sparse slots retain indices into the full frame window, not the ray
     # pool. Bound frame bits from that window even when coverage is tiny.
@@ -3802,43 +3893,84 @@ def raytrace_render_wavefront(
                     hit_f = memory.get_tensor((kbuf, 4, na), f32)
                     hit_i = memory.get_tensor((kbuf, 2, na), i32)
                 with _stage(f"wavefront:   - {bounce} traverse", items=na):
-                    wavefront_traverse_events(
+                    # Called before this iteration ends; the defaults only pin
+                    # this iteration's buffers.
+                    def _software_traverse(
+                        tri_tree=int(has_tri),
+                        active=active,
+                        na=na,
+                        hit_f=hit_f,
+                        hit_i=hit_i,
+                    ):
+                        wavefront_traverse_events(
+                            active,
+                            na,
+                            t_bvh.kernel_blocks,
+                            t_bvh.node_miss,
+                            t_bvh.leaf_prim,
+                            t_bvh.leaf_tspan,
+                            int(t_bvh.first_leaf),
+                            a_pos,
+                            bez_bvh.kernel_blocks,
+                            bez_bvh.node_miss,
+                            bez_bvh.leaf_prim,
+                            bez_bvh.leaf_tspan,
+                            int(bez_bvh.first_leaf),
+                            merged["circuit_meta"],
+                            merged["edges_2d"],
+                            merged["edge_accel"],
+                            merged["tri_opaque_bvh"].kernel_blocks,
+                            merged["tri_opaque_bvh"].node_miss,
+                            merged["tri_opaque_bvh"].leaf_prim,
+                            merged["tri_opaque_bvh"].leaf_tspan,
+                            int(merged["tri_opaque_bvh"].first_leaf),
+                            merged["bez_opaque_bvh"].kernel_blocks,
+                            merged["bez_opaque_bvh"].node_miss,
+                            merged["bez_opaque_bvh"].leaf_prim,
+                            merged["bez_opaque_bvh"].leaf_tspan,
+                            int(merged["bez_opaque_bvh"].first_leaf),
+                            pixel_world_scale,
+                            float(layer_offset_triangles),
+                            bvh_refit,
+                            tri_tree,
+                            int(has_bez),
+                            opaque_closest,
+                            opaque_prepass,
+                            int(time_start),
+                            int(width),
+                            int(height),
+                            0,
+                            rs_ro,
+                            rs_rd,
+                            rs_sca,
+                            rs_int,
+                            hit_f,
+                            hit_i,
+                            rs_pix,
+                            0,
+                            cam_origin,
+                            screen_point,
+                            pixel_basis_x,
+                            pixel_basis_y,
+                            gen_meta,
+                            cam_proj_table,
+                            projected,
+                        )
+
+                    if not _optix_gather(
+                        memory,
+                        merged,
                         active,
                         na,
-                        t_bvh.kernel_blocks,
-                        t_bvh.node_miss,
-                        t_bvh.leaf_prim,
-                        t_bvh.leaf_tspan,
-                        int(t_bvh.first_leaf),
                         a_pos,
-                        bez_bvh.kernel_blocks,
-                        bez_bvh.node_miss,
-                        bez_bvh.leaf_prim,
-                        bez_bvh.leaf_tspan,
-                        int(bez_bvh.first_leaf),
-                        merged["circuit_meta"],
-                        merged["edges_2d"],
-                        merged["edge_accel"],
-                        merged["tri_opaque_bvh"].kernel_blocks,
-                        merged["tri_opaque_bvh"].node_miss,
-                        merged["tri_opaque_bvh"].leaf_prim,
-                        merged["tri_opaque_bvh"].leaf_tspan,
-                        int(merged["tri_opaque_bvh"].first_leaf),
-                        merged["bez_opaque_bvh"].kernel_blocks,
-                        merged["bez_opaque_bvh"].node_miss,
-                        merged["bez_opaque_bvh"].leaf_prim,
-                        merged["bez_opaque_bvh"].leaf_tspan,
-                        int(merged["bez_opaque_bvh"].first_leaf),
-                        pixel_world_scale,
-                        float(layer_offset_triangles),
-                        bvh_refit,
-                        int(has_tri),
-                        int(has_bez),
+                        has_tri,
+                        has_bez,
                         opaque_closest,
                         opaque_prepass,
-                        int(time_start),
-                        int(width),
-                        int(height),
+                        0,
+                        time_start,
+                        width,
+                        height,
                         0,
                         rs_ro,
                         rs_rd,
@@ -3847,15 +3979,10 @@ def raytrace_render_wavefront(
                         hit_f,
                         hit_i,
                         rs_pix,
-                        0,
-                        cam_origin,
-                        screen_point,
-                        pixel_basis_x,
-                        pixel_basis_y,
-                        gen_meta,
-                        cam_proj_table,
-                        projected,
-                    )
+                        float(layer_offset_triangles),
+                        _software_traverse,
+                    ):
+                        _software_traverse()
                 # Deferred shadows (rt_settings.wf_deferred_shadows): the lit
                 # triangle hits in this iteration's K-buffers become shadow
                 # events, traced by the lean raster_shadow_trace kernel exactly
@@ -4716,43 +4843,86 @@ def raytrace_render_wavefront(
                 # traverse kernel's stores and shade's gathers coalesce.
                 hit_f = memory.get_tensor((kbuf, 4, na), f32)
                 hit_i = memory.get_tensor((kbuf, 2, na), i32)
-                wavefront_traverse_events(
+
+                # Called before this iteration ends; the defaults only pin
+                # this iteration's buffers.
+                def _software_traverse(
+                    tri_tree=int(has_tri),
+                    active=active,
+                    na=na,
+                    hit_f=hit_f,
+                    hit_i=hit_i,
+                    first=first,
+                ):
+                    wavefront_traverse_events(
+                        active,
+                        na,
+                        t_bvh.kernel_blocks,
+                        t_bvh.node_miss,
+                        t_bvh.leaf_prim,
+                        t_bvh.leaf_tspan,
+                        int(t_bvh.first_leaf),
+                        a_pos,
+                        bez_bvh.kernel_blocks,
+                        bez_bvh.node_miss,
+                        bez_bvh.leaf_prim,
+                        bez_bvh.leaf_tspan,
+                        int(bez_bvh.first_leaf),
+                        merged["circuit_meta"],
+                        merged["edges_2d"],
+                        merged["edge_accel"],
+                        merged["tri_opaque_bvh"].kernel_blocks,
+                        merged["tri_opaque_bvh"].node_miss,
+                        merged["tri_opaque_bvh"].leaf_prim,
+                        merged["tri_opaque_bvh"].leaf_tspan,
+                        int(merged["tri_opaque_bvh"].first_leaf),
+                        merged["bez_opaque_bvh"].kernel_blocks,
+                        merged["bez_opaque_bvh"].node_miss,
+                        merged["bez_opaque_bvh"].leaf_prim,
+                        merged["bez_opaque_bvh"].leaf_tspan,
+                        int(merged["bez_opaque_bvh"].first_leaf),
+                        pixel_world_scale,
+                        float(layer_offset_triangles),
+                        bvh_refit,
+                        tri_tree,
+                        int(has_bez),
+                        opaque_closest,
+                        opaque_prepass,
+                        int(time_start),
+                        int(width),
+                        int(height),
+                        int(tile_start),
+                        rs_ro,
+                        rs_rd,
+                        rs_sca,
+                        rs_int,
+                        hit_f,
+                        hit_i,
+                        rs_pix,
+                        first,
+                        cam_origin,
+                        screen_point,
+                        pixel_basis_x,
+                        pixel_basis_y,
+                        gen_meta,
+                        cam_proj_table,
+                        projected,
+                    )
+
+                if not _optix_gather(
+                    memory,
+                    merged,
                     active,
                     na,
-                    t_bvh.kernel_blocks,
-                    t_bvh.node_miss,
-                    t_bvh.leaf_prim,
-                    t_bvh.leaf_tspan,
-                    int(t_bvh.first_leaf),
                     a_pos,
-                    bez_bvh.kernel_blocks,
-                    bez_bvh.node_miss,
-                    bez_bvh.leaf_prim,
-                    bez_bvh.leaf_tspan,
-                    int(bez_bvh.first_leaf),
-                    merged["circuit_meta"],
-                    merged["edges_2d"],
-                    merged["edge_accel"],
-                    merged["tri_opaque_bvh"].kernel_blocks,
-                    merged["tri_opaque_bvh"].node_miss,
-                    merged["tri_opaque_bvh"].leaf_prim,
-                    merged["tri_opaque_bvh"].leaf_tspan,
-                    int(merged["tri_opaque_bvh"].first_leaf),
-                    merged["bez_opaque_bvh"].kernel_blocks,
-                    merged["bez_opaque_bvh"].node_miss,
-                    merged["bez_opaque_bvh"].leaf_prim,
-                    merged["bez_opaque_bvh"].leaf_tspan,
-                    int(merged["bez_opaque_bvh"].first_leaf),
-                    pixel_world_scale,
-                    float(layer_offset_triangles),
-                    bvh_refit,
-                    int(has_tri),
-                    int(has_bez),
+                    has_tri,
+                    has_bez,
                     opaque_closest,
                     opaque_prepass,
-                    int(time_start),
-                    int(width),
-                    int(height),
+                    first,
+                    time_start,
+                    width,
+                    height,
                     int(tile_start),
                     rs_ro,
                     rs_rd,
@@ -4761,15 +4931,10 @@ def raytrace_render_wavefront(
                     hit_f,
                     hit_i,
                     rs_pix,
-                    first,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    gen_meta,
-                    cam_proj_table,
-                    projected,
-                )
+                    float(layer_offset_triangles),
+                    _software_traverse,
+                ):
+                    _software_traverse()
                 wavefront_shade(
                     active,
                     na,

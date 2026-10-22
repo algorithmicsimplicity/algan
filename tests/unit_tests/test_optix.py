@@ -449,3 +449,31 @@ def test_one_launch_over_every_tap_matches_the_two_phase_schedule(
     one = _render_mixed(tmp_path / "one.png", True)
     assert np.array_equal(one, two)
 
+
+@pytest.mark.parametrize("circuits", [False, True])
+def test_reflection_gather_of_a_render_agrees_with_the_software_walk(
+    tmp_path, monkeypatch, circuits
+):
+    """Every continuation gather of a real render, done both ways.
+
+    With circuits in the batch the triangles still go to the RT cores and the
+    circuits' own software gather is merged in.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing.optix import gather
+
+    _runtime()
+    monkeypatch.setattr(gather, "VERIFY", True)
+    for stats in (gather.VERIFY_STATS, gather.STATS):
+        for key in stats:
+            stats[key] = 0 if key != "max_first_t_diff" else 0.0
+    hardware = _render_mixed(tmp_path / "on.png", True, 3, circuits)
+    software = _render_mixed(tmp_path / "off.png", False, 3, circuits)
+    verify = gather.VERIFY_STATS
+    assert gather.STATS["launches"] > 0
+    assert verify["rays"] > 1000
+    assert verify["same_first_hit"] >= 0.998 * verify["rays"]
+    assert verify["max_first_t_diff"] < 1e-3
+    delta = np.abs(hardware - software).max(-1)
+    assert int((delta > 2).sum()) <= 0.003 * delta.size

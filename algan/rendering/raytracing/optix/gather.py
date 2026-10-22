@@ -123,3 +123,74 @@ def gather(
     runtime.launch("gather", params, int(num_active))
     STATS["launches"] += 1
     STATS["rays"] += int(num_active)
+
+
+#: Per-ray check against the software walk (``tracer._optix_gather``): with
+#: ``VERIFY`` set, every hardware gather is followed by the software traversal
+#: of the same rays, the two k-buffers are compared into ``VERIFY_STATS``, and
+#: the hardware's buffers are put back (so the image is the hardware arm's).
+VERIFY = False
+VERIFY_STATS = {
+    "rays": 0,
+    "same_count": 0,
+    "same_first_hit": 0,
+    "same_hits": 0,
+    "max_first_t_diff": 0.0,
+}
+
+
+def _order_keys(hit_f, counts, na):
+    """``_comes_after`` order of each ray's buffer, one float64 key per slot.
+
+    Depth bin, then descending layer; ``+inf`` past the ray's count.
+    """
+    from algan.rendering.raytracing.raytrace_kernels_taichi import (
+        INV_DEPTH_TIE_EPSILON,
+    )
+
+    t = hit_f[:, 0, :na]
+    layer = hit_f[:, 1, :na].double()
+    bins = torch.floor(t * float(INV_DEPTH_TIE_EPSILON)).double()
+    key = bins * 1e9 - layer
+    slot = torch.arange(hit_f.shape[0], device=hit_f.device)[:, None]
+    return torch.where(slot < counts[None], key, torch.full_like(key, float("inf")))
+
+
+def verify(active, na, rs_int, hit_f, hit_i, software):
+    """Run ``software`` over the same rays and compare the two k-buffers."""
+    rows = active[:na].long()
+    count_hw = rs_int[rows, 3].clone()
+    f_hw = hit_f.clone()
+    i_hw = hit_i.clone()
+    software()
+    count_sw = rs_int[rows, 3].clone()
+    key_hw = _order_keys(f_hw, count_hw, na)
+    key_sw = _order_keys(hit_f, count_sw, na)
+    order_hw = key_hw.argsort(0)
+    order_sw = key_sw.argsort(0)
+    prim_hw = i_hw[:, 0, :na].gather(0, order_hw)
+    prim_sw = hit_i[:, 0, :na].gather(0, order_sw)
+    t_hw = f_hw[:, 0, :na].gather(0, order_hw)
+    t_sw = hit_f[:, 0, :na].gather(0, order_sw)
+    both = torch.minimum(count_hw, count_sw)
+    slot = torch.arange(hit_f.shape[0], device=hit_f.device)[:, None]
+    agree = (prim_hw == prim_sw) | (slot >= both[None])
+    first_same = ((count_hw == 0) & (count_sw == 0)) | (
+        (count_hw > 0) & (count_sw > 0) & (prim_hw[0] == prim_sw[0])
+    )
+    first_t = torch.where(
+        (count_hw > 0) & (count_sw > 0) & (prim_hw[0] == prim_sw[0]),
+        (t_hw[0] - t_sw[0]).abs(),
+        torch.zeros_like(t_hw[0]),
+    )
+    VERIFY_STATS["rays"] += int(na)
+    VERIFY_STATS["same_count"] += int((count_hw == count_sw).sum())
+    VERIFY_STATS["same_first_hit"] += int(first_same.sum())
+    VERIFY_STATS["same_hits"] += int((agree.all(0) & (count_hw == count_sw)).sum())
+    if na:
+        VERIFY_STATS["max_first_t_diff"] = max(
+            VERIFY_STATS["max_first_t_diff"], float(first_t.max())
+        )
+    rs_int[rows, 3] = count_hw
+    hit_f.copy_(f_hw)
+    hit_i.copy_(i_hw)

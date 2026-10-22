@@ -9,7 +9,8 @@ moves two of the deterministic renderer's traversals onto RT cores:
 
 Both trace triangles only; Bezier circuits stay on Algan's software walk (a
 shadow ray's circuit transmittance is marched in software and multiplied on;
-a gather over a batch with circuits stays in software). A device without RT
+a gather's circuit hits are gathered in software and the two k-buffers
+merged). A device without RT
 cores, a driver without OptiX 9.1 (ABI 118), or anything else this package
 cannot take keeps the software traversal, so the switch never fails a
 render; the reason is logged once.

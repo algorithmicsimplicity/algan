@@ -202,6 +202,71 @@ For deterministic built-in glass, compute `_relative_ior` before the Fresnel/con
 
 `shadow_anyhit` defaults to `"auto"`: `shadow_dispatch.py` selects opaque-only any-hit only when all four merged opacity facts prove it safe. Missing facts, physical transmission, translucent triangles/circuits, and uncertain texture alpha keep the ordered march's answer -- through opaque-first (mode 5, below) when the batch has an opaque caster, the plain march otherwise. `False` selects the reference march, explicit `True` retains the experimental mixed prepass, and `"gather"` retains gather-march. The path tracer shares the opacity proof but keeps its own enable switch.
 
+## Hardware ray tracing (OptiX) is a side path, off by default
+
+`SETTINGS.raytracing.experimental.optix` (`ALGAN_OPTIX`) moves two traversals
+onto RT cores, through `algan/rendering/raytracing/optix/`: the deterministic
+renderer's shadow queue and its reflection/refraction gather. Nothing in a
+Quadrants kernel changes; the OptiX launches sit between them on the same
+stream, reading and writing the same arena buffers.
+
+- **How it is reached.** ctypes over the display driver's own `nvoptix`
+  library (function table ABI 118, OptiX 9.1), programs compiled at first use
+  by PyTorch's NVRTC (PTX cached under `<cache>/optix`). No OptiX SDK and no
+  CUDA toolkit, at build or run time, and no NVIDIA header in the repository:
+  `_abi.py` and `algan_optix_device.h` re-declare the ABI subset they use
+  (licensing: the headers are proprietary, Algan is MIT; the Dr.Jit/Mitsuba
+  precedent). A struct layout written wrong is not refused by the driver, it is
+  misread -- `_abi.py` asserts the x64 sizes, and `test_optix.py` exercises
+  every call.
+- **What it traces.** Triangles only, one compacted GAS per batch frame built
+  from `tri_pos` in place; invisible and (for shadow rays) non-casting
+  primitives are degenerate triangles, so OptiX's primitive index is Algan's;
+  a per-primitive SBT class splits opaque (any-hit disabled: the hardware's
+  answer is final) from translucent (an any-hit program lists it). Bezier
+  circuits stay in software and are merged in (below). A device without RT
+  cores, a driver without ABI 118, mem-trimmed geometry, `kbuf > 4` and a GAS
+  past its 1 GiB budget keep the software walk, per launch, logged once.
+- **Shadows** (`optix/shadows.py`) are an arm of the light-major queue
+  (`shadow_queue.make_shadow_tracer(..., merged=)`): the queue's own prepare
+  and reference-order reduce, one OptiX launch over every tap (the reduce
+  applies the adaptive-tap rule; `optix.shadows.TWO_PHASE` is the reference
+  two-phase schedule, same image), then `optix_shadow_resolve`
+  (`optix_shadow_taichi.py`) multiplies a ray's listed translucent casters
+  with the march's own functions (`_flat_triangle_color`,
+  `_shadow_pass_through`, `_shadow_hit_sigma`, seam merge, Beer-Lambert
+  pairing, exits, cap). A ray that crossed more than `SHADOW_HITS` (4) and was
+  not settled by them re-marches in software. A batch's circuits are marched
+  there too, in software, and their transmittance multiplied on (the march's
+  product does not depend on factor order; seams, pairing and absorption are
+  triangle-only; `min_alpha` is applied once). The identity floor
+  (`_shadow_identity_t_min`) runs in the any-hit programs. With the switch on
+  the bounce drain keeps the host shadow glue (`_device_shadow_glue`). Its
+  chunks may take 512 MiB of arena (the software queue's 64 MiB made the arm
+  launch-bound and slower than the serial fan).
+- **The gather** (`optix/gather.py`, `tracer._optix_gather`) fills `hit_f`,
+  `hit_i` and `rs_int[:, 3]` for continuation rays exactly as
+  `_collect_hits` defines them: the first `kbuf` hits after the cursor in
+  `_comes_after` order, cut after the first opaque one. The hardware commits
+  the nearest opaque hit; a second, one-bin trace recovers the hits in that
+  hit's depth bin that come before it on a higher layer. With circuits in the
+  batch the software traversal gathers them alone (triangle tree compiled
+  out) and `optix_gather_merge` (`optix_gather_taichi.py`) keeps the first
+  `kbuf` of the union -- exactly `_collect_hits`' answer, since each buffer
+  holds its type's first `kbuf` hits.
+- **What is not bit-exact.** The RT cores' watertight triangle test is not
+  `_tri_hit`'s float32 arithmetic: `t`, barycentrics and the owner of a ray
+  through an edge differ in the last bits. On by default would need its own
+  render baselines; that is why it is off.
+- **Switches.** `ALGAN_OPT_DISABLE=optixshadow` / `optixgather` keep one
+  half in software (meaningful only with the switch on).
+- **Checking it.** `optix.shadows.VERIFY` traces every phase-0 queue chunk a
+  second time with `shadow_queue_trace` and compares per ray
+  (`VERIFY_STATS`); `optix.gather.VERIFY` does the same for the gather and
+  keeps the hardware's buffers. `tests/unit_tests/test_optix.py` holds the
+  queries against a float64 brute force and a render against the software
+  walk.
+
 ## Software traversal: what it counts, and how it fetches a node
 
 Every non-RTX device keeps the software BVH walk, so three things live there.
