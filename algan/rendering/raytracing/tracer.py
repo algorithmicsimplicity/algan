@@ -225,6 +225,13 @@ def _host_tensor(value):
     return torch.as_tensor(value, device="cpu")
 
 
+#: Largest upload ``_arena_copy`` stages through page-locked memory. The ones
+#: worth staging are a chunk's ten-odd small tables; the path tracer's light
+#: tree, shell and media tables can run to tens of MB, and torch's caching host
+#: allocator keeps every pinned block it hands out for the life of the process.
+_PINNED_STAGING_MAX_BYTES = 1 << 20
+
+
 def _arena_copy(memory, tensor, dtype=None):
     """Copy ``tensor`` into the render arena, optionally casting on copy.
 
@@ -234,7 +241,12 @@ def _arena_copy(memory, tensor, dtype=None):
     """
     dtype = tensor.dtype if dtype is None else dtype
     out = memory.get_tensor(tensor.shape, dtype)
-    if out.is_cuda and tensor.device.type == "cpu" and defer_syncs_enabled():
+    if (
+        out.is_cuda
+        and tensor.device.type == "cpu"
+        and tensor.numel() * out.element_size() <= _PINNED_STAGING_MAX_BYTES
+        and defer_syncs_enabled()
+    ):
         # A blocking copy from pageable memory synchronizes the stream, and a
         # chunk makes about ten of these (camera rows, lights, generation and
         # layer tables), each waiting out whatever the previous chunk left
@@ -3217,7 +3229,13 @@ def raytrace_render_wavefront(
             projected,
         )
         cols = 3 * int(num_lights)
-        if defer_syncs_enabled() and cols <= 3 * vis_lights:
+        if (
+            defer_syncs_enabled()
+            and cols <= 3 * vis_lights
+            # MPS index assignment into the strided ``vis_tab[:, :cols]`` view
+            # is unverified; Metal keeps the padded copy.
+            and vis_tab.device.type != "mps"
+        ):
             # The traced rows straight into the light columns of the all-lit
             # table: the columns past them already hold the 1.0 a padded
             # ``filled`` row carried, so the table comes out the same, without
@@ -3798,15 +3816,42 @@ def raytrace_render_wavefront(
                     # simply dropped if the resolve overflowed.
                     alloc_words = rs_alloc if defer_syncs_enabled() else None
                     first_active = None
+                    poll_oom = None
                     with _stage("wavefront:   - pool overflow poll"):
                         if alloc_words is not None:
-                            first_active = compactor.select(
-                                rs_int,
-                                0,
-                                source=compactor.current,
-                                scan_pool=True,
-                                also_read=alloc_words,
-                            )
+                            try:
+                                first_active = compactor.select(
+                                    rs_int,
+                                    0,
+                                    source=compactor.current,
+                                    scan_pool=True,
+                                    also_read=alloc_words,
+                                )
+                            except (InsufficientMemoryException, RuntimeError) as exc:
+                                # This is the drain's first compaction, moved
+                                # out of the drain's try below; an OOM here
+                                # takes the same halving retry it would there.
+                                if not isinstance(
+                                    exc, InsufficientMemoryException
+                                ) and not is_cuda_oom(exc):
+                                    raise
+                                poll_oom = exc
+                    if poll_oom is not None:
+                        memory.set_pointers(state_ptrs)
+                        release_torch_memory(force_gc=False)
+                        if attempt_primary <= 1:
+                            raise OutOfRenderMemory(
+                                "Sparse raster bounce scratch did not fit for "
+                                "one covered pixel. Lower the resolution or "
+                                "transparency complexity." + path_tracer_fallback_hint()
+                            ) from poll_oom
+                        next_primary = max(1, attempt_primary // 2)
+                        _WAVEFRONT_POOL_RETRIES[0] += 1
+                        learned_primary_cap = min(learned_primary_cap, next_primary)
+                        attempt_primary = next_primary
+                        continue
+                    with _stage("wavefront:   - pool overflow poll"):
+                        if alloc_words is not None:
                             polled = compactor.also_values
                             overflow = pool_ratio > 1 and polled[ALLOC_OVERFLOW] != 0
                         else:

@@ -205,21 +205,23 @@ def clear_pack_cache():
 #: mode 2's upload waited out the whole primary shadow trace queued ahead of
 #: it: 360 times, 3.8 s of host time, in a 30-frame graphics UHD render. Every
 #: change is a scheduling change; the values are identical. ``None`` resolves
-#: on first use from ``ALGAN_OPT_DISABLE=tilesync``; an A/B script may assign
-#: True/False.
+#: on every call from ``ALGAN_OPT_DISABLE=tilesync``; an A/B script may assign
+#: True/False to override it.
 defer_syncs = None
 
 
 def defer_syncs_enabled():
     """Whether the render's avoidable host-device synchronizations are off."""
-    global defer_syncs
-    if defer_syncs is None:
-        # Imported lazily, as sheets.py does: the timeline module is not part
-        # of the renderer's import graph.
-        from algan.animation_timeline.timeline import _opt_disabled
+    if defer_syncs is not None:
+        return defer_syncs
+    # Asked of ``_opt_disabled`` each time rather than cached here, so a script
+    # that swaps the timeline's ``_OPT_DISABLED`` (every ``*_ab.py`` does) and a
+    # warm daemon adopting a client's ``ALGAN_OPT_DISABLE`` both take effect.
+    # Imported lazily, as sheets.py does: the timeline module is not part of
+    # the renderer's import graph.
+    from algan.animation_timeline.timeline import _opt_disabled
 
-        defer_syncs = not _opt_disabled("tilesync")
-    return defer_syncs
+    return not _opt_disabled("tilesync")
 
 
 def _upload_table(values, device):
