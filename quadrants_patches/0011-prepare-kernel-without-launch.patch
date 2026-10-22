@@ -116,7 +116,7 @@ index 5f01d8d36..945da4c30 100644
  
     private:
 diff --git a/quadrants/runtime/cuda/ptx_cache.cpp b/quadrants/runtime/cuda/ptx_cache.cpp
-index c274ad186..42bb7dd03 100644
+index c274ad186..09338bde2 100644
 --- a/quadrants/runtime/cuda/ptx_cache.cpp
 +++ b/quadrants/runtime/cuda/ptx_cache.cpp
 @@ -1,6 +1,8 @@
@@ -137,13 +137,32 @@ index c274ad186..42bb7dd03 100644
      return;
    }
  
-@@ -112,10 +114,15 @@ void PtxCache::dump() {
-   // Add new data
+@@ -89,8 +91,10 @@ void PtxCache::dump() {
+   auto lock_path = join_path(cache_dir_, kMetadataLockName);
+ 
+   if (!lock_with_file(lock_path)) {
+-    QD_WARN("Lock {} failed. Please run 'qd cache clean -p {}' and try again.", lock_path, cache_dir_);
+-    wrapped_by_key_.clear();  // Ignore the caching kernels
++    // Kept for the next dump rather than dropped: with dump_cache_data_to_disk() several processes dump into one
++    // directory while they run, and a lock another one holds is the likely reason, not a stale one.
++    QD_WARN("Lock {} failed; {} PTX entries wait for the next dump. If this persists, run 'qd cache clean -p {}'.",
++            lock_path, wrapped_by_key_.size(), cache_dir_);
+     return;
+   }
+ 
+@@ -109,13 +113,19 @@ void PtxCache::dump() {
+       iter->second.metadata.last_used_at = e->metadata.last_used_at;
+     }
+   }
+-  // Add new data
++  // Add new data. A key the index already lists is only ever stored again after its file could not be read (the
++  // lookup would have served it otherwise), so its entry is replaced and the file written again: inserting beside the
++  // old entry would fail, and the file would stay missing in every later process.
    for (auto &[kernel_key, wrapped] : wrapped_by_key_) {
      if (wrapped.metadata.cache_mode == CacheMode::MemAndDiskCache) {
 -      auto [iter, ok] = dataWrapperByCacheKey.insert({kernel_key, std::move(wrapped)});
-+      auto [iter, ok] = dataWrapperByCacheKey.insert({kernel_key, wrapped});
-       QD_ASSERT(!ok || iter->second.metadata.size == 0);
+-      QD_ASSERT(!ok || iter->second.metadata.size == 0);
++      dataWrapperByCacheKey[kernel_key] = wrapped;
      }
    }
 +  // Keep serving what is written here: a dump before the program ends (dump_cache_data_to_disk) must not turn this
@@ -154,7 +173,7 @@ index c274ad186..42bb7dd03 100644
    wrapped_by_key_.clear();
    // Dump cached CompiledKernelData to disk
    for (auto &[_, k] : dataWrapperByCacheKey) {
-@@ -125,11 +132,23 @@ void PtxCache::dump() {
+@@ -125,11 +135,23 @@ void PtxCache::dump() {
      }
      QD_TRACE("Dumping PTX for cache_key {}", k.metadata.cache_key);
      auto cache_filename = make_filename(k.metadata.cache_key);
@@ -183,7 +202,7 @@ index c274ad186..42bb7dd03 100644
      data.size += k.metadata.size;
    }
    // Dump offline cache metadata
-@@ -186,7 +205,9 @@ std::string PtxCache::make_content_cache_key(const std::string &content_hash, bo
+@@ -186,7 +208,9 @@ std::string PtxCache::make_content_cache_key(const std::string &content_hash, bo
    return res;
  }
  
@@ -194,7 +213,7 @@ index c274ad186..42bb7dd03 100644
    {
      // Find in memory-cache
      const auto &kernels = wrapped_by_key_;
-@@ -210,6 +231,23 @@ std::optional<std::string> PtxCache::try_load_cached(const std::string &cache_ke
+@@ -210,6 +234,23 @@ std::optional<std::string> PtxCache::try_load_cached(const std::string &cache_ke
        k.ptx = ptx;
        return ptx;
      }
@@ -218,7 +237,7 @@ index c274ad186..42bb7dd03 100644
    }
    return std::nullopt;
  }
-@@ -244,9 +282,9 @@ void PtxCache::store_ptx(const std::string &cache_key, const std::string &ptx) {
+@@ -244,9 +285,9 @@ void PtxCache::store_ptx(const std::string &cache_key, const std::string &ptx) {
    wrapped_by_key_[cache_key] = std::move(k);
  }
  

@@ -1155,6 +1155,8 @@ class _Job:
         "reason",
         "worker",
         "name",
+        "ptx_seconds",
+        "ptx_error",
     )
 
     def __init__(self, spec, context, expected):
@@ -1170,6 +1172,10 @@ class _Job:
         self.reason = None
         self.worker = None
         self.name = kernel_display_name(spec)
+        #: What :func:`prepare_for_launch` took in the worker, or why it failed;
+        #: both ``None`` where it did not run (see :func:`compile_spec`).
+        self.ptx_seconds = None
+        self.ptx_error = None
 
 
 #: How long :meth:`PrecompilePool.terminate` waits for workers to leave a lock
@@ -1485,6 +1491,8 @@ class PrecompilePool:
                         job.status = event.get("status")
                         job.seconds = float(event.get("seconds") or 0.0)
                         job.reason = event.get("reason")
+                        job.ptx_seconds = event.get("ptx_seconds")
+                        job.ptx_error = event.get("ptx_error")
                         job.state = (
                             "done"
                             if job.status in ("cached", "offline-hit", "compiled")

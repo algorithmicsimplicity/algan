@@ -79,7 +79,7 @@ what changed in each patch.
 
 **0010 and 0011 were added on 2026-10-22**, written against the tree the nine
 produce. All eleven apply strictly in order onto a pristine `v1.3.3`, **55
-files, +1120/−68**, and the result is byte-identical to the tree they were
+files, +1127/−72**, and the result is byte-identical to the tree they were
 written in. Neither has been compiled: see "0010-0011 — what is verified".
 
 Numeric order is the convention rather than a constraint, and it is worth being
@@ -1206,14 +1206,14 @@ launch them -- a launch with placeholder arguments is not safe -- so on CUDA
 they leave only the `.qdc`, and the render still pays LLVM→PTX and the driver
 JIT at each first launch: ~14 s of a cold `explainer` render on the RTX 5080.
 
-**What it changes**, 12 files, +87/−13:
+**What it changes**, 12 files, +94/−17:
 
 | file | change |
 | --- | --- |
 | `program/kernel_launcher.h`, `runtime/llvm/kernel_launcher.{h,cpp}` | `KernelLauncher::prepare_kernel`: a no-op by default, `register_llvm_kernel` on the LLVM backends. A later launch of the same data reuses the registration. |
 | `program/program.{h,cpp}`, `python/export_lang.cpp` | `Program::prepare_kernel`, bound as `prog.prepare_kernel(compiled_kernel_data)`. |
 | `program/program_impl.{h,cpp}`, `runtime/cuda/jit_cuda.h` | `NeedsFinalizing::dump_cache_data_to_disk()`, called by `ProgramImpl::dump_cache_data_to_disk`; CUDA's PTX-cache finalizer implements it. The PTX cache used to reach disk only when the program finalized, which a precompile worker (`os._exit`) never does. |
-| `runtime/cuda/ptx_cache.{h,cpp}` | `dump()` keeps serving what it wrote (it dropped it, harmless only at finalize), keeps memory-only entries when there is no disk cache, and writes each file beside its name and renames it into place. `load_ptx(key, allow_unindexed)` also takes a file missing from the index this process read at start-up, if it ends in the NUL every PTX buffer ends in. |
+| `runtime/cuda/ptx_cache.{h,cpp}` | `dump()` keeps serving what it wrote (it dropped it, harmless only at finalize), keeps memory-only entries when there is no disk cache, and writes each file beside its name and renames it into place. A key the on-disk index already lists is written again rather than skipped -- it is only stored again when its file could not be read, and upstream's insert-beside left such a file missing for good (found by the first GPU run, below). A lock another process holds keeps the entries for the next dump instead of dropping them. `load_ptx(key, allow_unindexed)` also takes a file missing from the index this process read at start-up, if it ends in the NUL every PTX buffer ends in. |
 | `runtime/cuda/jit_cuda.cpp` | One line: the content-hash lookup passes `allow_unindexed=true`. |
 
 **Why the unindexed lookup, and only for content keys.** The PTX index is read
@@ -1274,15 +1274,38 @@ which Algan puts under `ALGAN_CACHE_DIR` for every process.
   should ("no offline_cache_ptx_by_content_hash field"), and its
   compile-without-launch and launch helpers run on the CPU arch.
 
-**Not checked: nothing has been compiled or run.** In order:
+**First GPU run, 2026-10-23** (RTX 5080, test wheel `1.3.4.dev0+g00423caa9`
+from run `39777784064`, which predates the two `dump()` fixes above):
 
-1. **The build.** The wheel workflow runs `verify_ptx_cache.py binding` on
-   every patched leg, and its CUDA sequence on the Linux legs, where it skips.
-2. **`verify_ptx_cache.py run`** on the RTX 5080: every claim above, one fresh
-   process per step.
-3. **Algan's A/B on CUDA**: a fresh-process first render with warm caches and
-   a cold first render with an empty `ALGAN_CACHE_DIR`, each with the switches
-   on and off, frames compared.
+* `verify_ptx_cache.py binding`: PASS. `run`: the 0010 populate/warm/off steps
+  and all of 0011's (prepare without launch, driver cache filled, a fresh
+  process served; the unindexed lookup in `late`) passed. **migrate and warm2
+  failed**: migrate re-keyed both kernels (parsed 2, stored 2, the IR keys
+  hit), but warm2 was not served. Cause, by reading: the step deletes the
+  `C*.ptx` files while the index still lists them, and `dump()` inserted the
+  re-stored entries beside the old ones -- which fails for a listed key -- so
+  the files were never written again. Fixed in 0011 (above); needs a rebuild.
+* Fresh process with warm caches (`profile_scene` RUN 1 incl. authoring, PREVIEW
+  6 s, the arms alternating in one cache): explainer **1.25-1.65 s on** against
+  ~4.6 s for the release wheel; graphics **2.7-2.9 s on** against ~7.9 s. The
+  off arm (8.2 s / 6.0 s) was slower than the release wheel because no off
+  process ever wrote its PTX: the on arm's cold warm-up stores content keys
+  only, and a process whose kernels all come from the index builds no
+  specialization, so Algan's exit flush skipped it. Nothing evicted anything;
+  both dumps merge with the on-disk index. Algan now writes that PTX at exit
+  (`taichi_runtime.write_ptx_at_exit`). The first on-arm explainer process
+  (13.5 s) is not explained by reading: `check_ptx_cache.py` on a cache after
+  its cold run shows whether every `.qdc` had its content-keyed PTX.
+* Cold first render (explainer, empty cache each, the first-run pool running in
+  every arm, ~42 s as documented): both switches on 40.5 / 39.2 s, base
+  42.4 / 41.5 s, 0010 alone 42.0 / 38.8 s -- no clear gain. Most likely
+  reason, an inference: the render waits for the whole pool, which ends with
+  its slowest job, a megakernel, and preparing moves that kernel's own
+  LLVM→PTX and ptxas onto exactly that path. The pool's progress lines now
+  give each job's PTX time, so the next run can confirm it.
+
+**Still not checked:** the patches as amended (a rebuild), `run` passing in
+full, and frame parity between the arms.
 
 **A test wheel** (diagnostic, nothing published):
 

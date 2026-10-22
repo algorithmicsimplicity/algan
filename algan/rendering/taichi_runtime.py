@@ -1298,7 +1298,56 @@ def _register_kernel_cache_flush():
     # handlers (``atexit`` is LIFO): Taichi releases the device first, which is
     # the order the destructor path used to get for free.
     atexit.register(flush_kernel_cache)
+    # After it, so it runs first (LIFO) and can see whether the flush will.
+    atexit.register(write_ptx_at_exit)
     _FLUSH_REGISTERED = True
+
+
+def write_ptx_at_exit():
+    """At exit, write the PTX a process generated when the flush will not.
+
+    :func:`flush_kernel_cache` tears the program down -- and so writes every
+    cache -- only in a process that built a specialization. One whose kernels
+    all came from the cache skips it, Quadrants registers no exit hook of its
+    own, and the program is not reliably destroyed at interpreter teardown, so
+    on CUDA the PTX such a process generated was never written: for cached
+    kernels whose PTX was missing, or re-keyed from an older cache (Quadrants
+    patch 0010). Every later process generated it again -- the off arm of the
+    first 0010 A/B paid that in every process.
+
+    Where the wheel has patch 0011, ``dump_cache_data_to_disk`` writes the PTX
+    cache too, so this calls it. That dump frees the kernels it writes, which
+    is why nothing calls it mid-process; at exit nothing launches again.
+    CUDA only (the one arch with a PTX cache), under the flush's own
+    conditions: not under ``ALGAN_FLUSH_KERNEL_CACHE=0``, only on the main
+    thread with no render holding the arch. Returns whether a dump ran.
+    """
+    if _BUILT_A_SPECIALIZATION:
+        return False
+    if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    if render_is_active() or _live_arch() != ti.cuda:
+        return False
+    from algan.taichi_compat import program
+
+    prog = program()
+    if not hasattr(prog, "prepare_kernel"):
+        return False
+    started = time.perf_counter()
+    try:
+        prog.dump_cache_data_to_disk()
+    except Exception as exc:
+        get_logger().log(PERF, "Writing generated PTX at exit failed: %r", exc)
+        return False
+    get_logger().log(
+        PERF,
+        "Wrote generated PTX to %s in %.2f s.",
+        _TAICHI_CACHE_DIRECTORY,
+        time.perf_counter() - started,
+    )
+    return True
 
 
 def _reset_after_interruption():

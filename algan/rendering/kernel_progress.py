@@ -325,6 +325,12 @@ def _report_while_waiting(pool, kind, job):
         if job.state == "done"
         else f"not compiled ({job.reason})"
     )
+    ptx_seconds = getattr(job, "ptx_seconds", None)
+    ptx_error = getattr(job, "ptx_error", None)
+    if ptx_seconds is not None:
+        outcome += f", PTX ready after {_format_seconds(ptx_seconds)} of it"
+    elif ptx_error:
+        outcome += f", PTX not prepared ({ptx_error})"
     _log([f"  background worker: {job.name} {outcome} ({finished} of {total} done)"])
 
 
@@ -402,6 +408,15 @@ def pool_event(pool, kind, payload):
         parts.append(f"{reused} already cached")
     if failed:
         parts.append(f"{len(failed)} not compiled")
+    prepared = [job.ptx_seconds for job in jobs if getattr(job, "ptx_seconds", None)]
+    if prepared:
+        parts.append(
+            f"PTX prepared for {len(prepared)} "
+            f"({_format_seconds(sum(prepared))} of worker time)"
+        )
+    unprepared = sum(bool(getattr(job, "ptx_error", None)) for job in jobs)
+    if unprepared:
+        parts.append(f"PTX failed for {unprepared}")
     _log(
         [
             f"Background kernel compilation finished in {_format_seconds(elapsed)}: "

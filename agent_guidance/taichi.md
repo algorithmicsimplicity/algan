@@ -202,7 +202,14 @@ before the pool finished: 0011 lets a content-hash lookup take a file the
 index lacks. 0011 does not make the dump safe mid-process: its PTX half keeps
 what it wrote, but the `.qdc` half still frees every kernel it writes, so the
 rule above stands -- and a worker never prepares a kernel it compiled and
-dumped itself (`_DUMPED_HERE`), whose handle that dump freed.
+dumped itself (`_DUMPED_HERE`), whose handle that dump freed. At exit the rule
+does not bite, and `taichi_runtime.write_ptx_at_exit` dumps there when the
+flush will not: a process whose kernels all came from the index builds no
+specialization, so the flush skips it, and Quadrants has no exit hook of its
+own -- without it, PTX such a process generated (a cached kernel whose PTX was
+missing) was never written, and every later process generated it again.
+`quadrants_patches/check_ptx_cache.py <cache dir>` shows, without a GPU, which
+cached kernels have their content-keyed PTX on disk.
 
 **Loading cached kernels cannot overlap authoring on a thread.** On a warm
 cache a fresh process's first render spends ~2.5 s (`explainer`) to ~4.4 s

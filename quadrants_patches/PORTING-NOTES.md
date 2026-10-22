@@ -851,7 +851,7 @@ Not verified — **nothing in these three has been run on a CUDA device**:
 
 Base: Quadrants `v1.3.3` (`00423caa9`) with 0001-0009 applied, LLVM 22.1.0. **Not ports**, and,
 unlike everything above, never compiled: written on 2026-10-22 against the tree as read, on a
-machine with no C++ toolchain. 0010 is 17 files +250/−28, 0011 12 files +87/−13; `README.md` says
+machine with no C++ toolchain. 0010 is 17 files +250/−28, 0011 12 files +94/−17; `README.md` says
 why, this says where and what to watch.
 
 ### What each hunk is anchored on

@@ -20,6 +20,7 @@ fresh-process / cold-cache render A/B per switch.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -315,3 +316,144 @@ def test_a_kernel_this_worker_dumped_is_never_prepared_again(worker, monkeypatch
     assert "ptx_seconds" not in outcome
     assert prepared == [data]
     assert calls == []
+
+
+# --- PTX written at exit by a process that compiled nothing -------------------
+
+
+class _ExitProgram:
+    def __init__(self, with_prepare=True):
+        self.dumps = 0
+        if with_prepare:
+            self.prepare_kernel = lambda data: None
+
+    def dump_cache_data_to_disk(self):
+        self.dumps += 1
+
+
+@pytest.fixture
+def at_exit(monkeypatch):
+    """``write_ptx_at_exit`` against a stub program on the CUDA arch."""
+    prog = _ExitProgram()
+    monkeypatch.setattr(algan.taichi_compat, "program", lambda: prog)
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.cuda)
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", False)
+    monkeypatch.delenv("ALGAN_FLUSH_KERNEL_CACHE", raising=False)
+    return prog
+
+
+def test_a_process_that_compiled_nothing_writes_its_ptx_at_exit(at_exit):
+    """Its kernels all came from the cache, so the flush skips it -- and the PTX."""
+    assert taichi_runtime.write_ptx_at_exit() is True
+    assert at_exit.dumps == 1
+
+
+def test_the_exit_ptx_write_leaves_everything_else_alone(at_exit, monkeypatch):
+    # A process that built a specialization: the flush tears down and writes all.
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    assert taichi_runtime.write_ptx_at_exit() is False
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", False)
+    # The flush's own A/B arm, and a render still holding the arch.
+    monkeypatch.setenv("ALGAN_FLUSH_KERNEL_CACHE", "0")
+    assert taichi_runtime.write_ptx_at_exit() is False
+    monkeypatch.delenv("ALGAN_FLUSH_KERNEL_CACHE")
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: True)
+    assert taichi_runtime.write_ptx_at_exit() is False
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
+    # No PTX cache off CUDA; and without 0011 the dump would write no PTX.
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.x64)
+    assert taichi_runtime.write_ptx_at_exit() is False
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.cuda)
+    monkeypatch.setattr(algan.taichi_compat, "program", lambda: _ExitProgram(False))
+    assert taichi_runtime.write_ptx_at_exit() is False
+    assert at_exit.dumps == 0
+
+
+# --- what the pool reports about PTX -------------------------------------------
+
+
+def test_a_workers_ptx_time_and_failure_reach_the_progress_lines(monkeypatch):
+    from algan.rendering import kernel_progress
+
+    lines = []
+    monkeypatch.setattr(kernel_progress, "_log", lines.extend)
+    pool = SimpleNamespace(counts=lambda: (1, 2))
+    monkeypatch.setattr(kernel_progress._STATE, "waiting_for", pool)
+    job = kp._Job({"kernel": "m:k", "args": []}, {}, 1.0)
+    assert (job.ptx_seconds, job.ptx_error) == (None, None)
+    job.state, job.seconds = "done", 3.0
+    job.ptx_seconds = 1.25
+    kernel_progress._report_while_waiting(pool, "done", job)
+    assert "PTX ready" in lines[-1]
+    job.ptx_seconds, job.ptx_error = None, "RuntimeError: no"
+    kernel_progress._report_while_waiting(pool, "done", job)
+    assert "PTX not prepared (RuntimeError: no)" in lines[-1]
+
+
+# --- the cache checker ----------------------------------------------------------
+
+
+def _checker():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[2] / "quadrants_patches" / "check_ptx_cache.py"
+    spec = importlib.util.spec_from_file_location("check_ptx_cache", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_qdc(path, name):
+    import hashlib
+    import struct
+
+    metadata = json.dumps({"compiled_data": {"tasks": [{"name": name}]}}).encode()
+    source = b"; ModuleID = 'kernel'\n"
+    digest = hashlib.sha256(metadata + source).hexdigest().encode()
+    path.write_bytes(
+        b"QDC\x00"
+        + struct.pack("<IQQ", 5, len(metadata), len(source))
+        + metadata
+        + source
+        + digest
+    )
+    return digest.decode()
+
+
+def test_the_checker_finds_which_kernels_have_content_keyed_ptx(tmp_path):
+    check = _checker()
+    kcm = tmp_path / "quadrants" / "kernel_compilation_manager"
+    ptx = tmp_path / "quadrants" / "ptx_cache_sm_120"
+    kcm.mkdir(parents=True)
+    ptx.mkdir()
+    identity = {"fast_math": True, "llvm": "22.1.0", "version": "1.3.3", "commit": "c0"}
+    served = _write_qdc(kcm / "Tserved.qdc", "served_kernel")
+    _write_qdc(kcm / "Tmissing.qdc", "missing_kernel")
+    key = check.content_key(served, "120", **identity)
+    (ptx / f"{key}.ptx").write_bytes(b"ptx\x00")
+    (ptx / "Tabc.ptx").write_bytes(b"ptx\x00")
+    (ptx / f"{key}.ptx.12.tmp").write_bytes(b"")
+    report = check.summarize(tmp_path, **identity)
+    sm = report["ptx_dirs"]["ptx_cache_sm_120"]
+    assert report["qdc"] == 2
+    assert sm["with_content_ptx"] == 1
+    assert sm["without"] == ["missing_kernel (Tmissing)"]
+    assert (sm["ir_keyed_ptx_files"], sm["leftover_tmp_files"]) == (1, 1)
+
+
+def test_the_checker_builds_the_key_the_patch_builds():
+    """The material and revision must stay what 0010's ``make_content_cache_key`` hashes."""
+    from pathlib import Path
+
+    patch = (
+        Path(__file__).parents[2]
+        / "quadrants_patches"
+        / "0010-cuda-ptx-cache-by-content-hash.patch"
+    ).read_text(encoding="utf-8")
+    assert (
+        '"ptx-by-content-hash/{};sm_{};fast_math={};llvm={};quadrants={}+{};content={}"'
+        in patch
+    )
+    assert f"kContentKeyRevision = {_checker().CONTENT_KEY_REVISION};" in patch
