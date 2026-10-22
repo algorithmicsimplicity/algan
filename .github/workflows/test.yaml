@@ -15,19 +15,104 @@ on:
     # review and runs on every push after that, so work in progress can be
     # pushed without occupying every arm, the two macOS ones included, for a
     # result the next push replaces. The default types leave out
-    # ready_for_review, so the list names all four.
-    types: [opened, synchronize, reopened, ready_for_review]
+    # ready_for_review, so the list names them all.
+    #
+    # `labeled` is there for the `full-ci` label: adding it starts the full
+    # run at once instead of on the next push. Any other label is a no-op (see
+    # the `plan` job, and the concurrency group below, which keeps such an
+    # event from cancelling the run already in flight).
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  # A merge queue runs the full suite, like a push to master: it is the last
+  # gate before the commit lands.
+  merge_group:
   # Lets a run be started by hand from the Actions tab. Only takes effect once
   # this file is on the default branch: GitHub reads workflow_dispatch from
   # there, not from the ref being dispatched.
   workflow_dispatch:
 
-# Cancel in-progress runs when pushing a new commit on the PR
+# One run per pull request: a new push (or the `full-ci` label) cancels the
+# run in flight, whose answer is about a commit nobody is waiting on any more.
+# Pushes to master and stable, and merge-queue runs, are keyed by run id and so
+# never cancel one another. A label other than `full-ci` gets a group of its
+# own; it starts nothing, and must not cancel the run that is going.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
+  # Decides how much of the suite this run is worth. The full suite is about
+  # two hours of runner time across four arms, two of them on the account's
+  # five macOS slots, and a few open pull requests pushing at once queued
+  # behind each other for most of a day. So a pull request runs the fast
+  # scope by default and the full one only when asked:
+  #
+  #   full   push to master/stable, merge queue, manual dispatch, or a pull
+  #          request labelled `full-ci`. The four-arm matrix, exactly as
+  #          before.
+  #   fast   any other pull request. Linux 3.10 runs the `--fast` suite and
+  #          the cheap unit tests (.github/cheap_unit_tests.txt); macOS 3.10
+  #          CPU runs the cheap unit tests, which is enough to prove the
+  #          package installs and imports there.
+  #   cheap  a pull request that touches only docs and/or tests, without the
+  #          label: both arms run the cheap unit tests and nothing renders.
+  #
+  # The arm names do not change between scopes, and that matters: branch
+  # protection requires "ubuntu-latest / Python 3.10" and "macos-latest /
+  # Python 3.10" by name, so both arms run in every scope, if only briefly.
+  # That is also why the docs/tests filter is computed here rather than with
+  # `on.pull_request.paths`: a workflow that does not start reports no check,
+  # and a missing required check blocks the merge.
+  plan:
+    name: Plan the run
+    # Not on a draft pull request; see `on.pull_request`. Nor for a label
+    # other than `full-ci`, which changes nothing about what should run.
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+      && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$EVENT" != pull_request ] || [ "$FULL_LABEL" = true ]; then
+            scope=full
+          else
+            # Docs-only or tests-only (or both) means nothing the renderer
+            # runs on has changed. Anything else, this file included, does.
+            files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
+            other=$(printf '%s\n' "$files" | grep -vE '^(docs/|tests/)|\.(md|rst)$' || true)
+            if [ -n "$files" ] && [ -z "$other" ]; then
+              scope=cheap
+            else
+              scope=fast
+            fi
+          fi
+          echo "scope: $scope"
+
+          full='[
+            {"os": "ubuntu-latest", "python_version": "3.10", "render_device": "auto", "scope": "full"},
+            {"os": "ubuntu-latest", "python_version": "3.14", "render_device": "auto", "scope": "full", "coverage": true},
+            {"os": "macos-latest", "python_version": "3.10", "render_device": "cpu", "scope": "full"},
+            {"os": "macos-latest", "python_version": "3.10", "render_device": "mps", "scope": "full"}
+          ]'
+          linux=fast
+          [ "$scope" = cheap ] && linux=cheap
+          light='[
+            {"os": "ubuntu-latest", "python_version": "3.10", "render_device": "auto", "scope": "'"$linux"'"},
+            {"os": "macos-latest", "python_version": "3.10", "render_device": "cpu", "scope": "cheap"}
+          ]'
+          if [ "$scope" = full ]; then matrix=$full; else matrix=$light; fi
+          echo "matrix=$(jq -c '{include: .}' <<<"$matrix")" >> "$GITHUB_OUTPUT"
+
   build:
     # The device is in the name only where it distinguishes two arms, and that
     # is not cosmetic: a job's name IS the check name, branch protection pins
@@ -38,8 +123,7 @@ jobs:
     # nothing that was required stops arriving.
     name: ${{ matrix.os }} / Python ${{ matrix.python_version }}${{ matrix.render_device == 'mps' && ' / render=mps' || '' }}
     runs-on: ${{ matrix.os }}
-    # Not on a draft pull request; see `on.pull_request`.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: [plan]
     strategy:
       # One platform or render device failing must not cancel the others. The
       # matrix is the portability/release gate, so every arm should report.
@@ -73,23 +157,11 @@ jobs:
       # What makes that work is `audioop-lts`, which uv.lock carries with a
       # `python_full_version >= '3.13'` marker. This arm is what keeps a future
       # lock update from quietly dropping it.
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python_version: "3.10"
-            render_device: auto
-          - os: ubuntu-latest
-            python_version: "3.14"
-            render_device: auto
-            # The one arm that measures coverage; see "Upload coverage to
-            # Codecov" for why it is this one.
-            coverage: true
-          - os: macos-latest
-            python_version: "3.10"
-            render_device: cpu
-          - os: macos-latest
-            python_version: "3.10"
-            render_device: mps
+      #
+      # The arms themselves are listed in the `plan` job, which picks the
+      # full four or the light two. `coverage` marks the one arm that measures
+      # coverage; see "Upload coverage to Codecov" for why it is the 3.14 one.
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     # The two macOS arms are intentionally explicit. The CPU arm keeps macOS
     # portability coverage. The MPS arm is an ordinary required test arm: the
@@ -151,7 +223,7 @@ jobs:
         run: brew install pango cairo pkg-config
 
       - name: Install LaTeX dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: matrix.scope != 'cheap' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -176,7 +248,7 @@ jobs:
       # the matching historic repository (tug.org/historic/systems/texlive/
       # <year>/tlnet-final) rather than waiting for Homebrew to catch up.
       - name: Install LaTeX dependencies (macOS)
-        if: runner.os == 'macOS'
+        if: matrix.scope != 'cheap' && runner.os == 'macOS'
         run: |
           brew install --cask basictex
           echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
@@ -199,7 +271,7 @@ jobs:
       # has. `brew install ffmpeg` is several minutes of dependency building
       # for something nothing in the test run would call.
       - name: Install ffmpeg (Linux)
-        if: runner.os == 'Linux'
+        if: matrix.scope != 'cheap' && runner.os == 'Linux'
         run: sudo apt-get install -y ffmpeg
 
       - name: Install uv
@@ -251,8 +323,10 @@ jobs:
       # that a cold run never starts. The directory's entries are listed with
       # `/*` because an exclusion only removes what the pattern itself
       # matched; listed as a directory, tar would put the manifest back.
+      # The cheap scope renders nothing, so it has no kernels to restore or
+      # save.
       - name: Restore compiled kernels
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && matrix.scope != 'cheap'
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -364,11 +438,11 @@ jobs:
       # 29-204 channel values against a tolerance of 2, while tests/fast and
       # shapes_and_timeline matched exactly. See tests/README.md.
       #
-      # Named as paths rather than run with --fast on purpose, and the reason is
-      # stronger since the fast suite became opt-in: --fast now runs only the
-      # 191 hand-picked tests marked 'fast', while everything under these two
-      # paths is portable and passes here. CI can afford the whole thing; the
-      # fast suite is a development loop, not a CI scope.
+      # The full scope names paths rather than running with --fast on purpose:
+      # --fast runs only the 191 hand-picked tests marked 'fast', while
+      # everything under these two paths is portable and passes here. That is
+      # what master, the merge queue and a `full-ci` pull request run; an
+      # ordinary pull request settles for the fast scope (see the `plan` job).
       #
       # The render in tests/fast compares pixels on Linux and renders without
       # comparing on macOS, because no baseline is committed for Apple Silicon
@@ -388,15 +462,35 @@ jobs:
       # summary counts them on every run, which is what keeps a required check
       # from quietly meaning less than it looks like it means.
       # DESIGN_mps_support.md §4 is the scoreboard.
+      #
+      # The fast and cheap scopes (see the `plan` job) run the `--fast` suite
+      # and/or the files in .github/cheap_unit_tests.txt instead. `--fast`
+      # deselects every unmarked test, so the two are separate invocations.
       - name: Run tests
-        run: uv run pytest tests/unit_tests tests/fast ${{ matrix.coverage && '--cov=algan --cov-report=xml' || '' }} -n 1
+        env:
+          SCOPE: ${{ matrix.scope }}
+        run: |
+          cheap() {
+            files=()
+            while read -r f; do
+              case "$f" in ''|'#'*) continue ;; esac
+              if [ -e "$f" ]; then files+=("$f"); else echo "not on this branch, skipped: $f"; fi
+            done < .github/cheap_unit_tests.txt
+            uv run pytest "${files[@]}"
+          }
+          case "$SCOPE" in
+            full) uv run pytest tests/unit_tests tests/fast ${{ matrix.coverage && '--cov=algan --cov-report=xml' || '' }} -n 1 ;;
+            fast) uv run pytest --fast -n 1 && cheap ;;
+            cheap) cheap ;;
+            *) echo "unknown scope: $SCOPE"; exit 1 ;;
+          esac
 
       # A compile writes new files: the compiler names an artifact by its key,
       # and so does the source-keyed index. No new file means this run loaded
       # everything it used from what it restored.
       - name: Count newly compiled kernels
         id: new-kernels
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.scope != 'cheap' }}
         run: |
           mkdir -p ~/.algan/cache/quadrants
           touch "$RUNNER_TEMP/kernels-before.txt"
@@ -417,7 +511,7 @@ jobs:
       # is derived from it, and a save under another `path` is one the restore
       # never finds.
       - name: Save compiled kernels
-        if: ${{ !cancelled() && steps.new-kernels.outputs.new != '0' }}
+        if: ${{ !cancelled() && matrix.scope != 'cheap' && steps.new-kernels.outputs.new != '0' }}
         uses: actions/cache/save@v6
         with:
           path: |

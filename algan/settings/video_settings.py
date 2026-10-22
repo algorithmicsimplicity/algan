@@ -97,6 +97,15 @@ class VideoSettings(Settings):
             if value is None or value <= 0:
                 raise AlganConfigurationError(f"{name} must be a positive integer")
             object.__setattr__(self, name, value)
+        # The renderer projects with a half-screen of ``side // 2`` pixels at
+        # the supersampled size; a 1-pixel side makes that 0, which divides by
+        # zero deep in the raster pass (and collapses the projection anyway).
+        if min(width, height) * self.supersampling < 2:
+            raise AlganConfigurationError(
+                "resolution must be at least 2 pixels on each side "
+                "(after supersampling); got "
+                f"{width}x{height} at supersampling={self.supersampling}"
+            )
         if not isinstance(self.fxaa, bool):
             raise AlganConfigurationError("fxaa must be a boolean")
 
