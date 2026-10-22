@@ -2276,10 +2276,7 @@ class MobMorphMixin:
                 replacement_allowed=replacement_allowed,
             )
 
-        from algan.animatable_base.morph_conversions import (
-            MorphConversionError,
-            get_morph_conversion,
-        )
+        from algan.animatable_base.morph_conversions import get_morph_conversion
 
         source_conversion = get_morph_conversion(source._morph_family)
         target_conversion = get_morph_conversion(target._morph_family)
@@ -2290,15 +2287,14 @@ class MobMorphMixin:
                 f"{source._morph_family!r} and {target._morph_family!r}"
             )
         if replacement_allowed and can_convert:
-            try:
-                return self._record_pn_morph(
-                    source,
-                    target,
-                    minimize_movement=minimize_movement,
-                )
-            except MorphConversionError:
-                if replacement_allowed:
-                    raise
+            # A MorphConversionError from a registered converter propagates:
+            # it names a Mob that should convert and could not, which a
+            # silent dissolve would hide.
+            return self._record_pn_morph(
+                source,
+                target,
+                minimize_movement=minimize_movement,
+            )
         if not replacement_allowed:
             return self._record_dissolve(
                 source,

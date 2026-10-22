@@ -28,10 +28,10 @@ def map_mob_over_inputs(mob, animation_func, inputs, percent_shown=0.1):
 
     Only the start and end of the sequence are shown: ``mob`` visits the first
     ``int(len(inputs) * percent_shown)`` inputs one after another, then jumps
-    (un-animated) towards the end of the sequence and visits the last
-    ``num_shown - 1`` inputs. At each input it is moved to that input's
-    location plus its initial offset from ``inputs[0]``, and
-    ``animation_func(mob, input)`` is played. Steps run in sequence.
+    (un-animated) to ``inputs[-num_shown]`` without playing ``animation_func``
+    there, and visits the last ``num_shown - 1`` inputs. At each input it is
+    moved to that input's location plus its initial offset from ``inputs[0]``,
+    and ``animation_func(mob, input)`` is played. Steps run in sequence.
 
     Parameters
     ----------
@@ -53,7 +53,7 @@ def map_mob_over_inputs(mob, animation_func, inputs, percent_shown=0.1):
             with Sync(animation_manager=animation_manager_for(mob, inputs)):
                 animation_func(mob, inp)
         with Off(animation_manager=animation_manager_for(mob, inputs)):
-            mob.location = inputs[-num_shown]
+            mob.location = inputs[-num_shown].location + d
         for i in range(-num_shown, -1):
             inp = inputs[i + 1]
             mob.location = inp.location + d

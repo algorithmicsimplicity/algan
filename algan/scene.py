@@ -337,7 +337,10 @@ class Scene(RenderLoopMixin):
         if video_settings is None:
             video_settings = SETTINGS.video
         if background is None:
-            background = SETTINGS.style.frame
+            # The documented default. ``style.frame`` stood here, so a still
+            # (which renders the stored background) drew ``style.frame`` while
+            # save_video drew ``style.background``.
+            background = SETTINGS.style.background
         self.set_video_settings(video_settings)
         # Whether this Scene was *given* its settings, or merely started from
         # the process-wide ones. Only the first kind outranks a later

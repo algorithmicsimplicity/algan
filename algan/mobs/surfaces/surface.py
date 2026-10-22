@@ -1648,10 +1648,10 @@ class Surface(Mob):
         rather than to a row of it.
         """
         leading = tuple(row.shape[:-1])
-        height, width = int(self.texture_height), int(self.texture_width)
-        image = row.reshape(*leading, height, width, 5)
+        width, height = int(self.texture_width), int(self.texture_height)
+        image = row.reshape(*leading, width, height, 5)
         if all(d == 1 for d in leading):
-            image = image.reshape(height, width, 5)
+            image = image.reshape(width, height, 5)
         return image
 
     @property
@@ -1708,8 +1708,8 @@ class Surface(Mob):
             )
         if texture.dim() != 3 or texture.shape[-1] != 5:
             current = (
-                f" This surface's is [{int(self.texture_height)}, "
-                f"{int(self.texture_width)}, 5]."
+                f" This surface's is [{int(self.texture_width)}, "
+                f"{int(self.texture_height)}, 5]."
                 if self._has_color_texture
                 else ""
             )
@@ -1717,8 +1717,8 @@ class Surface(Mob):
                 f"color_texture must have shape [W, H, 5], got "
                 f"{tuple(texture.shape)}.{current}"
             )
-        texture_height, texture_width = texture.shape[-3:-1]
-        attr = f"color_texture_{texture_height * texture_width}"
+        texture_width, texture_height = texture.shape[-3:-1]
+        attr = f"color_texture_{texture_width * texture_height}"
 
         if previous_attr is not None and previous_attr != attr and self.is_spawned():
             # Keep the old texture topology on a frozen historical clone. The
@@ -1726,8 +1726,8 @@ class Surface(Mob):
             self.detach_history()
 
         self._color_texture_attr = attr
-        self.texture_height = int(texture_height)
         self.texture_width = int(texture_width)
+        self.texture_height = int(texture_height)
         # u8 provenance, proved here at authoring where a full-image pass is
         # cheap and sync-free, and trusted by the merge (texture_u8_storage
         # must not probe texels on the prefetch worker). Any later assignment
@@ -3406,8 +3406,8 @@ class Surface(Mob):
         ok = texture_u8_provenance(
             seg.endpoints.view(
                 seg.endpoints.shape[0],
-                int(self.texture_height),
                 int(self.texture_width),
+                int(self.texture_height),
                 5,
             )
         )
@@ -3458,7 +3458,7 @@ class Surface(Mob):
             return 0
         inds = None if timeline is None else timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
-        texels = int(self.texture_height) * int(self.texture_width) * 5
+        texels = int(self.texture_width) * int(self.texture_height) * 5
         from algan.rendering.raytracing import settings as _rts
 
         if _rts.texture_opacity_in_kernel_active():
@@ -3509,7 +3509,7 @@ class Surface(Mob):
             return 0
         inds = timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
-        texels = int(self.texture_height) * int(self.texture_width) * 5
+        texels = int(self.texture_width) * int(self.texture_height) * 5
         from algan.rendering.raytracing import settings as _rts
 
         # One image of the six-image chain is the host premultiply, absent
@@ -3814,14 +3814,14 @@ class Surface(Mob):
             texture_map = wrap_pad_texture(
                 texels.view(
                     texels.shape[0],
-                    self.texture_height,
                     self.texture_width,
+                    self.texture_height,
                     5,
                 ),
                 closed_axes,
             )
             if texture_lerp is not None:
-                # [1, K, H, W, 5]: the leading singleton declares the stack
+                # [1, K, W, H, 5]: the leading singleton declares the stack
                 # frame-static to everything that treats axis 0 as batch time
                 # (slice_time_window would otherwise slice the endpoint axis
                 # whenever K happened to equal the batch's frame count); the
@@ -4156,10 +4156,9 @@ class Surface(Mob):
 
         if resolution is None:
             if self._has_color_texture:
-                # texture_height / texture_width are the u / v axis lengths, in
-                # that order -- the names are inverted with respect to the
-                # public [W, H, 5] contract, the axes are not.
-                resolution = (self.texture_height, self.texture_width)
+                # texture_width / texture_height are the u / v axis lengths,
+                # the first and second axes of the public [W, H, 5] image.
+                resolution = (self.texture_width, self.texture_height)
             else:
                 resolution = (self.grid_width, self.grid_height)
         if isinstance(resolution, (tuple, list)):
@@ -4380,7 +4379,7 @@ class Surface(Mob):
         texture_shape = tuple(surface_texture.shape[-3:-1])
         if self.is_spawned() and (
             not self._has_color_texture
-            or (self.texture_height, self.texture_width) != texture_shape
+            or (self.texture_width, self.texture_height) != texture_shape
         ):
             # A texture attribute that does not exist yet -- or one whose
             # resolution is about to change, which detaches history -- has no
@@ -4424,7 +4423,7 @@ class Surface(Mob):
             current = (
                 self._color_texture_uncopied()
                 .as_subclass(torch.Tensor)
-                .view(-1, self.texture_height, self.texture_width, 5)[-1]
+                .view(-1, self.texture_width, self.texture_height, 5)[-1]
             )
         else:
             current = self.grid.get_animated_attribute("color").as_subclass(

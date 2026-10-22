@@ -1981,12 +1981,19 @@ class Paragraph(Group):
             )
         self.lines_text = lines
         self.chars = self.children
+        # Kept so set_all_lines_alignments rebuilds the same lines, spaced and
+        # styled as they were constructed.
+        self.line_spacing = line_spacing
+        self._line_kwargs = {k: v for k, v in kwargs.items() if k != "scene"}
 
     def set_all_lines_alignments(self, alignment: str):
         """Re-align every line of the paragraph.
 
         The paragraph is rebuilt with the new alignment and morphed into, so the lines
-        slide into their new positions.
+        slide into their new positions. The rebuild keeps the ``line_spacing`` and
+        the line keywords (``font_size``, ``color``, ``font``...) the paragraph was
+        constructed with; styling changed on a line after construction is not
+        carried over.
 
         Animation
         ---------
@@ -2008,6 +2015,8 @@ class Paragraph(Group):
             *self.lines_text,
             scene=self.scene,
             alignment=alignment,
+            line_spacing=self.line_spacing,
             add_to_scene=False,
+            **self._line_kwargs,
         )
         return self.become(replacement, detach_history=False)

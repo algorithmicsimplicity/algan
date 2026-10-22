@@ -813,7 +813,10 @@ def Circumscribe(
             filled=False,
         )
     else:
-        raise AlganConfigurationError("shape should be either Rectangle or Circle.")
+        raise AlganConfigurationError(
+            "shape should be Rectangle, Square, Circle or None (the classes "
+            f"themselves); got {shape!r}."
+        )
 
     if fade_in and fade_out:
         with Seq(animation_manager=animation_manager):

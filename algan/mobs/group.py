@@ -669,6 +669,17 @@ class Group(Mob):
             Scene.save_video()
 
         """
+        # Validate before the empty-Group early return, so a bad argument is
+        # refused whether or not the Group has members yet.
+        if num_rows is not None:
+            rows = None if isinstance(num_rows, bool) else integer_or_none(num_rows)
+            if rows is None or rows <= 0:
+                raise AlganConfigurationError("num_rows must be a positive integer")
+            num_rows = rows
+        if tight_axis is not None and tight_axis not in (0, 1):
+            raise AlganConfigurationError("tight_axis must be 0, 1, or None")
+        row_direction = _layout_direction("row_direction", row_direction)
+        column_direction = _layout_direction("column_direction", column_direction)
         if not self.children:
             return self
         if row_buffer is None:
@@ -677,15 +688,9 @@ class Group(Mob):
             column_buffer = row_buffer
         if num_rows is None:
             num_rows = max(1, math.ceil(math.sqrt(len(self.children))))
-        rows = None if isinstance(num_rows, bool) else integer_or_none(num_rows)
-        if rows is None or rows <= 0:
-            raise AlganConfigurationError("num_rows must be a positive integer")
-        num_rows = rows
         num_cols = len(self.children) // num_rows
         if num_rows * num_cols < len(self.children):
             num_cols += 1
-        row_direction = _layout_direction("row_direction", row_direction)
-        column_direction = _layout_direction("column_direction", column_direction)
         # Dimensions do not change until the moves below. Query each member
         # once per direction, including when tight cells reuse those lengths.
         row_lengths = [m.get_length_in_direction(row_direction) for m in self.children]
@@ -716,8 +721,6 @@ class Group(Mob):
                     for j in range(num_rows)
                     if j * num_cols < len(self.children)
                 ]
-            else:
-                raise AlganConfigurationError("tight_axis must be 0, 1, or None")
 
         start = self.location - (
             row_direction * sum(buf_dist1) * 0.5

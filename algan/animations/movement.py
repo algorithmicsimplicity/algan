@@ -592,7 +592,8 @@ def ApplyMatrix(
     Raises
     ------
     TypeError
-        If neither argument is a Mob, or if the Mob has no deformable geometry.
+        If neither argument is a Mob, if no matrix is given (or both arguments
+        are Mobs), or if the Mob has no deformable geometry.
     :class:`.AlganConfigurationError`
         If ``matrix`` is not of shape ``(2, 2)`` or ``(3, 3)``.
     """
@@ -600,6 +601,11 @@ def ApplyMatrix(
         mob, matrix = matrix, mob
     if not isinstance(mob, Mob):
         raise TypeError("ApplyMatrix expects a Mob and a 2x2 or 3x3 matrix.")
+    if matrix is None or isinstance(matrix, Mob):
+        raise TypeError(
+            "ApplyMatrix expects a Mob and a 2x2 or 3x3 matrix; received "
+            f"{type(mob).__name__} and {type(matrix).__name__}."
+        )
     matrix = torch.as_tensor(matrix, dtype=torch.get_default_dtype())
     if matrix.shape == (2, 2):
         full_matrix = torch.eye(3, device=matrix.device, dtype=matrix.dtype)

@@ -307,6 +307,56 @@ def test_add_parent_rejects_a_mob_from_its_own_subtree(scene):
     assert root.add_parent(_mob([0, 0, 9])) is root
 
 
+def test_a_shared_descendant_is_listed_once(scene):
+    """A Mob with two parents under one root was listed once per path, so every
+    walk over the subtree (``set_material``, ``set_shader``, colour-wave
+    refinement) processed it twice. The first depth-first position is kept.
+    """
+    root, left, right, shared = (
+        _mob([0, 0, 0]),
+        _mob([1, 0, 0]),
+        _mob([2, 0, 0]),
+        _mob([3, 0, 0]),
+    )
+    root.add_children(left, right)
+    left.add_children(shared)
+    right.add_children(shared)
+
+    assert [id(m) for m in root.get_descendants()] == [
+        id(root),
+        id(left),
+        id(shared),
+        id(right),
+    ]
+    assert [id(m) for m in root.get_descendants(include_self=False)] == [
+        id(left),
+        id(shared),
+        id(right),
+    ]
+    # Still accumulates one delta per recorded change, not one per path.
+    with Off():
+        root.move(RIGHT)
+    _assert_at(scene, [0.0], shared, [[4.0, 0.0, 0.0]])
+
+
+def test_mutating_get_children_leaves_the_hierarchy_alone(scene):
+    """The default call returned the live ``children`` list, so editing it
+    changed the hierarchy behind the version bump the descendant cache keys
+    on, which then went on serving the old subtree.
+    """
+    parent, child, stranger = _mob([0, 0, 0]), _mob([1, 0, 0]), _mob([2, 0, 0])
+    parent.add_children(child)
+    parent.get_descendants()  # warm the cache
+
+    children = parent.get_children()
+    children.append(stranger)
+    children.remove(child)
+
+    assert parent.children == [child]
+    assert parent.get_children() == [child]
+    assert [id(m) for m in parent.get_descendants(include_self=False)] == [id(child)]
+
+
 # ---------------------------------------------------------------------------
 # Lifespans and layout follow the live graph, unlike recorded animations.
 # ---------------------------------------------------------------------------
