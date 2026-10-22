@@ -325,6 +325,23 @@ def test_shadow_tracer_falls_back_when_optix_is_unavailable(monkeypatch):
     assert make_shadow_tracer(arena) is kernels.raster_shadow_trace
 
 
+def test_a_failed_structure_build_keeps_the_software_walk(monkeypatch):
+    """Out of memory or refused by the driver: no structures, no exception."""
+    from algan.rendering.raytracing.optix import _abi, gas
+
+    def fail(*args, **kwargs):
+        raise torch.OutOfMemoryError("no room")
+
+    monkeypatch.setattr(gas, "_build_batch_gas", fail)
+    assert gas.build_batch_gas(None, None, None, None) is None
+
+    def refuse(*args, **kwargs):
+        raise _abi.OptixError("refused")
+
+    monkeypatch.setattr(gas, "_build_batch_gas", refuse)
+    assert gas.build_batch_gas(None, None, None, None) is None
+
+
 def _mixed_triangle_scene():
     """Opaque, half-transparent and glass solids and a mirror on a lit wall."""
     from algan import (

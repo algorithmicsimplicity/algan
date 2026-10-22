@@ -90,6 +90,40 @@ def _frames_of(*tables):
 def build_batch_gas(runtime, tri_pos, valid, opaque, casts=None, all_translucent=False):
     """Build one GAS per frame; return a :class:`BatchGas`, or ``None``.
 
+    ``None`` -- the batch keeps the software walk -- also when the build
+    fails: out of device memory (the structures live outside the arena, so the
+    render's own out-of-memory retry, which shrinks the frame window, would not
+    help) or refused by the driver. Logged once.
+    """
+    global _BUILD_FAILURE_LOGGED
+    try:
+        return _build_batch_gas(
+            runtime,
+            tri_pos,
+            valid,
+            opaque,
+            casts=casts,
+            all_translucent=all_translucent,
+        )
+    except (abi.OptixError, torch.OutOfMemoryError) as exc:
+        if not _BUILD_FAILURE_LOGGED:
+            _BUILD_FAILURE_LOGGED = True
+            logger.warning(
+                "OptiX: building this batch's acceleration structures failed, so "
+                "it renders with the software traversal: %s",
+                exc,
+            )
+        return None
+
+
+_BUILD_FAILURE_LOGGED = False
+
+
+def _build_batch_gas(
+    runtime, tri_pos, valid, opaque, casts=None, all_translucent=False
+):
+    """:func:`build_batch_gas` without the fallback.
+
     ``tri_pos`` is ``[Tp, N, 9]`` float32; ``valid`` / ``opaque`` / ``casts``
     are ``[T?, N]`` bool tables (one frame or the batch's). ``casts`` given
     removes non-casters (shadow rays); ``all_translucent`` puts every
