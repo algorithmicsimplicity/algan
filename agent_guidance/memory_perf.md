@@ -239,6 +239,22 @@ means yielding frames that are not yet host-ready, which changes the contract
 of every consumer of `get_frames`: the video writer, `save_frame`, the viewer,
 stills, camera-view captures and public `Scene.get_frames` callers.
 
+The tile's state fills and the glossy reset are whole-row writes, and only of
+the rows something reads (`ALGAN_OPT_DISABLE=exactfills` restores the strided
+column fills). A strided write of one column rewrites part of every DRAM
+sector it touches; a whole-row write of the same buffer costs less. Only a
+tile's primaries read the nested-IOR stack and shell words the host zeroes:
+every continuation slot has both written where it is spawned. So the zero
+covers the primaries' rows alone, which is a fraction of the pool on any
+splitting batch. Only the compactor reads a slot nothing has activated, and it
+reads the status alone, so `rs_int` is filled whole. `_gloss_clear` is one
+coalesced `gloss_clear` launch. A finished glossy frame is one `gloss_finish`
+launch (`ALGAN_OPT_DISABLE=glossfuse`), not one per pyramid level plus the
+composite and the clear; `DESIGN_glossy_prefilter.md` has why its reset is
+exact. `tests/unit_tests/test_tile_state_fills.py` holds the state fills on
+both routes by rendering with every tile's state poisoned, and
+`test_glossy_fused_finish.py` holds the glossy kernels the same way.
+
 ### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
 
 Some scenes render slightly differently every run, with no change to the code
@@ -273,6 +289,11 @@ Practical rules:
 - Do not use a scene with reflective/refractive geometry under analytic AA as a
   byte-identical parity fixture. Establish the arm's own run-to-run floor first,
   or pin one of the ingredients off.
+- The CPU backend races the same way across its threads. A CPU render on ONE
+  thread is reproducible to the byte: set `cpu_max_num_threads=1` in
+  `taichi_runtime.taichi_init_kwargs()` before the first render, in a process
+  of its own. `test_tile_state_fills.py` does this. That compiles kernels
+  under their own cache key.
 - A *larger* difference than `|d| = 1` is NOT this mechanism. Branches are never
   silently dropped: a continuation that does not fit raises the pool's overflow
   flag, and the host discards and retries the tile with fewer primaries
