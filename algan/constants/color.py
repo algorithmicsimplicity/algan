@@ -314,12 +314,8 @@ class Color(torch.Tensor):
 
     @property
     def opacity(self):
-        """Get or set the alpha channel: ``0`` invisible, ``1`` fully opaque.
-
-        Reading returns a plain tensor of shape ``(*, 1)`` that shares this
-        color's storage. Assigning a number, sequence or tensor writes the
-        channel in place, broadcasting over a batched color.
-        """
+        # Documented in the class docstring's Attributes section; a docstring
+        # here would describe the same object twice in the API reference.
         opacity = self.data[..., -1:].as_subclass(torch.Tensor)
         return opacity
 
@@ -329,13 +325,8 @@ class Color(torch.Tensor):
 
     @property
     def glow(self):
-        """Get or set the glow channel: additive emissive brightness for bloom.
-
-        ``0`` is non-emissive; values above ``1`` are allowed. Reading
-        returns a plain tensor of shape ``(*, 1)`` that shares this color's
-        storage. Assigning writes the channel in place, broadcasting over a
-        batched color.
-        """
+        # Documented in the class docstring's Attributes section; a docstring
+        # here would describe the same object twice in the API reference.
         glow = self.data[..., -2:-1].as_subclass(torch.Tensor)
         return glow
 
@@ -356,13 +347,8 @@ class Color(torch.Tensor):
 
     @property
     def rgb(self):
-        """Get or set the red, green and blue channels, each in ``[0, 1]``.
-
-        Reading returns a view of shape ``(*, 3)`` that shares this color's
-        storage (still typed as a :class:`Color`, unlike :attr:`glow` and
-        :attr:`opacity`). Assigning an ``(r, g, b)`` sequence or tensor
-        writes the channels in place, leaving glow and opacity unchanged.
-        """
+        # Documented in the class docstring's Attributes section; a docstring
+        # here would describe the same object twice in the API reference.
         return self.data[..., :3]
 
     @rgb.setter
