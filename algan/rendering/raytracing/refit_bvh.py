@@ -51,10 +51,12 @@ quintuple, the merged-scene arena upload and the memory accounting work
 unchanged; the kernels select the walk with a compile-time ``refit`` template.
 
 Topology uses vectorized PyTorch: one batched binned-SAH split pass per binary
-level across every node of that level. The optional ``refit_pack_kernel``
-path fuses each bottom-up refit level with traversal-block packing on a local
-Taichi backend, retaining only node unions and final blocks. The torch path
-remains the default and the fallback for non-local tensor/backend pairs.
+level across every node of that level -- or, for a small tree or a CPU build,
+the same passes in NumPy (``refit_host_topology_max_columns``). The
+``refit_pack_kernel`` path (default on) fuses each bottom-up refit level with
+traversal-block packing on a local Taichi backend, retaining only node unions
+and final blocks; the torch path is the fallback for non-local tensor/backend
+pairs and the A/B arm.
 """
 
 from __future__ import annotations
@@ -85,10 +87,15 @@ from algan.rendering.raytracing.stbvh import (
 # rather than fixed.
 bvh_sah_bins = max(2, env_int("ALGAN_SAH_BINS", 16))
 
-# Opt-in: saves ~169 MiB on nn_scene_UHD and speeds up an isolated captured
-# build, but the full UHD A/B did not establish an end-to-end speedup.
-# See benchmarks/performance/refit_optimization_report.md.
-refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", False)
+# One launch per tree level for the per-frame refit and its block packing
+# (refit_bvh_taichi.refit_pack_level), where the torch path issues ~45 small
+# ops a level plus the packing; bit for bit the torch path's blocks
+# (tests/unit_tests/test_refit_bvh.py). Saves ~169 MiB on nn_scene_UHD. On a
+# 5080 under WDDM, where the build is launch-bound, it took 15 ms off a
+# 10k-triangle tree's and a 110k-triangle tree's builds and 4-10 ms off a
+# small one's; an earlier UHD A/B on a GPU-bound render saw no end-to-end
+# change. ALGAN_REFIT_PACK_KERNEL=0 is the torch arm.
+refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", True)
 
 # Column count up to which a device build runs its topology (the binned-SAH
 # level loop below) on the host, in NumPy (``_build_topology_host``); a CPU
