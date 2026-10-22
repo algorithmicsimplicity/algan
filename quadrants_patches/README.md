@@ -1,6 +1,6 @@
 # The Quadrants patches Algan carries
 
-Nine patches against **Quadrants v1.3.3** (`00423caa9`, dated 2026-09-25 — the pinned upstream base, not a claim
+Eleven patches against **Quadrants v1.3.3** (`00423caa9`, dated 2026-09-25 — the pinned upstream base, not a claim
 about the latest upstream release),
 applied **in numeric order** onto a pristine checkout of that tag:
 
@@ -36,6 +36,8 @@ touching a patch.
 | `0007-cuda-fast-expf.patch` | Under `fast_math`, f32 `qd.exp` becomes `__nv_fast_expf` instead of `__nv_expf` — the branch shape `log`, `sin` and `cos` already have. Not a port — new, and PLAN row 18. | none |
 | `0008-aarch64-shared-libgcc.patch` | On aarch64 only, links the extension against the shared libgcc runtime instead of AlmaLinux 9's static one, whose `_dl_find_object` backport carries a `GLIBC_2.35` symbol version — so a wheel built on glibc 2.34 keeps that floor. `libstdc++` stays static. | none |
 | `0009-python-3.14.patch` | **Python 3.14.** Lifts `requires-python` to `<3.15` and drops the four reads of `ast.Str`, which 3.14 removed from the standard library — without that, a kernel with a docstring or an `assert` message fails to compile. Upstream v1.3.0 through v1.3.3 (and upstream `main` as of 2026-09-28) stop at 3.13. See "0009" below. | none |
+| `0010-cuda-ptx-cache-by-content-hash.patch` | **Fresh-process start-up on CUDA.** Under a new `offline_cache_ptx_by_content_hash` config field, the PTX cache is keyed by the SHA-256 every `.qdc` already stores over its metadata and IR, and a cached kernel's IR is parsed only when its PTX is not cached. A kernel whose `.qdc` and PTX are both on disk reaches `cuModuleLoadDataEx` without its IR being parsed, verified, cloned, printed or hashed. Off by default; Algan turns it on. See "0010" below. | none |
+| `0011-prepare-kernel-without-launch.patch` | **PTX from the precompile workers.** `Program.prepare_kernel(compiled_kernel_data)` does a first launch's work without the launch (on CUDA: the PTX, and the driver's JIT of it); `dump_cache_data_to_disk` now writes the PTX cache as well; a PTX lookup by content hash finds a file another process wrote after this one started. See "0011" below. | none |
 
 0005-0007 are CUDA codegen and were written in one sitting, after 0004 and
 **against a tree that did not have 0003 applied** (their `codegen_cuda.cpp` and
@@ -75,6 +77,11 @@ apply on their own; 0006 needs 0004, as before. 0001, 0002 and 0009 apply at
 line offsets, which strict `git apply` accepts. "Rebase onto v1.3.3" below says
 what changed in each patch.
 
+**0010 and 0011 were added on 2026-10-22**, written against the tree the nine
+produce. All eleven apply strictly in order onto a pristine `v1.3.3`, **55
+files, +1120/−68**, and the result is byte-identical to the tree they were
+written in. Neither has been compiled: see "0010-0011 — what is verified".
+
 Numeric order is the convention rather than a constraint, and it is worth being
 precise about which, because several patches share a file:
 
@@ -85,6 +92,8 @@ precise about which, because several patches share a file:
 | `codegen/cuda/codegen_cuda.cpp` | 0003, 0005, 0006, 0007 | 0005 → `:692`, 0006 → `:616`, 0007 → `:356`, 0003 → `optimized_reduction` at `:362-388`; 0005-0007 were chained onto each other but not onto 0003 |
 | `runtime/llvm/llvm_context.cpp` | 0003, 0005 | 0003 rewrites a syncscope in `module_from_file`; 0005 edits `mark_function_as_cuda_kernel` at `:1055` |
 | `analysis/offline_cache_util.cpp`, `program/compile_config.h`, `codegen/llvm/codegen_llvm.cpp` | 0004 and 0006 (the first two), 0004 and 0005 (the third) | adjacent lines in the same lists; 0006 is written on 0004 |
+| `python/export_lang.cpp`, `program/compile_config.h`, `program/program.{h,cpp}` | 0010 and 0011 with the above (and 0001's `program.*`) | written on the tree 0001-0009 produce; 0010's config field sits with the `offline_cache_*` fields, away from 0004's and 0006's |
+| `runtime/cuda/jit_cuda.{h,cpp}`, `runtime/cuda/ptx_cache.{h,cpp}` | 0010 and 0011 | 0011 is written on 0010 and changes one of its lines (`load_ptx(key, /*allow_unindexed=*/true)`), so 0011 needs 0010 |
 
 In every one of them the hunks are far enough apart that `git apply` absorbs the
 line offsets, so the order does not decide whether they apply: 0002 applies onto
@@ -1036,7 +1045,7 @@ every patch here: v1.3.1 to v1.3.3 touches none of the patched files.
 | 0005 | Upstream #890 deleted `CompileConfig::gpu_max_reg`. Its hunk in `llvm_runtime_executor.cpp` still applied textually but would not have compiled, so the module-wide half is gone and `create_jit_module` is upstream's again. `loop_config(max_reg=)` was re-anchored after upstream removed `block_dim_adaptive`, and its docstring and the docs no longer mention `qd.init(gpu_max_reg=N)`. 15 files, +73/−4. |
 | 0006 | Only the `readonly_ndarray_ldg` binding moved, into the new documented style. |
 | 0007 | Only its `fast_math` doc sentence moved, onto upstream's reworded paragraph. |
-| 0010 (the Windows `/O2` fix) | Deleted: it was a backport of upstream PR #921, which v1.3.1 contains. |
+| the former 0010 (the Windows `/O2` fix) | Deleted: it was a backport of upstream PR #921, which v1.3.1 contains. Its number went to `0010-cuda-ptx-cache-by-content-hash.patch` on 2026-10-22; the patch digests in `quadrants_wheels/manifest.json` carry the file name, so a record from before then is not ambiguous. |
 
 The build follows: `quadrants_build.yaml`'s `QUADRANTS_REF` and the gate
 scripts' default ref are `v1.3.3`, and the release version is `1.3.3.post1`
@@ -1100,6 +1109,187 @@ prerelease. GitHub rewrote the `+` in their names to `.`, so save each one
 under its real name, the one in `quadrants_wheels/manifest.json`, before
 installing it.
 
+## 0010 — the PTX cache keyed by content hash, and cached IR parsed on demand
+
+**What it fixes.** Item #6 of the October 2026 speed-up report: a fresh process
+whose caches are all warm still spends ~4.1 s loading ~41 cached kernels on the
+RTX 5080, in two places.
+
+* **The cache restore**, `Program.load_fast_cache` (Algan reaches it through
+  `taichi_source_key._restore_from_cache_value`), ~1.59 s per fresh process.
+  Profiled on the CPU arch with a warm cache: `explainer` at `SMOKE_TEST`
+  restores 18 kernels in 0.29 s, all of it inside the C++ call -- the Python
+  around it is under a millisecond. Split by loading copies of one `.qdc` that
+  fail at a known stage (`sheet_resolve_shade_arena`: 2.73 MB of IR, 18 KB of
+  metadata; best of four fresh processes each):
+
+  | stage | time |
+  | --- | --- |
+  | read the file, check its SHA-256 | 10 ms |
+  | parse the JSON metadata, `parseAssemblyString` the IR | 151 ms |
+  | `verifyModule` and the task lookup (`check()`) | 5 ms |
+
+  So about 90 % is LLVM's text-IR parser, ~15 MB/s over all 18 kernels. Not
+  picosha2, not the JSON, not Algan's shims.
+* **Each kernel's first `launch_kernel`**, ~1.74 s: `register_llvm_kernel`
+  clones the module, and `compile_module_to_ptx` verifies it, prints it to text
+  and SHA-256s the text to key the PTX cache, before `cuModuleLoadDataEx`.
+
+None of that is needed when the PTX is cached. The PTX is a function of the
+module, and every `.qdc` already carries a SHA-256 of exactly the text the
+module is parsed from (`CompiledKernelDataFile::hash_`, checked at every load).
+
+**What it changes**, 17 files, +250/−28:
+
+| file | change |
+| --- | --- |
+| `program/compile_config.h`, `python/export_lang.cpp` | `offline_cache_ptx_by_content_hash`, default off, with a documented binding -- so `qd.init(offline_cache_ptx_by_content_hash=True)` and `QD_OFFLINE_CACHE_PTX_BY_CONTENT_HASH=1` both work. |
+| `codegen/compiled_kernel_data.{h,cpp}` | `CompiledKernelDataFile::hash()` and `compute_hash()`; the static `CompiledKernelData::load` takes `defer_src_parse` and hands it to `load_impl`. |
+| `codegen/llvm/compiled_kernel_data.{h,cpp}` | A deferred load keeps the IR text and the file's hash. `get_internal_data()` parses on first use (`materialize_module`, which runs `check()` and stops with a message to clear the cache if either fails); `args()` and `tasks()` never parse. `content_hash()` is the file's hash, or -- for a kernel compiled in this process -- the hash its `.qdc` will carry, computed once from the same serialization. `dump_impl` writes deferred text as it is; `clone()` parses first. |
+| `compilation_manager/kernel_compilation_manager.{h,cpp}` | Both load paths (`load_or_compile`, `load_fast_cache`) defer the parse when `defers_src_parse(config)`: CUDA, and the flag. |
+| `jit/jit_session.{h,cpp}`, `runtime/llvm/llvm_runtime_executor.{h,cpp}` | `add_kernel_module(content_key, module_from_file, make_module)`. The base calls `make_module()` and `add_module`, so the CPU and AMDGPU sessions are unchanged. |
+| `runtime/cuda/jit_cuda.{h,cpp}` | CUDA's override: look the PTX up under `make_content_cache_key`; on a hit, `cuModuleLoadDataEx` it (`add_module`'s old tail, now `load_ptx_module`); on a miss, build the module and compile it -- looking under the IR key first only for a kernel from the offline cache, which a Quadrants without this patch may have cached that way -- and store it under the content key. The debugging paths (`QD_DUMP_IR`, `QD_LOAD_PTX`, `print_kernel_*`) keep the old path. |
+| `runtime/cuda/ptx_cache.{h,cpp}` | `make_content_cache_key`: a SHA-256 of `kContentKeyRevision`, `sm_<cc>`, `fast_math`, `LLVM_VERSION_STRING`, the Quadrants version and commit, and the content hash; prefixed `C`, where IR-text keys are `T`. |
+| `runtime/cuda/kernel_launcher.cpp` | `register_llvm_kernel` goes through `create_kernel_jit_module`, and takes the arguments and tasks without cloning the module. |
+
+**Why the key is sound.** Besides the module, `compile_module_to_ptx` reads
+the target CPU (`sm_<cc>`), `TargetOptions` (decided by `fast_math` alone), and
+constants of its own code (FTZ, the O3 pipeline, three legacy passes). All are
+in the key: the code by LLVM version, Quadrants version and commit, and
+`kContentKeyRevision` for a lowering change none of those would record. The
+module is fixed by the content hash, a SHA-256 of the very text it is parsed
+from (plus the metadata, which only narrows it), and everything that changes
+codegen changes that text: `opt_level`, `fast_math`, 0004's
+`invariant_arg_loads`, 0005's `max_reg` (an nvvm annotation in the IR), 0006's
+`readonly_ndarray_ldg`. `CU_JIT_MAX_REGISTERS` is a load option rather than
+PTX, and kernels pass none. The IR-text key had less -- no compiler identity
+at all; the version check on the cache's index stood in for it.
+
+**Why it is off by default**, as 0006 is: installing the wheel should not
+change what an unmodified program does before a CUDA run has checked it.
+Algan opts in (`taichi_init_kwargs`; `ALGAN_PTX_CACHE_BY_CONTENT_HASH=0` is
+the off arm). The `offline_cache` prefix keeps the field out of Quadrants' own
+fastcache key (`config_hasher.EXCLUDE_PREFIXES`) and out of Algan's source key,
+and the C++ key lists its fields explicitly without it, so the two arms of an
+A/B share every artifact: the A/B times the load path, never a cache miss.
+
+**Review findings.**
+
+* **A deferred kernel that cannot be parsed is now an error, not a miss** --
+  severity *robustness*. Unpatched, a `.qdc` whose IR fails to parse or verify
+  is a miss and gets recompiled. Deferred, the parse happens at the first
+  launch, after the compile manager has handed the kernel over, so
+  `materialize_module` stops with "Clear the offline cache and run again". It
+  takes a `.qdc` whose SHA-256 checks out but whose text this LLVM cannot read:
+  one written by a different LLVM under the same Quadrants version, which the
+  index's version check would not catch. Algan's wheels all pin LLVM 22.1.0.
+* **The content hash must be what the `.qdc` later carries.** For a kernel
+  compiled in this process, `content_hash()` hashes `dump_impl`'s output at the
+  first launch and `KernelCompilationManager::dump` writes the same output
+  later; nothing touches the kernel's module between (the launcher clones it
+  before compiling). If they ever differed the next process would miss and
+  recompile, not misbehave.
+* **A fresh compile serializes its metadata once more** -- severity
+  *negligible*: that and the IR print it already paid for the IR key, next to
+  a compile.
+* **A cache warmed by an older wheel is re-keyed, once** (the IR-key fallback).
+  Its PTX then exists under both keys, and stays: the PTX cache has no cleaner
+  (`PtxCache::clean_offline_cache` is never called, upstream).
+* **Only CUDA defers.** The CPU arch JIT-compiles the module at every first
+  launch whatever the flag says, so deferring there would only move the parse.
+
+## 0011 — `Program.prepare_kernel`, and the PTX cache written with the rest
+
+**What it fixes.** Item #3 of the same report. Algan's precompile workers
+(`algan/rendering/kernel_precompile.py`) compile kernels in parallel but never
+launch them -- a launch with placeholder arguments is not safe -- so on CUDA
+they leave only the `.qdc`, and the render still pays LLVM→PTX and the driver
+JIT at each first launch: ~14 s of a cold `explainer` render on the RTX 5080.
+
+**What it changes**, 12 files, +87/−13:
+
+| file | change |
+| --- | --- |
+| `program/kernel_launcher.h`, `runtime/llvm/kernel_launcher.{h,cpp}` | `KernelLauncher::prepare_kernel`: a no-op by default, `register_llvm_kernel` on the LLVM backends. A later launch of the same data reuses the registration. |
+| `program/program.{h,cpp}`, `python/export_lang.cpp` | `Program::prepare_kernel`, bound as `prog.prepare_kernel(compiled_kernel_data)`. |
+| `program/program_impl.{h,cpp}`, `runtime/cuda/jit_cuda.h` | `NeedsFinalizing::dump_cache_data_to_disk()`, called by `ProgramImpl::dump_cache_data_to_disk`; CUDA's PTX-cache finalizer implements it. The PTX cache used to reach disk only when the program finalized, which a precompile worker (`os._exit`) and a killed process never do. |
+| `runtime/cuda/ptx_cache.{h,cpp}` | `dump()` keeps serving what it wrote (it dropped it, harmless only at finalize), keeps memory-only entries when there is no disk cache, and writes each file beside its name and renames it into place. `load_ptx(key, allow_unindexed)` also takes a file missing from the index this process read at start-up, if it ends in the NUL every PTX buffer ends in. |
+| `runtime/cuda/jit_cuda.cpp` | One line: the content-hash lookup passes `allow_unindexed=true`. |
+
+**Why the unindexed lookup, and only for content keys.** The PTX index is read
+once, when the CUDA JIT session is created at `qd.init` -- before Algan waits
+for its pool (`before_first_materialization`). Without the fallback a render
+would never see the PTX its own workers wrote. A content key names the
+compiler that produced the file, so a file under it is usable whoever wrote
+it; an IR-text key does not, so a file under one is still served only through
+the index, whose version check keeps an older Quadrants' PTX out.
+
+**Algan's side** (`kernel_precompile.compile_spec`). A CUDA worker prepares
+every spec it compiles, and every spec the index served too -- its `.qdc` may
+predate the PTX tier -- before its dump. `ALGAN_PRECOMPILE_PTX=0` turns that
+off, and a wheel without the entry point is detected (`prepare_for_launch`). A
+failure is reported in the worker's `done` event (`ptx_error`) and costs only
+the head start; the render prepares again and reports. The driver's own JIT
+runs inside the worker's `cuModuleLoadDataEx` and lands in `CUDA_CACHE_PATH`,
+which Algan puts under `ALGAN_CACHE_DIR` for every process.
+
+**Review findings.**
+
+* **The driver's cache may not persist from a worker that leaves with
+  `os._exit`** -- severity *benefit-reducing, not wrong*. Algan's workers skip
+  interpreter teardown on purpose, and whether the driver writes its entry at
+  JIT time or at teardown is not documented. `verify_ptx_cache.py`'s prepare
+  step exits the same way and checks `CUDA_CACHE_PATH` afterwards. If it is
+  empty the PTX still arrives (the explicit dump writes it) and the render pays
+  only the driver's JIT; the fix would be a context teardown before the exit.
+* **A worker holds its loaded modules in VRAM**: code only, a few MB a
+  megakernel, inside the 0.6 GB a CUDA worker is already budgeted.
+* **A process killed mid-dump leaves `<key>.ptx.<pid>.tmp`** behind. Nothing
+  reads it.
+
+## 0010-0011 — what is verified, and how to test a wheel
+
+**Checked here, with no compiler, no CUDA toolkit and no GPU:**
+
+* All eleven apply strictly in order onto pristine `v1.3.3` and give the tree
+  they were written in.
+* By reading: declarations match definitions, default arguments are on
+  declarations only, no added line passes `.clang-format`'s 120 columns, and
+  nothing obvious trips the `-Wall -Werror` the clang legs build with.
+* Algan's side, on the CPU arch: `tests/unit_tests/test_quadrants_ptx_cache.py`
+  and the existing tests of every file it touches.
+* `verify_ptx_cache.py binding` on the published 1.3.3.post1 wheel fails as it
+  should ("no offline_cache_ptx_by_content_hash field"), and its
+  compile-without-launch and launch helpers run on the CPU arch.
+
+**Not checked: nothing has been compiled or run.** In order:
+
+1. **The build.** The wheel workflow runs `verify_ptx_cache.py binding` on
+   every patched leg, and its CUDA sequence on the Linux legs, where it skips.
+2. **`verify_ptx_cache.py run`** on the RTX 5080: every claim above, one fresh
+   process per step.
+3. **Algan's A/B on CUDA**: a fresh-process first render with warm caches and
+   a cold first render with an empty `ALGAN_CACHE_DIR`, each with the switches
+   on and off, frames compared.
+
+**A test wheel** (diagnostic, nothing published):
+
+    .venv\Scripts\python.exe scripts\build_quadrants_wheels.py --platforms windows --python 3.13
+
+dispatches `quadrants_build.yaml` with the patches applied and `publish` off,
+waits (~20 min a leg), and downloads the wheel into `quadrants_wheels/`. It is
+the distribution `quadrants`, not `algan-quadrants`, so remove the published
+one first -- two distributions over one import package is what `AGENTS.md`
+warns against:
+
+    uv pip uninstall --python .venv\Scripts\python.exe algan-quadrants
+    .venv\Scripts\python.exe scripts\build_quadrants_wheels.py --run-id <id> --install
+
+`uv sync` puts the published wheel back. Publishing is `PYPI.md`'s two stages:
+`ALGAN_QUADRANTS_VERSION` and `DOWNSTREAM_VERSION` to `1.3.3.post2`, the
+complete matrix with `publish` on from `master`, then `pyproject.toml` and
+`uv.lock`.
+
 ## Upstreaming
 
 0003 is written to be upstreamed rather than carried: minimal, no Algan-specific
@@ -1124,5 +1314,9 @@ the most to carry: it deletes dead code and moves a version bound, and every
 Quadrants user on 3.14 needs it, not only Algan. Once upstream ships cp314
 wheels of its own, this fork's cp314 row stops being new ground.
 
-0010, the Windows `/O2` fix, was upstream PR #921 and went away with the v1.3.3
+The former 0010, the Windows `/O2` fix, was upstream PR #921 and went away with the v1.3.3
 rebase.
+
+0010 and 0011 are written to go upstream as they stand: no Algan naming, 0010
+off by default and 0011 a no-op until called, and both are about any CUDA
+user's start-up rather than Algan's kernels.

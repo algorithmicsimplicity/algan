@@ -846,3 +846,55 @@ Not verified — **nothing in these three has been run on a CUDA device**:
 5. **Anything about speed.** No timing, on any of the three, on any hardware. 0005 in particular is a
    lever nobody has pulled: PLAN §8's `ptxas -v` measurement on the four megakernels comes first, and
    §9 still lists the register-pressure effect on the 161-register megakernel as an open question.
+
+## 9. Patches 0010-0011 — the PTX cache by content hash, and `prepare_kernel`
+
+Base: Quadrants `v1.3.3` (`00423caa9`) with 0001-0009 applied, LLVM 22.1.0. **Not ports**, and,
+unlike everything above, never compiled: written on 2026-10-22 against the tree as read, on a
+machine with no C++ toolchain. 0010 is 17 files +250/−28, 0011 12 files +87/−13; `README.md` says
+why, this says where and what to watch.
+
+### What each hunk is anchored on
+
+| file | anchored on |
+| --- | --- |
+| `codegen/compiled_kernel_data.{h,cpp}` | `CompiledKernelDataFile::src_code()` (the two hash accessors follow it); the static `load`'s declaration and its `result->load_impl(file)` call. |
+| `codegen/llvm/compiled_kernel_data.{h,cpp}` | `get_internal_data()`, the three private members, `clone()`, `check()`'s first lines, `load_impl` after its JSON deserialize, and `dump_impl`'s module print. |
+| `compilation_manager/kernel_compilation_manager.{h,cpp}` | the two `try_load_cached_kernel` calls, its signature, `load_ckd`'s, and `get_cache_mode` (the new static follows it). |
+| `jit/jit_session.{h,cpp}` | the pure-virtual `add_module`; the `JITSession` constructor. |
+| `runtime/llvm/llvm_runtime_executor.{h,cpp}` | `create_jit_module`, declaration and one-line body. |
+| `runtime/cuda/jit_cuda.cpp` | `add_module` is split where `QD_LOAD_PTX`'s block ends: what follows (context, lock, options, `module_load_data_ex`) becomes `load_ptx_module`. `compile_module_to_ptx`'s IR print / key / lookup block, and its final `store_ptx`. |
+| `runtime/cuda/ptx_cache.{h,cpp}` | `make_cache_key` (the content key follows it); in 0011, `dump()`'s add-new-data and write loops, `try_load_cached`'s index miss, `load_ptx`. |
+| `runtime/cuda/kernel_launcher.cpp` | `register_llvm_kernel`'s `clone()` / `create_jit_module` / populate-ctx lines. |
+| `program/kernel_launcher.h`, `runtime/llvm/kernel_launcher.{h,cpp}`, `program/program.{h,cpp}` | `launch_kernel` in each; `prepare_kernel` sits after it. |
+| `program/program_impl.{h,cpp}`, `runtime/cuda/jit_cuda.h` | `NeedsFinalizing`, `ProgramImpl::dump_cache_data_to_disk`'s `mgr.dump()`, the `Finalizer`'s `finalize()`. |
+| `program/compile_config.h`, `python/export_lang.cpp` | `offline_cache_cleaning_factor`; the `offline_cache_file_path` `def_rw`; the `launch_kernel` `.def`. |
+
+### What to check first on a real build
+
+1. **`-Wall -Werror` on the clang legs.** Read for and believed clean: no shadowed virtual (every
+   override repeats its base signature), no unused variable, `QD_NOT_IMPLEMENTED; return nullptr;` only
+   in the `#ifndef QD_WITH_LLVM` arm of `JITSession::add_kernel_module`.
+2. **`std::function<std::unique_ptr<llvm::Module>()>` in `jit_session.h`** with `llvm::Module` only
+   forward-declared (`llvm_fwd.h`). Naming the type is fine; the one body that destroys a
+   `unique_ptr<Module>` is in `jit_session.cpp`, which now includes `llvm/IR/Module.h`. A
+   translation unit that *calls* `add_kernel_module` with an incomplete `Module` would fail; the
+   two callers (`llvm_runtime_executor.cpp`, `kernel_launcher.cpp` via the executor) see it complete.
+3. **`mutable` on `LLVM::CompiledKernelData::data_` and `llvm_ctx_`.** `get_internal_data() const`
+   now parses on demand. Every reader is single-threaded under the GIL; nothing else changed about
+   who may call it.
+4. **The deferred `check()`.** `KernelCompilationManager::load_ckd` calls `check()` on every load; a
+   deferred kernel passes it without a module, and `materialize_module` runs it once the module
+   exists. A kernel that fails there stops the run instead of being recompiled (`README.md`, 0010's
+   first finding).
+5. **The debug log lines `verify_ptx_cache.py` counts** -- "served from the PTX cache", "stored in
+   the PTX cache", "Parsing the deferred LLVM IR", "outside the index read at start-up" -- are
+   `QD_DEBUG`, and the IR-key hit it also counts is the pre-existing `QD_TRACE`. Rewording one
+   breaks the script, not the patch.
+
+### What has been verified here, and what has not
+
+Verified: the strict apply of all eleven onto pristine `v1.3.3` (byte-identical to the authoring
+tree); Algan's side on the CPU arch; `verify_ptx_cache.py`'s CPU helpers. Not verified: the compile,
+and everything that needs a CUDA device -- `README.md`, "0010-0011 — what is verified", lists the
+order.

@@ -492,6 +492,18 @@ jobs:
           python "$V" --compare "$GITHUB_WORKSPACE/cuda_on.json" "$GITHUB_WORKSPACE/cuda_off.json" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # 0010-0011: the binding half runs anywhere -- the config field, its
+      # default, and a kernel prepared with Program.prepare_kernel launching
+      # right on the CPU arch. The CUDA sequence writes {"skipped": true} on a
+      # GPU-less runner, like the 0005-0007 arms above.
+      - name: Check the 0010-0011 PTX cache (the CUDA sequence skips without a CUDA device)
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          V="$GITHUB_WORKSPACE/algan/quadrants_patches/verify_ptx_cache.py"
+          python "$V" binding "$GITHUB_WORKSPACE/ptx_binding.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          python "$V" run "$GITHUB_WORKSPACE/ptx_run.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
       # 3.14 removed `ast.Str`, which the unpatched frontend reads at four sites:
       # on cp314 a kernel reaching one does not compile at all. One kernel per
       # site; it passes on 3.10-3.13 with or without 0009, so it runs on every
@@ -832,6 +844,18 @@ jobs:
           python "$V" --compare "$GITHUB_WORKSPACE/cuda_on.json" "$GITHUB_WORKSPACE/cuda_off.json" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # 0010-0011: the binding half runs anywhere -- the config field, its
+      # default, and a kernel prepared with Program.prepare_kernel launching
+      # right on the CPU arch. The CUDA sequence writes {"skipped": true} on a
+      # GPU-less runner, like the 0005-0007 arms above.
+      - name: Check the 0010-0011 PTX cache (the CUDA sequence skips without a CUDA device)
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          V="$GITHUB_WORKSPACE/algan/quadrants_patches/verify_ptx_cache.py"
+          python "$V" binding "$GITHUB_WORKSPACE/ptx_binding.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          python "$V" run "$GITHUB_WORKSPACE/ptx_run.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
       # 3.14 removed `ast.Str`, which the unpatched frontend reads at four sites:
       # on cp314 a kernel reaching one does not compile at all. One kernel per
       # site; it passes on 3.10-3.13 with or without 0009, so it runs on every
@@ -1090,6 +1114,15 @@ jobs:
           set -euxo pipefail
           python algan/quadrants_patches/verify_python_314.py | tee verify_python_314.log
           tail -n 1 verify_python_314.log >> "$GITHUB_STEP_SUMMARY"
+
+      # The 0010-0011 binding gate the Linux legs run; see there. This leg's
+      # wheel is the one the RTX 5080 box installs.
+      - name: Check the 0010-0011 PTX cache binding
+        if: ${{ inputs.apply_patches }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python algan/quadrants_patches/verify_ptx_cache.py binding ptx_binding.json | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Report the wheel
         if: always()
