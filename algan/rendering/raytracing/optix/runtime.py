@@ -13,8 +13,11 @@ source/option/compiler combination and the PTX is kept under
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import ctypes
 import hashlib
+import os
 import sys
 import threading
 from ctypes import byref, c_size_t, c_uint, c_uint64, c_void_p, sizeof
@@ -39,11 +42,14 @@ SHADOW_HITS = 4
 #: Payload words the deepest trace uses (the gather's 24).
 _PAYLOAD_WORDS = 24
 
-#: Ray types; a hit group record is ``type + RAY_TYPES * class``.
-RAY_TYPE_SHADOW = 0
-RAY_TYPE_GATHER = 1
-RAY_TYPE_GATHER_BIN = 2
+#: Ray types (shadow, gather, gather's same-bin pass); a hit group record is
+#: ``type + RAY_TYPES * class``.
 RAY_TYPES = 3
+
+#: Create the device context with OptiX's validation fully on and log at
+#: level 4 (everything), into ``OptixRuntime.logs``. Slow; for a diagnostic
+#: run of the tests, set before the runtime is first created.
+VALIDATION = False
 
 #: GAS SBT classes: an opaque primitive (any-hit disabled) and a translucent
 #: one (any-hit called once per primitive).
@@ -148,8 +154,13 @@ def _program_options(arch: str, kbuf: int, edge_epsilon: float) -> list[str]:
     ]
 
 
-def _compile_programs(arch: str, kbuf: int, edge_epsilon: float) -> bytes:
-    """The programs' PTX, from the disk cache when this exact build exists."""
+def _compile_programs(arch: str, kbuf: int, edge_epsilon: float, use_cache=True):
+    """The programs' PTX and its cache file (``None`` when uncached).
+
+    Read from ``<cache dir>/optix`` when this exact source, option and
+    compiler combination was compiled before (and ``use_cache``); otherwise
+    compiled and written there.
+    """
     source = (_HERE / _PROGRAMS).read_text(encoding="utf-8")
     header = (_HERE / _DEVICE_HEADER).read_text(encoding="utf-8")
     options = _program_options(arch, kbuf, edge_epsilon)
@@ -161,20 +172,22 @@ def _compile_programs(arch: str, kbuf: int, edge_epsilon: float) -> bytes:
         from algan.settings._startup import _CACHE_DIRECTORY
 
         cache = Path(_CACHE_DIRECTORY) / "optix" / f"programs-{key}.ptx"
-        if cache.exists():
-            return cache.read_bytes()
+        if use_cache and cache.exists():
+            return cache.read_bytes(), cache
     except OSError:
         cache = None
     ptx = nvrtc.compile_ptx(source, _PROGRAMS, options, {_DEVICE_HEADER: header})
     if cache is not None:
         try:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            tmp = cache.with_suffix(f".{threading.get_ident()}.tmp")
+            # Unique per process and thread, then an atomic rename: two
+            # processes compiling at once never read a half-written file.
+            tmp = cache.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
             tmp.write_bytes(ptx)
             tmp.replace(cache)
         except OSError:
-            pass
-    return ptx
+            cache = None
+    return ptx, cache
 
 
 class OptixRuntime:
@@ -182,7 +195,16 @@ class OptixRuntime:
 
     def __init__(self, device, kbuf: int, edge_epsilon: float):
         self.device = torch.device(device)
+        self.context = self.module = self.pipeline = None
+        self._groups = None
         torch.cuda.init()
+        try:
+            self._create(kbuf, edge_epsilon)
+        except BaseException:
+            self.close()
+            raise
+
+    def _create(self, kbuf, edge_epsilon):
         with torch.cuda.device(self.device):
             # Make the primary context current on this thread.
             self._anchor = torch.zeros(1, device=self.device)
@@ -199,16 +221,21 @@ class OptixRuntime:
             options = abi.OptixDeviceContextOptions(
                 logCallbackFunction=self._log_callback,
                 logCallbackData=None,
-                logCallbackLevel=2,
-                validationMode=abi.OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_OFF,
+                logCallbackLevel=4 if VALIDATION else 2,
+                validationMode=(
+                    abi.OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_ALL
+                    if VALIDATION
+                    else abi.OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_OFF
+                ),
             )
-            self.context = c_void_p()
+            context = c_void_p()
             self.api(
                 "optixDeviceContextCreate",
                 c_void_p(_current_cu_context()),
                 byref(options),
-                byref(self.context),
+                byref(context),
             )
+            self.context = context
             self.rtcore_version = self._property(
                 abi.OPTIX_DEVICE_PROPERTY_RTCORE_VERSION
             )
@@ -216,12 +243,24 @@ class OptixRuntime:
                 abi.OPTIX_DEVICE_PROPERTY_LIMIT_MAX_PRIMITIVES_PER_GAS
             )
             self.kbuf = int(kbuf)
-            self._build_pipeline(
-                _compile_programs(_ptx_architecture(self.device), kbuf, edge_epsilon)
-            )
-            self._params_device = torch.zeros(
-                sizeof(_Params), dtype=torch.uint8, device=self.device
-            )
+            arch = _ptx_architecture(self.device)
+            ptx, cache = _compile_programs(arch, kbuf, edge_epsilon)
+            try:
+                self._create_module(ptx)
+            except abi.OptixError:
+                if cache is None:
+                    raise
+                # A cached PTX OptiX refuses (truncated, or from another
+                # driver's era) is deleted, and the programs compile afresh.
+                cache.unlink(missing_ok=True)
+                ptx, cache = _compile_programs(arch, kbuf, edge_epsilon, False)
+                try:
+                    self._create_module(ptx)
+                except abi.OptixError:
+                    if cache is not None:
+                        cache.unlink(missing_ok=True)
+                    raise
+            self._build_pipeline()
 
     def _property(self, which) -> int:
         value = c_uint()
@@ -238,7 +277,7 @@ class OptixRuntime:
         return int(value.value)
 
     # ------------------------------------------------------------ pipeline
-    def _build_pipeline(self, ptx: bytes):
+    def _create_module(self, ptx: bytes):
         self._compile_options = abi.OptixPipelineCompileOptions(
             usesMotionBlur=0,
             traversableGraphFlags=abi.OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS,
@@ -258,7 +297,7 @@ class OptixRuntime:
         )
         log = ctypes.create_string_buffer(16384)
         log_size = c_size_t(sizeof(log))
-        self.module = c_void_p()
+        module = c_void_p()
         result = self.api.fn["optixModuleCreate"](
             self.context,
             byref(module_options),
@@ -267,10 +306,14 @@ class OptixRuntime:
             len(ptx),
             log,
             byref(log_size),
-            byref(self.module),
+            byref(module),
         )
         self.api.check(result, "optixModuleCreate", log.value)
+        self.module = module
+
+    def _build_pipeline(self):
         module = self.module.value
+        log = ctypes.create_string_buffer(16384)
 
         def single(kind, field, entry):
             desc = abi.OptixProgramGroupDesc(kind=kind, flags=0)
@@ -322,7 +365,7 @@ class OptixRuntime:
         self.api.check(result, "optixProgramGroupCreate", log.value)
         self._groups = groups
         link = abi.OptixPipelineLinkOptions(maxTraceDepth=1, maxTraversableGraphDepth=1)
-        self.pipeline = c_void_p()
+        pipeline = c_void_p()
         log_size = c_size_t(sizeof(log))
         result = self.api.fn["optixPipelineCreate"](
             self.context,
@@ -332,9 +375,10 @@ class OptixRuntime:
             len(descs),
             log,
             byref(log_size),
-            byref(self.pipeline),
+            byref(pipeline),
         )
         self.api.check(result, "optixPipelineCreate", log.value)
+        self.pipeline = pipeline
 
         size = abi.OPTIX_SBT_RECORD_HEADER_SIZE
 
@@ -376,30 +420,36 @@ class OptixRuntime:
 
     # ------------------------------------------------------------ launch
     def launch(self, program: str, params: _Params, width: int):
-        """Launch ``program`` over ``width`` threads on the current stream."""
+        """Launch ``program`` over ``width`` threads on PyTorch's current stream.
+
+        The parameters go through a pinned staging block and a device block of
+        their own, both from PyTorch's caching allocators and both used on the
+        launch's stream: the copy and the launch run in stream order, and
+        neither block is handed out again before that stream is done with it,
+        so launches from different threads or streams never share them.
+        """
         if width <= 0:
             return
         if width >= 1 << 30:
             raise abi.OptixError(f"an OptiX launch is limited to 2^30 threads: {width}")
-        stream = torch.cuda.current_stream(self.device)
-        raw = bytes(params)
-        # Pinned staging, copied in stream order: no host wait. The caching
-        # host allocator does not hand the block out again until the copy has
-        # run, and the launch reads the device copy in stream order too.
-        host = torch.empty(len(raw), dtype=torch.uint8, pin_memory=True)
-        ctypes.memmove(host.data_ptr(), raw, len(raw))
-        self._params_device.copy_(host, non_blocking=True)
-        self.api(
-            "optixLaunch",
-            self.pipeline,
-            c_void_p(stream.cuda_stream),
-            c_uint64(self._params_device.data_ptr()),
-            len(raw),
-            byref(self._sbt[program]),
-            int(width),
-            1,
-            1,
-        )
+        with torch.cuda.device(self.device):
+            stream = torch.cuda.current_stream(self.device)
+            raw = bytes(params)
+            host = torch.empty(len(raw), dtype=torch.uint8, pin_memory=True)
+            ctypes.memmove(host.data_ptr(), raw, len(raw))
+            device_params = torch.empty(len(raw), dtype=torch.uint8, device=self.device)
+            device_params.copy_(host, non_blocking=True)
+            self.api(
+                "optixLaunch",
+                self.pipeline,
+                c_void_p(stream.cuda_stream),
+                c_uint64(device_params.data_ptr()),
+                len(raw),
+                byref(self._sbt[program]),
+                int(width),
+                1,
+                1,
+            )
 
     # ------------------------------------------------------------ GAS
     def accel_sizes(self, build_input, options) -> abi.OptixAccelBufferSizes:
@@ -450,10 +500,61 @@ class OptixRuntime:
         )
         return int(compacted.value)
 
+    # ------------------------------------------------------------ teardown
+    def close(self):
+        """Destroy the pipeline, program groups, module and context, in that
+        order. Safe to call twice and on a half-built runtime; the ctypes log
+        callback stays referenced by ``self`` until the context is gone.
+        """
+        api = getattr(self, "api", None)
+        if api is None:
+            return
+        # Tear down whatever state CUDA is in.
+        with contextlib.suppress(Exception):
+            torch.cuda.synchronize(self.device)
+        steps = []
+        if self.pipeline is not None:
+            steps.append(("optixPipelineDestroy", self.pipeline))
+        for group in list(self._groups or []):
+            if group:
+                steps.append(("optixProgramGroupDestroy", c_void_p(group)))
+        if self.module is not None:
+            steps.append(("optixModuleDestroy", self.module))
+        if self.context is not None:
+            steps.append(("optixDeviceContextDestroy", self.context))
+        self.pipeline = self.module = self.context = None
+        self._groups = None
+        for name, handle in steps:
+            with contextlib.suppress(abi.OptixError):
+                api(name, handle)
+
 
 _RUNTIME = None
 _RUNTIME_ERROR = None
 _LOCK = threading.Lock()
+
+
+def _shutdown():
+    """Process exit: tear the runtime down.
+
+    Run while the interpreter -- and the ctypes log callback the context calls
+    into -- is still alive.
+    """
+    global _RUNTIME
+    runtime, _RUNTIME = _RUNTIME, None
+    if runtime is not None:
+        runtime.close()
+
+
+def _transient(exc) -> bool:
+    """A creation failure the next batch may not meet again."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    if isinstance(exc, abi.OptixError):
+        return exc.transient
+    from algan.utils.memory_utils import is_cuda_oom
+
+    return isinstance(exc, RuntimeError) and is_cuda_oom(exc)
 
 
 def _device_key(device):
@@ -464,7 +565,13 @@ def _device_key(device):
 
 
 def get_runtime(device, kbuf, edge_epsilon):
-    """The process's runtime, or ``None`` with the reason logged once."""
+    """The process's runtime, or ``None``.
+
+    A failure that will recur -- no OptiX runtime, the ABI refused, no RT
+    cores, programs that do not compile -- is logged once and remembered for
+    the process, the warm daemon included. One that may not -- device or host
+    memory, a CUDA error -- is logged and tried again at the next call.
+    """
     global _RUNTIME, _RUNTIME_ERROR
     device = _device_key(device)
     with _LOCK:
@@ -477,11 +584,19 @@ def get_runtime(device, kbuf, edge_epsilon):
         try:
             runtime = OptixRuntime(device, kbuf, edge_epsilon)
             if runtime.rtcore_version <= 0:
+                runtime.close()
                 raise abi.OptixError(
                     "this GPU has no RT cores; OptiX would trace on the SMs, which "
                     "is no faster than Algan's own traversal"
                 )
         except Exception as exc:  # noqa: BLE001 - any failure means "fall back"
+            if _transient(exc):
+                logger.log(
+                    PERF,
+                    f"OptiX could not start this time ({exc}); this batch keeps "
+                    "the software traversal and the next one tries again.",
+                )
+                return None
             _RUNTIME_ERROR = exc
             logger.warning(
                 "SETTINGS.raytracing.experimental.optix is on, but OptiX is not "
@@ -494,10 +609,6 @@ def get_runtime(device, kbuf, edge_epsilon):
             f"OptiX side path ready: RT core version {runtime.rtcore_version}, "
             f"runtime {runtime.api.path}",
         )
+        atexit.register(_shutdown)
         _RUNTIME = runtime
         return runtime
-
-
-def runtime_error():
-    """Why :func:`get_runtime` failed, or ``None``."""
-    return _RUNTIME_ERROR
