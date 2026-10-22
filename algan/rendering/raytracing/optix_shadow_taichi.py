@@ -8,7 +8,9 @@ the translucent casters it crossed -- up to ``SHADOW_HITS`` of them, first in
 pass-through, Beer-Lambert pairing, early exits and surface cap, through the
 march's own material functions, so materials stay single-source. A ray whose
 list ran past ``SHADOW_HITS`` and still had light left when the list ended is
-marched again in software, from scratch, by the march itself.
+marched again in software, from scratch, by the march itself. In a batch
+with Bezier circuits the circuits are marched here too, in software, and
+their transmittance multiplied onto the triangles'.
 """
 from algan.rendering.raytracing.arena_args_taichi import ArenaView, arena_packed
 from algan.rendering.raytracing.raster_taichi import _RASTER_SHADOW_TRACE_ARENA
@@ -191,39 +193,78 @@ def optix_shadow_resolve_arena(
 
     for r in range(num_rays):
         s = status[r]
-        if s >= 2:
+        # Without circuits a status-1 ray is final: the trace wrote its
+        # occlusion. Only listed rays (and, with circuits, every traced one)
+        # touch anything here.
+        work = s >= 2
+        if ti.static(has_bez != 0):
+            work = s != 0
+        if work:
             e = event_first + r % num_events
             f = event_frame[e]
             max_t = queue_data[r, 6]
-            settled, occ = _march_list(
-                r, f, max_t, s - 2, hits, tri_colors, tri_uvs, tri_tex_meta,
-                textures, tri_extra, circuit_meta, num_colored_triangles,
-                layer_offset_triangles)
-            if settled == 0:
-                src_prim = -1
-                src_sid = -1
-                if ti.static(shadow_identity):
-                    src_prim = event_src_prim[e]
-                    if src_prim >= 0:
-                        src_sid = tri_obj[f % tri_obj.shape[0], src_prim]
-                origin = ti.math.vec3(queue_data[r, 0], queue_data[r, 1],
-                                      queue_data[r, 2])
-                direction = ti.math.vec3(queue_data[r, 3], queue_data[r, 4],
-                                         queue_data[r, 5])
-                occ = _shadow_occluded(
-                    refit, shadow_anyhit, origin, direction, f,
-                    ti.cast(f, ti.f32), max_t,
-                    pixel_world_scale[f % pixel_world_scale.shape[0]],
-                    0.0, _pixel_size_base(cam_proj, f),
-                    layer_offset_triangles, has_tri, has_bez,
-                    t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                    t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
-                    textures, tri_extra, num_colored_triangles, b_nodes,
-                    b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                    circuit_meta, circuit_colors, circuit_border_colors,
-                    edges_2d, edge_accel, src_sid, src_prim, eps_self,
-                    eps_near, tri_obj, shadow_identity)
-                status[r] = -1  # diagnostic: marched in software
+            src_prim = -1
+            src_sid = -1
+            if ti.static(shadow_identity):
+                src_prim = event_src_prim[e]
+                if src_prim >= 0:
+                    src_sid = tri_obj[f % tri_obj.shape[0], src_prim]
+            origin = ti.math.vec3(queue_data[r, 0], queue_data[r, 1],
+                                  queue_data[r, 2])
+            direction = ti.math.vec3(queue_data[r, 3], queue_data[r, 4],
+                                     queue_data[r, 5])
+            # The trace answered status-1 rays itself (all-blocked or clear).
+            occ = ti.math.vec3(occ_out[r, 0], occ_out[r, 1], occ_out[r, 2])
+            marched = 0
+            if s >= 2:
+                settled, listed = _march_list(
+                    r, f, max_t, s - 2, hits, tri_colors, tri_uvs, tri_tex_meta,
+                    textures, tri_extra, circuit_meta, num_colored_triangles,
+                    layer_offset_triangles)
+                occ = listed
+                if settled == 0:
+                    # The whole march, both geometry types, in software.
+                    occ = _shadow_occluded(
+                        refit, shadow_anyhit, origin, direction, f,
+                        ti.cast(f, ti.f32), max_t,
+                        pixel_world_scale[f % pixel_world_scale.shape[0]],
+                        0.0, _pixel_size_base(cam_proj, f),
+                        layer_offset_triangles, has_tri, has_bez,
+                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                        t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
+                        textures, tri_extra, num_colored_triangles, b_nodes,
+                        b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                        circuit_meta, circuit_colors, circuit_border_colors,
+                        edges_2d, edge_accel, src_sid, src_prim, eps_self,
+                        eps_near, tri_obj, shadow_identity)
+                    marched = 1
+                    status[r] = -1  # diagnostic: marched in software
+            if ti.static(has_bez != 0):
+                # Circuits stay on the software walk. Their transmittance
+                # multiplies onto the triangles': the march's product does not
+                # depend on the order of its factors (the seam merge, the
+                # Beer-Lambert pairing and the absorption are triangle-only),
+                # and its min_alpha exit is the product falling under the
+                # floor, which the product here applies once, at the end.
+                if (marched == 0) and (_vis_max_component(occ) < 1.0):
+                    occ_c = _shadow_occluded(
+                        refit, shadow_anyhit, origin, direction, f,
+                        ti.cast(f, ti.f32), max_t,
+                        pixel_world_scale[f % pixel_world_scale.shape[0]],
+                        0.0, _pixel_size_base(cam_proj, f),
+                        layer_offset_triangles, 0, has_bez,
+                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                        t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
+                        textures, tri_extra, num_colored_triangles, b_nodes,
+                        b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                        circuit_meta, circuit_colors, circuit_border_colors,
+                        edges_2d, edge_accel, src_sid, src_prim, eps_self,
+                        eps_near, tri_obj, shadow_identity)
+                    one3 = ti.math.vec3(1.0)
+                    transmitted = (one3 - occ) * (one3 - occ_c)
+                    if _vis_max_component(transmitted) <= min_alpha:
+                        transmitted = ti.math.vec3(0.0)
+                    occ = one3 - transmitted
             for k in ti.static(range(3)):
                 occ_out[r, k] = occ[k]
 

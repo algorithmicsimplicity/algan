@@ -7,8 +7,10 @@ shares) and reduce them in reference order (``shadow_queue_reduce``); only the
 traversal in between changes: an OptiX launch per adaptive-tap phase, then
 ``optix_shadow_resolve`` for the rays that crossed translucent casters.
 
-A launch keeps the software queue (or the serial fan) when the batch has
-Bezier circuits, no triangles, or a GAS cannot be built.
+Triangles only: a batch's Bezier circuits are marched in software inside
+the resolve and their transmittance multiplied on. A launch keeps the software
+queue (or the serial fan) when the batch has no triangles or a GAS cannot be
+built.
 """
 
 from __future__ import annotations
@@ -42,6 +44,17 @@ VERIFY_STATS = {
 _EXTRA_BYTES_PER_RAY = 4 + 16 * SHADOW_HITS
 
 _GAS_KEY = "_optix_shadow_gas"
+
+#: Arena bytes one queue chunk may take (the software queue's is 64 MiB). Each
+#: chunk costs six launches whatever its size, and at 112 bytes a ray the
+#: software queue's chunks are small enough for the host to dominate.
+SCRATCH_LIMIT = 512 * 1024 * 1024
+
+#: Trace the adaptive hard-light taps in shadow_queue_trace's two phases
+#: (diagonal pair, then the off-diagonal pair where the first disagreed)
+#: instead of all four in one launch. Same answers; the single launch traces
+#: more rays and launches half as often, which is what the RT cores want.
+TWO_PHASE = False
 
 
 def batch_runtime(device):
@@ -107,7 +120,6 @@ def make_optix_shadow_tracer(memory, merged, software):
         if (
             events == 0
             or lights == 0
-            or int(p["has_bez"])
             or not int(p["has_tri"])
             or tri_pos.device.type != "cuda"
         ):
@@ -122,14 +134,22 @@ def make_optix_shadow_tracer(memory, merged, software):
             p["light_col"], lights, int(p["sec_aa"]), int(p["secondary"])
         )
         capacity = _event_capacity(
-            memory, events, slots, False, extra_bytes_per_ray=_EXTRA_BYTES_PER_RAY
+            memory,
+            events,
+            slots,
+            False,
+            extra_bytes_per_ray=_EXTRA_BYTES_PER_RAY,
+            limit=SCRATCH_LIMIT,
         )
         if capacity < 1:
             return software(*args)
         identity = int(p["shadow_identity"]) != 0
         tri_obj = p["tri_obj"]
         arena_tail = [p[name] for name, _, _ in kernels._SHADOW_QUEUE_TRACE_ARENA]
-        phases = (0, 1) if int(p["sec_aa"]) > 1 and int(p["adaptive_taps"]) else (0,)
+        adaptive = int(p["sec_aa"]) > 1 and int(p["adaptive_taps"])
+        # One launch over every tap (phase 2) unless asked for the reference
+        # two-phase schedule; see the raygen.
+        phases = ((0, 1) if adaptive else (0,)) if TWO_PHASE else (2,)
         with memory.temp():
             ray_data = memory.get_tensor((capacity * slots, 7), torch.float32)
             valid = memory.get_tensor((capacity * slots,), torch.int32)
@@ -223,7 +243,7 @@ def make_optix_shadow_tracer(memory, merged, software):
                     )
                     if COUNTING:
                         _count(status[:rays])
-                    if VERIFY and phase == 0:
+                    if VERIFY and phase in (0, 2):
                         _verify(
                             p,
                             count,
@@ -290,6 +310,9 @@ def _verify(
         p["projected"],
     )
     traced = status[:rays] != 0
+    # Phase 0 of the software queue skips the hard fans' off-diagonal taps.
+    sk = layout[:, 0].repeat_interleave(count)[:rays]
+    traced &= ~((valid[:rays] == 2) & (sk >= 2))
     a = occ[:rays][traced]
     b = occ_sw[:rays][traced]
     diff = (a - b).abs().amax(-1)

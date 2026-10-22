@@ -7,9 +7,11 @@ moves two of the deterministic renderer's traversals onto RT cores:
 * the reflection/refraction gather (``gather.py``), filling the same k-buffer
   ``wavefront_traverse_events`` fills.
 
-Both trace triangles only. A batch with Bezier circuits, a device without RT
+Both trace triangles only; Bezier circuits stay on Algan's software walk (a
+shadow ray's circuit transmittance is marched in software and multiplied on;
+a gather over a batch with circuits stays in software). A device without RT
 cores, a driver without OptiX 9.1 (ABI 118), or anything else this package
-cannot take keeps Algan's software traversal, so the switch never fails a
+cannot take keeps the software traversal, so the switch never fails a
 render; the reason is logged once.
 
 Licensing. OptiX's SDK headers are NVIDIA-proprietary and Algan is MIT, so

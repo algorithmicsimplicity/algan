@@ -324,3 +324,128 @@ def test_shadow_tracer_falls_back_when_optix_is_unavailable(monkeypatch):
     monkeypatch.setattr(rt_settings, "optix", True)
     assert make_shadow_tracer(arena) is kernels.raster_shadow_trace
 
+
+def _mixed_triangle_scene():
+    """Opaque, half-transparent and glass solids and a mirror on a lit wall."""
+    from algan import (
+        BLUE,
+        OUT,
+        RED,
+        RIGHT,
+        UP,
+        WHITE,
+        Cube,
+        MeshLambertMaterial,
+        MeshPhysicalMaterial,
+        MeshStandardMaterial,
+        PointLight,
+        Prism,
+        Sphere,
+    )
+
+    PointLight(
+        location=RIGHT * 1.0 + OUT * 6.0 + UP * 1.5, color=WHITE, intensity=20.0
+    ).spawn(animate=False)
+    Prism(width=14.0, height=9.0, depth=0.1).set_material(
+        MeshLambertMaterial(color=WHITE)
+    ).spawn(animate=False)
+    Cube(size=1.6).set_material(MeshLambertMaterial(color=RED)).move(
+        RIGHT * -2.5 + OUT * 1.0
+    ).spawn(animate=False)
+    Cube(size=1.8, opacity=0.5).set_material(MeshLambertMaterial(color=BLUE)).move(
+        RIGHT * 0.5 + OUT * 1.4
+    ).spawn(animate=False)
+    Sphere(radius=1.0).set_material(
+        MeshPhysicalMaterial(color=WHITE, transmission=1.0, roughness=0.0, ior=1.5)
+    ).move(RIGHT * 3.0 + OUT * 1.5 + UP * 1.0).spawn(animate=False)
+    Sphere(radius=0.7).set_material(
+        MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.0)
+    ).move(RIGHT * -1.0 + OUT * 2.2 + UP * -1.5).spawn(animate=False)
+
+
+def _render_mixed(path, optix, max_bounces=0, circuits=False):
+    import numpy as np
+    from PIL import Image
+
+    from algan import BLACK, SETTINGS, SMOKE_TEST, Off, Scene
+    from algan.scene_manager import SceneManager
+
+    video = SMOKE_TEST.set(resolution=(128, 96))
+    SceneManager.reset()
+    snapshot = SETTINGS.snapshot()
+    try:
+        SETTINGS.raytracing.set(shadows=True, max_bounces=max_bounces)
+        SETTINGS.raytracing.experimental.set(optix=optix)
+        with Scene(video_settings=video) as scene:
+            scene.set_background(BLACK)
+            with Off():
+                _mixed_triangle_scene()
+                if circuits:
+                    from algan import OUT, RED, RIGHT, UP, Circle, Square
+
+                    Square(size=1.5, color=RED, opacity=0.6).move(
+                        RIGHT * -0.5 + OUT * 3.0 + UP * -1.0
+                    ).spawn(animate=False)
+                    Circle(radius=0.5, color=RED).move(
+                        RIGHT * 1.5 + OUT * 2.5 + UP * -1.8
+                    ).spawn(animate=False)
+            result = scene.save_frame(str(path), video_settings=video, overwrite=True)
+        with Image.open(result.output_path) as image:
+            return np.asarray(image.convert("RGB")).astype(np.int16)
+    finally:
+        SETTINGS.restore(snapshot)
+        SceneManager.reset()
+
+
+@pytest.mark.parametrize("circuits", [False, True])
+def test_shadow_rays_of_a_render_agree_with_the_software_walk(
+    tmp_path, monkeypatch, circuits
+):
+    """Every phase-0 queue ray of a real render, traced both ways.
+
+    With circuits in the batch the triangles still go to the RT cores and the
+    circuits' transmittance is marched in software and multiplied on.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing.optix import shadows
+
+    _runtime()
+    monkeypatch.setattr(shadows, "VERIFY", True)
+    monkeypatch.setattr(shadows, "COUNTING", True)
+    for stats in (shadows.VERIFY_STATS, shadows.STATS):
+        for key in stats:
+            stats[key] = 0 if key != "max_abs" else 0.0
+    hardware = _render_mixed(tmp_path / "on.png", True, circuits=circuits)
+    software = _render_mixed(tmp_path / "off.png", False, circuits=circuits)
+    verify = shadows.VERIFY_STATS
+    assert verify["rays"] > 5000
+    assert shadows.STATS["listed"] > 100  # the translucent casters were listed
+    assert shadows.STATS["answered"] > 1000
+    # Last-bit differences of the triangle test only: a ray may change sides
+    # of an edge, nothing more.
+    assert verify["within_1e-6"] >= 0.995 * verify["rays"]
+    assert verify["lit_vs_blocked"] <= 0.003 * verify["rays"]
+    delta = np.abs(hardware - software).max(-1)
+    assert int((delta > 2).sum()) <= 0.002 * delta.size
+
+
+def test_one_launch_over_every_tap_matches_the_two_phase_schedule(
+    tmp_path, monkeypatch
+):
+    """One launch over every tap renders what the two-phase schedule does.
+
+    The single launch traces a hard fan's off-diagonal taps whether or not
+    the reduce reads them.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing.optix import shadows
+
+    _runtime()
+    monkeypatch.setattr(shadows, "TWO_PHASE", True)
+    two = _render_mixed(tmp_path / "two.png", True)
+    monkeypatch.setattr(shadows, "TWO_PHASE", False)
+    one = _render_mixed(tmp_path / "one.png", True)
+    assert np.array_equal(one, two)
+

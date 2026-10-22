@@ -216,14 +216,19 @@ extern "C" __global__ void __raygen__shadow()
         return;
     // Which rays this phase traces: shadow_queue_trace's rule exactly
     // (phase 0: soft fans and the hard fan's diagonal pair; phase 1: the
-    // off-diagonal taps of a pair that disagreed).
+    // off-diagonal taps of a pair that disagreed) -- or, phase 2, every ray:
+    // the adaptive rule is the reduce's to apply, which reads an off-diagonal
+    // tap only where the diagonal pair disagreed, so tracing them all changes
+    // no answer and saves the second launch pair.
     const int flag = params.queue_valid[r];
     const unsigned int slot = r / params.num_events;
     const int sk = params.layout[2 * slot];
     const unsigned int first =
         (unsigned int)params.layout[2 * slot + 1] * params.num_events + r % params.num_events;
     bool trace = flag != 0;
-    if (params.phase == 0u) {
+    if (params.phase == 2u) {
+        // every valid ray
+    } else if (params.phase == 0u) {
         if (flag == 2 && sk >= 2)
             trace = false;
     } else {

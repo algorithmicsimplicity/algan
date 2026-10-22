@@ -3498,7 +3498,7 @@ def shade_sparse_raster_coverage(
                 make_shadow_tracer,
             )
 
-            raster_shadow_trace = make_shadow_tracer(memory)
+            raster_shadow_trace = make_shadow_tracer(memory, merged=merged)
             raster_shadow_trace(
                 num_events,
                 ev_pos,

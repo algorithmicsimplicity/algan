@@ -401,12 +401,14 @@ def _device_shadow_glue(device):
 
     ``ALGAN_OPT_DISABLE=devshadow`` keeps the host glue. So does the parallel
     shadow queue (``shadow_ray_parallel``), which chunks its work by an event
-    count the host holds, and Metal, where the int views and the int32 prefix
-    sum this leans on are unverified.
+    count the host holds, its OptiX arm (``optix``), and Metal, where the int
+    views and the int32 prefix sum this leans on are unverified.
     """
     return (
         not _tracer_opt_disabled("devshadow")
         and not rt_settings.shadow_ray_parallel
+        # The OptiX shadow arm is a queue arm too (shadow_queue.py).
+        and not (rt_settings.optix and not _tracer_opt_disabled("optixshadow"))
         and torch.device(device).type in ("cuda", "cpu")
     )
 
@@ -3466,7 +3468,7 @@ def raytrace_render_wavefront(
             sort_sources = (
                 hit_i[:, 0, :na].transpose(0, 1).reshape(-1).index_select(0, acc_idx)
             )
-        raster_shadow_trace = make_shadow_tracer(memory, sort_sources)
+        raster_shadow_trace = make_shadow_tracer(memory, sort_sources, merged=merged)
         raster_shadow_trace(
             num_events,
             ev_pos.index_select(0, acc_idx),
