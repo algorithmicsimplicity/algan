@@ -1190,8 +1190,18 @@ class RenderLoopMixin:
             light_sources=lights,
             track_peak=track_peak,
             # A still batch is checked frame by frame before it renders.
-            frame_signature=bool(getattr(self, "_frame_local_batches", False))
+            frame_signature=bool(
+                getattr(
+                    self,
+                    "_still_batches",
+                    getattr(self, "_frame_local_batches", False),
+                )
+            )
             and not (render_state or {}).get("lone_still", False),
+            # A frame-local video batch decodes each frame's colors as an
+            # array of one frame's length, as a still does (no signature:
+            # a video batch is never split on one).
+            per_frame_decode=bool(getattr(self, "_frame_local_batches", False)),
         )
         from algan.rendering.raytracing.tracer import (
             _append_env_texture,
@@ -3908,6 +3918,16 @@ class RenderLoopMixin:
         (:meth:`_frames_deciding_alike`). The path tracer gives every still a
         batch of its own (:meth:`_stills_may_share_batches`).
 
+        ``SETTINGS.raytracing.experimental.frame_local_video_batches`` makes
+        the same per-frame choices in every other job's batches (video
+        included), without the still job's splitting: a frame then renders
+        alike whichever window it lands in, so re-windowing (a different
+        memory budget, ``first_batch_frames``, static frame reuse) leaves the
+        output byte-stable on every scene measured. Off by default: the
+        per-frame chord counts move animated circuits against the batch-wide
+        default (by up to 200 levels on the explainer benchmark), and
+        preparation costs 20-170% more on the PREVIEW benchmarks.
+
         With ``aux_passes=True``, ``aux_sink`` (a callable, required then) is
         called exactly once per yielded batch, immediately before the batch is
         yielded, with that batch's compositing passes: a dict of CPU tensors
@@ -3951,9 +3971,12 @@ class RenderLoopMixin:
             if start_time_ind == end_time_ind:
                 return
         _check_post_processes(post_processes)
-        if _independent_frames and post_processes:
+        if (
+            _independent_frames or rt_settings_module.frame_local_video_batches
+        ) and post_processes:
             # Bloom included: it decides from a whole chunk whether any frame
-            # glows, and a still's pixels must not depend on its batch-mates.
+            # glows, and a still's pixels must not depend on its batch-mates
+            # (nor, under frame_local_video_batches, a video frame's).
             post_processes = _framewise_post_processes(
                 post_processes, batch_native=False
             )
@@ -4036,6 +4059,7 @@ class RenderLoopMixin:
                 if cache is not None:
                     cache.clear()
                 self.__dict__.pop("_frame_local_batches", None)
+                self.__dict__.pop("_still_batches", None)
                 # Release the arena before the arch scope considers a deferred
                 # compiler reset. WDDM charges GPU allocations against host
                 # commit too; its freed storage must be reclaimable before the
@@ -4206,8 +4230,14 @@ class RenderLoopMixin:
 
             # Stills (see get_frames): batches end where each still's group
             # does, and preparation makes its choices per frame (read off the
-            # Scene by the projection and the merge, worker included).
-            self._frame_local_batches = bool(independent_frames)
+            # Scene by the projection and the merge, worker included). So does
+            # every batch under frame_local_video_batches.
+            self._frame_local_batches = bool(independent_frames) or bool(
+                rt_settings_module.frame_local_video_batches
+            )
+            # Only a still batch notes the merge's batch-wide choices frame by
+            # frame, to be split on them (_frames_deciding_alike).
+            self._still_batches = bool(independent_frames)
             group_ends = (
                 self._still_group_ends(
                     actors, frame_indices, start_time_ind, end_time_ind
@@ -4398,6 +4428,19 @@ class RenderLoopMixin:
                     )
                     return materialize_batch(time_ind, batch_end_ind)
 
+            # A job's first fetch may be held to a few frames
+            # (``first_batch_frames``) so that the prefetch worker prepares
+            # the rest of the clip while they render; otherwise a clip that
+            # fits one batch renders only after all of it is prepared.
+            first_batch_frames = (
+                0 if independent_frames else int(rt_settings_module.first_batch_frames)
+            )
+            split_first_batch = (
+                prefetch_enabled
+                and first_batch_frames > 0
+                and end_time_ind - start_time_ind > first_batch_frames
+            )
+
             def fetch_end_for(time_ind):
                 """End index to materialize up to, given what the arena took.
 
@@ -4414,6 +4457,8 @@ class RenderLoopMixin:
                 """
                 cap = self._arena_fetch_frame_cap
                 if not cap:
+                    if split_first_batch and time_ind == start_time_ind:
+                        return min(end_time_ind, time_ind + first_batch_frames)
                     return end_time_ind
                 return min(end_time_ind, time_ind + int(cap))
 
@@ -4703,7 +4748,16 @@ class RenderLoopMixin:
                     # the arena rejects it, and the timeline is rematerialized
                     # at half the size -- for every batch of the job, not just
                     # the first.
-                    if primitives:
+                    if (
+                        split_first_batch
+                        and current_time_ind == start_time_ind
+                        and retry_upper_duration is None
+                        and duration == fetched_duration
+                    ):
+                        # Held short by choice, not by the arena: the rest of
+                        # the clip is fetched as a job's first fetch is.
+                        pass
+                    elif primitives:
                         arena_frames = self._batch_frame_capacity() or 0
                         fitted = duration
                         if (

@@ -1521,7 +1521,12 @@ def _texture_alpha_frames(tex, num_frames):
 
 
 def _merge_scene(
-    primitives, *, light_sources=(), track_peak=None, frame_signature=False
+    primitives,
+    *,
+    light_sources=(),
+    track_peak=None,
+    frame_signature=False,
+    per_frame_decode=False,
 ):
     """Merge the batch's collections into one set per geometry type --
     triangles and bezier circuits, each with a single STBVH
@@ -1544,6 +1549,9 @@ def _merge_scene(
     notes (``_frame_digest``), which tell the render loop whether a still
     batch's frames would decide alike with its neighbours'.
     A batch-wide choice added here must ``_note`` its per-frame inputs.
+
+    ``per_frame_decode`` decodes the merged colors frame by frame without
+    noting a signature (frame-local video batches; a signature implies it).
     """
     first = primitives[0]
     cached = getattr(first, "_rt_merged_scene", None)
@@ -2627,7 +2635,7 @@ def _merge_scene(
     # Area-light radiance is already linear in the light snapshot. Decode the
     # authored geometry first, then insert emitters before the ONE BVH build
     # and arena preflight/upload. The deterministic merge keeps its row model.
-    _decode_merged_colors(scene, per_frame=signature is not None)
+    _decode_merged_colors(scene, per_frame=signature is not None or per_frame_decode)
     if int(_rts.samples_per_pixel) > 1 and _rts.pt_area_light_quads:
         from algan.rendering.raytracing.area_light_quads import build_area_light_quads
 
