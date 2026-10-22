@@ -699,6 +699,19 @@ def set_wf_shadow_event_sort(enabled):
     wf_shadow_event_sort = bool(enabled)
 
 
+# Build, order and size the deferred shadow events on the device
+# (tracer._device_wavefront_shadows): no count read back per bounce, no dense
+# all-lit table, events binned by octree cell instead of Morton-sorted, a trace
+# sized by the row count and a shade that reads visibility through a row ->
+# slot map. Byte-identical either way. OFF by default, on measurement: on an
+# RTX 5080 (graphics UHD 0.5 s, warm) it was neutral alone (13.65/13.50 s
+# against 13.90/13.68) and cost ~0.35 s beside the adaptive tile pool (12.22/
+# 12.17 against 11.85/11.86) -- the drain there is GPU-bound, so the sync it
+# removes was not on the critical path, and its row-sized trace launch, binned
+# order and mapped reads cost GPU time. ALGAN_WF_DEVICE_SHADOW_GLUE=1 opts in.
+wf_device_shadow_glue = env_flag("ALGAN_WF_DEVICE_SHADOW_GLUE", False)
+
+
 # Compile-time material-pipeline gating. The per-hit material dispatch
 # (``shading_taichi._run_frag_pipeline``) is inlined into the shade kernels
 # with every built-in stage reachable -- including ``_stage_physical``'s
