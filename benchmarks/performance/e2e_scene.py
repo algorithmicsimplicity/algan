@@ -491,6 +491,7 @@ def main(argv=None):
 
     import torch
 
+    from algan.rendering.raytracing import tracer as rt_tracer
     from algan.settings._startup import render_device
 
     root, commit = _checkout()
@@ -525,6 +526,9 @@ def main(argv=None):
     output = None
     for index in range(args.runs):
         SceneManager.reset()
+        # The sheet route's tile attempts and retries, per run.
+        for key in rt_tracer._WAVEFRONT_TILE_STATS:
+            rt_tracer._WAVEFRONT_TILE_STATS[key] = 0
         scene = Scene()
         scene.set_video_settings(preset)
         profiler = cProfile.Profile() if index in profiled_runs else None
@@ -578,6 +582,7 @@ def main(argv=None):
                 if device.type == "cuda"
                 else None
             ),
+            "tiles": dict(rt_tracer._WAVEFRONT_TILE_STATS),
         }
         runs.append(item)
         print("E2E " + json.dumps(item), flush=True)
