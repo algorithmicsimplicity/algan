@@ -23,7 +23,7 @@ See :doc:`/galleries/mob_gallery`.
 from __future__ import annotations
 
 import math
-import numbers
+import operator
 
 import torch.nn.functional as F
 
@@ -960,6 +960,14 @@ class RegularPolygon(Polygon):
             {"num_vertices": "n"},
             manim_alternative="RegularPolygon",
         )
+        if isinstance(n, float) and n.is_integer():
+            n = int(n)
+        try:
+            n = operator.index(n)
+        except TypeError:
+            raise AlganConfigurationError(
+                f"RegularPolygon's n must be a whole number of sides; got {n!r}"
+            ) from None
         if n < 3:
             raise AlganConfigurationError("RegularPolygon requires n >= 3")
         if start_angle is None:

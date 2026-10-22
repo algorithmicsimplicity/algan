@@ -5,15 +5,22 @@ on:
   pull_request:
     branches: [master, stable]
     # A draft runs nothing until it is marked ready for review (see test.yaml).
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `labeled` is for the `full-ci` label, which adds the two packaging jobs
+    # below; see test.yaml for the scopes.
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  merge_group:
+# One run per pull request; see test.yaml for why another label gets a group
+# of its own.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 jobs:
   lock_file:
-    # Not on a draft pull request. Every other job needs this one, so they are
-    # skipped with it.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Not on a draft pull request, nor for a label other than `full-ci`.
+    # Every other job needs this one, so they are skipped with it.
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+      && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,10 +72,14 @@ jobs:
       # deliberate act: expect a reformat commit alongside.
       - run: uvx ruff@0.12.4 format --check
 
+  # The two packaging jobs belong to the full scope: a pull request runs them
+  # only with the `full-ci` label, and master, stable and the merge queue run
+  # them always. Neither is a required check.
   packaging:
     name: Wheel builds and imports
     runs-on: ubuntu-latest
     needs: [lock_file]
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -148,6 +159,7 @@ jobs:
     name: Native macOS wheel builds and imports
     runs-on: macos-latest
     needs: [lock_file]
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     env:
       ALGAN_RENDER_DEVICE: mps
     steps:
