@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 
+import torch
 import torch.nn.functional as F
 
 from algan import animated_function
@@ -30,6 +31,22 @@ _RADIANS_TO_DEGREES = 180.0 / math.pi
 #: Local axis names accepted by ``look`` / ``look_at``, mapped to the basis row
 #: they select.
 _AXIS_NAMES = {"right": 0, "up": 1, "forward": 2}
+
+
+
+def _normalized_axis(axis) -> torch.Tensor:
+    """``axis`` as a unit direction, rejecting a zero-length axis.
+
+    ``F.normalize`` maps a zero vector to zero, and a rotation about a zero
+    axis collapses the Mob's basis to a point instead of turning it.
+    """
+    axis = cast_to_direction("axis", axis)
+    if bool((torch.linalg.vector_norm(axis, dim=-1) == 0).any()):
+        raise AlganConfigurationError(
+            "axis must be a non-zero direction; got a zero-length axis, which "
+            "would collapse the Mob to a point instead of rotating it"
+        )
+    return F.normalize(axis, p=2, dim=-1)
 
 
 class _ReadOnlyProperty(property):
@@ -172,7 +189,7 @@ class MobOrientationMixin:
         # Scaling commutes with the decorator's interpolation from 0, so
         # converting the already-interpolated value here is exact.
         num_degrees = angle if degrees else angle * _RADIANS_TO_DEGREES
-        axis = F.normalize(cast_to_direction("axis", axis), p=2, dim=-1)
+        axis = _normalized_axis(axis)
         rotation_matrix = get_rotation_around_axis(num_degrees, axis, dim=-1)
         self.basis = squish(unsquish(self.basis, -1, 3) @ rotation_matrix, -2, -1)
         if about is not None:
@@ -229,7 +246,7 @@ class MobOrientationMixin:
         if about is None:
             return self
         num_degrees = angle if degrees else angle * _RADIANS_TO_DEGREES
-        axis = F.normalize(cast_to_direction("axis", axis), p=2, dim=-1)
+        axis = _normalized_axis(axis)
         about = cast_to_direction("about", about)
         self.location = (
             rotate_vector_around_axis(
