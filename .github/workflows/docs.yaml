@@ -10,6 +10,8 @@ on:
     branches: [master, stable]
     # A draft runs nothing until it is marked ready for review (see test.yaml).
     types: [opened, synchronize, reopened, ready_for_review]
+  # "Sphinx Build" is a required check, so a merge queue has to run it too.
+  merge_group:
   # Only takes effect once this file is on the default branch: GitHub reads
   # workflow_dispatch from there, not from the ref being dispatched.
   workflow_dispatch:

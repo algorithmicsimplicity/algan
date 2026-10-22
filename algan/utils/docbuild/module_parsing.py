@@ -138,6 +138,8 @@ def parse_module_attributes() -> tuple[AliasDocsDict, DataDict, TypeVarDict]:
                 # or a docstring of the module attribute defined before
                 elif data_name:
                     data_list.append(data_name)
+                    # One docstring per attribute: a later string is not its.
+                    data_name = None
                 continue
 
             # if it's defined under if TYPE_CHECKING

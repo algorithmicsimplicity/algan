@@ -55,13 +55,16 @@ def _depth(key):
     return np.array([key & 0xFFFFFFFF], dtype=np.uint32).view(np.float32)[0]
 
 
-def _bin(key):
-    # The renderer's own bin arithmetic: what is checked here is the grouping.
-    return int(rpl._depth_bin(torch.tensor([key], dtype=torch.int64))[0])
+def _reference(key, ref, offset, device="cpu"):
+    """The tie-grouped order one run at a time, in plain Python.
 
-
-def _reference(key, ref, offset):
-    """The tie-grouped order one run at a time, in plain Python."""
+    A dense stack's bins are the renderer's own arithmetic on ``device`` (what
+    is checked here is the grouping). They differ by device: torch on CUDA
+    evaluates ``t / depth_tie_epsilon`` as ``t * (1 / eps)``, which moves a
+    fragment near a bin edge into the neighbouring bin -- a few hundred of
+    each stream below -- so a CPU-binned reference fails a correct CUDA order.
+    """
+    bin_of = rpl._depth_bin(key.to(device)).tolist()
     key = key.tolist()
     ref = ref.tolist()
     n = len(key)
@@ -83,7 +86,7 @@ def _reference(key, ref, offset):
         if np.float32(_depth(key[run[-1]]) - _depth(key[run[0]])) < GAP:
             run.sort(key=lambda g: (-_layer(ref[g], offset), position[g]))
         else:
-            run.sort(key=lambda g: (_bin(key[g]), -_layer(ref[g], offset), position[g]))
+            run.sort(key=lambda g: (bin_of[g], -_layer(ref[g], offset), position[g]))
         out.extend(run)
         i = j
     return torch.tensor(out, dtype=torch.int64)
@@ -169,7 +172,7 @@ def test_the_counting_sort_arm_gives_the_same_order(
         key.to(device), ref.to(device), layers, num_bins=pixels
     )
     assert taken == [True]
-    assert torch.equal(got.cpu(), _reference(key, ref, layers))
+    assert torch.equal(got.cpu(), _reference(key, ref, layers, device))
 
 
 def _two_layer_order(depths, layers=(5, 9), *, tie_gap=True):
