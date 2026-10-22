@@ -1104,7 +1104,9 @@ def _env_sh_coeffs(env, intensity):
     """Order-1 spherical-harmonics irradiance of an equirect environment map,
     as the linear form ``E(n) / pi = A + Bx*nx + By*ny + Bz*nz`` consumed by
     the in-kernel ENV_SH light row. A uniform map of color ``c`` yields
-    ``A = c, B = 0`` -- i.e. it lights like an ambient light of color ``c``.
+    ``A = c, B = 0`` -- i.e. it lights like an ambient light of color ``c``
+    and intensity ``pi`` (an environment map's pixels are radiances, an
+    ambient light's color an irradiance; see ``shading_taichi._light_eval``).
     """
     import math
 

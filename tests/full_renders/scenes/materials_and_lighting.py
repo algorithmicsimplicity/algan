@@ -25,7 +25,7 @@ SETTINGS.raytracing.set(shadows=True)
 # Act 1 -- the material zoo, two labelled rows of identical spheres.
 # --------------------------------------------------------------------------
 with Off():
-    ambient = AmbientLight(color=WHITE, intensity=0.35).spawn(animate=False)
+    ambient = AmbientLight(color=WHITE, intensity=0.35 * PI).spawn(animate=False)
     key_light = DirectionalLight(
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,
@@ -194,7 +194,7 @@ with Seq():
         hemisphere = HemisphereLight(
             color=MAROON_A,
             ground_color=BLUE_E,
-            intensity=0.5,
+            intensity=0.5 * PI,
         ).spawn(animate=False)
     with Sync(runtime=0.7):
         wall.spawn()
@@ -223,7 +223,7 @@ with Sync(runtime=0.7):
     light_label.despawn()
 
 with Off():
-    AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.45 * PI).spawn(animate=False)
     DirectionalLight(
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,

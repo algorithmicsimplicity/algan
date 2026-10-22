@@ -895,7 +895,10 @@ only the SURFACE response changed. The direction-less ambient / hemisphere
 rows contribute `e_diff * L` (the diffuse lobe's energy times the row's
 radiance, with the hemisphere row's sky/ground blend still done by
 `_light_eval` against the shading normal) and no specular fill — indirect
-transport is what replaces that.
+transport is what replaces that. (Since 2026-10, `_light_eval` folds a `1/pi`
+into those two rows' `L`: their color is an irradiance, as in three.js r155+,
+so an ambient light needs `intensity = pi` to light a white Lambert surface
+white, like every other light.)
 
 What moved, concretely: a Lambert surface under a light row is `pi` times
 dimmer than it was, since `_pt_direct_response` had no `1/pi`; a rough metal

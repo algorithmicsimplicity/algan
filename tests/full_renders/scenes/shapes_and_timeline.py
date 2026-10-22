@@ -53,7 +53,7 @@ STAR_POINTS = (
 # Act 1 -- filled circuits spawn under Lag, outlined circuits under Sync.
 # --------------------------------------------------------------------------
 with Off():
-    AmbientLight(color=WHITE, intensity=0.6).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.6 * PI).spawn(animate=False)
     DirectionalLight(
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,

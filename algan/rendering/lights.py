@@ -155,11 +155,11 @@ class Light(Mob):
     ``color * intensity`` is the light arriving on a surface that faces the
     light square-on, in the same units under both renderers. A white matte
     surface returns ``1/pi`` of it, so it renders white under a light of
-    ``intensity=PI`` (the default light's) and about a third as bright at
-    ``1``. :class:`~.AmbientLight` and :class:`~.HemisphereLight` are the
-    exception: their color arrives from every direction, and ``intensity=1``
-    renders a white matte surface white. See
-    :ref:`light-units`.
+    ``intensity=PI`` (the default light's, and :class:`~.PointLight`'s
+    default) and about a third as bright at ``1``. :class:`~.AmbientLight` and
+    :class:`~.HemisphereLight` use the same units, as in three.js: their color
+    arrives from every direction, and ``intensity=PI`` renders a white matte
+    surface white. See :ref:`light-units`.
 
     Parameters
     ----------
@@ -362,7 +362,8 @@ class PointLight(Light):
     ----------
     intensity
         As on :class:`~.Light`: a dimensionless multiplier on the light's
-        color, animatable like any Mob attribute. Defaults to ``1.0``.
+        color, animatable like any Mob attribute. Defaults to ``PI``, which
+        renders a white matte surface facing the light white.
     decay
         Distance falloff exponent (0 = none -- the legacy Algan default;
         2 = physically correct inverse-square). Must be finite and at least
@@ -388,7 +389,13 @@ class PointLight(Light):
     light_type = LIGHT_POINT
 
     def __init__(
-        self, *args, intensity=1.0, decay=0.0, distance=0.0, shadow_radius=0.0, **kwargs
+        self,
+        *args,
+        intensity=math.pi,
+        decay=0.0,
+        distance=0.0,
+        shadow_radius=0.0,
+        **kwargs,
     ):
         self.decay = _finite_number("decay", decay, minimum=0.0)
         self.distance = _finite_number("distance", distance, minimum=0.0)
@@ -525,10 +532,10 @@ class DirectionalLight(_TargetedLight):
 class AmbientLight(Light):
     """Uniform, direction-less illumination applied to every surface.
 
-    Its color is the light arriving from every direction at once, so a white
-    matte surface under an ambient light of ``intensity=1`` renders white,
-    where a point or directional light needs ``intensity=PI`` for the same
-    result (see :ref:`light-units`). Ambient light reaches the diffuse part of
+    Its ``color * intensity`` is the irradiance it delivers, arriving from
+    every direction at once, so a white matte surface under an ambient light
+    of ``intensity=PI`` renders white, as under a point or directional light
+    of the same intensity facing it (see :ref:`light-units`). Ambient light reaches the diffuse part of
     a material only.
 
     Parameters
@@ -549,6 +556,10 @@ class AmbientLight(Light):
 class HemisphereLight(Light):
     """Sky/ground gradient ambient: surfaces facing ``up`` receive the light's
     ``color`` (sky), surfaces facing away receive ``ground_color``.
+
+    Both colors are irradiances, in the units of every other light: a white
+    matte surface facing a white sky of ``intensity=PI`` renders white (see
+    :ref:`light-units`).
 
     Parameters
     ----------

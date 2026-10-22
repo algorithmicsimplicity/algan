@@ -779,6 +779,9 @@ _LT_AREA_SAMPLE = 5
 _LT_ENV_SH = 6
 
 
+_INV_PI = 0.3183098861837907
+
+
 @ti.func
 def _light_eval(light_pos: ti.template(), light_col: ti.template(),
                 f, li, pos, n):
@@ -823,6 +826,11 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
             ld = -ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
                                light_col[tl, li, 8])
         elif ltype == _LT_AMBIENT:
+            # Irradiance, like every other light's color (three.js r155+):
+            # the diffuse stages keep ``albedo * lc`` for direction-less rows,
+            # so the Lambert 1/pi is taken here, where the path tracer's
+            # ambient fill picks it up too.
+            lc = lc * _INV_PI
             ld = n
             spec_w = 0.0
         elif ltype == _LT_HEMISPHERE:
@@ -832,7 +840,7 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
                                   light_col[tl, li, 13],
                                   light_col[tl, li, 14])
             h = 0.5 + 0.5 * n.dot(up)
-            lc = ground * (1.0 - h) + lc * h
+            lc = (ground * (1.0 - h) + lc * h) * _INV_PI
             ld = n
             spec_w = 0.0
         elif ltype == _LT_ENV_SH:
@@ -877,9 +885,6 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
     return ld, lc, spec_w, frac
 
 
-_INV_PI = 0.3183098861837907
-
-
 @ti.func
 def _diffuse_norm(spec_w):
     """The Lambert ``1/pi`` a light row's diffuse term takes, from the row's
@@ -888,11 +893,11 @@ def _diffuse_norm(spec_w):
     A light row's ``lc`` is the irradiance it delivers to a surface facing it,
     and a Lambert surface sends ``albedo / pi`` of irradiance back out as
     radiance -- the path tracer's BSDF, so a lit surface reads the same in
-    both renderers. The direction-less rows (``spec_w = 0``) are already a
-    radiance: an ambient or hemisphere colour arrives from every direction,
-    and the ``pi`` of integrating it over the hemisphere cancels the BSDF's
-    ``1/pi``, so they keep ``albedo * lc`` (the env-SH row is normalised to
-    match host-side). The path tracer's fill does the same.
+    both renderers. The direction-less rows (``spec_w = 0``) keep
+    ``albedo * lc``: :func:`_light_eval` already folds the ``1/pi`` into an
+    ambient or hemisphere row's ``lc`` (their color is an irradiance too, as
+    in three.js), and the env-SH row is packed host-side as ``E / pi``. The
+    path tracer's ambient fill reads the same ``lc``.
     """
     return 1.0 + (_INV_PI - 1.0) * spec_w
 
