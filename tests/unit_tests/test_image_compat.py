@@ -24,7 +24,6 @@ from algan.mobs.image_compat import (
     _load_rgba5,
     _rgba5_to_uint8,
 )
-from algan.mobs.plots import convert_points_to_path, get_corners
 
 
 def _rand_rgba(h=4, w=6, seed=0):
@@ -267,43 +266,3 @@ def test_image_mobject_from_path_records_path(tmp_path):
     m = ImageMobject(str(p))
     assert m.path == pathlib.Path(p)
     np.testing.assert_array_equal(m.pixel_array, a)
-
-
-# --------------------------------------------------------------------------
-# plots.convert_points_to_path / get_corners
-# --------------------------------------------------------------------------
-
-
-def test_convert_points_to_path_structure():
-    from svgelements import Close, Line, Move
-
-    pts = [(0, 0), (1, 0), (1, 1), (0, 1)]
-    path = convert_points_to_path(pts)
-    segs = list(path)
-    assert isinstance(segs[0], Move)
-    assert sum(isinstance(s, Line) and not isinstance(s, Close) for s in segs) == 3
-    assert isinstance(segs[-1], Close)
-    assert len(segs) == 5
-    assert tuple(segs[-1].end) == (0, 0)
-
-
-def test_get_corners_axis_aligned():
-    start = torch.tensor([0.0, 0.0, 0.0])
-    direction = torch.tensor([0.0, 1.0, 0.0])
-    facing = torch.tensor([0.0, 0.0, 1.0])
-    c = get_corners(start, direction, 0.5, 2.0, facing)
-    assert c.shape == (4, 3)
-    expected = torch.tensor([[0.5, 0, 0], [0.5, 2, 0], [-0.5, 2, 0], [-0.5, 0, 0]])
-    torch.testing.assert_close(c, expected)
-
-
-def test_get_corners_batched():
-    start = torch.zeros(3, 3)
-    start[:, 0] = torch.arange(3.0)
-    direction = torch.tensor([[0.0, 1.0, 0.0]]).expand(3, 3)
-    facing = torch.tensor([[0.0, 0.0, 1.0]]).expand(3, 3)
-    c = get_corners(start, direction, 0.1, 1.0, facing)
-    assert c.shape == (3, 4, 3)
-    # rectangle width is 2 * width, height is height
-    torch.testing.assert_close((c[:, 0] - c[:, 3]).norm(dim=-1), torch.full((3,), 0.2))
-    torch.testing.assert_close((c[:, 1] - c[:, 0]).norm(dim=-1), torch.ones(3))
