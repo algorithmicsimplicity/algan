@@ -42,6 +42,13 @@ off unless ``ALGAN_READONLY_NDARRAY_LDG=1``, and then set on CUDA only (see
 :func:`taichi_init_kwargs`). ``invariant_arg_loads`` (0004) defaults **on**,
 and ``fast_math`` below is what makes 0007's fast ``expf`` live, so those two
 are the patches an Algan render runs through by default.
+
+``offline_cache_ptx_by_content_hash`` (``0010-cuda-ptx-cache-by-content-hash.patch``)
+is the one Algan turns on itself where the wheel has it: on CUDA, a kernel
+whose ``.qdc`` and PTX are both cached is loaded without its LLVM IR being
+parsed, printed or hashed. ``ALGAN_PTX_CACHE_BY_CONTENT_HASH=0`` is the off
+arm; on any other arch, or a wheel without the patch, the keyword is not
+passed (:func:`ptx_cache_by_content_hash_supported`).
 """
 
 from __future__ import annotations
@@ -791,6 +798,26 @@ def cpu_prep_kernel_enabled(name):
 _INIT_OVERRIDES = {}
 
 
+def ptx_cache_by_content_hash_supported():
+    """Whether the installed compiler has Quadrants patch 0010's config field.
+
+    ``offline_cache_ptx_by_content_hash`` keys the CUDA PTX cache by the
+    SHA-256 each ``.qdc`` already stores and defers parsing a cached kernel's
+    IR until a PTX miss needs it (``quadrants_patches/README.md``, 0010). A
+    wheel without the patch would reject the keyword, so it is asked of the
+    config type, which every Quadrants build exposes before ``init``.
+    """
+    if BACKEND != "quadrants":
+        return False
+    from algan.taichi_compat import submodule
+
+    try:
+        config_type = submodule("_lib.core.quadrants_python").CompileConfig
+    except Exception:
+        return False
+    return hasattr(config_type, "offline_cache_ptx_by_content_hash")
+
+
 def taichi_init_kwargs():
     """Algan's Taichi runtime config, as a kwargs dict.
 
@@ -868,6 +895,19 @@ def taichi_init_kwargs():
     # the off arm's init -- and every key -- is what it was before the switch.
     if kwargs["arch"] == ti.cuda and env_flag("ALGAN_READONLY_NDARRAY_LDG", False):
         kwargs["readonly_ndarray_ldg"] = True
+    # Quadrants patch 0010: a cached CUDA kernel's PTX is found by the content
+    # hash its .qdc already carries, so its IR is never parsed, printed or
+    # hashed when the PTX is there. On by default where the wheel has it;
+    # ALGAN_PTX_CACHE_BY_CONTENT_HASH=0 is the A/B off arm. The field's
+    # `offline_cache` prefix keeps it out of the compiler's key and the source
+    # key alike, so both arms share every artifact. CUDA only: no other arch
+    # has a PTX cache, and the CPU arch needs every module parsed to JIT it.
+    if (
+        kwargs["arch"] == ti.cuda
+        and env_flag("ALGAN_PTX_CACHE_BY_CONTENT_HASH", True)
+        and ptx_cache_by_content_hash_supported()
+    ):
+        kwargs["offline_cache_ptx_by_content_hash"] = True
     kwargs.update(_INIT_OVERRIDES)
     if kwargs["arch"] == ti.metal:
         queue = _torch_mps_command_queue()

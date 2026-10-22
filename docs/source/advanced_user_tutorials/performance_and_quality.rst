@@ -461,6 +461,14 @@ background compilation off. Kernels that use your own ``@ti.func`` shader stages
 are always compiled at first use: only kernels built entirely from Algan's own
 code can be described to another process.
 
+On an NVIDIA GPU, with a compiler build that supports it, the workers also
+translate each kernel to the GPU's own code and have the driver cache it, so a
+first render does not wait for that at each kernel's first launch either;
+``ALGAN_PRECOMPILE_PTX=0`` leaves it to the render. The same builds load a
+fully cached kernel without re-reading its compiler IR, which shortens the
+start of every new process; ``ALGAN_PTX_CACHE_BY_CONTENT_HASH=0`` turns that
+off.
+
 None of this changes what a render draws. A kernel is only ever used when it
 matches exactly what the render asked for; anything a worker compiled that the
 render does not need is simply never used.
