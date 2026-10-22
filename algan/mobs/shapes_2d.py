@@ -23,6 +23,7 @@ See :doc:`/galleries/mob_gallery`.
 from __future__ import annotations
 
 import math
+import numbers
 import operator
 
 import torch.nn.functional as F
@@ -629,6 +630,26 @@ class Point(BezierCircuitCubic):
 
 
 class TriangleTriangulated(Mob):
+    """A filled triangle mesh, built from one or more triangles given by their corners.
+
+    Each triangle becomes a child holding its three corner vertices. The Mob is placed at
+    the triangle's circumcentre, and its color is the average of its corners' colors.
+
+    Parameters
+    ----------
+    corner_locations
+        The corners in world units, shape ``(*, 3, 3)``: three points per triangle. A
+        batch of triangles gives one Mob per triangle.
+    vertices
+        The Mob class used for the corners. Defaults to :class:`TriangleVertices`.
+    normals
+        Per-corner surface normals, shape ``(*, 3, 3)``, used for shading. Defaults to
+        ``None``.
+    **kwargs
+        Passed to :class:`~.Mob`, and to the corner Mobs -- notably ``color``, which
+        defaults to ``YELLOW``.
+    """
+
     _morph_family = "mesh"
 
     def __init__(self, corner_locations, vertices=None, normals=None, **kwargs):
@@ -688,10 +709,28 @@ class TriangleTriangulated(Mob):
         self.add_children(self.corners)
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given: ``YELLOW``."""
         return YELLOW
 
 
 class TriangleVertices(Mob):
+    """The corner vertices of a triangle mesh, rendered as filled triangles.
+
+    Usually created for you by :class:`TriangleTriangulated`; each group of three
+    consecutive locations is drawn as one triangle.
+
+    Parameters
+    ----------
+    corner_locations
+        The corners in world units, shape ``(*, 3, 3)``: three points per triangle.
+    normals
+        Per-corner surface normals, shape ``(*, 3, 3)``, used for shading. Defaults to
+        ``None``.
+    **kwargs
+        Passed to :class:`~.Mob` -- notably ``color``, which defaults to ``PURE_RED``
+        and may be given per corner.
+    """
+
     _morph_family = "mesh"
 
     def __init__(self, corner_locations, normals=None, **kwargs):
@@ -744,9 +783,11 @@ class TriangleVertices(Mob):
         return n * num_vars * 4
 
     def get_default_color(self):
+        """Get the color this Mob uses when none was given: ``PURE_RED``."""
         return PURE_RED
 
     def get_render_primitives(self):
+        """Internal: build the triangle primitive the renderer draws for this Mob."""
         # Read once: the corners and the normal frame below are the same
         # values, and each property read is a timeline query and a copy.
         location = self.location
@@ -803,6 +844,20 @@ class TriangleVertices(Mob):
 
 
 class QuadTriangulated(Mob):
+    """A filled quadrilateral, drawn as two :class:`TriangleTriangulated` halves.
+
+    The corners ``0, 1, 2`` form one triangle and ``2, 3, 0`` the other, so the corners
+    should be given in order around the quad.
+
+    Parameters
+    ----------
+    corner_locations
+        The four corners in world units, shape ``(*, 4, 3)``.
+    **kwargs
+        Passed to both triangles and to :class:`~.Mob` -- notably ``color``, which
+        defaults to ``YELLOW``.
+    """
+
     def __init__(self, corner_locations, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()

@@ -739,7 +739,7 @@ class TriangulatedBezierCircuit(Mob):
         self.tiles.add_children(triangles)
         self.add_children(self.tiles)
         # These triangles are bezier-circuit fills that happen to be
-        # triangulated (glyph fills, plots.Arrow, function-plot curves), and
+        # triangulated (glyph fills), and
         # their untriangulated twins are drawn unlit -- circuits stay unlit.
         # null_shader returns the albedo unchanged, giving exactly that, and
         # suppresses the no-material fallback that would otherwise light them

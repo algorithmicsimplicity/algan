@@ -556,13 +556,56 @@ def ApplyMatrix(
 ):
     """Animate a 2×2 or 3×3 linear transform about ``about_point``.
 
-    Accepts both ``ApplyMatrix(mob, matrix)`` and Manim's
-    ``ApplyMatrix(matrix, mob)`` argument order.
+    Each point ``p``, taken relative to ``about_point``, travels in a straight
+    line to ``matrix @ p``. A 2×2 matrix acts on x and y only and leaves z
+    unchanged. This is :func:`ApplyPointwiseFunction` with a linear map.
+
+    Animation
+    ---------
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation, and inside ``Off()`` the
+    points move at once. Applies to the Mob and all of its descendants.
+
+    Parameters
+    ----------
+    mob
+        The Mob to transform. Manim's order, ``ApplyMatrix(matrix, mob)``, is
+        accepted too.
+    matrix
+        The linear map, of shape ``(2, 2)`` or ``(3, 3)``, as anything
+        ``torch.as_tensor`` accepts. It has no usable default: the ``None`` in
+        the signature only lets the two argument orders share it.
+    about_point
+        Point the transform is centered on, shape ``(3,)``. Defaults to
+        ``ORIGIN``.
+    runtime
+        How long the points take to arrive, in seconds. Defaults to ``1.0``.
+    easing
+        Easing applied to the points' progress. Defaults to ``None``, meaning
+        the enclosing context's (``easings.smooth`` at the top level).
+
+    Returns
+    -------
+    :class:`~.Mob`
+        The Mob that was passed in.
+
+    Raises
+    ------
+    TypeError
+        If neither argument is a Mob, if no matrix is given (or both arguments
+        are Mobs), or if the Mob has no deformable geometry.
+    :class:`.AlganConfigurationError`
+        If ``matrix`` is not of shape ``(2, 2)`` or ``(3, 3)``.
     """
     if not isinstance(mob, Mob) and isinstance(matrix, Mob):
         mob, matrix = matrix, mob
     if not isinstance(mob, Mob):
         raise TypeError("ApplyMatrix expects a Mob and a 2x2 or 3x3 matrix.")
+    if matrix is None or isinstance(matrix, Mob):
+        raise TypeError(
+            "ApplyMatrix expects a Mob and a 2x2 or 3x3 matrix; received "
+            f"{type(mob).__name__} and {type(matrix).__name__}."
+        )
     matrix = torch.as_tensor(matrix, dtype=torch.get_default_dtype())
     if matrix.shape == (2, 2):
         full_matrix = torch.eye(3, device=matrix.device, dtype=matrix.dtype)
@@ -1145,9 +1188,49 @@ def MoveAlongPath(
 ):
     """Move ``mob`` along the arc length of a cubic Bezier path.
 
+    The Mob is translated, without rotating, so that the center it had when the
+    animation was recorded sits on the path at a fraction of the path's arc
+    length equal to the animation's progress: at the path's start at the
+    beginning (jumping there if it is elsewhere) and at its end at the finish.
     The path may itself animate in the same context; its materialized control
-    points are sampled for every frame.  ``samples_per_curve`` controls only the
-    arc-length approximation, not the rendered geometry.
+    points are sampled for every frame.
+
+    Animation
+    ---------
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation.
+
+    Parameters
+    ----------
+    mob
+        The Mob to move.
+    path
+        A Mob containing cubic Bezier geometry. Every non-empty
+        :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic` among it and its
+        descendants is joined, in order, into one path.
+    runtime
+        How long the journey takes, in seconds. Defaults to ``1.0``.
+    easing
+        Easing applied to the progress along the path. Defaults to ``None``,
+        meaning the enclosing context's (``easings.smooth`` at the top level).
+    samples_per_curve
+        Samples per cubic segment used to approximate arc length. It controls
+        only that approximation, not the rendered geometry. Must be at least
+        ``2``. Defaults to ``24``.
+
+    Returns
+    -------
+    :class:`~.Mob`
+        The Mob that was passed in.
+
+    Raises
+    ------
+    TypeError
+        If ``mob`` or ``path`` is not a Mob, or if ``path`` has no cubic Bezier
+        geometry.
+    :class:`.AlganConfigurationError`
+        If ``samples_per_curve`` is less than ``2``, or if the path's
+        control-point count is not a multiple of four.
     """
     if not isinstance(mob, Mob) or not isinstance(path, Mob):
         raise TypeError("MoveAlongPath expects two Mobs.")

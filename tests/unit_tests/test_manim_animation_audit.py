@@ -521,6 +521,8 @@ def test_invalid_geometry_and_parameters_fail_early():
         algan.ApplyPointwiseFunction(empty, lambda points: points)
     with pytest.raises(ValueError, match="shape"):
         algan.ApplyMatrix(algan.Circle(add_to_scene=False), [[1, 0, 0]])
+    with pytest.raises(TypeError, match="ApplyMatrix expects a Mob and a 2x2"):
+        algan.ApplyMatrix(algan.Circle(add_to_scene=False))
     with pytest.raises(ValueError, match="at least 1"):
         algan.PhaseFlow(
             algan.Circle(add_to_scene=False),

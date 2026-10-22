@@ -688,6 +688,25 @@ def test_group_layouts_are_safe_for_empty_and_ragged_groups():
         ragged.arrange_in_grid(num_rows=0)
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"num_rows": 0},
+        {"num_rows": 1.5},
+        {"tight_axis": 2},
+        {"row_direction": torch.zeros(3)},
+    ],
+    ids=["zero rows", "fractional rows", "tight axis", "zero direction"],
+)
+def test_arrange_in_grid_refuses_bad_arguments_on_an_empty_group(bad):
+    """Validation ran after the empty-Group early return, so these passed
+    silently until the Group had members.
+    """
+    empty = Group(add_to_scene=False)
+    with pytest.raises(AlganConfigurationError):
+        empty.arrange_in_grid(**bad)
+
+
 @pytest.mark.fast
 def test_hierarchy_rejects_cycles_and_duplicates():
     child = Square(add_to_scene=False)

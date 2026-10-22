@@ -12,6 +12,7 @@ Each test here pins a composite that used to be built exactly that way.
 from __future__ import annotations
 
 import pytest
+import torch
 
 import algan
 import algan.manim as mn
@@ -118,6 +119,27 @@ def test_paragraph_built_detached_registers_nothing():
     algan.Paragraph("hello", "world", scene=square.scene, add_to_scene=False)
 
     assert len(square.scene.actors) == before
+
+
+def test_paragraph_realignment_keeps_its_spacing_and_line_styling():
+    """The rebuild passed only the text, so ``line_spacing`` fell back to 0.2
+    and every line lost its ``font_size`` and ``color``.
+    """
+    options = {"line_spacing": 1.5, "font_size": 30, "color": algan.RED}
+    paragraph = algan.Paragraph("a wide line", "x", **options)
+    with algan.Off():
+        paragraph.set_all_lines_alignments("left")
+    expected = algan.Paragraph(
+        "a wide line", "x", alignment="left", add_to_scene=False, **options
+    )
+
+    for line, want in zip(paragraph, expected):
+        torch.testing.assert_close(line.get_center(), want.get_center())
+        torch.testing.assert_close(
+            line.get_length_in_direction(algan.UP),
+            want.get_length_in_direction(algan.UP),
+        )
+        torch.testing.assert_close(line.color, want.color)
 
 
 @pytest.mark.parametrize("background", ["rectangle", "window"])

@@ -224,3 +224,16 @@ def test_an_rgb_tensor_background_renders_into_an_mp4(tmp_path):
         Square(scene=scene).spawn()
         scene.set_background(torch.tensor([0.1, 0.2, 0.3]))
         assert scene.save_video(tmp_path / "clip.mp4").rendered
+
+
+def test_a_scene_without_a_background_starts_from_style_background():
+    """Not ``SETTINGS.style.frame``: stills draw the stored background, so with
+    the two set apart ``save_frame`` drew ``frame`` while ``save_video`` drew
+    ``background``.
+    """
+    from algan import BLUE, RED, SETTINGS
+
+    SETTINGS.style.set(background=BLUE, frame=RED)
+    with Scene(video_settings=SMOKE_TEST) as scene:
+        assert not scene.background_is_set
+        torch.testing.assert_close(scene.get_background(), BLUE)

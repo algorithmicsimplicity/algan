@@ -345,7 +345,9 @@ def _check_container_is_supported(destination, *, still: bool = False) -> None:
     )
 
 
-def _resolve_output_destination(file_path, default_extension: str) -> Path:
+def _resolve_output_destination(
+    file_path, default_extension: str, *, create_parent: bool = True
+) -> Path:
     """Turn a user's ``file_path`` into the absolute file to write.
 
     The rules, in order: an empty string is refused; a target that names a
@@ -355,7 +357,8 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
     The result is always absolute, because it is also what
     :class:`RenderResult` reports back and what the finish log prints -- a
     relative path there is only as good as the reader's guess at the working
-    directory.
+    directory. ``create_parent=False`` leaves the parent directory uncreated,
+    for a caller that may end up writing nothing.
     """
     if file_path is None:
         file_path = SETTINGS.paths.output_filename
@@ -395,7 +398,8 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
         )
 
     requested = Path(os.path.abspath(requested))
-    requested.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        requested.parent.mkdir(parents=True, exist_ok=True)
     return requested
 
 

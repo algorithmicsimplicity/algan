@@ -428,13 +428,15 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation over the current context's runtime (1 second
-        by default). Applies to this Mob and its descendants.
+        by default). With ``align_edge`` the alignment is recorded as a second,
+        separate move after the first. Applies to this Mob and its descendants.
 
         Parameters
         ----------
         target_mob
-            The Mob to sit beside, or a point of shape ``(*, 3)`` to treat as
-            the target. A Mob contributes its boundary, a point only itself.
+            The Mob to sit beside, or a point of shape ``(*, 3)`` (a tensor,
+            tuple, list or ndarray) to treat as the target. A Mob contributes
+            its boundary, a point only itself.
         direction
             Which side of ``target_mob`` to move to (e.g. ``RIGHT``, ``UP``);
             need not be normalized.
@@ -446,7 +448,9 @@ class MobMovementMixin:
             (see
             :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.align_with`),
             so e.g. two Mobs
-            placed side by side can also share a bottom edge. Defaults to
+            placed side by side can also share a bottom edge. When
+            ``target_mob`` is a point, this Mob's ``align_edge`` side is lined
+            up with the point along that axis instead. Defaults to
             ``None``, meaning no secondary alignment.
         **kwargs
             Passed to
@@ -466,11 +470,14 @@ class MobMovementMixin:
         buffer = _resolve_buffer(buffer)
         direction = cast_to_direction("direction", direction)
         normalized_direction = F.normalize(direction, p=2, dim=-1)
+        # Anything that is not a Mob (a tensor, tuple, list or ndarray) is a
+        # point, cast the way ``move`` casts its displacement.
+        target_is_mob = hasattr(target_mob, "get_boundary_point")
         # Get the boundary point of the target_mob along the given direction
         target_edge_point = (
             target_mob.get_boundary_point(normalized_direction)
-            if not isinstance(target_mob, torch.Tensor)
-            else target_mob
+            if target_is_mob
+            else cast_to_direction("target_mob", target_mob)
         )
         # Get the boundary point of this mob in the opposite direction
         my_edge_point = self.get_boundary_point(-normalized_direction)
@@ -482,7 +489,16 @@ class MobMovementMixin:
         )
         self.move(displacement_to_align_edges, **kwargs)
         if align_edge is not None:
-            self.align_with(target_mob, align_edge, anchor="boundary")
+            if target_is_mob:
+                self.align_with(target_mob, align_edge, anchor="boundary")
+            else:
+                # A point has no boundary: line this Mob's ``align_edge`` side
+                # up with the point itself, along that axis only.
+                edge = F.normalize(
+                    cast_to_direction("align_edge", align_edge), p=2, dim=-1
+                )
+                offset = target_edge_point - self.get_boundary_point(edge)
+                self.move(dot_product(offset, edge) * edge)
         return self
 
     def align_with(
@@ -515,7 +531,7 @@ class MobMovementMixin:
         anchor
             Which point on each Mob is brought into line, matched
             case-insensitively. ``'center'`` (the default) aligns the two
-            anchors. ``'boundary'`` aligns the two ``direction``-side
+            Mobs' :attr:`~algan.animatable_base.mob.Mob.location` anchors. ``'boundary'`` aligns the two ``direction``-side
             boundaries, so the Mobs end up flush -- sharing a bottom edge, say.
             ``'edge'`` brings this Mob's opposite side up against ``mob``'s
             ``direction`` side, so the two abut rather than overlap.
@@ -581,12 +597,16 @@ class MobMovementMixin:
         Parameters
         ----------
         x
-            Horizontal position in screen units: ``0`` is the left edge, ``1``
-            the right edge, ``0.5`` the middle. Values outside ``[0, 1]`` are
-            off-screen.
+            Horizontal position as a fraction of the way across the screen:
+            ``0`` is where
+            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_corner`
+            would put the Mob against the left edge (its boundary inset by
+            ``SETTINGS.style.buffer``, not its location on the border itself),
+            ``1`` the same against the right edge, ``0.5`` the middle. Values
+            outside ``[0, 1]`` extrapolate past those positions.
         y
-            Vertical position in screen units: ``0`` is the bottom edge, ``1``
-            the top edge.
+            Vertical position on the same scale: ``0`` is the Mob placed
+            against the bottom edge, ``1`` against the top edge.
 
         Returns
         -------
@@ -821,6 +841,8 @@ class MobMovementMixin:
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
+        destination = cast_to_direction("destination", destination)
+        displacement = cast_to_direction("displacement", displacement)
         # Vector from current location to destination
         destination_displacement = destination - self.location
         # Normalize the initial displacement direction

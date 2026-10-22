@@ -212,7 +212,7 @@ class Color(torch.Tensor):
     Attributes
     ----------
     rgb
-        The first three channels, as a plain tensor. Assignable.
+        The first three channels, shape ``(*, 3)``. Assignable.
     glow
         The fourth channel, shape ``(*, 1)``. Assignable.
     opacity
@@ -314,6 +314,8 @@ class Color(torch.Tensor):
 
     @property
     def opacity(self):
+        # Documented in the class docstring's Attributes section; a docstring
+        # here would describe the same object twice in the API reference.
         opacity = self.data[..., -1:].as_subclass(torch.Tensor)
         return opacity
 
@@ -323,6 +325,8 @@ class Color(torch.Tensor):
 
     @property
     def glow(self):
+        # Documented in the class docstring's Attributes section; a docstring
+        # here would describe the same object twice in the API reference.
         glow = self.data[..., -2:-1].as_subclass(torch.Tensor)
         return glow
 
@@ -343,6 +347,8 @@ class Color(torch.Tensor):
 
     @property
     def rgb(self):
+        # Documented in the class docstring's Attributes section; a docstring
+        # here would describe the same object twice in the API reference.
         return self.data[..., :3]
 
     @rgb.setter
@@ -635,6 +641,11 @@ def to_color(value):
 
 
 def color_to_texture_map(color):
+    """Internal: a texture map that paints every coordinate with ``color``.
+
+    Returns a callable taking a coordinate tensor of shape ``(*, d)`` and
+    returning ``color`` broadcast (without copying) to shape ``(*, 5)``.
+    """
     return lambda coords: color.view(([1] * (coords.dim() - 1)) + [-1]).expand(
         list(coords.shape[:-1]) + [-1]
     )

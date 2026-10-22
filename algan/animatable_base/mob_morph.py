@@ -2276,10 +2276,7 @@ class MobMorphMixin:
                 replacement_allowed=replacement_allowed,
             )
 
-        from algan.animatable_base.morph_conversions import (
-            MorphConversionError,
-            get_morph_conversion,
-        )
+        from algan.animatable_base.morph_conversions import get_morph_conversion
 
         source_conversion = get_morph_conversion(source._morph_family)
         target_conversion = get_morph_conversion(target._morph_family)
@@ -2290,15 +2287,14 @@ class MobMorphMixin:
                 f"{source._morph_family!r} and {target._morph_family!r}"
             )
         if replacement_allowed and can_convert:
-            try:
-                return self._record_pn_morph(
-                    source,
-                    target,
-                    minimize_movement=minimize_movement,
-                )
-            except MorphConversionError:
-                if replacement_allowed:
-                    raise
+            # A MorphConversionError from a registered converter propagates:
+            # it names a Mob that should convert and could not, which a
+            # silent dissolve would hide.
+            return self._record_pn_morph(
+                source,
+                target,
+                minimize_movement=minimize_movement,
+            )
         if not replacement_allowed:
             return self._record_dissolve(
                 source,
@@ -2321,44 +2317,94 @@ class MobMorphMixin:
         minimize_movement: bool = False,
         strategy: str = "auto",
     ) -> Mob:
-        """Transform any Mob hierarchy into any other Mob hierarchy.
+        """Morph this Mob, and everything under it, into the shape of another Mob.
 
-        Structural containers are transparent to pairing: renderer-facing
-        primitives are matched by concrete type, primitive family and either
-        traversal order or spatial proximity. Same-kind pairs use structural point
-        alignment and different primitive families convert through a cubic-PN
-        triangle soup. ImageMob pairs cross-dissolve because image textures have no
-        geometric adapter, and so does a pair that changes whether a circuit is
-        filled: that flag is read once per render rather than per frame, so no
-        morph can show it changing. The pairing prefers a counterpart that does
-        not force the change. ``strategy`` may be ``"auto"``, ``"morph"`` (reject
-        every non-geometric pair), or ``"dissolve"`` (dissolve the whole root).
-
-        With the default ``detach_history=True``, the returned Mob has the target's
-        hierarchy and is spliced into this Mob's parent slot; use it for later
-        animation. Surplus target primitives fade in as they grow from collapsed,
-        target-shaped geometry at nearby source points, while surplus sources fade
-        out as they shrink to points. Part of a text (``text[0]``,
+        Pieces are paired up by type and by order (or by distance, with
+        ``minimize_movement=True``) and each piece morphs into its partner.
+        Groups and plain container Mobs do not count as pieces: only the things
+        that draw do. Pieces of the same kind morph point by point; different
+        kinds (for example a curve and a 3D surface) morph through a triangle
+        mesh. Images cross-dissolve instead, and so does a pair where one piece
+        is filled and the other is not, because fill cannot change mid-morph;
+        pairing prefers partners that avoid this. Extra target pieces grow in
+        from nearby source points while fading in; extra source pieces shrink
+        to points while fading out. Part of a text (``text[0]``,
         ``tex.get_segment(1)``) morphs the same way while the rest of the text
-        stays on screen; a :class:`~algan.mobs.numeric_display.DecimalNumber`
-        morphs from the glyphs it shows.
-        ``detach_history=False`` keeps identity for compatibility and therefore
-        uses a dissolve where a target-class replacement would be required.
-        Updaters remain attached to replaced sources rather than being migrated
-        to replacements -- which is why, inside an updater, ``detach_history``
-        defaults to False and cannot be True: the Mob morphs in place, as
-        Manim's ``become`` does, rather than handing the screen to a
-        replacement the updater does not drive.
+        stays on screen, and a :class:`~algan.mobs.numeric_display.DecimalNumber`
+        morphs from the glyphs it currently shows.
+
+        Animation
+        ---------
+        Recorded over the current context's runtime (1 second by default). Wrap
+        the call in ``with Seq(runtime=3): ...`` to change timing, or in
+        ``with Off(): ...`` to make it immediate. Passing ``runtime=`` or other
+        timing keywords directly is rejected with an error naming the context to
+        use instead. ``other_mob`` itself is never changed or shown: a copy of it
+        is used.
+
+        Parameters
+        ----------
+        other_mob
+            The Mob to turn into. Must be in the same Scene; it need not be
+            spawned (``add_to_scene=False`` is typical).
+        detach_history
+            If True, the result is a new Mob with ``other_mob``'s class and
+            hierarchy that takes this Mob's place under its parent; keep the
+            returned Mob for later animation. If False, this Mob keeps its
+            identity and class, and pairs that would need a different class
+            dissolve instead of morphing. Defaults to ``None``, meaning True
+            normally and False inside an updater. Passing True inside an updater
+            raises, because the updater would keep driving this Mob rather than
+            the replacement.
+        minimize_movement
+            Pair pieces by spatial proximity (minimizing total travel distance)
+            instead of by traversal order. Requires SciPy. Defaults to ``False``.
+        strategy
+            ``"auto"`` morphs geometry where possible and dissolves otherwise;
+            ``"morph"`` forces a geometric morph and raises for any pair that
+            cannot morph; ``"dissolve"`` cross-dissolves the whole Mob. Defaults
+            to ``"auto"``.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            The Mob now on screen in the target's shape. With
+            ``detach_history=True`` this is a new Mob replacing this one; use it
+            for subsequent animation. Otherwise it is usually this Mob.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If ``other_mob`` is not a Mob, belongs to a different Scene,
+            ``strategy`` is not one of the three values, or
+            ``detach_history=True`` is passed inside an updater.
+        NotImplementedError
+            If ``strategy="morph"`` is used for a pair that has no geometric
+            morph, or for a change of piece kind with ``detach_history=False``.
 
         Notes
         -----
-        Cross-kind geometric morphs pair independent PN triangles, so a surface
-        can show seams while triangles move to new counterparts. Bezier outlines
-        are triangulated at the primitive-family swap, making the silhouette at
-        that instant an approximation. A mesh-to-bezier morph likewise travels
-        through the target's filled triangulation rather than growing cubic curves.
-        Cached glyph views held before a cross-kind replacement remain views of the
-        replaced source; reacquire them from the returned Mob when it is text.
+        Cross-kind morphs move independent triangles, so a surface can show
+        seams mid-morph, and a curve outline is triangulated at the moment it
+        swaps kind, so its silhouette at that instant is approximate. A
+        mesh-to-curve morph passes through the target's filled triangulation
+        rather than growing curves. Updaters stay on the replaced source and are
+        not moved to the replacement. Glyph views taken from text before a
+        cross-kind replacement still refer to the old text; take them again
+        from the returned Mob.
+
+        Examples
+        --------
+        Morph a square into a circle and keep animating the result:
+
+        .. algan:: Example1MobBecome
+
+            from algan import *
+
+            shape = Square().spawn()
+            shape = shape.become(Circle(add_to_scene=False))
+            shape.move(RIGHT)
+            Scene.save_video()
         """
         if strategy not in {"auto", "morph", "dissolve"}:
             raise AlganConfigurationError(

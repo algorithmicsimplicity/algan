@@ -91,8 +91,8 @@ def test_an_image_mob_is_unlit():
 
 def test_a_triangulated_circuit_fill_is_unlit():
     # A triangulated circuit's fill is a bezier circuit that happens to be
-    # triangulated (this is what TexTriangulated glyph fills and plots' curves
-    # are made of); its untriangulated twin is unlit, and circuits stay unlit.
+    # triangulated (this is what TexTriangulated glyph fills are made of); its
+    # untriangulated twin is unlit, and circuits stay unlit.
     from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
 
     # One closed square outline as four cubic segments.

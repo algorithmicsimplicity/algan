@@ -2738,8 +2738,8 @@ class ConvexHull3D(Polyhedron):
 
     Raises
     ------
-    ValueError
-        If fewer than four points are given.
+    :class:`~algan.errors.AlganConfigurationError`
+        If fewer than four points are given. A subclass of ``ValueError``.
 
     Examples
     --------

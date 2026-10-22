@@ -367,7 +367,8 @@ def TransformMatchingTex(
     Raises
     ------
     TypeError
-        If inputs are not LaTeX Mobs or groups, or mapping keys are not strings.
+        If inputs are not LaTeX Mobs or groups, ``key_map`` is not a mapping,
+        or its keys and values are not strings.
     AlganConfigurationError
         If Scenes differ, the source is unspawned or a packed slice, a mapping
         names a missing term, or both mismatch policies are enabled.
@@ -464,7 +465,8 @@ def TransformMatchingShapes(
     Raises
     ------
     TypeError
-        If inputs or mapping exemplars are not Mobs, or have unsupported geometry.
+        If inputs are not Mobs, ``key_map`` is not a mapping, its exemplars are
+        not Mobs, or a shape has unsupported geometry (for example an image).
     AlganConfigurationError
         If Scenes differ, the source is unspawned or a packed slice, an explicit
         shape key is absent, or both mismatch policies are enabled.

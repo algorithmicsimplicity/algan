@@ -173,6 +173,57 @@ def test_wave_color_takes_every_direction_spelling(spell):
     torch.testing.assert_close(swept(spell), swept(_tensor))
 
 
+@SPELLINGS
+def test_move_next_to_takes_a_point_in_every_spelling(spell):
+    """REGRESSION. A tuple or list target was taken for a Mob and failed with
+    "'tuple' object has no attribute 'get_boundary_point'".
+    """
+
+    def beside(given):
+        return _settled(
+            lambda mob, point: mob.move_next_to(point, (1.0, 0.0, 0.0), buffer=0.5),
+            given,
+            lambda mob: mob.get_boundary_point(_tensor((-1.0, 0.0, 0.0))),
+        )
+
+    # The left edge sits ``buffer`` to the right of the point.
+    torch.testing.assert_close(beside(_tensor).reshape(-1)[0], torch.tensor(1.5))
+    torch.testing.assert_close(beside(spell), beside(_tensor))
+
+
+def test_move_next_to_a_point_aligns_the_edge_with_the_point():
+    """REGRESSION. ``align_edge`` with a point target handed the point to
+    ``align_with``, which failed with "'Tensor' object has no attribute
+    'get_boundary_point'". The ``align_edge`` side now lines up with the point.
+    """
+    mob = _shape()
+    mob.move_next_to(_tensor(VECTOR), (1.0, 0.0, 0.0), buffer=0.5, align_edge=(0, 1, 0))
+    materialize(10.0)
+    left = mob.get_boundary_point(_tensor((-1.0, 0.0, 0.0))).reshape(-1)
+    top = mob.get_boundary_point(_tensor((0.0, 1.0, 0.0))).reshape(-1)
+    torch.testing.assert_close(left[0], torch.tensor(1.5))
+    torch.testing.assert_close(top[1], torch.tensor(0.5))
+
+
+@SPELLINGS
+def test_move_to_point_with_displacement_takes_every_spelling(spell):
+    """REGRESSION. ``move_to_point_with_displacement([3, 2, 0], RIGHT)`` failed
+    with "unsupported operand type(s) for -: 'list' and 'Tensor'".
+    """
+
+    def routed(given):
+        return _settled(
+            lambda mob, point: mob.move_to_point_with_displacement(
+                point, given((0.0, 1.0, 0.0))
+            ),
+            given,
+            lambda mob: mob.location,
+        )
+
+    torch.testing.assert_close(routed(_tensor).reshape(-1), _tensor(VECTOR))
+    torch.testing.assert_close(routed(spell), routed(_tensor))
+
+
 @pytest.mark.parametrize(
     "call",
     [
@@ -180,8 +231,10 @@ def test_wave_color_takes_every_direction_spelling(spell):
         lambda mob: mob.look((1.0, 0.0)),
         lambda mob: mob.look_at("origin"),
         lambda mob: mob.move_between((0.0, 0.0), (1.0, 0.0, 0.0)),
+        lambda mob: mob.move_next_to((1.0, 0.0), (1.0, 0.0, 0.0)),
+        lambda mob: mob.move_to_point_with_displacement((1.0, 0.0, 0.0), 1.0),
     ],
-    ids=["scalar", "2-D direction", "string", "2-D start"],
+    ids=["scalar", "2-D direction", "string", "2-D start", "2-D target", "scalar leg"],
 )
 def test_a_point_that_is_not_3_d_is_refused_by_name(call):
     mob = _shape()

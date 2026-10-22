@@ -646,12 +646,14 @@ class Animatable:
         :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_child`
         or
         :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.replace_children`
-        rather than by assignment, so the children's ``parents`` are kept in step.
+        rather than by assignment, so the children's ``parents`` are kept in step;
+        assigning to ``children`` raises :class:`~algan.errors.HierarchyError`.
         """
         return self._children
 
     @children.setter
     def children(self, value):
+        """Refuse assignment; use ``replace_children``, ``add_children`` or ``remove_child``."""
         raise HierarchyError(
             f"{self._describe()}.children cannot be assigned to: a parent-child "
             f"link is stored at both ends, and replacing this list would leave "
@@ -669,12 +671,14 @@ class Animatable:
         :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_parent`
         or
         :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_parent`
-        rather than by assignment, so the parents' ``children`` are kept in step.
+        rather than by assignment, so the parents' ``children`` are kept in step;
+        assigning to ``parents`` raises :class:`~algan.errors.HierarchyError`.
         """
         return self._parents
 
     @parents.setter
     def parents(self, value):
+        """Refuse assignment; use ``add_parent`` or ``remove_parent``."""
         raise HierarchyError(
             f"{self._describe()}.parents cannot be assigned to: a parent-child "
             f"link is stored at both ends, and replacing this list would leave "
@@ -1087,11 +1091,17 @@ class Animatable:
 
     @property
     def animation_manager(self):
-        """This mob's scene-owned animation manager."""
+        """The animation manager of the Scene this Mob belongs to.
+
+        Every Mob shares its Scene's manager. Assigning any other manager raises
+        :class:`~algan.errors.AlganConfigurationError`; assigning the Scene's own
+        one does nothing.
+        """
         return self.scene.animation_manager
 
     @animation_manager.setter
     def animation_manager(self, manager):
+        """Accept only the Scene's own manager; raise for any other."""
         if manager is not self.scene.animation_manager:
             raise AlganConfigurationError(
                 "A Mob must use the AnimationManager owned by its Scene"
