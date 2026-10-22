@@ -22,12 +22,14 @@ def optix_gather_merge(
         active: ti.types.ndarray(), num_active: int,
         rs_int: ti.types.ndarray(), tri_count: ti.types.ndarray(),
         tri_f: ti.types.ndarray(), tri_i: ti.types.ndarray(),
-        hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray()):
+        hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
+        max_count: int):
     """Merge the triangle k-buffer into the circuits' one.
 
     ``tri_*`` / ``tri_count`` hold the OptiX gather's triangle hits; ``hit_*``
     / ``rs_int[:, 3]`` hold what the software traversal gathered of the
-    circuits, and receive the merged buffer.
+    circuits, and receive the merged buffer. ``max_count`` is ``kbuf``, or 1
+    for the ``opaque_closest`` variant (the nearest hit alone).
     """
     for i in range(num_active):
         r = active[i]
@@ -85,7 +87,7 @@ def optix_gather_merge(
                         sel_p = cp[c]
                         sel_f = cf[c]
                         found = 1
-            if found == 1:
+            if (found == 1) and (count < max_count):
                 for c in ti.static(range(2 * kbuf)):
                     if (cv[c] == 1) and (ct[c] == sel_t) and (cl[c] == sel_l):
                         cv[c] = 0

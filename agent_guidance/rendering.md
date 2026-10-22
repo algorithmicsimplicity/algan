@@ -253,7 +253,10 @@ stream, reading and writing the same arena buffers.
   batch the software traversal gathers them alone (triangle tree compiled
   out) and `optix_gather_merge` (`optix_gather_taichi.py`) keeps the first
   `kbuf` of the union -- exactly `_collect_hits`' answer, since each buffer
-  holds its type's first `kbuf` hits.
+  holds its type's first `kbuf` hits. Under `opaque_closest` it keeps the
+  first hit alone (`_nearest_surface_g`). The path tracer's camera and
+  continuation gathers take the same route (its NEE shadow rays, inline in
+  `pt_shade`, stay in software).
 - **What is not bit-exact.** The RT cores' watertight triangle test is not
   `_tri_hit`'s float32 arithmetic: `t`, barycentrics and the owner of a ray
   through an edge differ in the last bits. On by default would need its own

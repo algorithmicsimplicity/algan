@@ -92,6 +92,8 @@ struct Params {
     unsigned int hit_f_c;
     unsigned int hit_i_q;
     unsigned int hit_i_c;
+    unsigned int closest_only;  // keep one hit (the opaque_closest variant)
+    unsigned int pad4;
 };
 
 extern "C" {
@@ -525,9 +527,11 @@ extern "C" __global__ void __raygen__gather()
             }
         }
     }
-    // Everything after the first opaque hit is absorbed; keep kbuf.
+    // Everything after the first opaque hit is absorbed; keep kbuf (under
+    // opaque_closest, the first hit alone: _nearest_surface_g's answer).
+    const int keep = params.closest_only != 0u ? 1 : AO_KBUF;
     int count = 0;
-    for (int c = 0; c < nc && count < AO_KBUF; ++c) {
+    for (int c = 0; c < nc && count < keep; ++c) {
         ++count;
         if (copq[c] != 0u)
             break;

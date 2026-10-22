@@ -68,8 +68,14 @@ def gather(
     ray_offset,
     pixels_per_frame,
     layer_offset,
+    closest_only=False,
 ):
-    """Launch the OptiX gather over ``active[:num_active]``."""
+    """Launch the OptiX gather over ``active[:num_active]``.
+
+    ``closest_only`` keeps one hit per ray, the first in order whatever its
+    class: the ``opaque_closest`` variant of ``wavefront_traverse_events``
+    (``_nearest_surface_g``).
+    """
     from algan.rendering.raytracing.raytrace_kernels_taichi import (
         INV_DEPTH_TIE_EPSILON,
         depth_tie_epsilon,
@@ -120,6 +126,7 @@ def gather(
     params.hit_f_c = int(hit_f.stride(1))
     params.hit_i_q = int(hit_i.stride(0))
     params.hit_i_c = int(hit_i.stride(1))
+    params.closest_only = 1 if closest_only else 0
     runtime.launch("gather", params, int(num_active))
     STATS["launches"] += 1
     STATS["rays"] += int(num_active)

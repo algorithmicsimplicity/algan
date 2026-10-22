@@ -103,6 +103,8 @@ class _Params(ctypes.Structure):
         ("hit_f_c", c_uint),
         ("hit_i_q", c_uint),
         ("hit_i_c", c_uint),
+        ("closest_only", c_uint),
+        ("pad4", c_uint),
     ]
 
 

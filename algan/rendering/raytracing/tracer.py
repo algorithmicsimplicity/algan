@@ -442,18 +442,18 @@ def _optix_gather(
 
     ``SETTINGS.raytracing.experimental.optix``'s gather (``optix/gather.py``):
     the hit set ``wavefront_traverse_events`` gathers, for continuation rays.
-    Triangles go to the RT cores; a batch's Bezier circuits are gathered by
+    Under ``opaque_closest`` it keeps the first hit alone, which is
+    ``_nearest_surface_g``'s answer. Triangles go to the RT cores; a batch's Bezier circuits are gathered by
     the software traversal with the triangle tree compiled out
     (``software(0)``) and the two k-buffers merged (``optix_gather_merge``).
-    Rays the traverse kernel generates itself (``gen_first``), the
-    opaque-closest and prepass variants and the memory-trimmed geometry stay
-    in software. ``software(has_tri)`` runs this iteration's software
+    Rays the traverse kernel generates itself (``gen_first``), the prepass
+    variant and the memory-trimmed geometry stay in software. ``software(has_tri)`` runs this iteration's software
     traversal; with ``optix.gather.VERIFY`` set the full one runs after the
     hardware gather too, and the two are compared per ray.
     """
     if not rt_settings.optix or _tracer_opt_disabled("optixgather"):
         return False
-    if gen_first or opaque_closest or opaque_prepass or not has_tri:
+    if gen_first or opaque_prepass or not has_tri:
         return False
     if a_pos is not merged.get("tri_pos") or rs_ro.device.type != "cuda":
         return False
@@ -491,6 +491,7 @@ def _optix_gather(
         ray_offset=ray_offset,
         pixels_per_frame=int(width) * int(height),
         layer_offset=layer_offset,
+        closest_only=bool(opaque_closest),
     )
     if has_bez:
         from algan.rendering.raytracing.optix_gather_taichi import optix_gather_merge
@@ -498,7 +499,17 @@ def _optix_gather(
         tri_count = memory.get_tensor((na,), torch.int32)
         torch.index_select(rs_int[:, 3], 0, active[:na], out=tri_count)
         software(0)
-        optix_gather_merge(active, na, rs_int, tri_count, tri_f, tri_i, hit_f, hit_i)
+        optix_gather_merge(
+            active,
+            na,
+            rs_int,
+            tri_count,
+            tri_f,
+            tri_i,
+            hit_f,
+            hit_i,
+            1 if opaque_closest else kbuf,
+        )
     if optix_gather.VERIFY:
         optix_gather.verify(active, na, rs_int, hit_f, hit_i, lambda: software(1))
     return True

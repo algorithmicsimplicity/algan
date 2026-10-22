@@ -342,8 +342,10 @@ def test_a_failed_structure_build_keeps_the_software_walk(monkeypatch):
     assert gas.build_batch_gas(None, None, None, None) is None
 
 
-def _mixed_triangle_scene():
-    """Opaque, half-transparent and glass solids and a mirror on a lit wall."""
+def _mixed_triangle_scene(opaque_only=False):
+    """Opaque, half-transparent and glass solids and a mirror on a lit wall
+    (the opaque ones alone with ``opaque_only``).
+    """
     from algan import (
         BLUE,
         OUT,
@@ -369,18 +371,19 @@ def _mixed_triangle_scene():
     Cube(size=1.6).set_material(MeshLambertMaterial(color=RED)).move(
         RIGHT * -2.5 + OUT * 1.0
     ).spawn(animate=False)
-    Cube(size=1.8, opacity=0.5).set_material(MeshLambertMaterial(color=BLUE)).move(
-        RIGHT * 0.5 + OUT * 1.4
-    ).spawn(animate=False)
-    Sphere(radius=1.0).set_material(
-        MeshPhysicalMaterial(color=WHITE, transmission=1.0, roughness=0.0, ior=1.5)
-    ).move(RIGHT * 3.0 + OUT * 1.5 + UP * 1.0).spawn(animate=False)
+    if not opaque_only:
+        Cube(size=1.8, opacity=0.5).set_material(MeshLambertMaterial(color=BLUE)).move(
+            RIGHT * 0.5 + OUT * 1.4
+        ).spawn(animate=False)
+        Sphere(radius=1.0).set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1.0, roughness=0.0, ior=1.5)
+        ).move(RIGHT * 3.0 + OUT * 1.5 + UP * 1.0).spawn(animate=False)
     Sphere(radius=0.7).set_material(
         MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.0)
     ).move(RIGHT * -1.0 + OUT * 2.2 + UP * -1.5).spawn(animate=False)
 
 
-def _render_mixed(path, optix, max_bounces=0, circuits=False):
+def _render_mixed(path, optix, max_bounces=0, circuits=False, spp=1, opaque_only=False):
     import numpy as np
     from PIL import Image
 
@@ -391,12 +394,14 @@ def _render_mixed(path, optix, max_bounces=0, circuits=False):
     SceneManager.reset()
     snapshot = SETTINGS.snapshot()
     try:
-        SETTINGS.raytracing.set(shadows=True, max_bounces=max_bounces)
+        SETTINGS.raytracing.set(
+            shadows=True, max_bounces=max_bounces, samples_per_pixel=spp
+        )
         SETTINGS.raytracing.experimental.set(optix=optix)
         with Scene(video_settings=video) as scene:
             scene.set_background(BLACK)
             with Off():
-                _mixed_triangle_scene()
+                _mixed_triangle_scene(opaque_only)
                 if circuits:
                     from algan import OUT, RED, RIGHT, UP, Circle, Square
 
@@ -494,3 +499,28 @@ def test_reflection_gather_of_a_render_agrees_with_the_software_walk(
     assert verify["max_first_t_diff"] < 1e-3
     delta = np.abs(hardware - software).max(-1)
     assert int((delta > 2).sum()) <= 0.003 * delta.size
+
+
+@pytest.mark.parametrize("opaque_only", [False, True])
+def test_path_tracer_gather_agrees_with_the_software_walk(
+    tmp_path, monkeypatch, opaque_only
+):
+    """The path tracer's camera and continuation gathers on RT cores.
+
+    An all-opaque batch takes the one-hit ``opaque_closest`` variant.
+    """
+    from algan.rendering.raytracing.optix import gather
+
+    _runtime()
+    monkeypatch.setattr(gather, "VERIFY", True)
+    for stats in (gather.VERIFY_STATS, gather.STATS):
+        for key in stats:
+            stats[key] = 0 if key != "max_first_t_diff" else 0.0
+    _render_mixed(tmp_path / "pt.png", True, 2, spp=4, opaque_only=opaque_only)
+    verify = gather.VERIFY_STATS
+    assert gather.STATS["launches"] > 0
+    assert verify["rays"] > 10000
+    assert verify["same_first_hit"] >= 0.998 * verify["rays"]
+    if opaque_only:
+        # One hit each, exactly as _nearest_surface_g answers.
+        assert verify["same_count"] >= 0.998 * verify["rays"]
