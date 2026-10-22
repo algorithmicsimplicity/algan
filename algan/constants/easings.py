@@ -441,21 +441,6 @@ rush_from = ease_out_cubic
 slow_into = ease_out_quad
 
 
-def tan(t, scale=10):
-    """Decelerate into the middle, then accelerate out to the end.
-
-    Combines :func:`ease_out_expo` on the first half with
-    :func:`ease_in_expo` on the second. Note that the curve jumps at
-    ``t = 0.5`` (from about ``0.42`` to ``0.58``), and ``scale`` is
-    currently ignored. Maps 0 to 0 and 1 to 1.
-    """
-    t_tensor = torch.as_tensor(t)
-    m = (t_tensor < 0.5).float()
-    return m * ease_out_expo(t_tensor) * 0.5 + (1 - m) * (
-        ease_in_expo(t_tensor) * 0.5 + 0.5
-    )
-
-
 # Explicit, so ``from algan.easings import *`` brings in the curves and not
 # this module's own ``math`` and ``torch`` imports, and so the documentation
 # tooling has a definitive roster to render. (``dir()`` still lists the imports
@@ -502,5 +487,4 @@ __all__ = [
     "rush_into",
     "slow_into",
     "smooth",
-    "tan",
 ]

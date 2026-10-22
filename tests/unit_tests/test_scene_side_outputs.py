@@ -251,6 +251,32 @@ def test_show_frame_displays_the_frame_it_rendered(scene, monkeypatch):
         pyplot.close("all")
 
 
+def test_show_frame_takes_a_negative_at_as_an_offset_like_save_frame(
+    scene, monkeypatch
+):
+    """REGRESSION. ``show_frame(at=-0.5)`` raised, although ``save_frame``
+    reads the same argument as half a second before the authoring cursor.
+    """
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    from matplotlib import pyplot
+
+    monkeypatch.setattr(pyplot, "pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pyplot, "show", lambda *args, **kwargs: None)
+    scene.set_video_settings(SMOKE_TEST)
+    square = Square(color=RED).spawn(animate=False)
+    square.move(RIGHT * 3)
+    now = scene.animation_manager.context.timespan.current_time
+    try:
+        offset = scene.show_frame(at=-0.5)[0]
+        absolute = scene.show_frame(at=now - 0.5)[0]
+        assert torch.equal(offset, absolute)
+        with pytest.raises(AlganConfigurationError):
+            scene.show_frame(at=-(now + 1))
+    finally:
+        pyplot.close("all")
+
+
 def _write_silence(path, seconds):
     from scipy.io import wavfile
 

@@ -1592,8 +1592,10 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         at
-            Time to render, in seconds. Defaults to ``None``, meaning just after the
-            current authoring time -- i.e. the scene as it stands.
+            Time to render, in seconds. A negative timestamp is an offset
+            backwards from the current authoring time, as in
+            :meth:`~.Scene.save_frame`. Defaults to ``None``, meaning just after
+            the current authoring time -- i.e. the scene as it stands.
 
         Returns
         -------
@@ -1604,19 +1606,14 @@ class Scene(RenderLoopMixin):
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``at`` is negative or not finite. Unlike
-            :meth:`~.Scene.save_frame`, a negative ``at`` is not an offset
-            back from the current time.
+            If the resolved timestamp is negative or not finite.
         """
         from algan.utils.plotting_utils import plot_tensor
 
         _note_render_requested()
-        if at is None:
-            at = (
-                self.animation_manager.context.current_time
-                + 1.5 / self.video_settings.frames_per_second
-            )
-        time_ind = self._frame_index_for_timestamp(at)
+        time_ind = self._frame_index_for_timestamp(
+            self._resolve_still_timestamp(at), at
+        )
         frames = []
         # See Scene.save_frame: a render that leaves the Scene re-renderable
         # must not leave its replay-window resolution behind for the next one.
@@ -1784,9 +1781,10 @@ class Scene(RenderLoopMixin):
             sequence, in the input's order. Batched wall time is shared evenly
             among the rendered files. Inside a project screenshot pass, the
             result is ``"deferred"``; the project's return value contains the
-            completed results. An empty list is returned, and nothing is
-            rendered, when a project run has filtered this still out or is
-            rendering video only, or when ``at`` is an empty sequence.
+            completed results. When a project run has filtered this still out
+            or is rendering video only, nothing is rendered and each still is
+            reported as ``"skipped"``. An empty sequence ``at`` returns an
+            empty list.
 
         Raises
         ------
@@ -1813,21 +1811,18 @@ class Scene(RenderLoopMixin):
             project_run = _get_active_project_run()
         if project_run is not None:
             file_path = project_run.prepare_frame_path(file_path)
-            # False in video mode, and for a frame the project run's selection
-            # has filtered out.
-            if not project_run.should_render_frame():
-                return []
-        if SETTINGS._skip_save_frame:
-            return []
         # Import lazily to avoid the Scene/algan_utils import cycle during
         # package initialization while sharing video output's exact resolver.
         from algan.utils.algan_utils import (
+            RenderResult,
             _check_container_is_supported,
             _resolve_output_destination,
         )
 
-        destination = _resolve_output_destination(file_path, ".png")
-        _check_container_is_supported(destination, still=True)
+        # The directory is created only once something will be written to it.
+        destination = _resolve_output_destination(
+            file_path, ".png", create_parent=False
+        )
         if not _names_several_timestamps(at):
             targets = [(destination, at)]
             returns_list = False
@@ -1839,6 +1834,15 @@ class Scene(RenderLoopMixin):
                 for time_stamp in at
             ]
             returns_list = True
+        # A project run in video mode, or one whose selection has filtered this
+        # still out, reports each still as skipped, as save_video does.
+        if (
+            project_run is not None and not project_run.should_render_frame()
+        ) or SETTINGS._skip_save_frame:
+            skipped = [RenderResult("skipped", path) for path, _ in targets]
+            return skipped if returns_list else skipped[0]
+        _check_container_is_supported(destination, still=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
 
         from algan._still_frames import _StillBatch
 

@@ -85,7 +85,7 @@ def inspect_funcs(module):
         for name in dir(module)
         if callable(getattr(module, name))
         and not name.startswith("_")
-        and name not in ("inversed", "tan", "delay_fade", "pulse_fade")
+        and name not in ("inversed", "delay_fade", "pulse_fade")
     ]
 
 
