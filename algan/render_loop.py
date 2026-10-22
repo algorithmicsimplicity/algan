@@ -353,6 +353,35 @@ def _opt_disabled_render_loop(name):
     return _opt_disabled(name)
 
 
+def _batch_boundary_sync():
+    """Drain the devices at a batch boundary, unless the render is on CUDA.
+
+    The batching loop synced at the top of every batch, after its fetch and
+    after its render, so that the ``Batch fetch took`` and ``Rendered frames``
+    log lines timed device work as well as host work. Nothing else needs it
+    on CUDA, where torch and Quadrants launch on one stream: device work is
+    ordered by that stream; every host read of a device result (the frame
+    readback, the compaction counts, the rounding records) synchronizes as it
+    reads; the memory model's peaks, torch's peak counters and the arena
+    preflight are host bookkeeping; and a prefetched batch arrives through a
+    ``Future``, with its device work queued on the same stream ahead of
+    anything the render thread enqueues after it. (The viewer already runs
+    this loop on a worker thread, where ``_sync_devices`` does nothing.) On
+    WDDM each sync is a command-buffer flush; an RTX 5080 profile put these
+    at 68-262 ms of a warm render.
+
+    The timings stay close: the batch's last frame readback has already
+    waited out its chunk, so ``Rendered frames`` (and the adaptive gen-fused
+    forecast fed from it) still sees the render's device time. Other devices
+    keep the syncs: on MPS torch and Taichi run separate queues, which the
+    reasoning above does not cover, and on the CPU they cost nothing.
+    ``ALGAN_OPT_DISABLE=loopsync`` restores them on CUDA.
+    """
+    if render_device().type == "cuda" and not _opt_disabled_render_loop("loopsync"):
+        return
+    _sync_devices()
+
+
 def _close_video_file_writer(file_writer):
     """Close moviepy's writer, and raise if FFmpeg did not finish the file.
 
@@ -674,6 +703,56 @@ def _frame_window_bounds(start, end, frame_indices=None):
     return frame_indices[start], frame_indices[end - 1] + 1
 
 
+#: Largest prepared background :func:`_prepare_background_for_chunk` keeps on
+#: the device between chunks. A color or an image at an ordinary resolution is
+#: far below it; a super-sampled UHD image is above it and is prepared per
+#: chunk as before, so it never sits beside the GPU merge between batches.
+_BACKGROUND_CACHE_MAX_BYTES = 64 << 20
+
+
+def _background_reuse_active(device):
+    """Whether chunk backgrounds are cached and staged for ``device``.
+
+    CUDA only: there a pageable upload synchronizes the stream, so a batch's
+    first chunk waited out everything queued ahead of it, the scene upload
+    included; and torch and Quadrants share the one stream the staged copy
+    is ordered on. ``ALGAN_OPT_DISABLE=bgupload`` turns both off.
+    """
+    return torch.device(device).type == "cuda" and not _opt_disabled_render_loop(
+        "bgupload"
+    )
+
+
+def _background_to_device(background, device):
+    """``background.to(device)``, without blocking when it is small.
+
+    A copy from pageable memory synchronizes the stream, so a small tensor is
+    staged in page-locked memory and copied without blocking, as
+    ``tracer._arena_copy`` does, up to the same size. The bytes, shape, dtype
+    and (contiguous) layout are those of the blocking copy, and the caching
+    host allocator keeps the staging block until the copy has run.
+    """
+    if (
+        _background_reuse_active(device)
+        and background.device.type == "cpu"
+        and background.is_contiguous()
+    ):
+        from algan.rendering.raytracing.tracer import _PINNED_STAGING_MAX_BYTES
+
+        if background.numel() * background.element_size() <= _PINNED_STAGING_MAX_BYTES:
+            try:
+                staged = torch.empty(
+                    background.shape, dtype=background.dtype, pin_memory=True
+                )
+            except RuntimeError:
+                # A host may be unable to lock more pages; pinning is optional.
+                staged = None
+            if staged is not None:
+                staged.copy_(background)
+                return staged.to(device, non_blocking=True)
+    return background.to(device)
+
+
 def _prepare_background_for_chunk(
     background,
     *,
@@ -685,6 +764,7 @@ def _prepare_background_for_chunk(
     frames_per_second,
     device,
     frame_indices=None,
+    cache=None,
 ):
     """Prepare one chunk's background for rendering.
 
@@ -694,6 +774,14 @@ def _prepare_background_for_chunk(
     the complete batch in one kernel launch. Neither path retains a second
     full-batch image allocation beside the render arena. Image tensors retain
     the eager path.
+
+    ``cache`` (a dict the render job owns, or ``None``) keeps a tensor
+    background's prepared value on a CUDA device across chunks, since it does
+    not change from one chunk to the next: the upload and its arithmetic run
+    once per job instead of once per chunk. An entry holds its source tensor,
+    so it matches only that object at the same ``_version`` -- one written in
+    place since is prepared afresh -- and only on the same device. Nothing
+    downstream writes the prepared value, so sharing it changes no byte.
     """
     aa = int(anti_alias_level)
     width = int(screen_width) * aa
@@ -712,20 +800,37 @@ def _prepare_background_for_chunk(
             frame_indices=frame_indices,
         )
 
+    from algan.rendering.raytracing.scene_builder import _StaticImageBackground
+
+    num_frames = new_ind - current_ind
+    source = background
+    reuse = (
+        cache is not None
+        and torch.is_tensor(source)
+        # An inference tensor has no version counter to compare.
+        and not source.is_inference()
+        and _background_reuse_active(device)
+    )
+    if reuse:
+        key = (source._version, torch.device(device))
+        entry = cache.get("background")
+        if entry is not None and entry[0] is source and entry[1] == key:
+            prepared, static = entry[2], entry[3]
+            if static:
+                return _StaticImageBackground(prepared, num_frames)
+            return prepared
+
     if torch.is_tensor(background):
-        background = background.to(device)
+        background = _background_to_device(background, device)
     else:
         background = torch.as_tensor(background, device=device)
 
+    static = False
     if background.dim() > 1:
         if background.shape[0] == 1:
             from algan.animation_timeline.timeline import _opt_disabled
 
             if not _opt_disabled("staticbg"):
-                from algan.rendering.raytracing.scene_builder import (
-                    _StaticImageBackground,
-                )
-
                 # One frame's rows, standing for every frame of the chunk:
                 # the copies below would be byte-identical frame to frame,
                 # and at a super-sampled resolution the float temporaries
@@ -733,19 +838,31 @@ def _prepare_background_for_chunk(
                 rows = background.reshape(-1, background.shape[-1])
                 rows = torch.cat((rows[:1], rows))
                 rows = torch.add(0.5, rows, alpha=255).clamp_(0, 255)
-                return _StaticImageBackground(
-                    rows.to(torch.uint8), new_ind - current_ind
-                )
-            background = background.expand(
-                new_ind - current_ind,
-                *[-1 for _ in range(background.dim() - 1)],
-            ).contiguous()
-        background = background.view(-1, background.shape[-1])
-        background = torch.cat((background[:1], background))
-        # 0.5 + 255 * bg: scale [0,1] floats to bytes with round-to-nearest
-        # (clamp before the cast -- float -> uint8 wraps instead of saturating).
-        background = torch.add(0.5, background, alpha=255).clamp_(0, 255)
-        background = background.to(torch.uint8)
+                background = rows.to(torch.uint8)
+                static = True
+            else:
+                background = background.expand(
+                    num_frames,
+                    *[-1 for _ in range(background.dim() - 1)],
+                ).contiguous()
+                # As long as this chunk, so the next one cannot reuse it.
+                reuse = False
+        if not static:
+            background = background.view(-1, background.shape[-1])
+            background = torch.cat((background[:1], background))
+            # 0.5 + 255 * bg: scale [0,1] floats to bytes with round-to-nearest
+            # (clamp before the cast -- float -> uint8 wraps instead of
+            # saturating).
+            background = torch.add(0.5, background, alpha=255).clamp_(0, 255)
+            background = background.to(torch.uint8)
+    if (
+        reuse
+        and background.numel() * background.element_size()
+        <= _BACKGROUND_CACHE_MAX_BYTES
+    ):
+        cache["background"] = (source, key, background, static)
+    if static:
+        return _StaticImageBackground(background, num_frames)
     return background
 
 
@@ -2333,6 +2450,7 @@ class RenderLoopMixin:
                         if "frame_indices" in render_state
                         else None
                     ),
+                    cache=self.__dict__.get("_chunk_background_cache"),
                 )
                 # Pressure-gated gc (like every other steady-state call site):
                 # a forced full collection here cost ~150 ms per frame window
@@ -2536,6 +2654,7 @@ class RenderLoopMixin:
                     if frame_indices is not None
                     else None
                 ),
+                cache=self.__dict__.get("_chunk_background_cache"),
             )
             # In-place AA samples the background once per output pixel, so a
             # super-sampled image background must be averaged down first
@@ -4061,6 +4180,7 @@ class RenderLoopMixin:
                 cache = self.__dict__.pop("_bezier_geometry_cache", None)
                 if cache is not None:
                     cache.clear()
+                self.__dict__.pop("_chunk_background_cache", None)
                 self.__dict__.pop("_frame_local_batches", None)
                 self.__dict__.pop("_still_batches", None)
                 # Release the arena before the arch scope considers a deferred
@@ -4187,6 +4307,9 @@ class RenderLoopMixin:
         # Measured chunk-peak model, carried across every batch of this job so
         # only the first one pays to probe.
         self._chunk_memory_model = ChunkMemoryModel()
+        # The prepared background, uploaded once for the job rather than per
+        # chunk (see _prepare_background_for_chunk); get_frames drops it.
+        self._chunk_background_cache = {}
         # The merge and the projection build outside the arena, so the chunk
         # model cannot see them; their multipliers are measured from the builds
         # themselves, seeded by the previous guesses until one has run.
@@ -4491,7 +4614,7 @@ class RenderLoopMixin:
 
             try:
                 while True:
-                    _sync_devices()
+                    _batch_boundary_sync()
                     s = time.time()
                     if retry_end_ind is not None:
                         drain_pending()
@@ -4519,7 +4642,7 @@ class RenderLoopMixin:
                         primitives, new_time_ind, render_state = fetch_batch(
                             current_time_ind, fetch_end_ind
                         )
-                    _sync_devices()
+                    _batch_boundary_sync()
                     e = time.time()
                     logger.debug("Batch fetch took %.2f seconds", e - s)
 
@@ -4926,7 +5049,7 @@ class RenderLoopMixin:
                         del primitives
                         # Free previous batch data before allocating next batch.
                         release_torch_memory(force_gc=False)
-                        _sync_devices()
+                        _batch_boundary_sync()
                         e = time.time()
                         logger.debug(
                             "Rendered frames %d:%d in %.2f seconds",
