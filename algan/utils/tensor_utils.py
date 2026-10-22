@@ -206,12 +206,17 @@ def _within_unit_interval(value):
     anyway, so a ``True`` here needs no separate finiteness check. ``False``
     says only "look closer": the caller then runs the exact checks, which
     decide which error -- if any -- to raise.
+
+    The lower end must be strictly positive. With denormals flushed (a thread
+    whose floating-point mode some library set), the reduction can return a
+    negative denormal as ``-0.0`` while the exact comparison still sees it
+    below zero, so a zero minimum is left to that comparison.
     """
     value = _plain_tensor(value)
     if not value.is_floating_point() or value.numel() == 0:
         return False
     low, high = torch.aminmax(value)
-    return low.item() >= 0.0 and high.item() <= 1.0
+    return low.item() > 0.0 and high.item() <= 1.0
 
 
 def reject_outside_unit_interval(name, value, given=None, *, cast_from=_NO_SOURCE):

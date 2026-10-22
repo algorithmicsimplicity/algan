@@ -137,6 +137,27 @@ def test_a_tensor_is_judged_as_the_elementwise_check_judges_it(value):
     )
 
 
+@pytest.mark.parametrize("value", TENSORS, ids=lambda t: f"{t.dtype}{tuple(t.shape)}")
+def test_the_verdicts_agree_with_denormals_flushed(value):
+    """A library can leave the thread flushing denormals.
+
+    A reduction may then see a negative denormal as ``-0.0`` where a
+    comparison does not; the unit-interval shortcut must not clear one on the
+    reduction's word.
+    """
+    if not torch.set_flush_denormal(True):
+        pytest.skip("this CPU cannot flush denormals")
+    try:
+        assert _outcome(reject_non_finite, "location", value) == _outcome(
+            _reference_non_finite, "location", value
+        )
+        assert _outcome(reject_outside_unit_interval, "opacity", value) == _outcome(
+            _reference_unit_interval, "opacity", value
+        )
+    finally:
+        torch.set_flush_denormal(False)
+
+
 def test_a_plain_number_never_builds_a_tensor_to_be_validated(monkeypatch):
     """The point of the number path: no tensor op runs for a valid number."""
     import algan.utils.tensor_utils as tensor_utils
