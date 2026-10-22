@@ -34,7 +34,13 @@ from algan.rendering.raytracing.settings import (
 )
 from algan.rendering.raytracing.shading_taichi import _MID_LAMBERT, MAT_W
 from algan.rendering.raytracing.sliver_split import sliver_leaf_columns
-from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, STBVH, build_stbvh
+from algan.rendering.raytracing.stbvh import (
+    EMPTY_HI,
+    EMPTY_LO,
+    STBVH,
+    build_stbvh,
+    bvh_node_words,
+)
 from algan.rendering.raytracing.utils import (
     _cat_collections,
     _cat_mat_blocks,
@@ -417,19 +423,23 @@ def _upload_alignment_floor():
     return _UPLOAD_ALIGNMENT_FLOOR
 
 
-#: Byte boundary a BVH's sibling blocks start on, on every backend: the
-#: traversal kernels read them as packed 64-bit words (``stbvh.kernel_blocks``),
-#: and a 2-byte-aligned f16 storage -- all the element size asks for -- would
-#: be a misaligned 8-byte load on CUDA (and a view torch refuses to make). 16
-#: also covers a vector-element bind. Applied whatever the ``nodewords``
-#: switch says, so the two arms of that A/B share one arena layout.
+#: Byte boundary a BVH's sibling blocks start on, on every backend, while the
+#: traversal kernels read them as packed 64-bit words (``stbvh.bvh_node_words``,
+#: ``stbvh.kernel_blocks``): a 2-byte-aligned f16 storage -- all the element
+#: size asks for -- would be a misaligned 8-byte load on CUDA (and a view torch
+#: refuses to make; ``kernel_blocks`` would fall back to narrower words). 16
+#: also covers a vector-element bind. Under ``ALGAN_BVH_NODE_WORDS=0`` it is
+#: not applied, so that arm keeps the original arena layout to the byte. (Where
+#: the Metal zero-copy patch is installed -- the published Quadrants build on
+#: every platform -- :func:`_upload_alignment_floor` is already 16 for every
+#: storage, so this changes nothing there.)
 _NODE_BLOCK_ALIGNMENT = 16
 
 
 def _storage_alignment(group):
     element = max((tensor.element_size() for tensor in group["tensors"]), default=1)
     floor = _upload_alignment_floor()
-    if group.get("node_blocks"):
+    if bvh_node_words and group.get("node_blocks"):
         floor = max(floor, _NODE_BLOCK_ALIGNMENT)
     return max(element, floor)
 

@@ -6,14 +6,14 @@ certain to reach, or touches nothing at all, and hands everything else to the
 ordered march. The claim is bit-identity with the march (shadow mode 1), so
 the tests here hold it to that:
 
-* the host selection (``shadow_dispatch``) and its kill switch;
+* the host selection (``shadow_dispatch``): opt-in through
+  ``shadow_anyhit="opaquefirst"``, since it measured slower on the GPU;
 * per ray, over a scene captured from a real render -- opaque, half
   transparent, glass and circuit casters, both BVH kinds -- with rays aimed at
   surface points, triangle edges and vertices (``max_t`` landing on a surface:
   the light's own depth bin) and non-finite rays, comparing the occlusion bits
   of modes 1 and 5 and requiring every outcome of the first pass to occur;
-* whole frames on both deterministic routes, mode 5 against the
-  ``opaquefirst`` kill switch.
+* whole frames on both deterministic routes, mode 5 against auto's march.
 """
 
 from __future__ import annotations
@@ -45,7 +45,6 @@ from algan import (
     Sphere,
     Square,
 )
-from algan.animation_timeline import timeline
 from algan.rendering.raytracing import raytrace_kernels_taichi as rk
 from algan.rendering.raytracing import scene_builder
 from algan.rendering.raytracing import settings as rt_settings
@@ -64,18 +63,6 @@ _FACTS = (
 )
 
 
-@pytest.fixture
-def opt_disabled():
-    """Swap ``ALGAN_OPT_DISABLE`` in-process, as the A/B scripts do."""
-    saved = timeline._OPT_DISABLED
-
-    def use(*names):
-        timeline._OPT_DISABLED = frozenset(names)
-
-    yield use
-    timeline._OPT_DISABLED = saved
-
-
 def _mixed_batch(**changes):
     merged = dict.fromkeys(_FACTS, False)
     merged.update(
@@ -88,45 +75,54 @@ def _mixed_batch(**changes):
     return merged
 
 
-def test_auto_takes_opaque_first_for_mixed_batches_with_opaque_casters(opt_disabled):
-    opt_disabled()
-    assert _select_shadow_mode(True, "auto", _mixed_batch()) == 5
+def test_opaque_first_is_opt_in_for_mixed_batches_with_opaque_casters():
+    # Auto keeps the ordered march for a mixed batch: opaque-first measured
+    # slower on the GPU, so it has to be asked for.
+    assert _select_shadow_mode(True, "auto", _mixed_batch()) == 1
+    assert _select_shadow_mode(True, "opaquefirst", _mixed_batch()) == 5
     # Circuits alone can be the opaque casters.
     assert (
         _select_shadow_mode(
-            True, "auto", _mixed_batch(tri_has_opaque=False, bez_has_opaque=True)
+            True,
+            "opaquefirst",
+            _mixed_batch(tri_has_opaque=False, bez_has_opaque=True),
         )
         == 5
     )
     # Nothing opaque to stop a ray early: every ray would march anyway.
-    assert _select_shadow_mode(True, "auto", _mixed_batch(tri_has_opaque=False)) == 1
+    assert (
+        _select_shadow_mode(True, "opaquefirst", _mixed_batch(tri_has_opaque=False))
+        == 1
+    )
     # Missing opacity facts are uncertainty, never a reason to skip the march.
     merged = _mixed_batch()
     del merged["tri_has_opaque"]
-    assert _select_shadow_mode(True, "auto", merged) == 1
-    # A provably opaque batch keeps the plain any-hit, and the explicit
-    # experimental modes are untouched.
+    assert _select_shadow_mode(True, "opaquefirst", merged) == 1
+    # A provably opaque batch keeps the plain any-hit under either value, and
+    # the explicit experimental modes are untouched.
     assert _select_shadow_mode(True, "auto", dict.fromkeys(_FACTS, False)) == 3
+    assert _select_shadow_mode(True, "opaquefirst", dict.fromkeys(_FACTS, False)) == 3
     assert _select_shadow_mode(True, True, _mixed_batch(has_transmissive=False)) == 2
     assert _select_shadow_mode(True, "gather", _mixed_batch()) == 4
     assert _select_shadow_mode(True, False, _mixed_batch()) == 1
     assert _select_shadow_mode(False, "auto", _mixed_batch()) == 0
 
 
-def test_opaque_first_kill_switch_and_its_exactness_preconditions(
-    opt_disabled, monkeypatch
-):
-    opt_disabled("opaquefirst")
-    assert _select_shadow_mode(True, "auto", _mixed_batch()) == 1
-    opt_disabled()
+def test_opaque_first_setting_and_its_exactness_preconditions(monkeypatch):
+    SETTINGS.raytracing.experimental.set(shadow_anyhit="opaquefirst")
+    try:
+        assert rt_settings.shadow_anyhit == "opaquefirst"
+    finally:
+        SETTINGS.raytracing.experimental.set(shadow_anyhit="auto")
+    assert rt_settings.shadow_anyhit == "auto"
     # Under a min_alpha below what an opaque blocker leaves of the light, the
     # march would not end at exactly zero: no opaque-first.
     monkeypatch.setattr(rk, "min_alpha", 1e-6)
-    assert _select_shadow_mode(True, "auto", _mixed_batch()) == 1
+    assert _select_shadow_mode(True, "opaquefirst", _mixed_batch()) == 1
     monkeypatch.setattr(rk, "min_alpha", 1e-3)
     # A short surface cap could stop the march before the blocker.
     monkeypatch.setattr(rk, "max_surfaces_per_ray", 64)
-    assert _select_shadow_mode(True, "auto", _mixed_batch()) == 1
+    assert _select_shadow_mode(True, "opaquefirst", _mixed_batch()) == 1
 
 
 def _build_mixed_scene():
@@ -162,12 +158,14 @@ def _build_mixed_scene():
     ).spawn(animate=False)
 
 
-def _render(path, *, hybrid_raster=True):
+def _render(path, *, hybrid_raster=True, shadow_anyhit="auto"):
     SceneManager.reset()
     snapshot = SETTINGS.snapshot()
     try:
         SETTINGS.raytracing.set(shadows=True, max_bounces=0)
-        SETTINGS.raytracing.experimental.set(hybrid_raster=hybrid_raster)
+        SETTINGS.raytracing.experimental.set(
+            hybrid_raster=hybrid_raster, shadow_anyhit=shadow_anyhit
+        )
         with Scene(video_settings=_SETTINGS) as scene:
             scene.set_background(BLACK)
             with Off():
@@ -503,14 +501,18 @@ def test_opaque_first_matches_the_march_ray_for_ray(captured_scenes, tree, ident
     assert (outcome[-10:-4] == 2).all()
 
 
-def _frame(tmp_path, name, *, hybrid_raster):
-    return _render(tmp_path / f"{name}.png", hybrid_raster=hybrid_raster)
+def _frame(tmp_path, name, *, hybrid_raster, shadow_anyhit):
+    return _render(
+        tmp_path / f"{name}.png",
+        hybrid_raster=hybrid_raster,
+        shadow_anyhit=shadow_anyhit,
+    )
 
 
 @pytest.mark.parametrize("hybrid_raster", [True, False], ids=("sheet", "classic"))
 @pytest.mark.parametrize("refit", [True, False], ids=("refit", "stbvh"))
-def test_opaque_first_frames_match_the_kill_switch(
-    tmp_path, opt_disabled, monkeypatch, hybrid_raster, refit
+def test_opaque_first_frames_match_the_march(
+    tmp_path, monkeypatch, hybrid_raster, refit
 ):
     from algan.rendering.raytracing import tracer
 
@@ -524,12 +526,12 @@ def test_opaque_first_frames_match_the_kill_switch(
         return mode
 
     monkeypatch.setattr(tracer, "_select_shadow_mode", recording)
-    opt_disabled()
-    on = _frame(tmp_path, "on", hybrid_raster=hybrid_raster)
+    on = _frame(
+        tmp_path, "on", hybrid_raster=hybrid_raster, shadow_anyhit="opaquefirst"
+    )
     assert set(modes) == {5}, modes
     modes.clear()
-    opt_disabled("opaquefirst")
-    off = _frame(tmp_path, "off", hybrid_raster=hybrid_raster)
+    off = _frame(tmp_path, "off", hybrid_raster=hybrid_raster, shadow_anyhit="auto")
     assert set(modes) == {1}, modes
     assert np.array_equal(on, off)
     # The shadows are really there: the frame is not one flat wall.

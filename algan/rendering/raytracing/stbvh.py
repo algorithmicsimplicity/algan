@@ -96,6 +96,21 @@ bvh_split_time_weight = env_float("ALGAN_SPLIT_TIME_WEIGHT", 1.0)
 # element type).
 bvh_block_f16 = env_flag("ALGAN_BVH_BLOCK_F16", True)
 
+# How the traversal kernels take the sibling blocks (``kernel_blocks``,
+# ``raytrace_kernels_taichi.NODE_ARG``): as packed 64-bit words, decoded by
+# shifts (default), or with ``ALGAN_BVH_NODE_WORDS=0`` as the original
+# ``vector(bvh_arity, f16/f32)`` lanes through the original fetch, byte for
+# byte -- the annotation is fixed when the kernel module loads, so this is
+# read once at import and an A/B runs one process per arm. Measured on an RTX
+# 5080, graphics UHD 0.5 s: 11.6 s with words against 13.7 s for the lanes.
+# The words also take a 16-byte arena alignment for the block storages
+# (``scene_builder._NODE_BLOCK_ALIGNMENT``), which the lanes arm leaves to the
+# original rule, so that arm keeps the original arena layout too. The words
+# are exact but not byte-identical to the lanes: the fused arithmetic of the
+# fast_math shadow kernels moves by an ulp with the fetch code around it
+# (agent_guidance/rendering.md, "Node words").
+bvh_node_words = env_flag("ALGAN_BVH_NODE_WORDS", True)
+
 # Smallest normal float16. Conservative rounding pushes would-be-subnormal
 # magnitudes outward to 0 or +-this, so a flush-to-zero f16->f32 conversion
 # in the kernel could never shrink a box.
@@ -195,32 +210,23 @@ def _build_blocks(nodes, first_leaf):
     return blk.contiguous()
 
 
-def _node_words_disabled():
-    """``ALGAN_OPT_DISABLE=nodewords``, asked at every launch (imported lazily,
-    as the tracer does: the timeline is not in the renderer's import graph).
-    """
-    from algan.animation_timeline.timeline import _opt_disabled
-
-    return _opt_disabled("nodewords")
-
-
 def kernel_blocks(blocks):
     """``blocks`` as the traversal kernels take it (``NODE_ARG`` in
     ``raytrace_kernels_taichi``): a view, nothing is copied.
 
-    The same bytes as packed words, ``[rows, 8 * words per lane]``: ``int64``
-    when a lane is a whole number of 8-byte words that start 8-byte aligned,
-    ``int32`` otherwise and on MPS (Metal shaders get no 64-bit loads from
-    this), so a default 64-byte f16 node is eight word loads where the lane
-    vectors compiled to 32 scalar 16-bit ones. The kernels pick the decode
-    from the element type, and every word decodes to exactly the bits a lane
-    held. With ``ALGAN_OPT_DISABLE=nodewords`` it is one scalar per child
-    value, ``[rows, 8 * bvh_arity]``: the old per-value loads, for A/B.
+    Under ``bvh_node_words`` (the default), the same bytes as packed words,
+    ``[rows, 8 * words per lane]``: ``int64`` when a lane is a whole number of
+    8-byte words that start 8-byte aligned, ``int32`` otherwise and on MPS
+    (Metal shaders get no 64-bit loads from this), or one scalar per child
+    value, ``[rows, 8 * bvh_arity]``, when not even 4-aligned. The kernels pick
+    the decode from the element type, and every format decodes to exactly the
+    bits a lane holds. With ``ALGAN_BVH_NODE_WORDS=0`` it is ``blocks`` itself,
+    the ``vector(bvh_arity, ...)`` lanes the original fetch reads.
     """
+    if not bvh_node_words:
+        return blocks
     rows = blocks.shape[0]
     lanes = blocks.reshape(rows, -1)
-    if _node_words_disabled():
-        return lanes
     lane_bytes = blocks.shape[-1] * blocks.element_size()
     offset = blocks.storage_offset() * blocks.element_size()
     if lane_bytes % 8 == 0 and offset % 8 == 0 and blocks.device.type != "mps":

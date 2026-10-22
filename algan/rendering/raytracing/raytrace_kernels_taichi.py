@@ -80,7 +80,12 @@ from algan.rendering.raytracing.shading_taichi import (
     # though nothing in this module reads the name.
     max_shadow_lights,  # noqa: F401
 )
-from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16, bvh_leaf_size
+from algan.rendering.raytracing.stbvh import (
+    bvh_arity,
+    bvh_block_f16,
+    bvh_leaf_size,
+    bvh_node_words,
+)
 from algan.rendering.raytracing.texture_mips_taichi import (
     _mip_blend,
     _mip_lod,
@@ -464,15 +469,27 @@ kbuf = max(1, env_int("ALGAN_KBUF", 4))
 # 64-byte (f16, conservatively out-rounded bounds) fetch tests a whole sibling
 # group per dependent memory round.
 #
-# The element type is left open and decides the loads (``_node_word_bits``):
-# the host passes ``stbvh.kernel_blocks``, which views the same bytes as
-# packed 64-bit words (32-bit on Metal), so a 64-byte f16 node is eight word
-# loads. The lane vector this used to be, ``vector(bvh_arity, f16)``, compiled
-# to one scalar 16-bit load per child and lane -- 32 per node, no vector loads
-# in the PTX. ``ALGAN_OPT_DISABLE=nodewords`` passes the lanes as one scalar
-# per child value instead, which is those 32 loads again; each arm is its own
-# specialization, so both run in one process.
-NODE_ARG = ti.types.ndarray(ndim=2)
+# Two layouts, chosen once at import by ``stbvh.bvh_node_words``
+# (``ALGAN_BVH_NODE_WORDS``):
+#
+# * words (the default): the element type is left open and decides the loads
+#   (``_node_word_bits``). The host passes ``stbvh.kernel_blocks``, which views
+#   the same bytes as packed 64-bit words (32-bit on Metal, or one scalar per
+#   value for a misaligned storage), decoded by ``_test_children_words`` and
+#   friends. RTX 5080, graphics UHD 0.5 s: 11.6 s against 13.7 s for the lanes.
+# * lanes (``ALGAN_BVH_NODE_WORDS=0``): ``vector(bvh_arity, f16/f32)`` and the
+#   original ``_test_children`` / ``_test_children_refit`` / ``_refit_link``
+#   bodies, byte for byte -- the A/B arm is the pre-words renderer, not an
+#   approximation of it.
+if not bvh_node_words:
+    if bvh_block_f16:
+        NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(bvh_arity, ti.f16),
+                                    ndim=2)
+    else:
+        NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(bvh_arity, ti.f32),
+                                    ndim=2)
+else:
+    NODE_ARG = ti.types.ndarray(ndim=2)
 
 # Bits per stored child value: an f16 bound or tspan half, or an f32.
 _NODE_VALUE_BITS = 16 if bvh_block_f16 else 32
@@ -481,7 +498,7 @@ _NODE_VALUE_BITS = 16 if bvh_block_f16 else 32
 def _node_word_bits(blocks):
     """How a sibling-block argument is laid out, read at compile time off its
     element type: 64 or 32 for packed words (``stbvh.kernel_blocks``), 0 for
-    one scalar per child value (the ``nodewords`` kill switch).
+    one scalar per child value (a storage not even 4-byte aligned).
     """
     dtype = blocks.get_type().element_type
     if dtype == ti.i64:
@@ -1194,6 +1211,128 @@ def _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
     cull, but the *looser* boxes shift those same boundary cracks, so f16 is
     epsilon-level non-identical and stays opt-in (``ALGAN_BVH_BLOCK_F16``).
     """
+    lox = blocks[blk, 0]
+    loy = blocks[blk, 1]
+    loz = blocks[blk, 2]
+    hix = blocks[blk, 3]
+    hiy = blocks[blk, 4]
+    hiz = blocks[blk, 5]
+    ts_a = blocks[blk, 6]
+    ts_b = blocks[blk, 7]
+    mask = 0
+    near = ti.Vector([1e30] * bvh_arity)
+    for c in ti.static(range(bvh_arity)):
+        tspan = 0
+        if ti.static(bvh_block_f16):
+            tspan = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32) | (
+                ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32) << 16)
+        else:
+            tspan = ti.bit_cast(ts_a[c], ti.i32)
+        if ((tspan & 0xFFFF) <= f) and (f <= ((tspan >> 16) & 0x7FFF)):
+            tx0 = (ti.cast(lox[c], ti.f32) - ro[0]) * inv_rd[0]
+            tx1 = (ti.cast(hix[c], ti.f32) - ro[0]) * inv_rd[0]
+            t_near = ti.min(tx0, tx1)
+            t_far = ti.max(tx0, tx1)
+            ty0 = (ti.cast(loy[c], ti.f32) - ro[1]) * inv_rd[1]
+            ty1 = (ti.cast(hiy[c], ti.f32) - ro[1]) * inv_rd[1]
+            t_near = ti.max(t_near, ti.min(ty0, ty1))
+            t_far = ti.min(t_far, ti.max(ty0, ty1))
+            tz0 = (ti.cast(loz[c], ti.f32) - ro[2]) * inv_rd[2]
+            tz1 = (ti.cast(hiz[c], ti.f32) - ro[2]) * inv_rd[2]
+            t_near = ti.max(t_near, ti.min(tz0, tz1))
+            t_far = ti.min(t_far, ti.max(tz0, tz1))
+            if ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
+                    and (t_far >= t_lo)):
+                mask |= 1 << c
+                near[c] = t_near
+    return mask, near
+
+
+@ti.func
+def _test_children_refit(row, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
+    """Refit-tree counterpart of :func:`_test_children` (see refit_bvh.py):
+    ``row`` is the frame's row of internal node ``blk``
+    (``_refit_row0(...) + blk``) in the ``[Tb * num_blocks, 8, ARITY]`` block
+    array. The per-child gate is the link word -- ``-1`` marks an absent
+    child or one whose whole subtree is invisible at this frame -- instead of
+    a frame-interval test; the bounds are already this frame's exact boxes,
+    so no temporal decode remains. The slab test itself is float-for-float
+    the classic one.
+    """
+    lox = blocks[row, 0]
+    loy = blocks[row, 1]
+    loz = blocks[row, 2]
+    hix = blocks[row, 3]
+    hiy = blocks[row, 4]
+    hiz = blocks[row, 5]
+    ts_a = blocks[row, 6]
+    ts_b = blocks[row, 7]
+    mask = 0
+    near = ti.Vector([1e30] * bvh_arity)
+    for c in ti.static(range(bvh_arity)):
+        w = 0
+        if ti.static(bvh_block_f16):
+            w = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32) | (
+                ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32) << 16)
+        else:
+            w = ti.bit_cast(ts_a[c], ti.i32)
+        if w != -1:
+            tx0 = (ti.cast(lox[c], ti.f32) - ro[0]) * inv_rd[0]
+            tx1 = (ti.cast(hix[c], ti.f32) - ro[0]) * inv_rd[0]
+            t_near = ti.min(tx0, tx1)
+            t_far = ti.max(tx0, tx1)
+            ty0 = (ti.cast(loy[c], ti.f32) - ro[1]) * inv_rd[1]
+            ty1 = (ti.cast(hiy[c], ti.f32) - ro[1]) * inv_rd[1]
+            t_near = ti.max(t_near, ti.min(ty0, ty1))
+            t_far = ti.min(t_far, ti.max(ty0, ty1))
+            tz0 = (ti.cast(loz[c], ti.f32) - ro[2]) * inv_rd[2]
+            tz1 = (ti.cast(hiz[c], ti.f32) - ro[2]) * inv_rd[2]
+            t_near = ti.max(t_near, ti.min(tz0, tz1))
+            t_far = ti.min(t_far, ti.max(tz0, tz1))
+            if ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
+                    and (t_far >= t_lo)):
+                mask |= 1 << c
+                near[c] = t_near
+    return mask, near
+
+
+@ti.func
+def _test_children_words(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
+    """:func:`_test_children` reading the block as packed words
+    (``bvh_node_words``): the row's words are loaded once (:func:`_node_row`)
+    and each child value is shifted out of them, decoding to exactly the bits
+    the lane vector held; the test that follows is the original's, expression
+    for expression.
+
+    The original's own description:
+
+    Spatio-temporal test of internal node ``blk``'s whole sibling group:
+    per-child frame containment + slab test restricted to the parametric
+    window [t_lo, t_hi] of still-relevant hits. The children's bounds and
+    packed frame intervals live in one aligned SoA block (see
+    stbvh._build_blocks) -- a single fetch feeds ``bvh_arity`` independent
+    box tests, so a whole sibling group costs one dependent memory round.
+    Returns ``(mask, near)`` where ``mask`` is the bitmask of intersected
+    children (bit c = child ``bvh_arity * blk + 1 + c``) and ``near[c]`` is
+    the slab-test entry distance for each passing child. Missed children get
+    a large sentinel and are never selected. Traversals use these distances
+    for deterministic near-to-far selection and recompute them when a saved
+    sibling group is restored after the depth window tightens.
+
+    The per-child predicate is float-for-float the retired per-node walk's
+    box test, and callers re-validate pending masks whenever the depth window
+    tightens (see the walk skeletons), so the set of nodes whose leaf slots
+    get tested is *bit-identical* to the old walk's -- this matters because
+    triangle hits routinely lie exactly on their bounding boxes' faces, where
+    a test evaluated against a stale (looser) window can admit hits within a
+    float ulp of the ``depth_tie_epsilon`` acceptance boundary that the old
+    walk never tested (observed as epsilon-level image changes).
+
+    f16 blocks decode exactly (f16 -> f32 casts are lossless) to the
+    conservatively out-rounded bounds baked at build time: never a false
+    cull, but the *looser* boxes shift those same boundary cracks, so f16 is
+    epsilon-level non-identical and stays opt-in (``ALGAN_BVH_BLOCK_F16``).
+    """
     words = _node_row(blocks, blk)
     mask = 0
     near = ti.Vector([1e30] * bvh_arity)
@@ -1225,8 +1364,13 @@ def _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
 
 
 @ti.func
-def _test_children_refit(row, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
-    """Refit-tree counterpart of :func:`_test_children` (see refit_bvh.py):
+def _test_children_refit_words(row, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
+    """:func:`_test_children_refit` reading the block as packed words (see
+    :func:`_test_children_words`).
+
+    The original's own description:
+
+    Refit-tree counterpart of :func:`_test_children` (see refit_bvh.py):
     ``row`` is the frame's row of internal node ``blk``
     (``_refit_row0(...) + blk``) in the ``[Tb * num_blocks, 8, ARITY]`` block
     array. The per-child gate is the link word -- ``-1`` marks an absent
@@ -1284,15 +1428,26 @@ def _refit_link(row, c, blocks: ti.template()):
     child's own block index. Reads the lanes the caller's group test just
     fetched, so this is a same-cache-line load.
     """
-    # Load only the word(s) holding child ``c`` (a runtime index): selecting
-    # it out of a whole loaded row through an unrolled branch chain loads
-    # sibling links this ray never uses. These are packed integers, including
-    # half-precision NaN payloads, so the decode stays on bits throughout.
     w = 0
-    if ti.static(bvh_block_f16):
-        w = _node_bits(blocks, row, 6, c) | (_node_bits(blocks, row, 7, c) << 16)
+    if ti.static(not bvh_node_words):
+        # Index the ndarray's vector element directly. Materializing both whole
+        # vectors and selecting a lane through an unrolled branch chain loads
+        # sibling links this ray never uses. Keep bit_cast: these are packed
+        # integers, including half-precision NaN payloads, not numeric floats.
+        if ti.static(bvh_block_f16):
+            w = ti.cast(ti.bit_cast(blocks[row, 6][c], ti.u16), ti.i32) | (
+                ti.cast(ti.bit_cast(blocks[row, 7][c], ti.u16), ti.i32) << 16)
+        else:
+            w = ti.bit_cast(blocks[row, 6][c], ti.i32)
     else:
-        w = _node_bits(blocks, row, 6, c)
+        # Load only the word(s) holding child ``c`` (a runtime index): selecting
+        # it out of a whole loaded row through an unrolled branch chain loads
+        # sibling links this ray never uses. These are packed integers, including
+        # half-precision NaN payloads, so the decode stays on bits throughout.
+        if ti.static(bvh_block_f16):
+            w = _node_bits(blocks, row, 6, c) | (_node_bits(blocks, row, 7, c) << 16)
+        else:
+            w = _node_bits(blocks, row, 6, c)
     return w
 
 
@@ -1323,10 +1478,18 @@ def _group_test(refit: ti.template(), row0, blk, f, ro, inv_rd, t_lo, t_hi,
     mask = 0
     near = ti.Vector([1e30] * bvh_arity)
     if ti.static(refit != 0):
-        mask, near = _test_children_refit(row0 + blk, ro, inv_rd, t_lo, t_hi,
-                                          blocks)
+        if ti.static(bvh_node_words):
+            mask, near = _test_children_refit_words(row0 + blk, ro, inv_rd,
+                                                    t_lo, t_hi, blocks)
+        else:
+            mask, near = _test_children_refit(row0 + blk, ro, inv_rd, t_lo,
+                                              t_hi, blocks)
     else:
-        mask, near = _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks)
+        if ti.static(bvh_node_words):
+            mask, near = _test_children_words(blk, f, ro, inv_rd, t_lo, t_hi,
+                                              blocks)
+        else:
+            mask, near = _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks)
     return mask, near
 
 
@@ -3710,7 +3873,15 @@ def _shadow_opaque_first(refit: ti.template(),
     boundaries, and a translucent surface whose colour or transmission data is
     NaN in front of a blocker, which the march turns into a NaN occlusion and
     this into a full one. ``ALGAN_TRACE_COUNTERS=verify`` counts, per render,
-    every ray where any of that happened.
+    every ray where any of that happened: none on the CPU (graphics, 320x180,
+    800k rays), but 56,927 at graphics UHD 0.5 s on an RTX 5080. Not yet
+    explained; the likeliest reason is that ``_tri_hit`` and the slab test are
+    inlined separately into this walk and into the march, CUDA contracts
+    multiply-adds into FMAs per inlined copy (the CPU build does not), and an
+    ulp of difference in ``t`` or a barycentric tips one of the thresholds
+    above (``t < max_t``, the depth bin, the edge band, a node window). Comparing
+    the two copies' PTX, or counting the mismatches per outcome, would settle
+    it. Hence opt-in (``shadow_anyhit="opaquefirst"``).
     """
     outcome = _OF_MARCH
     finite = (_finite_f32(ro[0]) & _finite_f32(ro[1]) & _finite_f32(ro[2])
@@ -3782,9 +3953,9 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
     opaque any-hit early-out: 3 (chosen when the batch provably contains no
     translucent geometry, so any march hit would be fully opaque and a miss
     proves the ray lit) runs ONLY :func:`_shadow_anyhit_opaque` -- the march
-    is compiled out entirely. 5 (auto's choice for mixed batches) asks
-    :func:`_shadow_opaque_first` first and marches only the rays it cannot
-    settle, giving the march's answer bit for bit outside the corners that
+    is compiled out entirely. 5 (opt-in, ``shadow_anyhit="opaquefirst"``)
+    asks :func:`_shadow_opaque_first` first and marches only the rays it
+    cannot settle, giving the march's answer outside the corners that
     function lists. 2 (explicit ``shadow_anyhit=True``) marches normally and, after
     the FIRST partially transparent surface, spends one any-hit walk over
     the remaining range: an opaque blocker further along forces the final
