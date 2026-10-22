@@ -277,9 +277,9 @@ Five further consequences of the split, not covered there:
     deterministic renderer uses Schlick-GGX, so a rough highlight differs by
     a few percent.
   * The ambient and hemisphere fill reaches **diffuse only**, as it does in
-    the deterministic renderer. A constant radiance arriving from every
-    direction, integrated over the diffuse lobe, is exactly what the fill
-    contributes; the specular equivalent is real indirect transport, which
+    the deterministic renderer. A constant irradiance arriving from every
+    direction, through the diffuse lobe's ``albedo / pi``, is exactly what the
+    fill contributes; the specular equivalent is real indirect transport, which
     this renderer has and the other one does not.
   * The deterministic renderer's small constant ambient fill
     (``ambient_strength_linear``, a stand-in for the bounce light it does not

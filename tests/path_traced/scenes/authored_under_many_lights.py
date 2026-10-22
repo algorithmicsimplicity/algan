@@ -40,8 +40,8 @@ with Off():
             color=WHITE,
             intensity=0.9 / NUM_LIGHTS,
         ).spawn(animate=False)
-    AmbientLight(color=WHITE, intensity=0.08).spawn(animate=False)
-    HemisphereLight(color=WHITE, ground_color=BLUE, intensity=0.12).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.08 * PI).spawn(animate=False)
+    HemisphereLight(color=WHITE, ground_color=BLUE, intensity=0.12 * PI).spawn(animate=False)
 
     floor = Prism(width=9.0, height=0.2, depth=5.0)
     floor.set_material(MeshToonMaterial(color=WHITE * 0.75))

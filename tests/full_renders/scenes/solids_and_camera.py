@@ -36,7 +36,7 @@ def saddle(uv):
 # Act 1 -- analytic surfaces above, flat meshes below.
 # --------------------------------------------------------------------------
 with Off():
-    AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.45 * PI).spawn(animate=False)
     key_light = DirectionalLight(
         location=RIGHT * 5 + UP * 6 + OUT * 4,
         target=ORIGIN,
@@ -46,7 +46,7 @@ with Off():
     HemisphereLight(
         color=BLUE_A,
         ground_color=MAROON_E,
-        intensity=0.3,
+        intensity=0.3 * PI,
     ).spawn(animate=False)
 
     title = Text(

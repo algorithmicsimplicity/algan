@@ -75,7 +75,7 @@ STAR_POINTS = (
 with Off():
     # Three light types, so the unlit, Lambert and PBR paths are all driven by
     # something other than a constant.
-    AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.45 * PI).spawn(animate=False)
     DirectionalLight(
         location=RIGHT * 5 + UP * 5 + OUT * 4,
         target=ORIGIN,

@@ -33,7 +33,7 @@ Scene.set_background(DARKER_GRAY)
 # Act 1 -- axes with delegated plots, a brace, and a number plane.
 # --------------------------------------------------------------------------
 with Off():
-    AmbientLight(color=WHITE, intensity=0.6).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.6 * PI).spawn(animate=False)
     DirectionalLight(
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,
