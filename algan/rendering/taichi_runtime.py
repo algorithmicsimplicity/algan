@@ -390,14 +390,12 @@ def _install_taichi_compile_logger():
         # serve, so it holds kernel data the offline cache may not. Only
         # `flush_kernel_cache` reads this, and only to skip the flush entirely
         # for a process that compiled nothing.
-        global _BUILT_A_SPECIALIZATION, _COMPILED_SINCE_DUMP
+        global _BUILT_A_SPECIALIZATION
         _BUILT_A_SPECIALIZATION = True
         # And so the flush is registered here too, not only by `start_program`:
         # whatever brought this program up, the kernel it just built reaches
         # the disk at exit.
         _register_kernel_cache_flush()
-        if not cache_hit:
-            _COMPILED_SINCE_DUMP = True
         backend_seconds = time.perf_counter() - backend_started
         total_seconds = frontend_seconds + backend_seconds
         _emit_compile_record(
@@ -1192,10 +1190,14 @@ def render_job_holding_the_arch():
                 from algan.rendering import kernel_precompile, kernel_progress
 
                 kernel_progress.render_finished()
-                # What this job compiled, on disk now rather than at exit --
-                # and before the manifest, which confirms a spec only once
-                # its artifact exists.
-                dump_new_kernels()
+                # No mid-process `dump_cache_data_to_disk` here. Quadrants'
+                # `KernelCompilationManager::dump` moves the newly compiled
+                # kernels out of `caching_kernels_` and frees them, so every
+                # handle Python still holds -- `compiled_kernel_data_by_key`,
+                # taichi_fast_launch's plans -- dangles, and the next launch
+                # of such a kernel reads freed memory (segfaults on the macOS
+                # CPU arch). Only a process that will never launch again may
+                # dump: the precompile workers, and the exit flush.
                 # The specializations this job used, for the next process's
                 # pool and for `algan warmup` (rendering/kernel_precompile.py).
                 kernel_precompile.flush_manifest()
@@ -1251,11 +1253,6 @@ def render_is_active():
 #: under-setting would lose kernels, which is the bug this exists for.
 _BUILT_A_SPECIALIZATION = False
 
-#: A specialization the offline cache did *not* serve was compiled since the
-#: last dump, so the program holds an artifact the disk does not. Narrower than
-#: :data:`_BUILT_A_SPECIALIZATION`: an offline-cache hit is on disk already.
-_COMPILED_SINCE_DUMP = False
-
 #: One ``atexit`` registration per process, from :func:`start_program` or, for
 #: a program something else brought up, from the first specialization built.
 _FLUSH_REGISTERED = False
@@ -1272,57 +1269,6 @@ def _register_kernel_cache_flush():
     _FLUSH_REGISTERED = True
 
 
-def dump_new_kernels():
-    """Write the kernels compiled since the last dump, keeping the program.
-
-    Called as the outermost render job ends. :func:`flush_kernel_cache` writes
-    them at exit by tearing the program down, which a process killed before
-    exit never reaches, and nor does a daemon between runs -- so the next
-    process recompiled what this one had already paid for.
-    ``Program.dump_cache_data_to_disk`` is the compiler's own non-destructive
-    write (the precompile workers call it after every spec). Checked on the CPU
-    arch with Quadrants 1.3.3: it writes the new ``.qdc`` and the index, a
-    process killed straight after it leaves an artifact the next process
-    loads, it does not rewrite an artifact an earlier dump wrote, and with
-    nothing new it takes well under a millisecond.
-
-    The flush's conditions without its teardown: off under
-    ``ALGAN_FLUSH_KERNEL_CACHE=0`` (the destructor-only A/B arm), and only on
-    the main thread while no render holds the arch.
-
-    Returns whether a dump ran.
-    """
-    global _COMPILED_SINCE_DUMP
-    if not _COMPILED_SINCE_DUMP:
-        return False
-    if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
-        return False
-    if threading.current_thread() is not threading.main_thread():
-        return False
-    if render_is_active() or not _already_initialized():
-        return False
-    from algan.taichi_compat import program
-
-    dump = getattr(program(), "dump_cache_data_to_disk", None)
-    if dump is None:
-        return False
-    started = time.perf_counter()
-    try:
-        dump()
-    except Exception as exc:
-        # Exit still flushes; this only moved the write earlier.
-        get_logger().log(PERF, "Saving newly compiled kernels failed: %r", exc)
-        return False
-    _COMPILED_SINCE_DUMP = False
-    get_logger().log(
-        PERF,
-        "Saved newly compiled kernels to %s in %.2f s.",
-        _TAICHI_CACHE_DIRECTORY,
-        time.perf_counter() - started,
-    )
-    return True
-
-
 def _reset_after_interruption():
     """Discard possibly half-initialized compiler state after a cancelled job.
 
@@ -1332,13 +1278,11 @@ def _reset_after_interruption():
     run even if initialization did not finish or no kernel was compiled.
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
-    global _COMPILED_SINCE_DUMP
     if render_is_active() or threading.current_thread() is not threading.main_thread():
         raise RuntimeError("Cannot recover the compiler while a render is active")
     ti.reset()
     _ARCH_READY_FOR = None
     _BUILT_A_SPECIALIZATION = False
-    _COMPILED_SINCE_DUMP = False
     _PRESSURE_RESET_PENDING = False
     _forget_compiled_in_settings()
 
@@ -1379,7 +1323,6 @@ def reset_quadrants_for_memory_pressure():
     therefore mean "not applicable", "declined" or "safely deferred".
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
-    global _COMPILED_SINCE_DUMP
     if BACKEND != "quadrants":
         return False
     if not _already_initialized():
@@ -1409,7 +1352,6 @@ def reset_quadrants_for_memory_pressure():
         get_logger().log(PERF, "Quadrants pressure reset failed: %r", exc)
         return False
     _BUILT_A_SPECIALIZATION = False
-    _COMPILED_SINCE_DUMP = False
     _ARCH_READY_FOR = None
     _PRESSURE_RESET_PENDING = False
     _forget_compiled_in_settings()
@@ -1452,8 +1394,9 @@ def flush_kernel_cache(*, force=False):
     specialization is built. That also covers the interrupted case -- a
     ``KeyboardInterrupt`` unwinds ``render_job_holding_the_arch`` normally, so
     an hour of compilation survives a Ctrl-C instead of evaporating. A process
-    killed outright still loses whatever it compiled after its last render job
-    ended; :func:`dump_new_kernels` writes the rest at the end of each job.
+    killed outright still loses whatever it compiled: a mid-process dump would
+    free the kernels the program is still launching (see
+    :func:`render_job_holding_the_arch`).
 
     Safe for the same reason :func:`ensure_taichi_for_render` may re-init:
     Algan holds no ``ti.field`` or ``ti.Ndarray``, every kernel argument being a
@@ -1477,7 +1420,7 @@ def flush_kernel_cache(*, force=False):
     bool
         Whether the runtime was actually torn down (and therefore dumped).
     """
-    global _BUILT_A_SPECIALIZATION, _ARCH_READY_FOR, _COMPILED_SINCE_DUMP
+    global _BUILT_A_SPECIALIZATION, _ARCH_READY_FOR
     if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
         return False
     if not (force or _BUILT_A_SPECIALIZATION):
@@ -1502,7 +1445,6 @@ def flush_kernel_cache(*, force=False):
         get_logger().log(PERF, "Kernel cache flush failed: %r", exc)
         return False
     _BUILT_A_SPECIALIZATION = False
-    _COMPILED_SINCE_DUMP = False
     _ARCH_READY_FOR = None
     _forget_compiled_in_settings()
     get_logger().log(

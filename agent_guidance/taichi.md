@@ -18,8 +18,9 @@ compiler defaults for later kernels in the same process, and even
 exit-time `flush_kernel_cache` -- a profiled process used to leave no `.qdc`
 behind, so every cold start measured through `profile_scene` was wrong. The
 flush is also registered when the first specialization is built, whatever
-started the program, and `dump_new_kernels` writes each render job's new kernels
-as the job ends, so a killed process or a daemon keeps them. In particular, Algan disables
+started the program. There is deliberately no mid-process dump: Quadrants'
+`KernelCompilationManager::dump` frees the kernels it writes, so a program that
+launches again afterwards reads freed memory. In particular, Algan disables
 `advanced_optimization`; historical tonemapping regressions under the enabled
 arm motivate this default. `ALGAN_ADV_OPT=1` is a comparison switch, not evidence
 that every renderer kernel supports that configuration.
