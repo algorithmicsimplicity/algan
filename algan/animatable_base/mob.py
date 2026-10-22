@@ -59,7 +59,8 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     _reject_context_kwargs,
 )
-from algan.constants.color import _channel_count_error, _is_channel, to_color
+from algan.animation_timeline.timeline import _opt_disabled
+from algan.constants.color import Color, _channel_count_error, _is_channel, to_color
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
@@ -71,6 +72,7 @@ from algan.geometry.geometry import (
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import integer_or_none
 from algan.utils.tensor_utils import (
+    _NO_SOURCE,
     cast_to_direction,
     cast_to_tensor,
     dot_product,
@@ -120,13 +122,17 @@ class _GuardedMethod:
         raise AttributeError(self._message)
 
 
-def _validate_opacity(value, *, given=None):
+def _validate_opacity(value, *, given=None, cast_from=_NO_SOURCE):
     """Validate the documented ``Mob.opacity`` unit interval at authoring time.
 
     The same check guards :meth:`~algan.constants.color.Color.set_opacity`, so
     both spellings of "make this half transparent" report the same way.
+    ``cast_from`` is what ``value`` was cast from, when known (see
+    :func:`~algan.utils.tensor_utils.reject_non_finite`).
     """
-    return reject_outside_unit_interval("opacity", value, given=given)
+    return reject_outside_unit_interval(
+        "opacity", value, given=given, cast_from=cast_from
+    )
 
 
 #: The largest :attr:`Mob.pass_index` a user may set. The object-index pass
@@ -215,6 +221,30 @@ _REST_SHAPE_ROUNDINGS = 4
 #: basis misses by a few float32 roundings; one squashed thousands of times
 #: thinner along one axis than the others misses by about a thousandth.
 _BASIS_CHANGE_TOLERANCE = 1e-4
+
+
+#: ``(default dtype, default device, target device) -> interpolation``: the
+#: unit interpolation :func:`animated_function` casts for an unrecorded
+#: ``_apply_change`` call, built once instead of once per write. Only ever an
+#: operand of an out-of-place multiply, so sharing it is safe.
+_UNIT_INTERPOLATIONS = {}
+
+
+def _unit_interpolation(device):
+    """The ``interpolation=1.0`` an unrecorded ``_apply_change`` multiplies by.
+
+    Built exactly as the decorator builds it -- ``cast_to_tensor(1.0)``, in
+    the default dtype on the default device -- then moved to ``device`` as the
+    body moves it, so the multiply is the same operation on the same operands.
+    """
+    key = (torch.get_default_dtype(), torch.get_default_device(), device)
+    unit = _UNIT_INTERPOLATIONS.get(key)
+    if unit is None:
+        unit = cast_to_tensor(1.0)
+        if unit.device != device:
+            unit = unit.to(device)
+        _UNIT_INTERPOLATIONS[key] = unit
+    return unit
 
 
 def _float64_device(device):
@@ -710,9 +740,14 @@ class Mob(
         self._init_default_attr("basis", basis)
         self._init_default_attr("color", color)
         self._init_default_attr(
-            "opacity", _validate_opacity(cast_to_tensor(opacity), given=opacity)
+            "opacity",
+            _validate_opacity(
+                cast_to_tensor(opacity), given=opacity, cast_from=opacity
+            ),
         )
-        self._init_default_attr("glow", reject_non_finite("glow", cast_to_tensor(glow)))
+        self._init_default_attr(
+            "glow", reject_non_finite("glow", cast_to_tensor(glow), cast_from=glow)
+        )
         self.num_points_per_object = 1
         self.shader = None
         self._constructor_unlit = unlit
@@ -1671,9 +1706,9 @@ class Mob(
         # which replay re-enters once per frame batch. Opacity has the stronger
         # documented [0, 1] contract, so validate that range here too.
         if attr == "opacity":
-            _validate_opacity(value, given=given)
+            _validate_opacity(value, given=given, cast_from=given)
         else:
-            reject_non_finite(attr, value)
+            reject_non_finite(attr, value, cast_from=given)
 
         if self._writes_through_property_setter(attr):
             # The generic path below writes timeline rows, which for these
@@ -1693,6 +1728,13 @@ class Mob(
         current_value = self.get_animated_attribute(
             attr, include_descendants=recursive, default=value, copy=False
         )
+        immediate = self._writes_immediately(attr)
+        if immediate and type(value) is Color:
+            # A Color sends every op below through Tensor.__torch_function__,
+            # several times the cost of the op itself at this size. Nothing
+            # keeps the change of an immediate write, so only its values
+            # matter, and the plain view computes the same ones.
+            value = value.as_subclass(torch.Tensor)
         if value.device != current_value.device:
             # See _apply_change: a wide attribute's window lives on the render
             # device. Only a replayed write can land here with a mismatch.
@@ -1704,8 +1746,69 @@ class Mob(
         if attr == "color":
             value = self._keep_explicit_alpha(value, current_value, recursive)
         change = value - current_value
-        self._apply_change(attr, change, recursive=recursive)
+        if immediate:
+            self._apply_change_immediately(attr, change, current_value, recursive)
+        else:
+            self._apply_change(attr, change, recursive=recursive)
         return self
+
+    def _writes_immediately(self, attr):
+        """Whether ``_apply_change`` would apply a write to ``attr`` at once.
+
+        :func:`~algan.animatable_base.animatable.animated_function` hands a call
+        straight to the function body when nothing in the Mob's subtree has
+        spawned: nothing is recorded, and the body adds the change to the rows
+        it reads. That is most writes made while a Mob is being built and
+        configured -- ``set_material`` alone makes fourteen per part of the
+        Mob. :meth:`_apply_change_immediately` is that body without the
+        decorator's per-call work, and is taken only where it provably writes
+        the same rows with the same values:
+
+        * the decorator itself would go straight to the body (its kill switch
+          ``ALGAN_OPT_DISABLE=fastpath`` is honoured, and this path has its own,
+          ``unrecordedset``);
+        * frames are not being materialized and no updater is being traced,
+          so neither replay bookkeeping nor dependency tracing is involved;
+        * ``_apply_change`` and ``get_animated_attribute`` are the base
+          implementations for this attribute, so re-reading the rows in the
+          body would return the values ``set_animated_attribute`` just read.
+        """
+        if _opt_disabled("fastpath") or _opt_disabled("unrecordedset"):
+            return False
+        cls = type(self)
+        if cls._apply_change is not Mob._apply_change:
+            return False
+        reader = cls.get_animated_attribute
+        if reader is not Animatable.get_animated_attribute:
+            intercepted = getattr(reader, "_intercepted_attributes", None)
+            if intercepted is None or attr in intercepted:
+                return False
+        if not hasattr(self, "id") or self.is_spawned_in_subtree():
+            return False
+        timeline = self.scene.timeline_manager
+        return (
+            not timeline.is_replaying()
+            and timeline._active_updater_trace is None
+            and timeline._active_updater_write_capture is None
+        )
+
+    def _apply_change_immediately(self, attr, change, current_value, recursive):
+        """:meth:`_apply_change`'s body for a write nothing records.
+
+        Reuses the rows ``set_animated_attribute`` has just read rather than
+        reading them again, and multiplies by the same unit interpolation the
+        decorator would have built for the call, so the stored value is the
+        one the decorated path stores, bit for bit. Only reached when
+        :meth:`_writes_immediately` says so.
+        """
+        device = current_value.device
+        change = change * _unit_interpolation(device)
+        if recursive:
+            change = self._distribute_over_packed_subtree(attr, change, current_value)
+        new_value = current_value + change
+        self._setattr_and_record_modification(
+            attr, new_value, include_descendants=recursive
+        )
 
     def _keep_explicit_alpha(self, value, current_value, recursive):
         """Keep an alpha chosen through a component opacity when a color replaces it.
@@ -2321,7 +2424,9 @@ class Mob(
             This Mob, so calls can be chained.
         """
         # Calculate the new absolute scale coefficient
-        scale_factor = reject_non_finite("scale_factor", cast_to_tensor(scale_factor))
+        scale_factor = reject_non_finite(
+            "scale_factor", cast_to_tensor(scale_factor), cast_from=scale_factor
+        )
         new_scale = scale_factor * self.scale_coefficient
         # Use the 'set' method to apply the new scale coefficient, which handles animation and recursion
         return (
@@ -2577,6 +2682,13 @@ class Mob(
         the MRO on every ``set`` call was one of the more expensive things a
         scene did while it was being authored.
         """
+        return self._class_settable_property_names() | set(self.animatable_attrs)
+
+    def _class_settable_property_names(self) -> set[str]:
+        """The MRO half of :meth:`_settable_property_names`, cached per class.
+
+        Returned as the cached set itself: read it, never modify it.
+        """
         version = ANIMATABLE_PROPERTY_VERSION[0]
         klass = type(self)
         cached = _SETTABLE_PROPERTY_CACHE.get(klass)
@@ -2593,7 +2705,7 @@ class Mob(
                         names.add(name)
             cached = (version, names)
             _SETTABLE_PROPERTY_CACHE[klass] = cached
-        return cached[1] | set(self.animatable_attrs)
+        return cached[1]
 
     def _check_properties_are_valid(self, property_names):
         """Raise if any of the given names is not an animatable attribute.
@@ -2613,7 +2725,11 @@ class Mob(
             If any name is neither an attribute of this Mob nor a registered
             animatable attribute; the message lists what is available.
         """
-        settable = self._settable_property_names()
+        # The two halves of _settable_property_names, tested separately: the
+        # union is only needed for the message, and building it cost every
+        # ``set`` a set copy of the class's whole settable namespace.
+        class_settable = self._class_settable_property_names()
+        own = self.animatable_attrs
         # attr_to_timeline is Scene-wide, so it also accepts an attribute owned
         # by some other Mob in the Scene (where setting it does nothing). It
         # gates the check as it always has, but is not advertised in the message.
@@ -2622,8 +2738,9 @@ class Mob(
             # The membership tests first: ``hasattr`` on an animatable
             # attribute runs its getter, a timeline read per name, which every
             # ``set`` paid only to learn what the registry already said.
-            if p in settable or p in timelines or hasattr(self, p):
+            if p in class_settable or p in own or p in timelines or hasattr(self, p):
                 continue
+            settable = self._settable_property_names()
             suggestion = difflib.get_close_matches(p, sorted(settable), n=1)
             hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
             raise AttributeError(

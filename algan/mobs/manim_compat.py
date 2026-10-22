@@ -212,9 +212,9 @@ def _uniform_color_and_opacity(color, opacity):
     """Return one Manim-compatible RGB string and effective opacity."""
     color = color.reshape(-1, color.shape[-1])[0]
     opacity = opacity.reshape(-1)[0]
-    rgb = "#" + "".join(
-        f"{round(float(x) * 255):02X}" for x in color[:3].detach().cpu().clamp(0, 1)
-    )
+    # One host read for the three channels, not one per channel.
+    channels = color[:3].detach().cpu().clamp(0, 1).tolist()
+    rgb = "#" + "".join(f"{round(x * 255):02X}" for x in channels)
     alpha = float((color[-1] * opacity).detach().cpu())
     return rgb, alpha
 

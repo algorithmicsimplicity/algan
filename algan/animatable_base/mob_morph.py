@@ -203,6 +203,37 @@ def _sample_grid_bilinearly(samples, uv):
     )
 
 
+def _gather_padded_objects(per_object, sources):
+    """Pad an object batch by repeating objects, as one gather.
+
+    ``per_object`` is ``[..., B, P, D]``: ``B`` objects of ``P`` points each.
+    Slot ``s`` of the result takes object ``sources[s]``; the first slot to
+    take an object gets it whole, and every later one gets it collapsed onto
+    its last point, so the padded copy grows out of the end of its source.
+    Returns ``[..., len(sources), P, D]``, element for element what selecting,
+    collapsing and stacking each slot in turn produces -- a pure copy, so the
+    values are the same bits -- in a gather and one write of the repeated
+    slots rather than several ops per slot, and without an index as large as
+    the result.
+    """
+    seen = set()
+    repeated = []
+    for slot, source in enumerate(sources):
+        if source in seen:
+            repeated.append(slot)
+        seen.add(source)
+    device = per_object.device
+    gathered = per_object.index_select(
+        -3, torch.tensor(sources, dtype=torch.long, device=device)
+    )
+    if repeated:
+        # ``gathered`` is a fresh copy, so writing into it is safe; the right
+        # side is read out (a copy too) before anything is written.
+        slots = torch.tensor(repeated, dtype=torch.long, device=device)
+        gathered[..., slots, :, :] = gathered[..., slots, -1:, :]
+    return gathered
+
+
 class MobMorphMixin:
     """``become`` plus the structural helpers used to align arbitrary Mobs."""
 
@@ -726,16 +757,7 @@ class MobMorphMixin:
         if current == 0:
             return value
         repeat_indices = [((slot * current) // target) for slot in range(target)]
-        seen = set()
-        aligned = []
-        for source_index in repeat_indices:
-            segment = value.select(-3, source_index)
-            if source_index in seen:
-                segment = segment[..., -1:, :].expand_as(segment).clone()
-            else:
-                seen.add(source_index)
-            aligned.append(segment)
-        return torch.stack(aligned, dim=-3)
+        return _gather_padded_objects(value, repeat_indices)
 
     def _expand_n_batch(self, n: int, *, points_per_object=None) -> Mob:
         """Grow an object batch by ``n``, re-batching all structural state.
@@ -773,20 +795,13 @@ class MobMorphMixin:
             value_per_object = unsquish(value, -2, points_per_object)
             if value_per_object.shape[-3] != current_batch_size:
                 continue
-            seen = set()
-            expanded = []
-            for source_index in repeat_list:
-                source = value_per_object[source_index]
-                if source_index in seen:
-                    source = source[..., -1:, :].expand(
-                        *source.shape[:-2], points_per_object, source.shape[-1]
-                    )
-                else:
-                    seen.add(source_index)
-                expanded.append(source)
+            # Every animatable attribute reads back as ``[frames, rows, D]``, so
+            # ``value`` is one frame's ``[rows, D]`` and the object axis is
+            # both dim 0 and dim -3 of ``value_per_object``.
+            expanded = _gather_padded_objects(value_per_object, repeat_list)
             self._setattr_and_rebatch_without_record(
                 attr,
-                squish(torch.stack(expanded, dim=-3), -3, -2).unsqueeze(0),
+                squish(expanded, -3, -2).unsqueeze(0),
             )
 
         self._rebatch_structural_attrs(repeat_indices)
