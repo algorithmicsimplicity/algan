@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.constants.color import Color
-from algan.environment import env_flag, env_float
+from algan.environment import env_float
 from algan.rendering.logical_pn import (
     OPPOSITE_EDGE,
     dice_pattern,
@@ -92,17 +92,6 @@ from algan.settings.kernel_settings import KERNEL_REGISTRY
 from algan.utils.python_utils import callable_signature
 
 _SAMPLE_TENSOR_CACHE = {}
-
-# The dice's launch diet (``LogicalPNTrianglePrimitive._dice_logical_pn``): a
-# chunk's positions and normals snapped in one call rather than two, and an
-# eager evaluation's patch weights built once per dice shape. The same
-# arithmetic on the same values, so the switch exists only to A/B that claim.
-_PN_DICE_LAUNCH_DIET = env_flag("ALGAN_PN_DICE_LAUNCH_DIET", True)
-
-# Plan the circuit inward-sign probe on the host (``_probe_inward_signs_host_
-# planned``) rather than reading it back from the device piece by piece. Bit
-# for bit the same signs; the switch exists to A/B that claim.
-_INWARD_SIGNS_HOST_PLAN = env_flag("ALGAN_INWARD_SIGNS_HOST_PLAN", True)
 
 
 def _camera_projection(camera, num_frames, device):
@@ -2738,7 +2727,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         shape_keys = (
             levels * (self.max_subdivision_level + 1) + across_levels
         ) * 3 + apex_levels
-        if _PN_DICE_LAUNCH_DIET and shape_keys.numel():
+        if rt_settings.pn_dice_launch_diet and shape_keys.numel():
             # Every shape's (frame, patch) list from one stable sort and one
             # readback, rather than a comparison, a ``nonzero`` and a device
             # synchronisation per shape. Within a shape the sort keeps the
@@ -2793,7 +2782,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             # against 0.97x on the deforming half of a real scene's dice calls.
             # The writes are disjoint and ``index_copy_`` does not care about
             # order, so the diced output is the same either way.
-            if _PN_DICE_LAUNCH_DIET and shape_keys.numel():
+            if rt_settings.pn_dice_launch_diet and shape_keys.numel():
                 selected = shape_rows[key]
             else:
                 trying = shape_keys == key
@@ -2819,7 +2808,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             # (``logical_pn_basis``); a compiled one fuses them into its kernel.
             basis = (
                 logical_pn_basis(vertex_uv)
-                if _PN_DICE_LAUNCH_DIET and not torch_compile_enabled()
+                if rt_settings.pn_dice_launch_diet and not torch_compile_enabled()
                 else None
             )
 
@@ -2850,7 +2839,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 normal_controls, _ = chunk_rows.rows_of(
                     normal_control_points, geometry_static
                 )
-                if _PN_DICE_LAUNCH_DIET:
+                if rt_settings.pn_dice_launch_diet:
                     if basis is None:
                         patch_positions = evaluate_logical_pn(controls, vertex_uv)
                         patch_normals = evaluate_logical_pn_normals(
@@ -3154,7 +3143,7 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     # to the single half-plane exactly where the wedge was meant to help.
     eps = 0.05
     budget = 4_000_000
-    if _INWARD_SIGNS_HOST_PLAN:
+    if rt_settings.inward_signs_host_plan:
         _probe_inward_signs_host_planned(
             edges,
             vert_circuit,
@@ -3674,7 +3663,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 if num_subdivisions == self.max_samples_per_segment:
                     break
                 resolved = max_error_squared <= tolerance_squared
-                chord_counts[active[resolved]] = num_subdivisions
+                # A masked write rather than a masked gather: the level's one
+                # readback is then the ``nonzero`` that shrinks ``active``.
+                chord_counts[active] = torch.where(
+                    resolved, num_subdivisions, chord_counts[active]
+                )
                 active = active[~resolved]
                 num_subdivisions = min(
                     num_subdivisions * 2, self.max_samples_per_segment

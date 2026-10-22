@@ -1108,7 +1108,6 @@ def test_the_dice_launch_diet_writes_the_same_bits(device, deforming, monkeypatc
     patch-major path that dedups frames.
     """
     import algan.rendering.logical_pn as logical_pn
-    import algan.rendering.raytracing.primitives as primitives
 
     def diced(diet):
         mob = Sphere()
@@ -1129,8 +1128,8 @@ def test_the_dice_launch_diet_writes_the_same_bits(device, deforming, monkeypatc
         primitive.shader_param_values = [
             value.to(device) for value in primitive.shader_param_values
         ]
-        monkeypatch.setattr(primitives, "_PN_DICE_LAUNCH_DIET", diet)
-        primitive._dice_logical_pn(_camera([-2.5, -1.8, -1.4], device=device))
+        with SETTINGS.raytracing.experimental.override(pn_dice_launch_diet=diet):
+            primitive._dice_logical_pn(_camera([-2.5, -1.8, -1.4], device=device))
         return primitive
 
     snaps = []

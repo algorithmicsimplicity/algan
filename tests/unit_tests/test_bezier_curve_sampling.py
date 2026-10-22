@@ -556,14 +556,15 @@ def _contour_edges(device, frames=3):
 
 
 @pytest.mark.parametrize("device", _inward_sign_devices(), ids=str)
-def test_host_planned_inward_signs_match_the_device_loop(device, monkeypatch):
+def test_host_planned_inward_signs_match_the_device_loop(device):
     import algan.rendering.raytracing.primitives as primitives
+    from algan.settings import SETTINGS
 
     edges, circuit = _contour_edges(device)
-    monkeypatch.setattr(primitives, "_INWARD_SIGNS_HOST_PLAN", False)
-    reference = primitives._circuit_edge_inward_signs(edges, circuit)
-    monkeypatch.setattr(primitives, "_INWARD_SIGNS_HOST_PLAN", True)
-    candidate = primitives._circuit_edge_inward_signs(edges, circuit)
+    with SETTINGS.raytracing.experimental.override(inward_signs_host_plan=False):
+        reference = primitives._circuit_edge_inward_signs(edges, circuit)
+    with SETTINGS.raytracing.experimental.override(inward_signs_host_plan=True):
+        candidate = primitives._circuit_edge_inward_signs(edges, circuit)
     assert torch.equal(candidate, reference)
     # Keep the fixture honest: both signs, and the degenerate rows left at 0.
     assert bool((reference == 1).any())
