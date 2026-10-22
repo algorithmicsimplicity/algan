@@ -341,16 +341,90 @@ def test_a_script_that_sets_its_settings_is_judged_by_the_context_it_rendered_un
     kp._note_entry(_spec(1), shadows, seconds=20.0, used=True, script="/s.py")
     kp.flush_manifest()
     data = kp.read_manifest()
-    assert kp.context_id(kp._script_context(data, "/s.py", imported)) == kp.context_id(
-        shadows
-    )
+    guess, rows_from = kp._script_context(data, "/s.py", imported)
+    assert kp.context_id(guess) == kp.context_id(shadows)
+    assert rows_from == kp.context_id(shadows)
     # A script with rows under the import-time context keeps it.
     kp._note_entry(_spec(2), imported, seconds=20.0, used=True, script="/s.py")
     kp.flush_manifest()
     data = kp.read_manifest()
-    assert kp._script_context(data, "/s.py", imported) is imported
+    assert kp._script_context(data, "/s.py", imported) == (imported, None)
     # A script with no rows at all keeps it too.
-    assert kp._script_context(data, "/other.py", imported) is imported
+    assert kp._script_context(data, "/other.py", imported) == (imported, None)
+
+
+def _old_schema(context, **raytracing):
+    """``context`` as an earlier version recorded it: one field since removed."""
+    return {
+        **context,
+        "raytracing": {
+            **context["raytracing"],
+            "a_field_an_update_removed": 1,
+            **raytracing,
+        },
+    }
+
+
+def test_a_guess_never_uses_a_context_from_another_settings_schema(
+    manifest, monkeypatch
+):
+    """After an update that changed SETTINGS' fields, a stored snapshot would make
+    every worker's ``apply_context`` raise; it is not used (no overrides recorded).
+    """
+    monkeypatch.setattr(kp, "environment_stamp", lambda: "after")
+    monkeypatch.setattr(kp, "_BASELINE", None)
+    now = kp.current_context()
+    old = _old_schema(now, shadows=True)
+    for k in (1, 2):
+        kp._note_entry(
+            _spec(k), old, seconds=20.0, confirmed="before", used=True, script="/s.py"
+        )
+    kp.flush_manifest()
+    data = kp.read_manifest()
+    assert data["overrides"] == {}
+    assert kp._script_context(data, "/s.py", now) == (now, None)
+    assert (
+        kp.pending_jobs(now, include_builtin=False, manifest=data, script="/s.py") == []
+    )
+
+
+def test_a_guess_is_rebuilt_from_current_defaults_and_what_the_script_changed(
+    manifest, monkeypatch
+):
+    monkeypatch.setattr(kp, "environment_stamp", lambda: "after")
+    now = kp.current_context()
+    # Recorded by an earlier version: its baseline had the removed field too,
+    # and the script turned shadows on.
+    old_baseline = _old_schema(now)
+    old = _old_schema(now, shadows=not now["raytracing"]["shadows"])
+    monkeypatch.setattr(kp, "_BASELINE", old_baseline)
+    for k in (1, 2):
+        kp._note_entry(
+            _spec(k), old, seconds=20.0, confirmed="before", used=True, script="/s.py"
+        )
+    kp.flush_manifest()
+    data = kp.read_manifest()
+    assert data["overrides"][kp.context_id(old)] == {
+        "raytracing": {"shadows": old["raytracing"]["shadows"]},
+        "computing": {},
+    }
+    guess, rows_from = kp._script_context(data, "/s.py", now)
+    assert rows_from == kp.context_id(old)
+    assert set(guess["raytracing"]) == set(now["raytracing"])
+    assert guess["raytracing"]["shadows"] == old["raytracing"]["shadows"]
+    assert {k: v for k, v in guess["raytracing"].items() if k != "shadows"} == {
+        k: v for k, v in now["raytracing"].items() if k != "shadows"
+    }
+    # A worker could apply it, and the script's specs are compiled under it.
+    try:
+        kp.apply_context(guess)
+    finally:
+        kp.apply_context(now)
+    jobs = kp.pending_jobs(
+        guess, include_builtin=False, manifest=data, script="/s.py", rows_from=rows_from
+    )
+    assert {job.spec["kernel"] for job in jobs} == {"algan.x:k1", "algan.x:k2"}
+    assert {job.cid for job in jobs} == {kp.context_id(guess)}
 
 
 class _RecordingPool:
@@ -404,7 +478,9 @@ def recorded_pools(manifest, monkeypatch):
 
 
 def test_a_first_run_precompiles_the_builtin_list(recorded_pools, monkeypatch):
-    monkeypatch.delenv("ALGAN_STARTUP_WARMUP", raising=False)
+    monkeypatch.delenv("ALGAN_FIRST_RUN_POOL", raising=False)
+    # Independent of the torch warm-up's switch.
+    monkeypatch.setenv("ALGAN_STARTUP_WARMUP", "0")
     pool = kp._start_pool(kp.current_context(), "test", "/new.py")
     assert pool is recorded_pools[0]
     assert {job.spec["kernel"] for job in pool.jobs} == {
@@ -419,9 +495,9 @@ def test_the_builtin_list_needs_an_empty_manifest_enough_workers_and_the_switch(
     recorded_pools, monkeypatch
 ):
     context = kp.current_context()
-    monkeypatch.setenv("ALGAN_STARTUP_WARMUP", "0")
+    monkeypatch.setenv("ALGAN_FIRST_RUN_POOL", "0")
     assert kp._start_pool(context, "test", "/new.py") is None
-    monkeypatch.delenv("ALGAN_STARTUP_WARMUP")
+    monkeypatch.delenv("ALGAN_FIRST_RUN_POOL")
     monkeypatch.setattr(kp, "_SETTLED", set())
     monkeypatch.setattr(kp, "worker_budget", lambda count: min(count, 3))
     assert kp._start_pool(context, "test", "/new.py") is None
@@ -496,6 +572,188 @@ def test_stopping_a_worker_kills_the_interpreter_its_launcher_started(tmp_path):
     finally:
         with contextlib.suppress(Exception):
             parent.kill()
+
+
+def test_a_reaped_process_is_never_used_to_find_children(monkeypatch):
+    """Its PID may already belong to an unrelated process."""
+    psutil = pytest.importorskip("psutil")
+    looked_up = []
+    monkeypatch.setattr(psutil, "Process", lambda pid: looked_up.append(pid))
+
+    class Reaped:
+        pid = os.getpid()
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            raise AssertionError("killed a reaped process")
+
+    kp._kill_tree(Reaped())
+    assert looked_up == []
+
+
+def test_two_deciders_never_start_two_pools(recorded_pools, monkeypatch):
+    """A pool assigned but not yet started is not ``active``; deciding is serialized."""
+    import time as _time
+
+    class SlowStart(_RecordingPool):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.active = False
+
+        def start(self):
+            _time.sleep(0.2)
+            self.active = True
+            return self
+
+    def make(jobs, workers, reason=""):
+        recorded_pools.append(SlowStart(jobs, workers, reason))
+        return recorded_pools[-1]
+
+    monkeypatch.setattr(kp, "PrecompilePool", make)
+    context = kp.current_context()
+    threads = [
+        threading.Thread(target=kp._start_pool, args=(context, "test", f"/{n}.py"))
+        for n in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert len(recorded_pools) == 1
+
+
+_SCRIPTED_WORKER = r"""
+import json, os, sys, time
+PREFIX = "@@algan-precompile@@ "
+d = os.environ["FAKE_DIR"]
+init_s = float(os.environ.get("FAKE_INIT_S", "0"))
+compile_s = float(os.environ.get("FAKE_COMPILE_S", "0"))
+dump_s = float(os.environ.get("FAKE_DUMP_S", "0"))
+
+def emit(**event):
+    sys.stdout.write(PREFIX + json.dumps(event) + "\n")
+    sys.stdout.flush()
+
+def mark(name):
+    open(os.path.join(d, name), "w").close()
+
+def enter(section, eid):
+    emit(event="enter", id=eid, section=section)
+    line = sys.stdin.readline()
+    answer = json.loads(line).get("op") if line else None
+    if answer not in ("go", "finish"):
+        mark("refused_" + section)
+        sys.exit(0)
+
+emit(event="ready", pid=os.getpid())
+applied = False
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    op = json.loads(line)
+    if op.get("op") in ("quit", "finish"):
+        break
+    if op.get("op") != "compile":
+        continue
+    eid = op["id"]
+    if not applied:
+        enter("init", eid)
+        time.sleep(init_s)
+        applied = True
+    emit(event="started", id=eid, fast_key="k")
+    mark("compiling")
+    time.sleep(compile_s)
+    enter("dump", eid)
+    lock = os.path.join(d, "qdcache.lock")
+    open(lock, "w").close()
+    time.sleep(dump_s)
+    os.remove(lock)
+    mark("dumped")
+    emit(event="done", id=eid, status="compiled", seconds=compile_s)
+"""
+
+
+@pytest.fixture
+def scripted_pool(tmp_path, monkeypatch):
+    """A one-job pool whose worker is a script that speaks the protocol."""
+    script = tmp_path / "worker.py"
+    script.write_text(_SCRIPTED_WORKER, encoding="utf-8")
+    monkeypatch.setattr(
+        kp.PrecompilePool, "worker_command", (sys.executable, str(script))
+    )
+    monkeypatch.setattr(kp, "_note_entry", lambda *a, **k: None)
+    monkeypatch.setattr(kp, "flush_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(kp, "_open_log", lambda: subprocess.DEVNULL)
+
+    def make(**timings):
+        env = {**os.environ, "FAKE_DIR": str(tmp_path)}
+        env.update({f"FAKE_{k.upper()}": str(v) for k, v in timings.items()})
+        job = kp._Job(_spec(1), kp.current_context(), 10.0)
+        pool = kp.PrecompilePool([job], 1, env=env, reason="test")
+        return pool.start()
+
+    return make
+
+
+def _wait_for(predicate, timeout=20.0):
+    deadline = threading.Event()
+    for _ in range(int(timeout / 0.02)):
+        if predicate():
+            return True
+        deadline.wait(0.02)
+    return predicate()
+
+
+def test_stopping_a_pool_waits_for_a_worker_inside_a_dump(scripted_pool, tmp_path):
+    """Killed mid-dump, a worker would leave the cache's lock file behind."""
+    import time as _time
+
+    pool = scripted_pool(compile_s=0.05, dump_s=1.0)
+    assert _wait_for(lambda: pool._workers and pool._workers[0].section == "dump")
+    began = _time.monotonic()
+    pool.terminate(grace=10)
+    assert _time.monotonic() - began >= 0.3
+    assert (tmp_path / "dumped").exists()
+    assert not (tmp_path / "qdcache.lock").exists()
+    assert pool.wait(10)
+
+
+def test_stopping_a_pool_kills_a_compiling_worker_at_once(scripted_pool, tmp_path):
+    import time as _time
+
+    pool = scripted_pool(compile_s=60)
+    assert _wait_for(lambda: (tmp_path / "compiling").exists())
+    assert _wait_for(lambda: pool._workers[0].section is None)
+    began = _time.monotonic()
+    pool.terminate(grace=10)
+    assert _time.monotonic() - began < 5
+    assert pool.wait(10)
+    assert not (tmp_path / "dumped").exists()
+
+
+def test_a_worker_still_inside_a_section_at_the_deadline_is_refused_the_next(
+    scripted_pool, tmp_path
+):
+    """Left alive past the grace period, it may not take the lock again."""
+    pool = scripted_pool(init_s=1.0, compile_s=0.05, dump_s=0.05)
+    assert _wait_for(lambda: pool._workers and pool._workers[0].section == "init")
+    pool.terminate(grace=0.1)
+    assert pool.wait(20)
+    assert (tmp_path / "refused_dump").exists()
+    assert not (tmp_path / "dumped").exists()
+
+
+def test_releasing_a_pool_lets_the_compile_in_hand_finish_and_dump(
+    scripted_pool, tmp_path
+):
+    pool = scripted_pool(compile_s=0.5, dump_s=0.05)
+    assert _wait_for(lambda: (tmp_path / "compiling").exists())
+    pool.release()
+    assert pool.wait(20)
+    assert (tmp_path / "dumped").exists()
 
 
 def test_scripts_are_remembered_most_recent_first_and_bounded():
