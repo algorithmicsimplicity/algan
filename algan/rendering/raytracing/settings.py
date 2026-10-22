@@ -1518,10 +1518,17 @@ first_batch_frames = max(0, env_int("ALGAN_FIRST_BATCH_FRAMES", 0))
 # (``Scene._frame_local_batches``): replay one frame at a time, give each
 # frame its own circuit chord counts, outline and bounds rather than the
 # batch's widest, decode its colors as one frame, and post-process it alone.
-# A frame then renders alike in any batch window (expanded stroke outlines
-# excepted: they are still padded to the batch's widest frame). Experimental:
-# the per-frame chord counts move animated circuits against the batch-wide
-# default, and preparation costs 20-170% more; see RenderLoopMixin.get_frames.
+# That removes the window dependence those choices carry, which made every
+# scene measured byte-stable under re-windowing -- but not all of it. Still
+# jobs also split a batch whose frames would make the merge's batch-wide
+# choices (route, opacity and material gates, triangle promotion) differently,
+# and keep one still per batch where nothing per frame covers the batch:
+# the path tracer, the wavefront memory trim and tonemapping inside the
+# composite (RenderLoopMixin._stills_may_share_batches). A video batch does
+# neither, and expanded stroke outlines are still padded to its widest frame.
+# Experimental: the per-frame chord counts move animated circuits against the
+# batch-wide default, and preparation costs 20-170% more; see
+# RenderLoopMixin.get_frames.
 frame_local_video_batches = env_flag("ALGAN_FRAME_LOCAL_VIDEO_BATCHES", False)
 
 # Bounded light-major queue, one worker per shadow ray, fixed-order reduction.

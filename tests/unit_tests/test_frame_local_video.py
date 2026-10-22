@@ -98,3 +98,61 @@ def test_video_batches_are_batch_wide_by_default(tmp_path, monkeypatch):
 
     assert len(windows) == 1
     assert set(flags) == {(False, False)}
+
+
+@pytest.mark.parametrize("frame_local", [False, True])
+def test_a_still_job_is_frame_local_and_signed_either_way(
+    tmp_path, monkeypatch, frame_local
+):
+    rt_settings.frame_local_video_batches = frame_local
+    scene = _author()
+    flags = []
+    original_batch = render_loop.RenderLoopMixin._render_primitive_batch
+
+    def batch(self, primitives, start_ind, end_ind, *args, **kwargs):
+        flags.append((self._frame_local_batches, self._still_batches))
+        return original_batch(self, primitives, start_ind, end_ind, *args, **kwargs)
+
+    monkeypatch.setattr(render_loop.RenderLoopMixin, "_render_primitive_batch", batch)
+    scene.save_frame(tmp_path / "still.png", SMALL, at=[0.3, 0.9])
+
+    assert flags
+    assert set(flags) == {(True, True)}
+
+
+@pytest.mark.parametrize(
+    ("frame_local", "still", "lone", "signature", "per_frame"),
+    [
+        (False, False, False, False, False),  # a video batch, as before
+        (True, False, False, False, True),  # a frame-local video batch
+        (True, True, False, True, True),  # a still batch
+        (True, True, True, False, True),  # a still alone in its batch
+    ],
+)
+def test_the_merge_is_told_how_to_decide_per_frame(
+    monkeypatch, frame_local, still, lone, signature, per_frame
+):
+    import types
+
+    from algan.rendering.raytracing import scene_builder, tracer
+
+    calls = []
+
+    def merge(primitives, **kwargs):
+        calls.append(kwargs)
+        return {"textures": torch.zeros(1)}
+
+    monkeypatch.setattr(scene_builder, "_merge_scene", merge)
+    monkeypatch.setattr(tracer, "_environment_radiance", lambda _scene: None)
+    scene = render_loop.RenderLoopMixin.__new__(render_loop.RenderLoopMixin)
+    scene._frame_local_batches = frame_local
+    scene._still_batches = still
+    primitive = types.SimpleNamespace(_rt_prepared_host_scene=None)
+    state = {"lights": [], "light_objects": [], "light_active": []}
+    if lone:
+        state["lone_still"] = True
+
+    scene._prepare_merged_host_scene([primitive], render_state=state)
+
+    assert calls[0]["frame_signature"] is signature
+    assert calls[0]["per_frame_decode"] is per_frame

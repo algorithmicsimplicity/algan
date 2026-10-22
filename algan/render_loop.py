@@ -3920,13 +3920,14 @@ class RenderLoopMixin:
 
         ``SETTINGS.raytracing.experimental.frame_local_video_batches`` makes
         the same per-frame choices in every other job's batches (video
-        included), without the still job's splitting: a frame then renders
-        alike whichever window it lands in, so re-windowing (a different
-        memory budget, ``first_batch_frames``, static frame reuse) leaves the
-        output byte-stable on every scene measured. Off by default: the
-        per-frame chord counts move animated circuits against the batch-wide
-        default (by up to 200 levels on the explainer benchmark), and
-        preparation costs 20-170% more on the PREVIEW benchmarks.
+        included), without the still job's splitting or its one-still batches
+        under the path tracer, the wavefront memory trim and in-composite
+        tonemapping -- so it removes only the window dependence those choices
+        carry. Re-windowing (a different memory budget, ``first_batch_frames``,
+        static frame reuse) left every scene measured byte-stable. Off by
+        default: the per-frame chord counts move animated circuits against the
+        batch-wide default (by up to 200 levels on the explainer benchmark),
+        and preparation costs 20-170% more on the PREVIEW benchmarks.
 
         With ``aux_passes=True``, ``aux_sink`` (a callable, required then) is
         called exactly once per yielded batch, immediately before the batch is

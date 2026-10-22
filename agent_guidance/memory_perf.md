@@ -341,17 +341,27 @@ workload), and sizing the arena, whose `empty_cache` handed the last job's
 6 GB arena back to the driver (~35 ms) only for it to be allocated again
 (~8 ms).
 
-- The collection is of generations 0-1 while PyTorch holds at most
-  `_FROZEN_GARBAGE_DEVICE_BYTES` (64 MiB; ~8.5 MB at a warm start) on the
-  render device -- garbage cannot hold more than is allocated -- and the host
-  is not short of memory. `ALGAN_OPT_DISABLE=rendergc` restores the full one.
+- The collection is of generations 0-1 only while (a) the render device's
+  segments that hold a live block total at most
+  `_FROZEN_GARBAGE_DEVICE_BYTES` (64 MiB) -- `allocated + inactive_split`
+  bytes, not allocated alone: `empty_cache` returns only wholly free
+  segments, so one small tensor kept by garbage in the last arena's segment
+  keeps all of it; (b) no Scene was discarded since the last full collection
+  (`note_scene_discarded`, from `Scene.reset`, `SceneManager.reset` and
+  `terminate`: a replaced Scene is cyclic garbage that only a full collection
+  reaches, and frozen it would sit out the render); and (c) the host is not
+  short of memory. So the cheap path is a script's first render and a
+  re-render of the same Scene; `ALGAN_OPT_DISABLE=rendergc` restores the full
+  one everywhere.
 - `_cuda_arena_from_cache` reads the free figure as the driver's free memory
   plus PyTorch's wholly free segments (equal to the post-`empty_cache`
-  reading on every render probed), and when one cached segment is exactly the
-  arena's rounded size, allocates from it before emptying the cache of the
-  rest. Nothing is held between renders that was not already in PyTorch's
-  cache. `ALGAN_OPT_DISABLE=arenareuse`; never with
-  `PYTORCH_CUDA_ALLOC_CONF`, an override, or off CUDA.
+  reading on every render probed), and when one cached segment on the current
+  stream is exactly the arena's rounded size, allocates from it before
+  emptying the cache of the rest. Nothing is held between renders that was not
+  already in PyTorch's cache. It falls back with
+  `ALGAN_OPT_DISABLE=arenareuse`, a `PYTORCH_CUDA_ALLOC_CONF`, an override,
+  allocation-history recording, a free private-pool or expandable segment,
+  or off CUDA.
 
 Arena sizes were identical in every arm; outputs byte-identical (explainer,
 nn, graphics with `max_bounces=0` -- graphics is not run-to-run
