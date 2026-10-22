@@ -188,7 +188,7 @@ def _opt_disabled(name):
     timeslice,lazyzeros,compactstate,rowdedup,clonememo,collate,gridnormals,
     gridcross,gridsoup,audiomix,audioprobe,staticbg,margindecay,strokesheets,
     strokepixels,solobands,packedfragsort,binfragsort,fusedbinkeys,hostbackoff,
-    writerrepeats,writerview,unrecordedset,rendergc,arenareuse disables
+    writerrepeats,writerview,unrecordedset,rendergc,arenareuse,tilesync disables
     individual optimizations (read once, first use).
     ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion A/B
     timeslice/lazyzeros through this; ``benchmarks/_query_rowdedup_parity.py``
