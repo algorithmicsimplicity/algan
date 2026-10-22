@@ -92,7 +92,8 @@ torch.set_default_dtype(torch.float32)
 # the rest of this import and the script's authoring hide what the first
 # render would otherwise pay for loading them (rendering/device_warmup.py).
 # A no-op on CPU and MPS, outside scene scripts and with
-# ALGAN_STARTUP_WARMUP=0; the first render job joins the thread.
+# ALGAN_STARTUP_WARMUP=0 (read here, so set it before the import); the first
+# render job joins the thread.
 from algan.rendering.device_warmup import start_at_import as _start_device_warmup
 
 _start_device_warmup()

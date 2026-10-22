@@ -1130,8 +1130,9 @@ def render_job_holding_the_arch():
 
             # The start-up warm-up thread issues device work of its own; the
             # render must not share the device with it (its memory peaks and
-            # arena preflight are measured), so it ends here.
-            device_warmup.finish()
+            # arena preflight are measured), so it ends here -- reported if
+            # its step in flight outlasts the wait.
+            device_warmup.finish(log=True)
         with contextlib.suppress(Exception):
             from algan.rendering import kernel_precompile, kernel_progress
 

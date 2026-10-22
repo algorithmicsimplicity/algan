@@ -37,13 +37,19 @@ Why it cannot change a render
   caching allocator's small segment, the cuBLAS handle and workspace, which
   return to torch's per-thread pools when the thread exits and are reused by
   the render thread).
-* Every step is wrapped: one that fails is skipped. A render device changed
-  after import, or a script that never renders, only makes the work wasted.
+* Every step is wrapped: one that fails is skipped. A script that never
+  renders only makes the work wasted, and so does a render device changed
+  after import -- the thread checks the device before each step and stops
+  as soon as it is no longer the one it warms.
 * At exit the thread is stopped and joined (bounded), so it is never inside a
   driver call while the process tears CUDA down, and never holds it open.
 
-``ALGAN_STARTUP_WARMUP=0`` turns it off (and with it the first-run use of the
-built-in kernel list by the precompile pool, see ``kernel_precompile.py``).
+``ALGAN_STARTUP_WARMUP=0`` turns it off. It is read where the thread would
+start: at ``import algan`` in a scene script (so it must be set before the
+import), and in the render daemon at its launch and again at each run, so a
+client's ``0`` stops a warm-up still running for that run and its ``1``
+starts one the launch environment had turned off. It never changes a
+picture, so the daemon does not refuse a client over it.
 """
 
 from __future__ import annotations
@@ -59,8 +65,9 @@ from algan.environment import env_flag
 _THREAD = None
 _STOP = threading.Event()
 _LOCK = threading.Lock()
-#: What the last warm-up did, for tests and the profiler:
-#: ``{"ops": int, "failed": int, "seconds": float, "stopped": bool}``.
+#: What the last warm-up did, for tests and for anyone inspecting a process:
+#: ``{"ops": int, "failed": int, "seconds": float, "stopped": bool,
+#: "device_moved": bool}``.
 LAST_RUN = None
 
 
@@ -228,13 +235,23 @@ def _ops(device):
     ]
 
 
+def _device_moved(device):
+    """Whether the render device is no longer the one this warm-up is for."""
+    try:
+        from algan.settings._startup import render_device
+
+        return render_device().type != device.type
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _run(device):
     global LAST_RUN
     import torch
 
     started = time.perf_counter()
     done = failed = 0
-    stopped = False
+    stopped = moved = False
     on_device = (
         torch.cuda.device(device) if device.type == "cuda" else contextlib.nullcontext()
     )
@@ -243,6 +260,9 @@ def _run(device):
             for _name, op in _ops(device):
                 if _STOP.is_set():
                     stopped = True
+                    break
+                if _device_moved(device):
+                    moved = True
                     break
                 try:
                     op()
@@ -256,6 +276,7 @@ def _run(device):
         "failed": failed,
         "seconds": time.perf_counter() - started,
         "stopped": stopped,
+        "device_moved": moved,
     }
 
 
@@ -310,12 +331,20 @@ def start_at_import():
     return start("import")
 
 
-def finish(timeout=5.0):
+#: How long the first render job waits for the step in flight. Warm, a step is
+#: milliseconds; on a cold driver cache the slowest JIT measured ~5 s, so this
+#: is only reached by a driver that is not answering at all.
+RENDER_JOIN_SECONDS = 30.0
+
+
+def finish(timeout=RENDER_JOIN_SECONDS, *, log=False):
     """Stop the warm-up and wait for it: called before the first render job.
 
     Steps not yet taken are skipped -- the render loads what it needs itself
     -- and the one in flight is waited for, so the render starts with no other
-    thread issuing device work. Returns whether the thread is gone.
+    thread issuing device work. Returns whether the thread is gone; with
+    ``log``, a thread still running at the timeout is reported (at ``PERF``),
+    since the render then starts beside it.
     """
     thread = _THREAD
     if thread is None:
@@ -324,10 +353,36 @@ def finish(timeout=5.0):
         return False
     _STOP.set()
     thread.join(timeout)
-    return not thread.is_alive()
+    gone = not thread.is_alive()
+    if not gone and log:
+        with contextlib.suppress(Exception):
+            from algan.logging.logger import PERF, get_logger
+
+            get_logger().log(
+                PERF,
+                "The start-up device warm-up was still inside one step after "
+                "%.0f s; the render starts while it finishes that step.",
+                timeout,
+            )
+    return gone
+
+
+def on_daemon_run():
+    """A daemon run is starting: apply this run's ``ALGAN_STARTUP_WARMUP``.
+
+    The daemon swaps each client's live variables in per run, so this is where
+    a client's value can still matter: ``0`` stops a warm-up the launch
+    started, ``1`` starts one the launch environment had turned off (once per
+    process either way; the daemon is warm after its first render).
+    """
+    if enabled():
+        return start("daemon run")
+    finish(log=True)
+    return False
 
 
 def active():
+    """Whether the warm-up thread is running (for tests)."""
     thread = _THREAD
     return thread is not None and thread.is_alive()
 

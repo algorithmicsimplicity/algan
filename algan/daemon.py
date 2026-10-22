@@ -1292,7 +1292,8 @@ def main(argv=None):
     _console()  # the real stdout, before any run can redirect it
     # The daemon's first run pays torch's lazy CUDA kernel loading like any
     # fresh process; load them while it waits for, and authors, that run
-    # (rendering/device_warmup.py). Its first render job joins the thread.
+    # (rendering/device_warmup.py). Its first render job joins the thread, and
+    # each run re-applies its own ALGAN_STARTUP_WARMUP (on_daemon_run below).
     from algan.rendering.device_warmup import start as _start_device_warmup
 
     _start_device_warmup("daemon")
@@ -1430,6 +1431,12 @@ def main(argv=None):
         from algan.rendering.kernel_precompile import start_for_script
 
         start_for_script(path)
+        # This run's ALGAN_STARTUP_WARMUP (swapped in with the live variables)
+        # decides about the start-up device warm-up: see rendering/
+        # device_warmup.py. On the adopted render device, once per process.
+        from algan.rendering.device_warmup import on_daemon_run
+
+        on_daemon_run()
         old_path = sys.path[:]
         _add_to_path(os.path.dirname(path))
         importlib.invalidate_caches()

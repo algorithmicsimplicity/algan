@@ -22,8 +22,11 @@ from algan.rendering import device_warmup
 
 
 @pytest.fixture(autouse=True)
-def _clean_warmup():
+def _clean_warmup(monkeypatch):
     device_warmup._reset_for_tests()
+    # The scripted runs below warm the CPU; on a CUDA box the render device
+    # would say they are for the wrong device and stop them at once.
+    monkeypatch.setattr(device_warmup, "_device_moved", lambda device: False)
     yield
     device_warmup._reset_for_tests()
 
@@ -76,6 +79,65 @@ def test_finish_stops_the_steps_not_yet_taken(monkeypatch):
     assert run["stopped"]
     assert run["ops"] < 200
     assert run["failed"] == 0
+
+
+def test_it_stops_when_the_render_device_moves_off_its_device(monkeypatch):
+    moved = []
+    monkeypatch.setattr(device_warmup, "_device_moved", lambda device: bool(moved))
+    steps = []
+
+    def step():
+        steps.append(1)
+        if len(steps) == 3:
+            moved.append(True)  # e.g. SETTINGS.computing.render_device = "cpu"
+
+    monkeypatch.setattr(
+        device_warmup, "_ops", lambda device: [(f"s{k}", step) for k in range(50)]
+    )
+    device_warmup._start_thread(torch.device("cpu"), "test")
+    device_warmup._THREAD.join(10)
+    assert device_warmup.LAST_RUN["device_moved"]
+    assert len(steps) == 3
+
+
+def test_a_step_that_outlasts_the_render_wait_is_reported(monkeypatch):
+    import threading
+
+    from algan.logging import logger as algan_logger
+
+    release = threading.Event()
+    monkeypatch.setattr(
+        device_warmup, "_ops", lambda device: [("stuck", lambda: release.wait(10))]
+    )
+    messages = []
+
+    class Recorder:
+        def log(self, level, message, *args):
+            messages.append(message % args)
+
+    monkeypatch.setattr(algan_logger, "get_logger", lambda: Recorder())
+    device_warmup._start_thread(torch.device("cpu"), "test")
+    try:
+        assert not device_warmup.finish(timeout=0.2, log=True)
+        assert any("warm-up" in message for message in messages)
+    finally:
+        release.set()
+    assert device_warmup.finish(timeout=10)
+
+
+def test_a_daemon_run_applies_its_own_switch(monkeypatch):
+    started = []
+    monkeypatch.setattr(device_warmup, "start", lambda reason="": started.append(1))
+    finished = []
+    monkeypatch.setattr(
+        device_warmup, "finish", lambda *a, **k: finished.append(1) or True
+    )
+    monkeypatch.setenv("ALGAN_STARTUP_WARMUP", "0")
+    device_warmup.on_daemon_run()
+    assert (started, finished) == ([], [1])
+    monkeypatch.setenv("ALGAN_STARTUP_WARMUP", "1")
+    device_warmup.on_daemon_run()
+    assert started == [1]
 
 
 def test_a_failing_step_is_skipped_not_raised(monkeypatch):

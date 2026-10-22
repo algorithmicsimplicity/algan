@@ -147,7 +147,7 @@ only from the import-time decision on a **first run** (an empty manifest: a
 new machine or `ALGAN_CACHE_DIR`) with at least six workers, and never other
 scripts' kernels: measured, speculative work only slowed the render's own
 compiles on a 4-core box, and anywhere with a record the record is the better
-list (`ALGAN_STARTUP_WARMUP=0` turns the first-run list off). It is a bet on
+list (`ALGAN_FIRST_RUN_POOL=0` turns the first-run list off). It is a bet on
 the scene matching a built-in variant: a cold first `explainer` render (a
 match) went from 73-77 s to 43 s, while a cold first `graphics` render (shadows
 set after import, its own lights: no megakernel matches) that got a
@@ -205,7 +205,21 @@ render. With a cold CUDA driver cache (`CUDA_CACHE_PATH`, which lives under
 driver JIT-compiles torch's kernels and the same op list costs ~15 s, serially
 -- four threads took as long as one -- which is the ~14 s a cold render spent
 before its first Taichi kernel. Keep the op list in step with what the
-renderer calls; a missing op only costs its load again.
+renderer calls; a missing op only costs its load again. The thread stops on
+its own when the render device moves off the one it warms, and a render that
+outwaits its step in flight (30 s) logs at `PERF` and starts beside it.
+
+**Stopping a pool never kills a worker that may hold the cache's metadata
+lock** (a bare `O_EXCL` file; a holder killed inside it blocks every process's
+loads and saves until the ten-minute stale-lock sweep). Polled on the CPU
+arch, a worker holds it for the index read and each dump -- milliseconds,
+never during a compile -- so a worker asks the parent (`enter`, answered `go`,
+`finish` or `abort`) before bringing a program up (which reads the index, and
+on a re-init dumps the old program) and before its index store and dump, and
+`PrecompilePool.terminate` decides under the same lock: it waits (bounded) for
+granted sections to end, kills only workers outside one, and refuses later
+requests. `_kill_tree` takes the venv launcher's child interpreter with it,
+and skips a process already reaped (its PID may be reused).
 
 **Progress** (`kernel_progress.py`) replaced the one-shot "several minutes"
 notice: a header on the first index miss of a render, a numbered line per real
