@@ -2682,6 +2682,13 @@ class Mob(
         the MRO on every ``set`` call was one of the more expensive things a
         scene did while it was being authored.
         """
+        return self._class_settable_property_names() | set(self.animatable_attrs)
+
+    def _class_settable_property_names(self) -> set[str]:
+        """The MRO half of :meth:`_settable_property_names`, cached per class.
+
+        Returned as the cached set itself: read it, never modify it.
+        """
         version = ANIMATABLE_PROPERTY_VERSION[0]
         klass = type(self)
         cached = _SETTABLE_PROPERTY_CACHE.get(klass)
@@ -2698,7 +2705,7 @@ class Mob(
                         names.add(name)
             cached = (version, names)
             _SETTABLE_PROPERTY_CACHE[klass] = cached
-        return cached[1] | set(self.animatable_attrs)
+        return cached[1]
 
     def _check_properties_are_valid(self, property_names):
         """Raise if any of the given names is not an animatable attribute.
@@ -2718,7 +2725,11 @@ class Mob(
             If any name is neither an attribute of this Mob nor a registered
             animatable attribute; the message lists what is available.
         """
-        settable = self._settable_property_names()
+        # The two halves of _settable_property_names, tested separately: the
+        # union is only needed for the message, and building it cost every
+        # ``set`` a set copy of the class's whole settable namespace.
+        class_settable = self._class_settable_property_names()
+        own = self.animatable_attrs
         # attr_to_timeline is Scene-wide, so it also accepts an attribute owned
         # by some other Mob in the Scene (where setting it does nothing). It
         # gates the check as it always has, but is not advertised in the message.
@@ -2727,8 +2738,9 @@ class Mob(
             # The membership tests first: ``hasattr`` on an animatable
             # attribute runs its getter, a timeline read per name, which every
             # ``set`` paid only to learn what the registry already said.
-            if p in settable or p in timelines or hasattr(self, p):
+            if p in class_settable or p in own or p in timelines or hasattr(self, p):
                 continue
+            settable = self._settable_property_names()
             suggestion = difflib.get_close_matches(p, sorted(settable), n=1)
             hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
             raise AttributeError(

@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from algan import BLUE, Square
+from algan import BLUE, MeshStandardMaterial, Square
 from algan.errors import AlganConfigurationError
 from algan.utils.tensor_utils import (
     cast_to_tensor,
@@ -84,6 +84,12 @@ SOURCES = [
     True,
     (0.0, 1.0, 2.0),
     (0.0, NAN, 2.0),
+    (0.5, INF),
+    (1.0e39, 0.5),  # one element beyond float32's range
+    [1, 2, 3],
+    [0.25],
+    (True, 0.5),  # a bool element takes the tensor check
+    ((0.5, 0.5), (0.5, NAN)),  # so does a nested sequence
 ]
 
 TENSORS = [
@@ -196,4 +202,31 @@ def test_the_assignment_funnel_still_names_the_bad_value(attr, bad, message):
     square = Square()
     with pytest.raises(AlganConfigurationError) as raised:
         setattr(square, attr, bad)
+    assert str(raised.value).startswith(message)
+
+
+@pytest.mark.parametrize(
+    ("opacity", "message"),
+    [
+        (1.5, "opacity must be between 0 and 1 inclusive; got tensor([[[1.5000]]])."),
+        (NAN, "opacity must be finite; got a NaN value: tensor([[[nan]]])."),
+        (True, None),  # a bool is cast, as it always was, and is in range
+        (0.5, None),
+        (1, None),
+    ],
+)
+def test_set_material_reports_an_opacity_as_it_always_did(opacity, message):
+    """A plain in-range opacity skips the per-part tensor.
+
+    Anything else is still handed to every part as the tensor the error
+    message names.
+    """
+    square = Square()
+    material = MeshStandardMaterial(opacity=opacity)
+    if message is None:
+        square.set_material(material)
+        assert float(square.opacity) == float(opacity)
+        return
+    with pytest.raises(AlganConfigurationError) as raised:
+        square.set_material(material)
     assert str(raised.value).startswith(message)

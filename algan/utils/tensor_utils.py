@@ -167,15 +167,26 @@ def _plain_tensor(value):
 
 
 def _number_casts_to_finite(source):
-    """Whether ``source`` is a plain Python number whose cast is finite.
+    """Whether ``source`` is plain Python numbers whose cast is finite.
 
-    True only for an ``int`` or ``float`` (exactly those types, so ``bool``,
-    NumPy scalars and tensors take the tensor check) whose magnitude fits the
-    default floating dtype: ``cast_to_tensor`` builds that dtype, and a finite
-    float beyond its range -- ``1e39`` in float32 -- casts to an infinity,
-    which must still be rejected. NaN and the infinities fail the comparison.
+    True only for an ``int`` or ``float`` -- or a flat, non-empty tuple or list
+    of them, which ``cast_to_tensor`` casts element by element -- (exactly
+    those types, so ``bool``, NumPy scalars, tensors and nested sequences take
+    the tensor check) whose magnitudes fit the default floating dtype:
+    ``cast_to_tensor`` builds that dtype, and a finite float beyond its range
+    -- ``1e39`` in float32 -- casts to an infinity, which must still be
+    rejected. NaN and the infinities fail the comparison.
     """
     kind = type(source)
+    if kind is tuple or kind is list:
+        if not source:
+            return False
+        limit = torch.finfo(torch.get_default_dtype()).max
+        for item in source:
+            kind = type(item)
+            if (kind is not float and kind is not int) or not abs(item) <= limit:
+                return False
+        return True
     if kind is not float and kind is not int:
         return False
     return abs(source) <= torch.finfo(torch.get_default_dtype()).max
