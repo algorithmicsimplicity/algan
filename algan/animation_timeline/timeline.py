@@ -188,13 +188,18 @@ def _opt_disabled(name):
     timeslice,lazyzeros,compactstate,rowdedup,clonememo,collate,gridnormals,
     gridcross,gridsoup,audiomix,audioprobe,staticbg,margindecay,strokesheets,
     strokepixels,solobands,packedfragsort,binfragsort,fusedbinkeys,hostbackoff,
-    writerrepeats,writerview,framewindows disables individual optimizations
-    (read once, first use).
+    writerrepeats,writerview disables individual optimizations (read once,
+    first use).
     ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion A/B
     timeslice/lazyzeros through this; ``benchmarks/_query_rowdedup_parity.py``
     A/Bs rowdedup; ``benchmarks/_updater_clone_memo_parity.py`` A/Bs clonememo;
     ``benchmarks/_collated_fanout_parity.py`` A/Bs collate;
     ``benchmarks/_grid_normals_ab.py`` A/Bs gridnormals.
+
+    Batch preparation's own: framewindows (replay windows located on the
+    host), broadcastall, mergeshapes, circuitscale and replaybodies;
+    ``tests/unit_tests/test_batch_build_*.py`` pin each against the path it
+    disables.
     """
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
