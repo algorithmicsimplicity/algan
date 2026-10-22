@@ -96,6 +96,10 @@ struct Params {
     unsigned int pad4;
 };
 
+// runtime._Params mirrors this struct field for field; test_optix_abi.py
+// holds its offsets (NVRTC has no offsetof without the standard headers).
+static_assert(sizeof(Params) == 272, "Params layout");
+
 extern "C" {
 __constant__ Params params;
 }

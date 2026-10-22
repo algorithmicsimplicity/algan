@@ -63,6 +63,7 @@ OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS = 1 << 0
 OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE = 1 << 31
 OPTIX_EXCEPTION_FLAG_NONE = 0
 OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_OFF = 0
+OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_ALL = 0xFFFFFFFF
 OPTIX_DEVICE_PROPERTY_LIMIT_MAX_PRIMITIVES_PER_GAS = 0x2003
 OPTIX_DEVICE_PROPERTY_RTCORE_VERSION = 0x2005
 OPTIX_SBT_RECORD_HEADER_SIZE = 32
@@ -345,7 +346,6 @@ _PROTOTYPES = {
     "optixDeviceContextGetProperty": CFUNCTYPE(
         c_int, c_void_p, c_int, c_void_p, c_size_t
     ),
-    "optixDeviceContextSetCacheEnabled": CFUNCTYPE(c_int, c_void_p, c_int),
     "optixModuleCreate": CFUNCTYPE(
         c_int,
         c_void_p,
@@ -422,8 +422,39 @@ _PROTOTYPES = {
 }
 
 
+#: Result codes that can clear up on their own -- memory, the CUDA state, the
+#: disk cache -- as against a missing runtime, a refused ABI or a program
+#: that does not compile, which recur on every attempt.
+_TRANSIENT_RESULTS = frozenset(
+    {
+        7002,  # host out of memory
+        7004,  # file I/O
+        7010,  # disk cache: invalid path
+        7011,  # disk cache: permission
+        7012,  # disk cache: database
+        7013,  # disk cache: invalid data
+        7052,  # CUDA not initialized
+        7807,  # device out of memory
+        7900,  # CUDA error
+    }
+)
+
+
 class OptixError(RuntimeError):
-    """An OptiX call, or loading the runtime, failed."""
+    """An OptiX call, or loading the runtime, failed.
+
+    ``code`` is the call's result code, or ``None`` when no call failed (the
+    runtime library is missing, the ABI is refused, the device has no RT
+    cores). ``transient`` says whether trying again later could succeed.
+    """
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+    @property
+    def transient(self):
+        return self.code in _TRANSIENT_RESULTS
 
 
 def _windows_file_version(path: Path) -> tuple[int, ...]:
@@ -528,6 +559,14 @@ class OptixApi:
             if not pointer:
                 raise OptixError(f"OptiX function table entry {name} is null")
             self.fn[name] = prototype(pointer)
+        # A table read at the wrong offsets fails here rather than at a launch:
+        # the first entry must name the success code.
+        name = self.fn["optixGetErrorName"](OPTIX_SUCCESS)
+        if name != b"OPTIX_SUCCESS":
+            raise OptixError(
+                f"the OptiX function table from {self.path} does not have the "
+                f"expected layout (optixGetErrorName(0) = {name!r})"
+            )
 
     def check(self, result: int, what: str, log: bytes | None = None):
         if result == OPTIX_SUCCESS:
@@ -537,7 +576,8 @@ class OptixApi:
         detail = f"\n{log.decode(errors='replace')}" if log else ""
         raise OptixError(
             f"{what} failed: {result} {name.decode() if name else ''} "
-            f"{text.decode() if text else ''}{detail}"
+            f"{text.decode() if text else ''}{detail}",
+            code=result,
         )
 
     def __call__(self, name, *args):

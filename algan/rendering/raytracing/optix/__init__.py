@@ -31,13 +31,6 @@ from __future__ import annotations
 import torch
 
 
-def optix_requested() -> bool:
-    """Whether the switch is on (read live)."""
-    from algan.rendering.raytracing import settings as rt_settings
-
-    return bool(rt_settings.optix)
-
-
 def gather_kbuf():
     """The k-buffer width the device programs are compiled for."""
     from algan.rendering.raytracing.raytrace_kernels_taichi import kbuf
