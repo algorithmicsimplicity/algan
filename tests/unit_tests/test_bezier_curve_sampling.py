@@ -504,3 +504,68 @@ def test_a_partial_draw_leaves_nothing_outside_its_window_at_any_size():
     torch.testing.assert_close(
         small[drawn, :4], reference[drawn, :4] * 1e-6, rtol=1e-4, atol=1e-12
     )
+
+
+def _inward_sign_devices():
+    devices = [torch.device("cpu")]
+    if torch.cuda.is_available():
+        devices.append(torch.device("cuda"))
+    return devices
+
+
+def _contour_edges(device, frames=3):
+    """``[T, V, 6]`` polyline edges of many circuits, and their circuit ids.
+
+    Glyph-sized loops beside one large one (several size classes), a ring
+    with its hole as a second loop of the same circuit, thin stems that need
+    the probe's later, smaller steps, a zero-length edge and a degenerate
+    sentinel row, loops wound both ways -- moved a little from frame to frame.
+    """
+    generator = torch.Generator().manual_seed(11)
+    loops = []
+    for c in range(9):
+        n = 3 + int(torch.randint(0, 12, (1,), generator=generator))
+        angles = torch.linspace(0, 2 * torch.pi, n + 1)[:-1]
+        radius = 0.2 + 0.8 * torch.rand(n, generator=generator)
+        points = torch.stack((radius * angles.cos(), radius * angles.sin()), -1)
+        if c % 2:
+            points = points.flip(0)  # wound the other way round
+        loops.append((c, points + torch.tensor([3.0 * c, 0.0])))
+    big = torch.linspace(0, 2 * torch.pi, 97)[:-1]
+    loops.append((9, torch.stack((5 * big.cos(), 5 * big.sin()), -1)))
+    ring = torch.linspace(0, 2 * torch.pi, 25)[:-1]
+    loops.append((10, torch.stack((2 * ring.cos(), 2 * ring.sin()), -1) + 20))
+    loops.append((10, torch.stack((ring.cos(), -ring.sin()), -1) + 20))
+    for c, width in ((11, 0.02), (12, 0.005)):
+        stem = torch.tensor([[0.0, 0.0], [width, 0.0], [width, 3.0], [0.0, 3.0]])
+        loops.append((c, stem + torch.tensor([-10.0, 2.0 * c])))
+    rows, circuit = [], []
+    for c, points in loops:
+        rolled = points.roll(-1, 0)
+        rows.append(torch.cat((points, rolled, torch.ones(len(points), 2)), -1))
+        circuit += [c] * len(points)
+    rows.append(torch.tensor([[1.0, 1.0, 1.0, 1.0, 1.0, 0.0]]))
+    rows.append(torch.tensor([[1e9, 1e9, 1e9, 1e9, 0.0, 0.0]]))
+    circuit += [0, 0]
+    edges = torch.cat(rows)[:, :5]
+    shifts = torch.rand(frames, 1, 1, generator=generator) * 0.01
+    edges = edges.unsqueeze(0) + torch.cat(
+        (shifts, shifts, shifts, shifts, 0 * shifts), -1
+    )
+    return edges.to(device), torch.tensor(circuit).to(device)
+
+
+@pytest.mark.parametrize("device", _inward_sign_devices(), ids=str)
+def test_host_planned_inward_signs_match_the_device_loop(device, monkeypatch):
+    import algan.rendering.raytracing.primitives as primitives
+
+    edges, circuit = _contour_edges(device)
+    monkeypatch.setattr(primitives, "_INWARD_SIGNS_HOST_PLAN", False)
+    reference = primitives._circuit_edge_inward_signs(edges, circuit)
+    monkeypatch.setattr(primitives, "_INWARD_SIGNS_HOST_PLAN", True)
+    candidate = primitives._circuit_edge_inward_signs(edges, circuit)
+    assert torch.equal(candidate, reference)
+    # Keep the fixture honest: both signs, and the degenerate rows left at 0.
+    assert bool((reference == 1).any())
+    assert bool((reference == -1).any())
+    assert bool((reference[:, -2:] == 0).all())
