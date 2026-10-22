@@ -780,9 +780,8 @@ def note_materialized(token, *, seconds, compiled, cache_key=None):
 
     Recorded under the current context. One the source-keyed index or the
     offline cache served is confirmed under the current stamp at once: its
-    artifact is on disk. One compiled here is not on disk until a dump writes
-    it -- ``taichi_runtime.dump_new_kernels`` as the render job ends, or the
-    exit flush -- so its row is left unconfirmed and :func:`flush_manifest`
+    artifact is on disk. One compiled here is not on disk until the exit
+    flush writes it, so its row is left unconfirmed and :func:`flush_manifest`
     confirms it once the ``.qdc`` that ``cache_key`` names exists. Confirming
     it at once ("it will exist, at this process's cache flush") was wrong for
     every process that never flushed -- the kernel profiler's, a killed one:
