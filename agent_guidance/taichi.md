@@ -135,13 +135,25 @@ must be left out of the key**, or its index entries never match. Because of the
 read-once index, a process waits for a running pool at its **first**
 materialization (`before_first_materialization`) and never later -- mid-render
 handoff was built first and measured useless. The implicit pool is scoped to
-the running script's recorded specs under its current settings, and runs only
-for specs not confirmed under the current environment stamp: at the end of
-`import algan` in a scene-script process (the daemon handoff's own test), at
-the start of a daemon run while its program is untouched, and at render start
-for a script `import algan` could not recognise. It never compiles the built-in
-list or other scripts' kernels: measured, speculative work only slowed the
-render's own compiles on a 4-core box. Specs are portable only when everything
+the running script's recorded specs, and runs only for specs not confirmed
+under the current environment stamp: at the end of `import algan` in a
+scene-script process (the daemon handoff's own test) -- under the settings the
+script last rendered with, since a script that sets `SETTINGS` itself records
+its kernels under those and not the import-time ones -- at the start of a
+daemon run while its program is untouched, and at render start and at the
+first materialization, where a pool for settings the script has since changed
+is replaced by one for the current settings. It compiles the built-in list
+only from the import-time decision on a **first run** (an empty manifest: a
+new machine or `ALGAN_CACHE_DIR`) with at least six workers, and never other
+scripts' kernels: measured, speculative work only slowed the render's own
+compiles on a 4-core box, and anywhere with a record the record is the better
+list (`ALGAN_STARTUP_WARMUP=0` turns the first-run list off). It is a bet on
+the scene matching a built-in variant: a cold first `explainer` render (a
+match) went from 73-77 s to 43 s, while a cold first `graphics` render (shadows
+set after import, its own lights: no megakernel matches) that got a
+replacement built-in pool at render start waited 40 s for it and still
+compiled its megakernels, 103 s against 81 s -- hence never this late (63 s
+without it, mostly the torch warm-up below; one run each, noisy). Specs are portable only when everything
 in them is `algan.*` or plain data -- a scene's own `@ti.func` stage keeps
 compiling at first launch. **A spec's identity must contain only what selects a
 specialization**: template values, array dtypes and ranks, scalar *types*. The
@@ -156,7 +168,44 @@ longer each). **When a
 kernel's signature or a pipeline's choice of kernels changes, regenerate the
 built-in list** with `scripts/generate_kernel_specs.py`;
 `test_every_builtin_spec_still_matches_a_live_kernel` fails until you do. A
-stale entry only costs parallelism, never correctness.
+stale entry only costs parallelism, never correctness -- but the test checks
+arity, not template values, and those decide whether a first run's pool
+helps at all: the shading megakernels specialize on the light count (rounded
+to a power of two), and a list holding only the lit 3-D scene's four slots
+left a cold default-rig `explainer` render compiling both megakernels itself
+after the pool had done everything else. Hence the `3d-default-light` variant.
+The list is generated on the CPU and matched the CUDA render's specs apart
+from that (and three small CUDA-only kernels). With it, a cold first
+`explainer` PREVIEW render on an RTX 5080 took 43 s against 73-77 s with no
+pool, bit-identical.
+
+Workers never launch, so on CUDA they produce the `.qdc` and nothing more: the
+render still generates PTX and pays the driver JIT at each kernel's first
+launch (~14 s of a cold `explainer` render on an RTX 5080: first launches
+36 s, of which the backend compile was 22 s). A launch with placeholder
+arguments is not safe (out-of-range reads, unbounded loops over garbage data);
+moving that work needs a compiler entry point that registers a kernel with the
+launcher without launching it.
+
+**Loading cached kernels cannot overlap authoring on a thread.** On a warm
+cache a fresh process's first render spends ~2.5 s (`explainer`) to ~4.4 s
+(`graphics`) in `Program.load_fast_cache` and each kernel's first
+`launch_kernel`, and a 0.5 ms ticker thread got no turns at all during either:
+both hold the GIL throughout, so a background loader would stop the authoring
+thread for as long as it saved the render.
+
+**Torch's lazy CUDA kernel loading does overlap**, because torch's bindings
+release the GIL inside each op. `rendering/device_warmup.py` calls the ops the
+renderer uses once, on tiny tensors, from a thread started during
+`import algan` (scene scripts and the daemon, CUDA only), and the first render
+job stops and joins it so it never shares the device with a render's memory
+measurements. With every cache warm that loading is ~0.7 s of the first
+render. With a cold CUDA driver cache (`CUDA_CACHE_PATH`, which lives under
+`ALGAN_CACHE_DIR`: a new machine, a driver update, `algan.clear_cache()`) the
+driver JIT-compiles torch's kernels and the same op list costs ~15 s, serially
+-- four threads took as long as one -- which is the ~14 s a cold render spent
+before its first Taichi kernel. Keep the op list in step with what the
+renderer calls; a missing op only costs its load again.
 
 **Progress** (`kernel_progress.py`) replaced the one-shot "several minutes"
 notice: a header on the first index miss of a render, a numbered line per real
