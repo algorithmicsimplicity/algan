@@ -368,9 +368,8 @@ def _mixed_triangle_scene(opaque_only=False):
     Prism(width=14.0, height=9.0, depth=0.1).set_material(
         MeshLambertMaterial(color=WHITE)
     ).spawn(animate=False)
-    Cube(size=1.6).set_material(MeshLambertMaterial(color=RED)).move(
-        RIGHT * -2.5 + OUT * 1.0
-    ).spawn(animate=False)
+    cube = Cube(size=1.6).set_material(MeshLambertMaterial(color=RED))
+    cube.move(RIGHT * -2.5 + OUT * 1.0).spawn(animate=False)
     if not opaque_only:
         Cube(size=1.8, opacity=0.5).set_material(MeshLambertMaterial(color=BLUE)).move(
             RIGHT * 0.5 + OUT * 1.4
@@ -378,30 +377,46 @@ def _mixed_triangle_scene(opaque_only=False):
         Sphere(radius=1.0).set_material(
             MeshPhysicalMaterial(color=WHITE, transmission=1.0, roughness=0.0, ior=1.5)
         ).move(RIGHT * 3.0 + OUT * 1.5 + UP * 1.0).spawn(animate=False)
-    Sphere(radius=0.7).set_material(
+    mirror = Sphere(radius=0.7).set_material(
         MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.0)
-    ).move(RIGHT * -1.0 + OUT * 2.2 + UP * -1.5).spawn(animate=False)
+    )
+    mirror.move(RIGHT * -1.0 + OUT * 2.2 + UP * -1.5).spawn(animate=False)
+    return cube, mirror
 
 
-def _render_mixed(path, optix, max_bounces=0, circuits=False, spp=1, opaque_only=False):
+def _render_mixed(
+    path,
+    optix,
+    max_bounces=0,
+    circuits=False,
+    spp=1,
+    opaque_only=False,
+    experimental=None,
+    frames=0,
+):
+    """One still of the mixed scene; with ``frames`` a moving clip of that
+    many frames (decoded, ``[F, H, W, 3]``), so every frame has its own GAS.
+    """
     import numpy as np
     from PIL import Image
 
-    from algan import BLACK, SETTINGS, SMOKE_TEST, Off, Scene
+    from algan import BLACK, OUT, RIGHT, SETTINGS, SMOKE_TEST, Off, Scene, Sync
     from algan.scene_manager import SceneManager
 
     video = SMOKE_TEST.set(resolution=(128, 96))
+    if frames:
+        video = video.set(frames_per_second=frames)
     SceneManager.reset()
     snapshot = SETTINGS.snapshot()
     try:
         SETTINGS.raytracing.set(
             shadows=True, max_bounces=max_bounces, samples_per_pixel=spp
         )
-        SETTINGS.raytracing.experimental.set(optix=optix)
+        SETTINGS.raytracing.experimental.set(optix=optix, **(experimental or {}))
         with Scene(video_settings=video) as scene:
             scene.set_background(BLACK)
             with Off():
-                _mixed_triangle_scene(opaque_only)
+                cube, mirror = _mixed_triangle_scene(opaque_only)
                 if circuits:
                     from algan import OUT, RED, RIGHT, UP, Circle, Square
 
@@ -411,6 +426,25 @@ def _render_mixed(path, optix, max_bounces=0, circuits=False, spp=1, opaque_only
                     Circle(radius=0.5, color=RED).move(
                         RIGHT * 1.5 + OUT * 2.5 + UP * -1.8
                     ).spawn(animate=False)
+            if frames:
+                with Sync():
+                    mirror.move(RIGHT * 0.8 + OUT * 0.3)
+                    cube.rotate(40, OUT)
+                result = scene.save_video(
+                    str(path.with_suffix(".mp4")),
+                    video_settings=video,
+                    overwrite=True,
+                    animate_fade_out=False,
+                    codec="libx264rgb",
+                    ffmpeg_params=["-crf", "0", "-preset", "fast"],
+                )
+                import imageio.v2 as iio
+
+                reader = iio.get_reader(str(result.output_path), format="FFMPEG")
+                try:
+                    return np.stack([np.asarray(f, np.int16) for f in reader])
+                finally:
+                    reader.close()
             result = scene.save_frame(str(path), video_settings=video, overwrite=True)
         with Image.open(result.output_path) as image:
             return np.asarray(image.convert("RGB")).astype(np.int16)
@@ -622,3 +656,186 @@ def test_the_arena_preflight_shrinks_a_window_whose_structures_do_not_fit(
     monkeypatch.setattr(rt_settings, "optix", False)
     monkeypatch.setattr(gas_module, "batch_budget", lambda device, held=0: 0)
     assert fits(loop, merged, 6)
+
+
+def _reset_verify_stats():
+    from algan.rendering.raytracing.optix import gather, shadows
+
+    for stats in (shadows.VERIFY_STATS, shadows.STATS):
+        for key in stats:
+            stats[key] = 0 if key != "max_abs" else 0.0
+    for stats in (gather.VERIFY_STATS, gather.STATS):
+        for key in stats:
+            stats[key] = 0 if key != "max_first_t_diff" else 0.0
+
+
+def _assert_shadows_agree(min_rays=1000):
+    from algan.rendering.raytracing.optix import shadows
+
+    verify = shadows.VERIFY_STATS
+    assert verify["rays"] > min_rays
+    assert verify["within_1e-6"] >= 0.995 * verify["rays"]
+    assert verify["lit_vs_blocked"] <= 0.003 * verify["rays"]
+
+
+def _assert_gathers_agree(min_rays=1000):
+    from algan.rendering.raytracing.optix import gather
+
+    verify = gather.VERIFY_STATS
+    assert verify["rays"] > min_rays
+    assert verify["same_first_hit"] >= 0.998 * verify["rays"]
+
+
+def _assert_close(hardware, software, share=0.003):
+    import numpy as np
+
+    delta = np.abs(hardware - software).max(-1)
+    assert int((delta > 2).sum()) <= share * delta.size
+
+
+def _verify_on(monkeypatch):
+    from algan.rendering.raytracing.optix import gather, shadows
+
+    _runtime()
+    monkeypatch.setattr(shadows, "VERIFY", True)
+    monkeypatch.setattr(shadows, "COUNTING", True)
+    monkeypatch.setattr(gather, "VERIFY", True)
+    _reset_verify_stats()
+
+
+def test_a_moving_clip_through_optix_agrees_with_the_software_walk(
+    tmp_path, monkeypatch
+):
+    """Several frames, each with its own GAS: shadows and gathers, per ray and
+    per pixel, against the software walk.
+    """
+    from algan.rendering.raytracing.optix import gas as gas_module
+
+    _verify_on(monkeypatch)
+    built = []
+    real = gas_module._build_batch_gas
+
+    def recording(*args, **kwargs):
+        out = real(*args, **kwargs)
+        if out is not None:
+            built.append(out.frames)
+        return out
+
+    monkeypatch.setattr(gas_module, "_build_batch_gas", recording)
+    hardware = _render_mixed(tmp_path / "on", True, 3, frames=4)
+    software = _render_mixed(tmp_path / "off", False, 3, frames=4)
+    assert hardware.shape == software.shape
+    assert hardware.shape[0] >= 4
+    assert max(built) > 1  # one GAS per frame of the moving batch
+    _assert_shadows_agree()
+    _assert_gathers_agree()
+    _assert_close(hardware, software)
+
+
+def test_a_shadow_queue_split_into_chunks_matches_one_chunk(tmp_path, monkeypatch):
+    """Chunks past the first (``event_first > 0``) index their events and
+    their rays exactly as one chunk does: the same image.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing import raster_taichi
+    from algan.rendering.raytracing.optix import shadows
+
+    _verify_on(monkeypatch)
+    whole = _render_mixed(tmp_path / "whole.png", True)
+    firsts = []
+    real = raster_taichi.shadow_queue_prepare
+
+    def recording(*args):
+        firsts.append(int(args[1]))
+        return real(*args)
+
+    monkeypatch.setattr(raster_taichi, "shadow_queue_prepare", recording)
+    monkeypatch.setattr(shadows, "SCRATCH_LIMIT", 256 * 1024)
+    _reset_verify_stats()
+    split = _render_mixed(tmp_path / "split.png", True)
+    assert max(firsts) > 0
+    assert len(firsts) > 4
+    _assert_shadows_agree()
+    assert np.array_equal(whole, split)
+
+
+def test_the_same_mesh_floor_eps_near_is_applied_on_rt_cores(tmp_path, monkeypatch):
+    """``shadow_near_fraction > 0``: a hit on another triangle of the source
+    mesh needs t > eps_near, tested in the any-hit programs.
+    """
+    from algan.rendering.raytracing.optix import runtime as optix_runtime
+
+    _verify_on(monkeypatch)
+    seen = []
+    real = optix_runtime.OptixRuntime.launch
+
+    def recording(self, program, params, width):
+        if program == "shadow":
+            seen.append(params.eps_near)
+        return real(self, program, params, width)
+
+    monkeypatch.setattr(optix_runtime.OptixRuntime, "launch", recording)
+    near = {"shadow_near_fraction": 0.75}
+    hardware = _render_mixed(tmp_path / "on.png", True, experimental=near)
+    software = _render_mixed(tmp_path / "off.png", False, experimental=near)
+    assert seen
+    assert min(seen) > 0.0
+    _assert_shadows_agree()
+    _assert_close(hardware, software)
+
+
+def test_every_caster_translucent_still_agrees(tmp_path, monkeypatch):
+    """Where an opaque hit is not certain to end the march (``min_alpha``
+    below 1e-5), every caster is listed and the resolve decides.
+    """
+    from algan.rendering.raytracing import raytrace_kernels_taichi as rk
+    from algan.rendering.raytracing.optix import gas as gas_module
+    from algan.rendering.raytracing.optix import shadows
+
+    _verify_on(monkeypatch)
+    classes = []
+    real = gas_module._build_batch_gas
+
+    def recording(*args, **kwargs):
+        classes.append(kwargs.get("all_translucent", False))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gas_module, "_build_batch_gas", recording)
+    # The host's check only: the compiled kernels keep their own min_alpha.
+    monkeypatch.setattr(rk, "min_alpha", 1e-6)
+    hardware = _render_mixed(tmp_path / "on.png", True, 3)
+    monkeypatch.undo()
+    software = _render_mixed(tmp_path / "off.png", False, 3)
+    assert True in classes
+    # Every hit is listed now, opaque ones included: a blocked ray is a list.
+    assert shadows.STATS["listed"] > shadows.STATS["rays"] * 0.1
+    _assert_shadows_agree()
+    _assert_close(hardware, software)
+
+
+def test_the_classic_route_gathers_tiles_past_the_first(tmp_path, monkeypatch):
+    """The classic wavefront (no sheet route), several primary tiles: the
+    gather's ``ray_offset`` is the tile's start.
+    """
+    from algan.rendering.raytracing.optix import gather as gather_module
+
+    _verify_on(monkeypatch)
+    offsets = []
+    real = gather_module.gather
+
+    def recording(*args, **kwargs):
+        offsets.append(kwargs["ray_offset"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gather_module, "gather", recording)
+    classic = {
+        "hybrid_raster": False,
+        "wavefront_tile_auto": False,
+        "wavefront_tile_rays": 2048,
+    }
+    hardware = _render_mixed(tmp_path / "on.png", True, 3, experimental=classic)
+    software = _render_mixed(tmp_path / "off.png", False, 3, experimental=classic)
+    assert max(offsets) > 0
+    _assert_gathers_agree()
+    _assert_close(hardware, software)
