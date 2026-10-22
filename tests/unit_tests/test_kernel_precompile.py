@@ -443,11 +443,20 @@ def test_settings_changed_after_import_replace_the_pool_at_the_first_kernel(
     stale = _RecordingPool([], 1)
     monkeypatch.setattr(kp, "_POOL", stale)
     monkeypatch.setattr(kp, "_POOL_CONTEXT_ID", "the-import-time-context")
-    pool = kp._pool_for_current_settings("test")
+    # An empty manifest: this late, the built-in list is not worth a pool.
+    assert kp._pool_for_current_settings("test") is None
     assert stale.terminated
-    # An empty manifest: the built-in list, under the settings that count now.
+    assert recorded_pools == []
+    # The script's own record under the current settings is.
+    monkeypatch.setattr(kp, "_SETTLED", set())
+    context = kp.current_context()
+    for k in (1, 2):
+        kp._note_entry(_spec(k), context, seconds=20.0, used=True, script="/s.py")
+    kp.flush_manifest()
+    pool = kp._pool_for_current_settings("test")
     assert pool is recorded_pools[0]
-    current = kp.context_id(kp.current_context())
+    assert {job.spec["kernel"] for job in pool.jobs} == {"algan.x:k1", "algan.x:k2"}
+    current = kp.context_id(context)
     assert current == kp._POOL_CONTEXT_ID
     # Asked again under the same settings, it is the same pool.
     assert kp._pool_for_current_settings("test") is pool

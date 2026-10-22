@@ -68,8 +68,10 @@ When it runs
 * At the start of a render job and at the first materialization, if the
   settings are not the ones the running pool (if any) compiles for: the
   script changed ``SETTINGS`` after the import. A pool for other settings is
-  stopped, and one for the current settings is started when there is work
-  for it -- late, but in parallel, where the alternative is serial.
+  stopped, and one for the script's own record under the current settings
+  is started when there is work for it -- late, but in parallel, where the
+  alternative is serial. Never the built-in list this late (measured a loss,
+  see :func:`_start_pool`).
 * From ``algan warmup`` (``rendering/kernel_warmup.py``), for every spec on
   record and the built-in common set, before any render needs them.
 
@@ -1381,13 +1383,22 @@ def active_pool():
 _SETTLED = set()
 
 
-def _start_pool(context, reason, script, *, guess_context=True):
+def _start_pool(context, reason, script, *, guess_context=True, speculative=True):
     """Start the process pool for ``script``'s specs under ``context``, if worth it.
 
     With ``guess_context`` (the import-time decision, made before the script
     has had a chance to change ``SETTINGS``), the context the script last
     rendered under stands in for ``context`` when that has no rows of its own
     (:func:`_script_context`). Without it, ``context`` is final.
+
+    ``speculative`` allows the built-in list on a first run. Only the
+    import-time decision passes it: a built-in pool pays off only when the
+    scene matches a built-in variant, and only the authoring time it overlaps
+    softens a miss. Started late -- for settings the script changed, which is
+    itself a sign of a scene the default-settings variants do not describe --
+    it was measured as a pure loss: a cold first ``graphics`` render (shadows
+    on, its own lights) waited 40 s for a replacement built-in pool, then
+    compiled its megakernels itself anyway, 103 s against 81 s with none.
     """
     global _POOL, _POOL_CONTEXT_ID
     if (context_id(context), script) in _SETTLED:
@@ -1400,7 +1411,7 @@ def _start_pool(context, reason, script, *, guess_context=True):
     jobs = pending_jobs(
         context, include_builtin=False, manifest=manifest, script=script
     )
-    if _builtin_on_first_run(manifest, jobs):
+    if speculative and _builtin_on_first_run(manifest, jobs):
         jobs = pending_jobs(context, include_builtin=True, manifest=manifest)
         reason = f"{reason}; a first run, so the built-in kernel list"
     workers = worker_budget(len(jobs)) if worthwhile(jobs) else 0
@@ -1517,10 +1528,10 @@ def _pool_for_current_settings(reason):
     """The running pool, made one for this process's current settings.
 
     A pool for other settings is stopped (its artifacts would be keyed under
-    settings this render does not have), and when the script has work under
-    the current ones -- its own record, or the built-in list on a first run --
-    a pool for that is started instead. Returns the pool that is running for
-    the current settings, or ``None``.
+    settings this render does not have), and when the script's own record has
+    work under the current ones a pool for that is started instead -- never
+    the built-in list (see :func:`_start_pool`). Returns the pool that is
+    running for the current settings, or ``None``.
     """
     context = current_context()
     cid = context_id(context)
@@ -1536,7 +1547,7 @@ def _pool_for_current_settings(reason):
     script = current_script()
     if not script:
         return None
-    return _start_pool(context, reason, script, guess_context=False)
+    return _start_pool(context, reason, script, guess_context=False, speculative=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1603,9 +1614,10 @@ def _wait_for_pool():
         starter.join(timeout=10)
     # The last moment a pool can help this program, and the settings this
     # kernel is being traced under are the ones that count: a pool for others
-    # is replaced, and work under these that nobody started (the script set
-    # ``SETTINGS`` and launched a kernel while authoring, before any render
-    # job) is started now -- in parallel, where the alternative is serial.
+    # is replaced, and recorded work under these that nobody started (the
+    # script set ``SETTINGS`` and launched a kernel while authoring, before
+    # any render job) is started now -- in parallel, where the alternative is
+    # serial.
     pool = _pool_for_current_settings("started at the first kernel")
     if pool is None or not pool.active:
         return
