@@ -58,12 +58,8 @@ def test_point_light_defaults_to_the_intensity_that_renders_white():
     # of a light, so PI is the bare PointLight that lights it white -- the
     # default scene light's intensity too.
     with Scene():
-        assert float(PointLight().intensity.reshape(-1)[0]) == pytest.approx(
-            math.pi
-        )
-        assert float(HemisphereLight().intensity.reshape(-1)[0]) == pytest.approx(
-            1.0
-        )
+        assert float(PointLight().intensity.reshape(-1)[0]) == pytest.approx(math.pi)
+        assert float(HemisphereLight().intensity.reshape(-1)[0]) == pytest.approx(1.0)
 
 
 def test_intensity_assignment_records_an_animation():
