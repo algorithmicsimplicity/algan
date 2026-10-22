@@ -20,6 +20,9 @@ import torch
 
 from algan.rendering import device_warmup
 
+#: The real check, before the autouse fixture stubs it for the scripted runs.
+_DEVICE_MOVED = device_warmup._device_moved
+
 
 @pytest.fixture(autouse=True)
 def _clean_warmup(monkeypatch):
@@ -98,6 +101,22 @@ def test_it_stops_when_the_render_device_moves_off_its_device(monkeypatch):
     device_warmup._THREAD.join(10)
     assert device_warmup.LAST_RUN["device_moved"]
     assert len(steps) == 3
+
+
+@pytest.mark.parametrize(
+    ("render_device", "warmed", "moved"),
+    [
+        ("cuda:1", "cuda:0", True),
+        ("cpu", "cuda:0", True),
+        ("cuda:0", "cuda:0", False),
+        ("cuda:1", "cuda:1", False),
+    ],
+)
+def test_a_move_between_gpus_is_a_move(monkeypatch, render_device, warmed, moved):
+    import algan.settings._startup as startup
+
+    monkeypatch.setattr(startup, "render_device", lambda: torch.device(render_device))
+    assert _DEVICE_MOVED(torch.device(warmed)) is moved
 
 
 def test_a_step_that_outlasts_the_render_wait_is_reported(monkeypatch):

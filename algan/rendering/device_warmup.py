@@ -235,12 +235,26 @@ def _ops(device):
     ]
 
 
+def _resolved(device):
+    """``device`` with an index: a bare ``cuda`` names the calling thread's current GPU."""
+    import torch
+
+    if device.type == "cuda" and device.index is None:
+        with contextlib.suppress(Exception):
+            return torch.device("cuda", torch.cuda.current_device())
+    return device
+
+
 def _device_moved(device):
-    """Whether the render device is no longer the one this warm-up is for."""
+    """Whether the render device is no longer the one this warm-up is for.
+
+    The whole device, index included: a move from ``cuda:0`` to ``cuda:1``
+    leaves nothing on the first GPU worth loading.
+    """
     try:
         from algan.settings._startup import render_device
 
-        return render_device().type != device.type
+        return _resolved(render_device()) != device
     except Exception:  # noqa: BLE001
         return False
 
@@ -310,7 +324,9 @@ def start(reason="import"):
             return False
         if device.type != "cuda":
             return False
-        _start_thread(device, reason)
+        # Resolved here, on the thread that will render: a bare ``cuda`` means
+        # this thread's current GPU, which the warm-up thread does not share.
+        _start_thread(_resolved(device), reason)
         return True
 
 
@@ -337,14 +353,14 @@ def start_at_import():
 RENDER_JOIN_SECONDS = 30.0
 
 
-def finish(timeout=RENDER_JOIN_SECONDS, *, log=False):
+def finish(timeout=RENDER_JOIN_SECONDS, *, log=False, starting="the render"):
     """Stop the warm-up and wait for it: called before the first render job.
 
     Steps not yet taken are skipped -- the render loads what it needs itself
     -- and the one in flight is waited for, so the render starts with no other
     thread issuing device work. Returns whether the thread is gone; with
     ``log``, a thread still running at the timeout is reported (at ``PERF``),
-    since the render then starts beside it.
+    naming what (``starting``) then goes ahead beside it.
     """
     thread = _THREAD
     if thread is None:
@@ -361,8 +377,9 @@ def finish(timeout=RENDER_JOIN_SECONDS, *, log=False):
             get_logger().log(
                 PERF,
                 "The start-up device warm-up was still inside one step after "
-                "%.0f s; the render starts while it finishes that step.",
+                "%.0f s; %s starts while it finishes that step.",
                 timeout,
+                starting,
             )
     return gone
 
@@ -377,7 +394,7 @@ def on_daemon_run():
     """
     if enabled():
         return start("daemon run")
-    finish(log=True)
+    finish(log=True, starting="this daemon run")
     return False
 
 

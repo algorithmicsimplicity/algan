@@ -756,6 +756,97 @@ def test_releasing_a_pool_lets_the_compile_in_hand_finish_and_dump(
     assert (tmp_path / "dumped").exists()
 
 
+def test_a_reader_that_fails_never_leaves_its_worker_waiting(
+    scripted_pool, tmp_path, monkeypatch
+):
+    """An exception in the reader must not hang ``wait`` (and a render with it)."""
+    original = kp.PrecompilePool._emit
+    exploded = []
+
+    def exploding(self, events):
+        if not exploded and any(event[0] == "started" for event in events):
+            exploded.append(True)
+            raise RuntimeError("the reader broke")
+        return original(self, events)
+
+    monkeypatch.setattr(kp.PrecompilePool, "_emit", exploding)
+    pool = scripted_pool(compile_s=0.2, dump_s=0.05)
+    assert pool.wait(20)
+    assert exploded
+    # Its stdin closed with the reader, the worker's request to dump met
+    # "stop" rather than a parent that would never answer.
+    assert (tmp_path / "refused_dump").exists()
+    assert not (tmp_path / "dumped").exists()
+
+
+_TOUCH_CHILD = r"""
+import os, sys, time
+import algan  # noqa: F401
+from algan.rendering import kernel_precompile as kp
+from algan.rendering import taichi_runtime
+from algan.settings._startup import _TAICHI_CACHE_DIRECTORY
+
+spec = [
+    s for s, _sec, req in kp.read_builtin_specs(with_requirements=True)
+    if not req and s["kernel"].endswith("tonemap_to_u8")
+][0]
+taichi_runtime.ensure_taichi_for_render()
+if sys.argv[1] == "populate":
+    kp.compile_spec(spec)
+    sys.exit(0)
+lock = os.path.join(
+    str(_TAICHI_CACHE_DIRECTORY), "kernel_compilation_manager", "qdcache.lock"
+)
+open(lock, "w").close()
+sys.stderr.write("@@TOUCH-BEGIN\n"); sys.stderr.flush()
+began = time.perf_counter()
+kp._touch_cache_index()
+took = time.perf_counter() - began
+sys.stderr.write("@@TOUCH-END\n"); sys.stderr.flush()
+os.remove(lock)
+print("TOOK", took)
+"""
+
+
+@quadrants_only
+def test_the_cache_index_is_read_inside_the_touch(tmp_path):
+    """Pins what the worker's lock protocol rests on.
+
+    A worker counts as killable while it compiles, so the program's one read
+    of the offline cache's index -- taken under the metadata lock -- must
+    happen inside :func:`kp._touch_cache_index`, which runs in a granted
+    section. With the lock held by someone else, the compiler's retry (five
+    50 ms attempts, then a warning) must therefore happen inside the touch: if
+    a Quadrants update moves the read elsewhere, this fails rather than
+    silently reopening a window to kill a worker holding the lock.
+    """
+    env = {
+        **os.environ,
+        "ALGAN_USE_DAEMON": "0",
+        "ALGAN_AUTO_DAEMON": "0",
+        "ALGAN_PRECOMPILE_JOBS": "0",
+        "ALGAN_CACHE_DIR": str(tmp_path / "cache"),
+        "ALGAN_HOME": str(tmp_path / "home"),
+        "ALGAN_RENDER_DEVICE": "cpu",
+        "CUDA_VISIBLE_DEVICES": "-1",
+    }
+    for mode in ("populate", "locked"):
+        result = subprocess.run(
+            [sys.executable, "-c", _TOUCH_CHILD, mode],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr[-3000:]
+    stderr = result.stderr
+    inside = stderr[stderr.index("@@TOUCH-BEGIN") : stderr.index("@@TOUCH-END")]
+    assert "qdcache.lock" in inside, stderr[-3000:]
+    took = float(
+        next(x for x in result.stdout.splitlines() if x.startswith("TOOK"))[5:]
+    )
+    assert took >= 0.15
+
+
 def test_scripts_are_remembered_most_recent_first_and_bounded():
     merged = kp._merge_scripts(["/new.py"], [f"/{n}.py" for n in range(10)])
     assert merged[0] == "/new.py"

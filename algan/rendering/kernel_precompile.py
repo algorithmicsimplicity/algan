@@ -1306,7 +1306,27 @@ class PrecompilePool:
         self._send(worker, {"op": "quit"})
 
     def _read(self, worker):
+        """The reader thread for ``worker``: its events, then its exit.
+
+        The exit half runs however the first ends. A reader that died on an
+        exception would otherwise leave the worker alive in the pool's eyes
+        -- and, if it was waiting in ``enter``, waiting for ever -- so
+        :meth:`wait` (and a render waiting for the pool at its first kernel)
+        would hang. Closing its stdin answers any such wait with "stop". The
+        exception itself goes no further: this is an optimization, and the
+        render compiles whatever the pool did not.
+        """
         events = []
+        try:
+            self._read_events(worker, events)
+        except Exception:  # noqa: BLE001, S110 -- the pool is best effort
+            pass
+        finally:
+            with self._condition, contextlib.suppress(Exception):
+                worker.process.stdin.close()
+            self._reap(worker, events)
+
+    def _read_events(self, worker, events):
         stream = worker.process.stdout
         for raw in iter(stream.readline, b""):
             text = raw.decode("utf-8", "replace")
@@ -1353,10 +1373,13 @@ class PrecompilePool:
                     events.append(("fatal", event.get("reason")))
                 self._condition.notify_all()
             self._emit(events)
+
+    def _reap(self, worker, events):
         with contextlib.suppress(Exception):
             worker.process.wait(timeout=10)
         with self._condition:
             worker.alive = False
+            worker.section = None
             job = worker.job
             if job is not None and job.state == "running":
                 job.state = "failed"
