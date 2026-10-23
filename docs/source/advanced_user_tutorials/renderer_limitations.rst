@@ -240,7 +240,7 @@ setting to reach for is a modest sample count with a short bounce budget,
 there only if the scene needs indirect light or the denoised result is still
 noisy. See :ref:`renderer-settings` in the performance guide.
 
-Five further consequences of the split, not covered there:
+Six further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
   fragment route. Direct light comes from sampling one emitter per lit surface
@@ -319,6 +319,18 @@ Five further consequences of the split, not covered there:
   ``samples = 16`` area light also costs the sampler two emitters here rather
   than sixteen, so raising ``samples`` for the deterministic renderer's sake
   no longer makes path-traced renders slower.
+* **The background lights the scene here.** Without an environment map, a
+  path that leaves the scene picks up the background. Seen straight on,
+  through smooth glass or in a mirror, that is the background pixel behind
+  it, as in the deterministic renderer. After a diffuse or glossy bounce it
+  is the frame's *average* background: a solid colour acts as a uniform sky
+  of that colour, and an image or procedural background as a uniform sky of
+  its average colour. The deterministic renderer traces no diffuse bounce, so
+  there the background lights nothing, and a non-black background makes a
+  path-traced scene brighter than its ``samples_per_pixel = 1`` preview -- a
+  white surface in front of a mid-grey background gains up to that grey.
+  Keep the default black background, and light with an environment map,
+  when the sky should light the scene from a direction.
 * Its raw output is stochastic, so low sample counts are visibly noisy. By
   default it is **denoised** (``SETTINGS.raytracing.denoise``) with the Open
   Image Denoise RT filter re-implemented in torch, guided by albedo and

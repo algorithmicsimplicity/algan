@@ -154,7 +154,8 @@ logger = get_logger("raytracing")
 # nested-IOR width -- the path tracer always carries the media stack),
 # rs_int (PT_INT_WIDTH i32: shared 5, opacity ring 4, media stack/counters 7),
 # rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32-- the radiance,
-# leftover and alpha columns plus adaptive sampling's stochastic flag), pt_aov
+# leftover and alpha columns, adaptive sampling's stochastic flag, the emitter
+# MIS carry and the scattered flag), pt_aov
 # (PT_AOV_WIDTH f32 -- budgeted whether or not the denoiser's AOVs are on,
 # since the budget only shapes work grouping, never results),
 # the compactor's ping-pong index pair (2 i32), and the transient
@@ -1133,6 +1134,32 @@ def _build_shell_table(memory, merged):
     return placeholder
 
 
+def scattered_background(memory, out):
+    """The background a path sees once it has scattered, per frame of
+    ``out``: a ``[frames, 5]`` float32 arena tensor whose columns 0-3 are the
+    frame's average color and glow at byte scale, and whose column 4 is 1.0
+    when every pixel of the frame holds the same value (a solid color).
+
+    The background is a screen-space picture, so the only direction it has
+    is the camera ray's: a pixel's backdrop is what lies behind that pixel.
+    Mirrors, smooth glass and pass-through keep the camera ray's line of
+    sight in that sense and keep reading it. A diffuse or glossy bounce does
+    not, and reading the camera pixel there painted an image or procedural
+    background's own texels onto every surface in front of them. Its average
+    is the uniform sky a solid color already acts as -- for a solid color the
+    two are the same value, and ``pt_reduce`` folds such a frame exactly as it
+    always did.
+    """
+    rgbg = out[..., :4]
+    table = memory.get_tensor((out.shape[0], 5), torch.float32)
+    table[:, 4] = (rgbg.amin(dim=1) == rgbg.amax(dim=1)).all(dim=1).float()
+    for f in range(out.shape[0]):
+        # One frame at a time: a float copy of a whole byte chunk is four
+        # times the chunk, outside the arena's accounting.
+        table[f, :4] = torch.sum(rgbg[f], dim=0, dtype=torch.float32) / rgbg.shape[1]
+    return table
+
+
 def path_trace_render(
     *,
     memory,
@@ -1176,7 +1203,9 @@ def path_trace_render(
 
     ``out`` must hold the prefilled background (byte scale) and ``accum`` the
     zeroed ``[frames, pixels, 5]`` sample sums; the caller averages them with
-    ``finalize_samples``. ``near_clip`` / ``far_clip`` are the camera's clip
+    ``finalize_samples``. A path still on its delta prefix sees the background
+    pixel behind it; one that has scattered sees the frame's average
+    background (:func:`scattered_background`). ``near_clip`` / ``far_clip`` are the camera's clip
     distances in world units (0 = no plane), applied with the deterministic
     renderer's semantics: the near plane advances the primary origin and
     seeds ``base_dist``, and the far plane retires a path once
@@ -1290,6 +1319,7 @@ def path_trace_render(
             # rank as a real lens table, so pinhole and lens renders share
             # one compiled pt_generate.
             lens = _arena_values(memory, [0.0, 0.0], f32).view(1, 2)
+        bg_scattered = scattered_background(memory, out)
     # The power-weighted next-event table + environment CDF for this call
     # (before the tile budget is taken, so their bytes are accounted).
     # Timed and logged at PERF: this is host work per chunk (the light tree
@@ -1684,6 +1714,7 @@ def path_trace_render(
                     pt_acc,
                     accum,
                     accum_odd,
+                    bg_scattered,
                 )
                 sample_base += sw
                 if adaptive:
