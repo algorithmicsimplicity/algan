@@ -17,6 +17,11 @@ mode 1, and the host hands a non-reflective batch's shading launches
 footprint is sized and computed from. That the output is unchanged rests on
 the branches being unreachable, and was checked by rendering before and after.
 
+``vis_lights``, the light slots of the per-sheet visibility payload, is the
+same kind of waste (S2): only mode 2 reads the payload, yet every launch
+specialised on the batch's light bucket, so each bucket compiled its own
+identical mode-0 and mode-1 resolves.
+
 Not marked fast: a change elsewhere cannot break these without changing the
 resolve or its launch.
 """
@@ -43,11 +48,14 @@ from algan import (
     DirectionalLight,
     MeshLambertMaterial,
     Off,
+    PointLight,
     Scene,
     Square,
+    cosine_color,
 )
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing import sheet_resolve_taichi
+from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
 from algan.settings import SETTINGS
 
 PARAMS = sheet_resolve_taichi._SHEET_RESOLVE_SHADE_PARAMS
@@ -127,7 +135,11 @@ def _render(tmp_path, name, build, shadows):
     SETTINGS.raytracing.set(shadows=shadows)
     with Scene() as scene:
         with Off():
+            # Two lights, so the visibility payload's light bucket is not 1.
             DirectionalLight(location=RIGHT * 4 + UP * 5 + OUT * 4, color=WHITE).spawn(
+                animate=False
+            )
+            PointLight(location=LEFT * 3 + UP * 2 + OUT * 3, color=WHITE).spawn(
                 animate=False
             )
             for mob in build():
@@ -149,24 +161,40 @@ def _mirror():
     ]
 
 
+def _custom():
+    """A user fragment pipeline, which is handed the visibility payload raw."""
+    return [
+        Cube(size=1.2).set_fragment_shader(cosine_color).move(LEFT),
+        Square(size=1.0, color=BLUE).move(RIGHT),
+    ]
+
+
+RENDERS = (
+    ("plain", _plain, False),
+    ("plain", _plain, True),
+    ("mirror", _mirror, False),
+    ("mirror", _mirror, True),
+    ("custom", _custom, False),
+)
+
+
 @pytest.fixture(scope="module")
 def launches(tmp_path_factory):
-    """Every resolve launch of four one-frame renders, by scene and shadows.
+    """Every resolve launch of five one-frame renders, by scene and shadows.
 
-    Module-scoped so the four renders happen once. ``pytest.MonkeyPatch`` is
-    used directly because the ``monkeypatch`` fixture is function-scoped.
+    Module-scoped so the renders happen once. ``pytest.MonkeyPatch`` is used
+    directly because the ``monkeypatch`` fixture is function-scoped.
     """
     tmp_path = tmp_path_factory.mktemp("resolve_variants")
     snapshot = SETTINGS.snapshot()
     seen = {}
     try:
         with pytest.MonkeyPatch.context() as monkeypatch:
-            for name, build in (("plain", _plain), ("mirror", _mirror)):
-                for shadows in (False, True):
-                    got = []
-                    _install_recorder(monkeypatch, got)
-                    _render(tmp_path, f"{name}_{int(shadows)}", build, shadows)
-                    seen[name, shadows] = {int(a["mode"]): a for a in got}
+            for name, build, shadows in RENDERS:
+                got = []
+                _install_recorder(monkeypatch, got)
+                _render(tmp_path, f"{name}_{int(shadows)}", build, shadows)
+                seen[name, shadows] = {int(a["mode"]): a for a in got}
     finally:
         SETTINGS.restore(snapshot)
     return seen
@@ -176,9 +204,14 @@ def test_the_renders_reached_every_resolve_mode(launches):
     assert rt_settings.effective_analytic_aa_secondary_samples() > 1, (
         "continuation fans are off at this setting, so nothing here is tested"
     )
-    for name in ("plain", "mirror"):
-        assert set(launches[name, False]) == {0}, launches[name, False].keys()
-        assert set(launches[name, True]) == {1, 2}, launches[name, True].keys()
+    for name, _build, shadows in RENDERS:
+        want = {1, 2} if shadows else {0}
+        assert set(launches[name, shadows]) == want, launches[name, shadows].keys()
+    for got in launches.values():
+        for launch in got.values():
+            assert shadow_vis_slots(launch["num_lights"]) > 1, (
+                "one light bucket: the vis_lights tests below compare nothing"
+            )
 
 
 def test_a_batch_with_nothing_to_reflect_compiles_its_shading_without_fans(
@@ -202,3 +235,30 @@ def test_a_batch_with_a_mirror_keeps_its_fans(launches):
     assert launches["mirror", False][0]["sec_aa"] == live
     assert launches["mirror", True][1]["sec_aa"] == live
     assert launches["mirror", True][2]["sec_aa"] == live
+
+
+def test_only_the_shading_pass_of_a_shadowed_batch_specialises_on_lights(
+    launches,
+):
+    """Modes 0 and 1 never read the visibility payload, so they take one slot.
+
+    Mode 0 shades with ``shadows`` 0, which compiles every built-in stage's
+    read out (``_light_vis``); mode 1 shades nothing. Before, both specialised
+    on the batch's light bucket, so a one-light and a two-light scene compiled
+    two identical copies of each -- the built-in ``3d`` and ``3d-default-light``
+    resolve specs differed in nothing else.
+    """
+    for name in ("plain", "mirror"):
+        assert launches[name, False][0]["vis_lights"] == 1
+        assert launches[name, True][1]["vis_lights"] == 1
+        mode2 = launches[name, True][2]
+        assert mode2["vis_lights"] == shadow_vis_slots(mode2["num_lights"])
+
+
+def test_a_user_pipeline_keeps_its_light_slots_without_shadows(launches):
+    """A custom fragment pipeline is handed ``vis`` itself and may index it
+    by light whatever ``shadows`` says, so its batch keeps the bucket.
+    """
+    mode0 = launches["custom", False][0]
+    assert mode0["frag_pipelines"], "the custom scene injected no pipeline"
+    assert mode0["vis_lights"] == shadow_vis_slots(mode0["num_lights"])

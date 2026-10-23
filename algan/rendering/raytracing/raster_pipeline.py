@@ -3314,6 +3314,17 @@ def shade_sparse_raster_coverage(
     from algan.rendering.raytracing.tracer import _batch_can_spawn_continuations
 
     shade_taps = sec_aa if _batch_can_spawn_continuations(merged) else 1
+    # Light slots each launch's ``lvis`` payload carries: what the batch
+    # needs, bucketed (``shadow_vis_slots``), but only where something reads
+    # it. Mode 2 shades with the traced visibility. Mode 1 never reads it, and
+    # mode 0 shades with ``shadows`` 0, where every built-in stage reads it
+    # only through ``_light_vis``, which compiles the read out -- so the
+    # bucket bought those launches one identical compile per light count (the
+    # built-in ``3d`` and ``3d-default-light`` resolves differed in nothing
+    # else). A user pipeline is handed ``vis`` raw and may index it whatever
+    # ``shadows`` says, so mode 0 keeps the bucket when the batch has one.
+    shaded_slots = shadow_vis_slots(num_lights)
+    unshadowed_slots = shaded_slots if frag_pipelines else 1
     dump_req = _aa_dump_request()
     sdump = (
         _aa_dump_buffer(dump_req, covered_idx.device)
@@ -3350,9 +3361,9 @@ def shade_sparse_raster_coverage(
         light_pos,
         light_col,
         int(num_lights),
-        # Light slots the lvis payload carries: what this batch needs,
-        # bucketed, rather than the 16-light compile-time cap.
-        shadow_vis_slots(num_lights),
+    )
+    # ``vis_lights`` goes here, per launch (see ``shaded_slots``).
+    pre_mid = (
         layer_offsets,
         int(frag_flag),
         frag_pipelines,
@@ -3362,7 +3373,7 @@ def shade_sparse_raster_coverage(
         int(skip_unlit_normal),
         1 if int(merged.get("num_circuits", 0)) > 0 else 0,
     )
-    # ``sec_aa`` goes between the two halves, per launch (see ``shade_taps``).
+    # ``sec_aa`` goes here, per launch (see ``shade_taps``).
     pre_tail = (
         float(rt_settings.analytic_aa_secondary_min_energy),
         # The batch's mode (tracer._batch_glossy_mode), which sized the
@@ -3372,6 +3383,10 @@ def shade_sparse_raster_coverage(
         1 if coverage.get("env_in_composite") else 0,
         int(rt_settings.direct_specular_lobe),
     )
+
+    def pre_args(vis_slots, taps):
+        return (*pre_head, vis_slots, *pre_mid, taps, *pre_tail)
+
     post_args = (
         covered_idx,
         int(time_start),
@@ -3438,9 +3453,7 @@ def shade_sparse_raster_coverage(
         )
         sheet_memo = _arena_tensor(memory, (S if memo_on else 1, 12), torch.float32)
         sheet_resolve_shade(
-            *pre_head,
-            sec_aa,
-            *pre_tail,
+            *pre_args(1, sec_aa),
             1,
             term_mode,
             sided_on,
@@ -3580,9 +3593,7 @@ def shade_sparse_raster_coverage(
                 projected,
             )
         sheet_resolve_shade(
-            *pre_head,
-            shade_taps,
-            *pre_tail,
+            *pre_args(shaded_slots, shade_taps),
             2,
             term_mode,
             sided_on,
@@ -3609,9 +3620,7 @@ def shade_sparse_raster_coverage(
         # literal 0; only the mode 1 / mode 2 launches above take a meaningful
         # gate.
         sheet_resolve_shade(
-            *pre_head,
-            shade_taps,
-            *pre_tail,
+            *pre_args(unshadowed_slots, shade_taps),
             0,
             0,
             0,
