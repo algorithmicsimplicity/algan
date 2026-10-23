@@ -44,6 +44,10 @@ Two invariants are easy to break and hard to see:
 
 Members share one lifespan, because they share one id. Staggered entrances go through opacity, which is what `Tex.write()` does.
 
+A view costs the same however large its pack, and two rules keep it so. Each packed level caches its member offsets (`Mob._member_offsets`), keyed on the identity of its `parent_batch_sizes` tensor. A view also shares its source's tensor attributes instead of copying them (`Animatable.__deepcopy__`). Both rely on **nothing writing into a Mob's tensor attributes in place**: assign a new tensor instead. `test_a_view_costs_the_same_whatever_the_pack_size` counts a view's work at two pack sizes.
+
+An Animatable's `set_<attr>` / `get_<attr>` accessors are built on first use, through `__getattr__` (`Animatable._generated_accessor`). They used to be a closure pair per attribute on every Mob and every view, which was most of a view's allocations. So **any `__getattr__` override on an Animatable must call `_generated_accessor` first**; otherwise it answers `set_color` itself, as the Manim-compatible Mobs would by handing it to their Manim object. `test_animatable_accessors.py` audits every override.
+
 Renderable mobs implement `get_render_primitives()`. The primary geometry families consumed by the renderer are:
 
 - flat triangle primitives;

@@ -1656,7 +1656,12 @@ class ManimCompatMob(ManimMob):
 
     def __getattr__(self, name):
         # Normal Mob/Animatable attribute lookup gets first chance.  This method
-        # is reached only for Manim-specific APIs.
+        # is reached only for Manim-specific APIs -- and for an Algan
+        # ``set_<attr>``/``get_<attr>`` not yet built, which must not be handed
+        # to the Manim object (Animatable._generated_accessor).
+        accessor = self._generated_accessor(name)
+        if accessor is not None:
+            return accessor
         if (
             name.startswith("_")
             or "manim_mobject" not in self.__dict__

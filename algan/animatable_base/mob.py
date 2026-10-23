@@ -885,6 +885,11 @@ class Mob(
         # nothing on the working path and only words the error on the failing
         # one. Manim's own compatibility Mobs override this to delegate to
         # their backing object, which is why the hint lives on the base class.
+        # A ``set_<attr>``/``get_<attr>`` not yet built lands here first
+        # (Animatable._generated_accessor).
+        accessor = self._generated_accessor(name)
+        if accessor is not None:
+            return accessor
         hint = _MANIM_METHOD_HINTS.get(name)
         if hint is None:
             raise AttributeError(f"{self._describe()} has no attribute {name!r}")
@@ -2895,6 +2900,33 @@ class Mob(
     # exit as well as its own.
     on_destroy._algan_collatable_hook = True
 
+    def _member_offsets(self) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """Each batch member's row count and first row, and the rows in all.
+
+        Computed once per ``parent_batch_sizes`` tensor and kept beside it.
+        The tensor is never written in place -- every change assigns a new
+        one -- so its identity is the cache key, and a view, which shares its
+        source's tensor (``Animatable.__deepcopy__``), shares these too.
+        """
+        pbs = self.parent_batch_sizes
+        cached = self.__dict__.get("_member_offsets_cache")
+        if cached is not None and cached[0] is pbs:
+            return cached[1]
+        if self.singleton_batch_indexing and len(pbs) == 1:
+            # The compressed encoding: one entry holding the member count,
+            # every member one row.
+            sizes = torch.ones((int(pbs.item()),), dtype=torch.long)
+        else:
+            sizes = pbs
+        long_sizes = sizes.to(torch.long)
+        offsets = (
+            sizes,
+            long_sizes.cumsum(0) - long_sizes,
+            int(long_sizes.sum()),
+        )
+        self.__dict__["_member_offsets_cache"] = (pbs, offsets)
+        return offsets
+
     def _set_data_sub_inds(self, data_sub_inds: list[int] | slice):
         """Internal: restrict this Mob to a subset of a batched Mob's rows.
 
@@ -2911,38 +2943,35 @@ class Mob(
             shared data tensors.
 
         """
-        self.batch_size = max(self.batch_size, self.location.shape[1])
+        # Only the row count is read, so the rows are not copied out.
+        rows = self.get_animated_attribute("location", copy=False).shape[1]
+        self.batch_size = max(self.batch_size, rows)
         if self.parent_batch_sizes is not None:
-            if self.singleton_batch_indexing and len(self.parent_batch_sizes) == 1:
-                self.parent_batch_sizes = torch.ones(
-                    (self.parent_batch_sizes.item(),), dtype=torch.long
-                )
-            sub_pbs = self.parent_batch_sizes[data_sub_inds]
-            # The rows of each selected member, in selection order: exactly
-            # ``torch.arange(batch_size).split(sizes)`` indexed by the
-            # selection, but built from the selected members' offsets alone.
-            # Splitting the whole batch (one ``.item()`` per member, at every
-            # level of the hierarchy) made each view of a packed Mob cost time
-            # proportional to the pack, not to the view.
-            sizes = self.parent_batch_sizes.tolist()
-            if sum(sizes) != self.batch_size:
+            sizes, starts, total = self._member_offsets()
+            if total != self.batch_size:
                 raise RuntimeError(
                     f"split_with_sizes expects split_sizes to sum exactly to "
-                    f"{self.batch_size}, but got split_sizes={sizes}"
+                    f"{self.batch_size}, but got split_sizes={sizes.tolist()}"
                 )
-            starts = [0] * len(sizes)
-            for member in range(1, len(sizes)):
-                starts[member] = starts[member - 1] + sizes[member - 1]
-            members = range(len(sizes))
-            selected = (
-                members[data_sub_inds]
-                if isinstance(data_sub_inds, slice)
-                else [members[d] for d in data_sub_inds]
-            )
-            data_sub_inds = torch.cat(
-                [torch.arange(starts[d], starts[d] + sizes[d]) for d in selected]
-                or [torch.zeros((0,), dtype=torch.long)]
-            )
+            # The rows of each selected member, in selection order: exactly
+            # ``torch.arange(batch_size).split(sizes)`` indexed by the
+            # selection, but built from the selected members' offsets alone,
+            # so a view costs time proportional to the view, not to the pack.
+            sub_pbs = sizes[data_sub_inds]
+            sub_sizes = sub_pbs.to(torch.long)
+            sub_starts = starts[data_sub_inds]
+            if len(sub_sizes) == 1:
+                start, size = sub_starts.item(), sub_sizes.item()
+                data_sub_inds = torch.arange(start, start + size)
+            else:
+                count = int(sub_sizes.sum())
+                # Each row is its member's start plus its place among the
+                # selected rows, less the rows selected before that member.
+                data_sub_inds = torch.arange(count) + torch.repeat_interleave(
+                    sub_starts - (sub_sizes.cumsum(0) - sub_sizes),
+                    sub_sizes,
+                    output_size=count,
+                )
         else:
             sub_pbs = self.parent_batch_sizes
         self.data_sub_inds = data_sub_inds
@@ -3009,6 +3038,16 @@ class Mob(
         """
         if len(self) == 0:
             raise TypeError("Mob object is not iterable")
+        # Every packed level works out its member offsets once, here on the
+        # source, for each of its views to share. A plain walk of the levels
+        # the view restricts (_set_data_sub_inds): each view bumps the
+        # hierarchy version, so get_descendants() would rebuild every time.
+        levels = [self]
+        while levels:
+            part = levels.pop()
+            if part.parent_batch_sizes is not None:
+                part._member_offsets()
+            levels.extend(part.children)
         # Clone the mob without cloning its data, but recursively for children structure
         cloned_mob = self.clone(
             add_to_scene=False, clone_data=False, recursive=True, spawn=False

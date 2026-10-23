@@ -558,7 +558,30 @@ explainer PREVIEW 0.58 vs 0.66 s, graphics PREVIEW 1.78 vs 1.88 s (pinned:
   `Speech` block. `save_video` mixes it exactly as before.
 - **Views of packed Mobs.** `Mob._set_data_sub_inds` builds the selected
   members' rows from their offsets instead of splitting the whole batch (one
-  `.item()` per member at every hierarchy level).
+  `.item()` per member at every hierarchy level). Each packed level works its
+  offsets out once (`Mob._member_offsets`, keyed on the identity of its
+  `parent_batch_sizes` tensor), a view shares its source's tensor attributes
+  and relation table instead of deep-copying them, and the batch-size read
+  takes the row count without copying the rows. A view now costs the same
+  however large the pack (`test_a_view_costs_the_same_whatever_the_pack_size`
+  counts lines run and tensor elements allocated), so viewing every glyph of
+  an N-glyph `Text` is O(N), not O(N^2). The sharing relies on nothing writing
+  into a Mob's tensor attributes in place: assign a new tensor instead.
+  Measured October 23 on a loaded CPU: a glyph view of a 100/400/1600-glyph
+  `Text` went from 445/604/872 µs to about 225 µs at every size; authoring the
+  backprop video's scene 6 (`Project.validate`, 28,693 views) went from 64 to
+  50 s, the views' share from 24.5 to 13 s, with the recorded timeline
+  unchanged byte for byte.
+- **Lazy `set_<attr>`/`get_<attr>` accessors.** Every Animatable used to
+  install a closure pair per animatable attribute at construction and on
+  every clone. That was 124 of the 157 GC-tracked objects a glyph view kept
+  alive, and the churn set off cyclic GC over the whole heap. They are now
+  built on first use (`Animatable._generated_accessor`, through `__getattr__`),
+  and a view keeps 41. Scene 6 under equal load, master → both changes:
+  `validate` 46–53 → 40 s, views 16–19 → 7.2 s, GC 5.2–5.6 → 3.1 s, full
+  collections 12 → 8. The recorded timeline is unchanged byte for byte. An
+  accessor whose name the class defines (`Mob.set_location`) is still built
+  at construction, so it shadows the class method as it always has.
 
 All of these memos reproduce the uncached state bit for bit
 (`tests/unit_tests/test_authoring_memos.py`). The daemon keeps them warm
