@@ -310,7 +310,7 @@ _PAIR_BSDF_DIR = 1
 # throughput the background shows through, the camera-segment alpha
 # transparency, and whether this path ever took a STOCHASTIC decision (see
 # ``pt_reduce``).
-PT_ACC_WIDTH = 14
+PT_ACC_WIDTH = 15
 _PT_ACC_LEFTOVER = 4
 _PT_ACC_ALPHA = 8
 #: 1.0 once the path has made any random choice beyond the sub-pixel jitter:
@@ -352,6 +352,18 @@ _PT_ACC_STOCH = 9
 #: rest of the row before ``pt_generate``, so a camera segment starts clear.
 _PT_ACC_MIS_ORIGIN = 10
 _PT_ACC_MIS_CARRY = 13
+#: 1.0 once the path has bounced off a blurring lobe: diffuse, sheen, a
+#: medium's phase function, or a GGX lobe (base, clearcoat, rough glass) whose
+#: alpha is off its 1e-4 floor -- the smoothness test that already makes glass
+#: delta. Sticky, and zeroed with the row before ``pt_generate``. It decides
+#: which background the path's leftover throughput sees in ``pt_reduce``: a
+#: path that has only gone straight on, refracted through smooth glass or
+#: bounced off a mirror sees the backdrop pixel behind it, as the
+#: deterministic renderer's continuation rays do; a scattered one sees the
+#: frame's average backdrop. The backdrop is a screen-space picture with no
+#: directions, so a per-pixel lookup after a scatter painted an image
+#: background's own texels onto every diffuse surface in front of them.
+_PT_ACC_SCATTERED = 14
 
 # Device-side truncation tallies, read back by the host once per wave and fed
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
@@ -2656,6 +2668,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             # Set at the first random decision this launch takes (see
             # ``_PT_ACC_STOCH``); folded into the sticky column at write-back.
             stoch = 0
+            # Set at the first blurring bounce (``_PT_ACC_SCATTERED``),
+            # folded into its sticky column the same way.
+            scattered = 0
             media = ti.Vector([-1, -1, -1, -1])
             media_events = ti.max(rs_int[r, _INT_MEDIA_EVENTS], 0)
             media_segments = ti.max(rs_int[r, _INT_MEDIA_SEGMENTS], 0)
@@ -3692,6 +3707,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 if medium_vertex:
                     t_alpha = 0.0
                     aov_open = 0
+                    scattered = 1
                     bounce_ord_m = max_b - bounces_left
                     pair_phase = PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * bounce_ord_m
                     u_phase = pt_sample_2d_seeded(path_seed, pair_phase + 5, s_index)
@@ -3999,6 +4015,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         # A diffuse pick is non-delta: the AOV prefix ends at
                         # this crossing (whose albedo/normal it just added).
                         aov_open = 0
+                        scattered = 1
                         p_sel = w_diff / w_sum
                         new_rd = _pt_cosine_direction(shade_n, u_dir)
                         if glass and (rd.dot(fnrm) * new_rd.dot(fnrm) >= 0.0):
@@ -4051,6 +4068,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         if pick < w_base + w_coat:
                             is_coat = 1
                             p_sel = w_coat / w_sum
+                        cc_r = layer_l[_PL_CC_ROUGH]
+                        if (is_coat == 0) or (cc_r * cc_r >= 1e-4):
+                            scattered = 1
                         new_rd, tint_l, ok = _pt_sample_layer(
                             layer_l, spec_n, rd, u_dir, is_coat)
                         if glass and (rd.dot(fnrm) * new_rd.dot(fnrm) >= 0.0):
@@ -4097,6 +4117,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 smooth_cross = 1
                         else:
                             aov_open = 0
+                            scattered = 1
                             fc_g, prev_pdf = _pt_lit_f_pdf(
                                 pt_glass_energy,
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
@@ -4121,6 +4142,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     elif pick < w_pass + w_diff + w_spec:
                         # GGX is non-delta (any roughness): close the prefix.
                         aov_open = 0
+                        if rough * rough >= 1e-4:
+                            # Its alpha off the 1e-4 floor: a blurring lobe,
+                            # not a mirror (``_PT_ACC_SCATTERED``).
+                            scattered = 1
                         p_sel = w_spec / w_sum
                         # VNDF sample about the RAY-FACING normal (see
                         # ``spec_n``): about ``shade_n`` an interior hit --
@@ -4287,6 +4312,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # Sticky: only ever written 1.0, never cleared, so a path that
                 # became stochastic on an earlier launch stays flagged.
                 pt_acc[r, _PT_ACC_STOCH] = 1.0
+            if scattered == 1:
+                pt_acc[r, _PT_ACC_SCATTERED] = 1.0
             for q in ti.static(range(_SHELL_RING_SLOTS)):
                 rs_int[r, _INT_RING0 + q] = ring[q]
             if aov_on:
@@ -4492,7 +4519,8 @@ def pt_reduce(sample_base: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
               width: ti.i32, height: ti.i32,
               pix_list: ti.types.ndarray(),
               out: ti.types.ndarray(), pt_acc: ti.types.ndarray(),
-              accum: ti.types.ndarray(), accum_odd: ti.types.ndarray()):
+              accum: ti.types.ndarray(), accum_odd: ti.types.ndarray(),
+              bg_scattered: ti.types.ndarray()):
     """Fold one wave's per-path rows into the chunk's per-pixel sample sums.
 
     One thread per wave pixel walks its own wave samples in index order --
@@ -4503,6 +4531,14 @@ def pt_reduce(sample_base: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
     where ``t_a`` is the deterministically-composited camera-segment
     transparency, so alpha matches the deterministic renderer's compositing
     contract in expectation (exactly, on scatter-free content).
+
+    A path that scattered (``_PT_ACC_SCATTERED``) sees
+    ``bg_scattered[f_rel, 0:4]`` instead -- the frame's average backdrop at
+    byte scale (``path_tracer.scattered_background``) -- because the pixel
+    behind the camera ray says nothing about the direction it left in.
+    ``bg_scattered[f_rel, 4]`` is 1.0 when every pixel of the frame holds the
+    same backdrop (a solid colour); there the average IS the pixel, and the
+    fold below is the single-sum one, byte for byte.
 
     ``pix_list[p_local]`` is the wave's pixel list (see ``pt_generate``): the
     global flat cell each column belongs to. ``sample_base`` is the sample
@@ -4525,35 +4561,60 @@ def pt_reduce(sample_base: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
         g = pix_list[p_local]
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
+        uniform = bg_scattered[f_rel, 4] > 0.5
         sum_acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         sum_leftover = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        sum_scat = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         odd_acc = ti.math.vec3(0.0, 0.0, 0.0)
         odd_leftover = ti.math.vec3(0.0, 0.0, 0.0)
+        odd_scat = ti.math.vec3(0.0, 0.0, 0.0)
         stoch_count = 0.0
         sum_t_alpha = 0.0
         for k in range(wave_samples):
             r = k * tile_pixels + p_local
+            scat = (not uniform) and (pt_acc[r, _PT_ACC_SCATTERED] > 0.5)
             for c in ti.static(range(4)):
                 sum_acc[c] += pt_acc[r, c]
-                sum_leftover[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
+                if scat:
+                    sum_scat[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
+                else:
+                    sum_leftover[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
             if adaptive != 0:
                 stoch_count += pt_acc[r, _PT_ACC_STOCH]
                 if (sample_base + k) % 2 == 1:
                     for c in ti.static(range(3)):
                         odd_acc[c] += pt_acc[r, c]
-                        odd_leftover[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
+                        if scat:
+                            odd_scat[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
+                        else:
+                            odd_leftover[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
             sum_t_alpha += pt_acc[r, _PT_ACC_ALPHA]
         background = ti.math.vec4(
             ti.cast(out[f_rel, p, 0], ti.f32),
             ti.cast(out[f_rel, p, 1], ti.f32),
             ti.cast(out[f_rel, p, 2], ti.f32),
             ti.cast(out[f_rel, p, 3], ti.f32)) / 255.0
-        for c in ti.static(range(4)):
-            accum[f_rel, p, c] += sum_acc[c] + sum_leftover[c] * background[c]
+        bg_s = ti.math.vec4(bg_scattered[f_rel, 0], bg_scattered[f_rel, 1],
+                            bg_scattered[f_rel, 2], bg_scattered[f_rel, 3]) \
+            / 255.0
+        if uniform:
+            for c in ti.static(range(4)):
+                accum[f_rel, p, c] += sum_acc[c] \
+                    + sum_leftover[c] * background[c]
+            if adaptive != 0:
+                for c in ti.static(range(3)):
+                    accum_odd[f_rel, p, c] += odd_acc[c] \
+                        + odd_leftover[c] * background[c]
+        else:
+            for c in ti.static(range(4)):
+                accum[f_rel, p, c] += sum_acc[c] \
+                    + sum_leftover[c] * background[c] + sum_scat[c] * bg_s[c]
+            if adaptive != 0:
+                for c in ti.static(range(3)):
+                    accum_odd[f_rel, p, c] += odd_acc[c] \
+                        + odd_leftover[c] * background[c] \
+                        + odd_scat[c] * bg_s[c]
         if adaptive != 0:
-            for c in ti.static(range(3)):
-                accum_odd[f_rel, p, c] += odd_acc[c] \
-                    + odd_leftover[c] * background[c]
             accum_odd[f_rel, p, 3] += stoch_count
         if transparent != 0:
             bg_alpha = ti.cast(out[f_rel, p, 4], ti.f32) / 255.0

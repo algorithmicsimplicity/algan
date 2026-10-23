@@ -68,6 +68,14 @@ For a background that is *part of the 3-D world* (i.e. visible in reflections an
 refractions, and correct as the camera turns) you want an environment map
 instead, not a background image. See :doc:`lighting_and_shadows`.
 
+.. note::
+    In a path-traced render (``samples_per_pixel`` above 1) the background
+    also **lights** the scene, as a uniform sky: a solid colour lights it with
+    that colour, and an image or procedural background with its average
+    colour. The default deterministic render (``samples_per_pixel = 1``) does
+    not, so a bright background makes the path-traced frame brighter than the
+    preview. See :doc:`renderer_limitations`.
+
 A procedural background
 -----------------------
 

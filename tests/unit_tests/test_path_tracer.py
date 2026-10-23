@@ -3930,6 +3930,104 @@ def test_an_emitter_behind_an_index_matched_pane_lights_as_without_it(tmp_path):
     assert b == pytest.approx(a, abs=2.0), (a, b)
 
 
+def _split_backdrop(x, y, t):
+    """Black on the left half of the frame, white on the right."""
+    right = (x + 0 * (y + t) >= 0.5).float()
+    return right.expand(*right.shape[:-1], 3)
+
+
+def _slab_against_split_backdrop(material):
+    """A slab filling the frame, facing the camera, with only the split
+    backdrop behind the camera to light it.
+    """
+
+    def build(scene):
+        scene.set_background(_split_backdrop)
+        Scene.clear_lights()
+        slab = Prism(width=40.0, height=40.0, depth=0.2)
+        slab.set_material(material)
+        slab.spawn(animate=False)
+
+    return build
+
+
+def _half_means(img):
+    """Mean RGB of the left and right halves, a two-pixel border dropped."""
+    w = img.shape[1]
+    left = img[2:-2, 2 : w // 2 - 2, :3].double().mean()
+    right = img[2:-2, w // 2 + 2 : -2, :3].double().mean()
+    return float(left), float(right)
+
+
+def test_a_scattered_path_sees_the_average_backdrop_not_the_pixel_behind(tmp_path):
+    """The background is a screen-space picture: the only direction it has is
+    the camera ray's. A diffuse bounce used to read the backdrop pixel behind
+    its camera ray anyway, so a white wall in front of a half-black,
+    half-white backdrop came out black on the left and white on the right --
+    the image painted onto the wall. A scattered path now sees the frame's
+    average backdrop, the uniform sky a solid color already is.
+    """
+    img = _render_scene_exp(
+        tmp_path,
+        "split_lambert.png",
+        _slab_against_split_backdrop(MeshLambertMaterial(color=WHITE)),
+        16,
+        **_furnace_opts(False, 2),
+    )
+    left, right = _half_means(img)
+    assert left == pytest.approx(127.5, abs=3), (left, right)
+    assert right == pytest.approx(127.5, abs=3), (left, right)
+
+
+def test_a_mirror_still_shows_the_backdrop_behind_it(tmp_path):
+    """Mirror-smooth reflection keeps the camera ray's line of sight, so it
+    keeps the deterministic renderer's convention (a mirror shows the
+    backdrop behind it), while a rough metal blurs it to the average.
+    """
+    mirror = _render_scene_exp(
+        tmp_path,
+        "split_mirror.png",
+        _slab_against_split_backdrop(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.0)
+        ),
+        16,
+        **_furnace_opts(False, 2),
+    )
+    left, right = _half_means(mirror)
+    assert left < 10, (left, right)
+    assert right > 240, (left, right)
+
+    rough = _render_scene_exp(
+        tmp_path,
+        "split_rough.png",
+        _slab_against_split_backdrop(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.5)
+        ),
+        16,
+        **_furnace_opts(False, 2),
+    )
+    left, right = _half_means(rough)
+    assert left == pytest.approx(right, abs=6), (left, right)
+
+
+def test_scattered_background_flags_solid_frames_and_averages_the_rest():
+    from algan.rendering.raytracing.path_tracer import scattered_background
+
+    class _Memory:
+        def get_tensor(self, shape, dtype):
+            return torch.empty(shape, dtype=dtype)
+
+    out = torch.zeros((2, 6, 5), dtype=torch.uint8)
+    out[0, :, :3] = 34
+    out[0, :, 4] = 255
+    out[1, 3:, :3] = 255
+    table = scattered_background(_Memory(), out)
+    assert table[:, 4].tolist() == [1.0, 0.0]
+    assert table[0, :3].tolist() == [34.0, 34.0, 34.0]
+    assert table[1, :3].tolist() == [127.5, 127.5, 127.5]
+    assert table[1, 3] == 0.0
+
+
 def test_rough_glass_blurs_transmission_but_index_matched_glass_does_not(tmp_path):
     """A striped environment resolves through smooth glass and blurs through rough glass."""
 
