@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import inspect
 import re
+import types
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -75,6 +76,20 @@ from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 #: Bumped whenever an animatable property is attached to a class, so per-class
 #: views of "what can this be told to set" can be cached across Mobs.
 ANIMATABLE_PROPERTY_VERSION = [0]
+
+#: What a view (``clone(clone_data=False)``) shares with its source besides
+#: every plain tensor attribute, instead of deep-copying it. A view only reads
+#: these: the relation table is never written after construction, and the
+#: member offsets are keyed on the ``parent_batch_sizes`` tensor shared with
+#: them (``Mob._member_offsets``).
+_VIEW_SHARED_ATTRS = frozenset(("attr_to_relations", "_member_offsets_cache"))
+
+#: Exactly the types ``copy.deepcopy`` returns unchanged (``copy._deepcopy_atomic``),
+#: which make up most of a Mob's ``__dict__``. ``__deepcopy__`` assigns them
+#: directly rather than paying a dispatch and a memo lookup apiece.
+_DEEPCOPY_RETURNS_ITSELF = frozenset(
+    (type(None), bool, int, float, complex, str, bytes, type, types.FunctionType)
+)
 
 
 def _check_updater_signature(update_function, extra_positional):
@@ -1783,6 +1798,21 @@ class Animatable:
             if k in ["_parents"]:
                 object.__setattr__(clone, k, [])
                 continue
+            if not clone_data and (
+                k in _VIEW_SHARED_ATTRS or isinstance(v, torch.Tensor)
+            ):
+                # A view shares its source's tensors: batch sizes and row
+                # selections, which Mob._set_data_sub_inds replaces outright,
+                # and construction-time geometry such as a circuit's
+                # ``first_basis``. Nothing writes into a Mob's tensor
+                # attributes in place -- a change assigns a new tensor -- and
+                # copying them made each view of a packed Mob cost time in
+                # proportion to the pack.
+                object.__setattr__(clone, k, v)
+                continue
+            if k == "_member_offsets_cache":
+                # A copy with its own data works out its own.
+                continue
             if isinstance(v, Animatable) and v in children:
                 object.__setattr__(clone, k, id_to_child[child_to_id[v]])
                 continue
@@ -1795,6 +1825,9 @@ class Animatable:
                 # Fresh rows start at zero: retaining the owner's row offsets
                 # makes property setters index outside a cloned packed view.
                 v = None
+            if type(v) in _DEEPCOPY_RETURNS_ITSELF:
+                object.__setattr__(clone, k, v)
+                continue
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
         # Exactly the accessors the source holds. An attribute registered after

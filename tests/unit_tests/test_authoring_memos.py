@@ -1,17 +1,21 @@
 """Authoring-time memos must reproduce the uncached construction exactly.
 
 Covers the Tex/Text glyph memo, the circuit-frame memo, the offset-based rows
-of a batched Mob's view, and the lazily opened speech clip.
+of a batched Mob's view and the cost of making one, and the lazily opened
+speech clip.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import sys
 
 import pytest
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
 
+import algan
 import algan.mobs.bezier_circuit as bezier_circuit
 import algan.mobs.text as text_module
 from algan import BLUE, GREEN, RED, DecimalNumber, SceneManager, Tex, Text
@@ -146,6 +150,106 @@ def test_batched_view_rows_match_a_split_of_the_whole_batch():
         view._set_data_sub_inds([item] if isinstance(item, int) else item)
         chosen = reference[item] if isinstance(item, slice) else [reference[item]]
         assert torch.equal(view.data_sub_inds, torch.cat(list(chosen)))
+
+
+def _square_pack(count):
+    """``count`` unit squares packed into one circuit, one member each."""
+    corners = torch.tensor(
+        [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]
+    )
+    square = torch.cat(
+        [
+            torch.stack([a * (1 - t) + b * t for t in torch.linspace(0, 1, 4)])
+            for a, b in zip(corners, corners.roll(-1, 0))
+        ]
+    )
+    return BezierCircuitCubic.from_batches(
+        [square + i for i in range(count)], add_to_scene=False
+    )
+
+
+def test_pack_root_view_rows_match_a_split_of_the_whole_batch():
+    count = 6
+    pack = _square_pack(count)
+    sizes = pack.control_points.parent_batch_sizes
+    reference = torch.arange(int(sizes.sum())).split(sizes.tolist())
+    for item in (0, 3, -1, slice(1, 4), slice(None, None, 2), slice(-2, None)):
+        view = pack[item]
+        members = torch.arange(count)[[item] if isinstance(item, int) else item]
+        assert torch.equal(view.data_sub_inds, members)
+        assert torch.equal(view.parent_batch_sizes, torch.ones_like(members))
+        assert torch.equal(
+            view.control_points.data_sub_inds,
+            torch.cat([reference[m] for m in members.tolist()]),
+        )
+    assert len(pack[2:2]) == 0
+
+
+def test_a_view_shares_its_sources_tensors():
+    pack = _square_pack(4)
+    sizes = pack.parent_batch_sizes
+    view = pack[1]
+    assert view.first_basis is pack.first_basis
+    assert view.attr_to_relations is pack.attr_to_relations
+    # The source keeps its own batch sizes; the view's are its selection's.
+    assert pack.parent_batch_sizes is sizes
+    assert len(pack) == 4
+    assert len(view) == 1
+    # A copy with its own data owns its tensors.
+    copy = pack.clone(add_to_scene=False, spawn=False)
+    assert copy.first_basis is not pack.first_basis
+    assert torch.equal(copy.first_basis, pack.first_basis)
+
+
+class _AllocatedElements(TorchDispatchMode):
+    """Counts the tensor elements every op allocates; views allocate none."""
+
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        out = func(*args, **(kwargs or {}))
+        outs = out if isinstance(out, (tuple, list)) else (out,)
+        for result, value in zip(func._schema.returns, outs):
+            if isinstance(value, torch.Tensor) and result.alias_info is None:
+                self.count += value.numel()
+        return out
+
+
+def _view_work(count):
+    """Algan lines run and tensor elements allocated to make one view."""
+    pack = _square_pack(count)
+    pack[0]  # the source works out its member offsets on its first view
+    algan_dir = os.path.dirname(algan.__file__)
+    lines = 0
+
+    def tracer(frame, event, arg):
+        nonlocal lines
+        if event == "call":
+            return tracer if frame.f_code.co_filename.startswith(algan_dir) else None
+        if event == "line":
+            lines += 1
+        return tracer
+
+    allocated = _AllocatedElements()
+    previous = sys.gettrace()
+    with allocated:
+        sys.settrace(tracer)
+        try:
+            pack[count // 2]
+        finally:
+            sys.settrace(previous)
+    return lines, allocated.count
+
+
+@pytest.mark.fast
+def test_a_view_costs_the_same_whatever_the_pack_size():
+    # Each view of a packed Mob used to split the whole batch at every level
+    # (a Python loop over every member) and copy every row the source held,
+    # so making a view of each of N glyphs cost O(N^2). Both counts are exact,
+    # so this holds on a loaded machine where a timing would not.
+    assert _view_work(8) == _view_work(256)
 
 
 def test_speech_clip_reads_its_duration_from_the_sidecar(tmp_path):
