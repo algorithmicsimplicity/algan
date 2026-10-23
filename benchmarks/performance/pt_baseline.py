@@ -35,6 +35,13 @@ many_lights_authored
     scale. ``--pt-authored-light-sampling off`` is the arm before, ``always``
     the arm after, and ``auto`` (the default) is ``always`` here because 64
     lights is past ``max_shadow_lights``.
+glass
+    Smooth glass over the ``lit`` floor -- a ball resting on it and a slab
+    held above it -- under the ``lit`` scene's three lights, for what roadmap
+    section 1's shadow caustics cost. ``ALGAN_PT_CAUSTICS=1`` (the tag's
+    ``cau1``) is the arm with them: every shadow ray that crosses the glass
+    probes it and runs a manifold walk. Without it the glass shadows straight
+    and tinted, which is the reference arm.
 text_2d
     Unlit 2-D content: a ``Text`` paragraph plus overlapping translucent
     ``Square``/``Circle`` shapes. This is the deterministic camera-segment
@@ -212,6 +219,24 @@ def _solids():
     return ball, box, coated
 
 
+def _lit_lights():
+    """The ``lit`` scene's two point lights and spot light."""
+    PointLight(
+        location=UP * 3.5 + OUT * 4.0 + LEFT * 2.0, color=WHITE, intensity=2.0
+    ).spawn(animate=False)
+    PointLight(
+        location=UP * 2.0 + OUT * 3.0 + RIGHT * 3.0, color=WHITE, intensity=1.0
+    ).spawn(animate=False)
+    SpotLight(
+        location=UP * 4.5 + OUT * 1.5,
+        target=ORIGIN,
+        color=WHITE,
+        intensity=2.5,
+        cone_angle=45.0,
+        penumbra=0.35,
+    ).spawn(animate=False)
+
+
 def scene_lit():
     """A few opaque PBR solids under three lights, with shadows on."""
     SETTINGS.raytracing.set(shadows=True)
@@ -219,20 +244,7 @@ def scene_lit():
     Scene.clear_lights()
 
     with Off():
-        PointLight(
-            location=UP * 3.5 + OUT * 4.0 + LEFT * 2.0, color=WHITE, intensity=2.0
-        ).spawn(animate=False)
-        PointLight(
-            location=UP * 2.0 + OUT * 3.0 + RIGHT * 3.0, color=WHITE, intensity=1.0
-        ).spawn(animate=False)
-        SpotLight(
-            location=UP * 4.5 + OUT * 1.5,
-            target=ORIGIN,
-            color=WHITE,
-            intensity=2.5,
-            cone_angle=45.0,
-            penumbra=0.35,
-        ).spawn(animate=False)
+        _lit_lights()
         ball, box, coated = _solids()
 
     with Sync(runtime=DURATION):
@@ -255,6 +267,38 @@ def scene_many_lights():
         ball.move(UP * 0.9)
         box.rotate(60, UP)
         coated.rotate(45, RIGHT)
+
+
+def scene_glass():
+    """Smooth glass over the ``lit`` floor, under the ``lit`` lights."""
+    SETTINGS.raytracing.set(shadows=True)
+    Scene.set_background(BLACK)
+    Scene.clear_lights()
+
+    with Off():
+        _lit_lights()
+        floor = Prism(width=10.0, height=0.3, depth=6.0)
+        floor.set_material(MeshStandardMaterial(color=WHITE, roughness=0.9))
+        _opaque(floor).move(DOWN * 1.7)
+        floor.spawn(animate=False)
+
+        ball = Sphere(radius=0.9)
+        ball.set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1.0, ior=1.5, roughness=0.0)
+        )
+        ball.move(LEFT * 1.6 + DOWN * 0.65)
+        ball.spawn(animate=False)
+
+        slab = Prism(width=1.8, height=0.3, depth=1.8)
+        slab.set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1.0, ior=1.5, roughness=0.0)
+        )
+        slab.move(RIGHT * 1.8 + UP * 0.2)
+        slab.spawn(animate=False)
+
+    with Sync(runtime=DURATION):
+        ball.move(RIGHT * 0.6)
+        slab.rotate(20, OUT)
 
 
 def _authored_solids():
@@ -384,6 +428,7 @@ SCENES = {
     "lit": scene_lit,
     "many_lights": scene_many_lights,
     "many_lights_authored": scene_many_lights_authored,
+    "glass": scene_glass,
     "text_2d": scene_text_2d,
 }
 
@@ -567,6 +612,9 @@ CODEGEN_ENV = (
     ("ALGAN_OPT_LEVEL", "opt"),
     ("ALGAN_ADV_OPT", "adv"),
     ("ALGAN_MAX_SHADOW_LIGHTS", "msl"),
+    # Shadow caustics compile a different pt_shade; a scene with no smooth
+    # refracting glass compiles the plain one either way.
+    ("ALGAN_PT_CAUSTICS", "cau"),
 )
 
 

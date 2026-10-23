@@ -43,6 +43,18 @@ The ceilings, and what each costs when it binds:
 ``medium_query``
     A containment/extinction query exhausted ``max_surfaces_per_ray``. Its
     result is absorbed rather than pretending unknown geometry was vacuum.
+``caustic_chain``
+    ``MNEE_MAX_VERTICES`` (2) refracting caster crossings on one next-event
+    shadow segment under ``pt_caustics``. No manifold walk runs for that
+    sample: the shadow march passes the casters tinted, as it does with
+    caustics off, so that light arrives unfocused instead of dropping.
+``caustic_solver``
+    A caustic manifold walk still walking after ``MNEE_MAX_ITERATIONS`` (64)
+    Newton steps. The sample's caustic is dropped (fail-closed): from a
+    point, spot or directional light that light is missing, so the caustic
+    renders slightly too dark where walks converge slowly; an area light's or
+    the environment's still arrives through the BSDF path that makes the same
+    journey, which the coverage test then keeps at full weight.
 
 One ceiling is **not** counted here: the deterministic renderer's shadow
 march stops after ``max_surfaces_per_ray`` surfaces too, and treats whatever
@@ -147,6 +159,12 @@ class TruncationCounts:
     medium_stack: int = 0
     #: Containment or extinction queries that exhausted the surface budget.
     medium_query: int = 0
+    #: Caustic next-event samples whose shadow segment crossed more refracting
+    #: casters than a manifold walk chains; they lit through them tinted.
+    caustic_chain: int = 0
+    #: Caustic manifold walks that ran out of Newton steps; their light was
+    #: dropped (a delta light's; an area light's still arrives by BSDF paths).
+    caustic_solver: int = 0
 
     @property
     def total(self) -> int:
@@ -179,6 +197,20 @@ _CEILING_MESSAGES = {
         "{count} medium containment/extinction query(s) exceeded {cap} surfaces "
         "and were absorbed to avoid light leaks. Reduce overlapping geometry "
         "or raise max_surfaces_per_ray before importing Algan."
+    ),
+    "caustic_chain": (
+        "{count} caustic light sample(s) crossed more than {cap} refracting "
+        "surfaces on the way to their light, so they lit through the glass "
+        "tinted but unfocused, as with pt_caustics off. Fewer stacked glass "
+        "surfaces between a light and what it lights keep those caustics."
+    ),
+    "caustic_solver": (
+        "{count} caustic light sample(s) found no light path through the "
+        "glass within {cap} manifold-walk steps and contributed nothing: "
+        "light a point, spot or directional light focuses there is missing, "
+        "so those caustics render slightly too dark (an area light's or the "
+        "environment's still arrives through bounced paths, only noisier). "
+        "Smoother caster meshes converge faster."
     ),
     "surfaces_per_ray": (
         "{count} primary ray(s) hit the {cap}-surface compositing ceiling "

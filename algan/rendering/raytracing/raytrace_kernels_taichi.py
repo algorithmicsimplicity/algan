@@ -2366,7 +2366,11 @@ def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
 
     * **Refraction.** Real glass bends the light it passes, which is why a
       glass ball's shadow has a bright caustic core; a shadow ray that
-      continues straight cannot produce one.
+      continues straight cannot produce one. The path tracer's opt-in shadow
+      caustics (``pt_caustics``, ``pt_caustics_taichi``) connect through
+      smooth glass along the bent path instead, and rescale this march's tint
+      at each caster they cover to its uncovered fraction
+      (``_pt_mnee_probe``).
 
     So the honest description is "a transmissive surface stops blocking light
     and tints what it passes", not "glass casts a correct shadow".

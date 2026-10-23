@@ -518,6 +518,7 @@ class TriangleMesh(Mob):
         # declaration is resolved through the hierarchy, so setting it on the
         # Model3D covers the TriangleMesh children it holds.
         primitive.declare_shadow_flags(*self._resolved_shadow_flags())
+        primitive.declare_caustic_flag(self._resolved_caustic_flag())
         return primitive
 
     def triangle_shell_ids(self):

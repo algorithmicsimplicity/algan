@@ -237,6 +237,10 @@ drops a feature a renderer cannot honour.
    * - Homogeneous scattering media, random-walk subsurface scattering
      - **Refused** (``UnsupportedFeatureError``)
      - Yes
+   * - Shadow caustics: light focused through glass and water, from every
+       light type (``experimental.pt_caustics``)
+     - No (a glass object's shadow is tinted, not bent)
+     - Opt-in (off by default)
    * - Depth of field (``camera.aperture > 0``)
      - **Refused** (``UnsupportedFeatureError``)
      - Yes (thin lens)
@@ -337,6 +341,15 @@ In rough order of impact:
    that is roughly nine times less noise at the same
    ``samples_per_pixel``. Directional lights and an environment map have no
    position to sort by and are chosen by brightness alone, as before.
+
+   Shadow caustics (``SETTINGS.raytracing.experimental.pt_caustics``) make
+   each of those shadow rays do more: it probes its segment for smooth glass
+   and water and, where it crosses some, runs a short Newton walk for the
+   bent path the light really takes (:doc:`renderer_limitations` has the
+   details). A scene with glass between its lights and what they light pays
+   for that on every sample. Glass whose caustic is not the point of the shot
+   -- a window, a display case -- opts out with ``mob.casts_caustics =
+   False`` and then costs nothing extra.
 5. **Triangle count.** Imported models and high-resolution
    :class:`~algan.mobs.surfaces.surface.Surface` grids.
 6. **Glow and bloom**, which add a full-frame post-processing pass.

@@ -110,6 +110,11 @@ row links to the section that explains it.
      - Yes (Fresnel uses the material's own index)
      - Yes
      - `Reflection, refraction and transmission`_
+   * - Caustics (light focused through glass or water)
+     - **No**
+     - **No**
+     - Opt-in (``pt_caustics``), smooth refraction
+     - `Limits and approximations`_
    * - Transmission through a 2-D shape
      - Thin pane, no bending
      - Thin pane, no bending
@@ -601,10 +606,11 @@ uses above: a bigger piece of colored glass casts a deeper shadow, not just a
 colored one. Circuits are flat zero-thickness panes with no interior, so they
 tint but never absorb.
 
-Two limits stand. There is still no refraction: the shadow ray travels
-straight through the glass, so there is no caustic core, and the umbra comes
-out uniformly tinted where a path tracer concentrates light into a bright
-centre. And the entry/exit pairing behind the chord is exact for a single
+Two limits stand. There is no refraction on this connection: the shadow ray
+travels straight through the glass, so there is no caustic core, and the umbra
+comes out uniformly tinted where real glass concentrates light into a bright
+centre (the path tracer bends the connection when shadow caustics are on; see
+`Limits and approximations`_). And the entry/exit pairing behind the chord is exact for a single
 convex solid and approximate where solids nest or overlap. Both behaviours are
 compiled in behind ``ALGAN_RGB_SHADOW_TINT`` (default on); set it to ``0``
 before ``import algan`` to restore achromatic shadows.
@@ -813,15 +819,57 @@ Limits and approximations
   with
   ``SETTINGS.raytracing.experimental.set(shadow_terminator=False)`` if you need
   to compare against the old behaviour.
-* **No refractive shadow transport.** Light is not bent as it passes through
-  glass, so there are no caustics: a glass object's shadow keeps its sharp
-  silhouette, and everything its interior does to the light crossing it --
-  opacity, albedo tint, absorption over the chord -- happens along a straight
-  line. The path tracer's shadow rays travel the same straight line, so this
-  holds under both renderers; see `Not implemented at all`_. The one
-  exception is the refracting boundary of a scattering medium, where the path
-  tracer's shadow ray stops instead (see
+* **Refractive shadow transport is the path tracer's, and opt-in.** By
+  default light is not bent as it passes through glass, so there are no
+  caustics: a glass object's shadow keeps its sharp silhouette, and everything
+  its interior does to the light crossing it -- opacity, albedo tint,
+  absorption over the chord -- happens along a straight line. The path
+  tracer's shadow rays travel the same straight line by default, so this holds
+  under both renderers, with one exception: the refracting boundary of a
+  scattering medium, where the path tracer's shadow ray stops instead (see
   `Homogeneous volumes and subsurface scattering`_).
+
+  ``SETTINGS.raytracing.experimental.set(pt_caustics=True)`` gives the path
+  tracer **shadow caustics** (manifold next-event estimation, what Blender
+  Cycles ships under the same name). A light sample whose shadow segment
+  crosses smooth refracting geometry is connected through it instead, along
+  the bent path that obeys Snell's law at each crossing and still reaches the
+  sampled point of the light: a point, spot or directional light focuses
+  through a glass ball and casts a pool's caustic network on its floor, which
+  no sampled ray could otherwise show (none can hit a delta light), and an
+  area light or the environment map focuses without the firefly clamp
+  capping the focus. A glass object's shadow is then the light it bends away,
+  and the medium inside a subsurface solid is lit through its boundary by
+  every kind of light. The deterministic renderer has no equivalent. Where it
+  stops:
+
+  - **Smooth refraction, at most two interfaces per connection**: into and
+    out of one glass solid, or one water surface. A segment that crosses more
+    keeps the straight, tinted reading and is counted (``caustic_chain``,
+    :ref:`limits-truncation`). Reflective caustics (light a mirror focuses),
+    rough glass and dispersion are not covered; such paths still arrive the
+    way they did before, through the path's own bounces.
+  - **One solution per light sample.** The bent path is found by a Newton
+    walk that starts from the straight segment, so it finds the solution that
+    start leads to. Light the glass bends onto a point from elsewhere is
+    missed for a point, spot or directional light: just outside a ball's
+    geometric shadow, in the bright ring around a ball resting on a floor,
+    and where a wavy surface folds several rays onto one point -- a few
+    percent of the light the glass transmits. An area light's or the
+    environment's share of those paths is kept, through the paths' own
+    bounces, at full weight.
+  - **A walk can fail.** One that is still searching after 64 steps
+    contributes nothing and is counted (``caustic_solver``). Smoother caster
+    meshes (more triangles, smooth normals) converge faster.
+  - **Casters** are every smooth refracting triangle of a lit material on a
+    mob that casts shadows. Set ``mob.casts_caustics = False`` (before
+    spawning) for glass whose caustic is not the point, such as a window: it
+    keeps the straight, tinted shadow and costs nothing extra. Glass that is
+    not a caster stays straight and tinted on a bent connection too, so a
+    caustic seen through an opted-out pane is focused by the caster alone.
+  - **Cost.** Every shadow ray from a lit surface probes its segment for
+    casters, and one that finds them runs the walk, so shading costs more
+    wherever glass stands between lights and what they light.
 
 
 Reflection, refraction and transmission
@@ -901,7 +949,8 @@ Refraction
   of multiple-scattered light, not an exact microscopic random walk; strong
   coloured multi-scattering remains approximate. Finite lookup interpolation
   also introduces a small energy error. Shadow connections through additional
-  glass remain straight, so this does not add caustics.
+  rough glass remain straight (shadow caustics bend them only through smooth
+  glass), so this does not add caustics.
   Custom scatter overrides and thin Bezier panes keep their authored delta
   continuations.
 * **Nested media are modelled, up to four deep.** A ray carries the stack of
@@ -1235,6 +1284,15 @@ Hard limits
      - 256 (``max_surfaces_per_ray``)
      - The query is absorbed rather than treated as empty space. **Warns**
        (:ref:`limits-truncation`).
+   * - Refracting interfaces one caustic light connection bends through
+       (``pt_caustics``)
+     - 2
+     - That light sample passes the glass straight and tinted, as with
+       caustics off. **Warns** (:ref:`limits-truncation`).
+   * - Steps of one caustic manifold walk (``pt_caustics``)
+     - 64
+     - That light sample contributes nothing through the glass. **Warns**
+       (:ref:`limits-truncation`).
    * - Frames in one render batch
      - 32767
      - Raises. Not reachable in practice -- memory bounds the batch far below
@@ -1293,8 +1351,8 @@ check without reading logs::
 
 :class:`~.TruncationCounts` has one field per ceiling --
 ``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers``,
-``dropped_continuations``, ``closed_shell_ring``, ``medium_stack`` and
-``medium_query`` -- plus ``total``.
+``dropped_continuations``, ``closed_shell_ring``, ``medium_stack``,
+``medium_query``, ``caustic_chain`` and ``caustic_solver`` -- plus ``total``.
 ``sheet_layers`` counted the former 16-layer ceiling and now always reads
 zero; it is kept so earlier reports still read. The counts are cumulative over
 the whole render, except ``shadow_lights``, which is a property of the scene
@@ -1370,14 +1428,17 @@ Important limits:
   sampled by the actual Fresnel/BSDF walk, not approximated with an unbent
   transparent shadow ray, which would double-count energy inside it. Point,
   spot and directional lights, which no sampled ray can hit, therefore never
-  reach a subsurface object's interior; area lights, emissive meshes and the
-  environment map do, through sampled refraction. Glass that does not scatter
+  reach a subsurface object's interior -- unless shadow caustics are on
+  (``pt_caustics``; see `Limits and approximations`_), which connect them to
+  the medium's scatter points along the path bent at the boundary; area
+  lights, emissive meshes and the environment map do either way, through
+  sampled refraction. Glass that does not scatter
   -- clear, or tinted with ``attenuation_color`` -- is unaffected: it casts
   the same straight, tinted shadow it does in a scene without any medium, and
   honours ``shadows`` and ``casts_shadows`` the same way. Glass sitting
   *inside* fog is the exception, because its boundary is then the boundary of
-  a scattering region. Delta-light refractive caustics, heterogeneous density
-  fields, and accelerated diffusion profiles remain future work.
+  a scattering region. Heterogeneous density fields and accelerated
+  diffusion profiles remain future work.
 
 A nonzero scattering coefficient on the deterministic renderer is reported
 as unsupported, with instructions to set ``samples_per_pixel > 1``. Its
@@ -1437,7 +1498,10 @@ Neither renderer does any of these, at any setting:
 
 * **Global illumination** on the deterministic path. Color bleeding and indirect
   light need ``samples_per_pixel > 1``.
-* **Caustics.**
+* **Reflective caustics** from a point, spot or directional light -- the
+  bright patch a curved mirror focuses -- and caustics through rough glass or
+  through more than two refracting surfaces. Smooth refraction is covered,
+  opt-in, by the path tracer's shadow caustics (`Limits and approximations`_).
 * **Ambient occlusion**, in any form -- no SSAO pass, no AO map.
 * **Heterogeneous volumes**: spatial density fields or simulated smoke.
   Homogeneous fog and random-walk subsurface scattering are supported by the

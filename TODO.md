@@ -149,11 +149,13 @@ stay valid.
 ## Later design work, not missing implementations
 
 Homogeneous scattering volumes and bounded random-walk subsurface scattering,
-light-tree selection, adaptive sampling, environment-map sampling and OIDN-based
-denoising are already implemented. Do not reopen them as absent features.
-Heterogeneous density/ratio tracking, stronger difficult-caustic sampling and
-more capable temporal denoising are extensions with separate cost and quality
-criteria, described in the path-tracer roadmap.
+light-tree selection, adaptive sampling, environment-map sampling, OIDN-based
+denoising and opt-in shadow caustics through smooth refraction (manifold
+next-event estimation, `pt_caustics`) are already implemented. Do not reopen
+them as absent features. Heterogeneous density/ratio tracking, caustics past
+one walk's solution (reflective casters, several solutions per light sample)
+and more capable temporal denoising are extensions with separate cost and
+quality criteria, described in the path-tracer roadmap.
 
 Custom fragment scatter currently preserves the parent medium rather than
 declaring a nested-medium transition. Extending that injection signature needs

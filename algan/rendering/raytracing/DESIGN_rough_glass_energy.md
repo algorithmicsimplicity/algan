@@ -155,7 +155,9 @@ not a global bound over all roughness, grazing angles and indices. Very close
 to index matching or critical angles, detailed angular multiple scattering is
 still approximate. A microscopic random-walk reference and a GPU timing sweep
 would be useful future validation; neither is claimed here. The change does not
-add a caustic estimator or bend straight transparent-shadow connections.
+add a caustic estimator or bend straight transparent-shadow connections. (Shadow
+caustics came later, opt-in and for smooth glass only: `pt_caustics`, roadmap
+section 1. Rough glass still shadows straight.)
 
 ## Measured on hardware, and the alternative that was not taken
 

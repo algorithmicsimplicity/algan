@@ -376,9 +376,14 @@ proportional cost.
    through each occluder's opacity, so stacked translucent surfaces compound and a
    fully opaque one blocks. Ambient and emissive terms are unaffected.
 
-   What neither renderer does is refractive *shadow* transport: a shadow ray
-   travels a straight line through glass under both, so there are no caustics
-   (see :doc:`renderer_limitations`). The path tracer honours every light type
+   What neither renderer does by default is refractive *shadow* transport: a
+   shadow ray travels a straight line through glass under both, so there are
+   no caustics. The path tracer bends it when shadow caustics are on
+   (``SETTINGS.raytracing.experimental.set(pt_caustics=True)``): a point,
+   spot or directional light then focuses through a glass ball or a water
+   surface, and an area light's or the environment's caustics converge
+   rather than being capped by the firefly clamp (see
+   :doc:`renderer_limitations` for where it stops). The path tracer honours every light type
    on this page -- area lights and emissive surfaces as true sampled emitters,
    the rest exactly as the deterministic stages define them -- at the cost of
    a large increase in render time; see :ref:`renderer-capabilities` for what

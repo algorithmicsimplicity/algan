@@ -428,9 +428,60 @@ transmission, while unused path scalar slot 6 accumulates its inverse for
 roulette and minimum-weight decisions. Keep the 12-float state width unchanged.
 Do not apply opaque GGX's Turquin compensation to transmitting interfaces:
 this is a single-scatter dielectric model. Shadow connections through further
-interfaces are still straight (no caustics). `test_rough_dielectric.py` checks
-PDF mass, sampled power, reciprocity and Snell/TIR; `test_path_tracer.py` adds
-rendered blur, lighting and roulette checks. See roadmap section 10.
+interfaces are straight unless `pt_caustics` bends them through smooth casters
+(next section); rough glass always shadows straight. `test_rough_dielectric.py`
+checks PDF mass, sampled power, reciprocity and Snell/TIR; `test_path_tracer.py`
+adds rendered blur, lighting and roulette checks. See roadmap section 10.
+
+## Shadow caustics are a light sample's chain, shared with the BSDF path
+
+`experimental.pt_caustics` (`ALGAN_PT_CAUSTICS`, default off) compiles
+`pt_shade` with the static `caustics` flag; a kernel compiled without it is
+unchanged, so keep caustic state out of the shared rows (`pt_acc`, `rs_*`)
+and inside `pt_cau`, which is a one-cell stand-in without caustics. Casters
+are the smooth refracting lit triangles of every Mob that casts shadows and
+keeps `casts_caustics` (resolved through ancestors like the shadow flags), a
+section of `tri_shell` at `nee_meta[_NM_CAUSTIC]` (`_pt_caster_id`). A
+triangle that casts no shadow must not be a caster: the walks skip it, so the
+BSDF paths through it would be held for chains that never form. The geometry
+lives in `pt_caustics_taichi.py`; `pt_shade` owns the radiometry.
+
+In the light loop, a receiver (`mnee_vertex`: a lit, shadow-receiving vertex
+that does not refract itself, including a medium vertex, which is how delta
+lights reach a subsurface interior) probes each sample's straight segment for
+casters (`_pt_mnee_probe`, at most `MNEE_MAX_VERTICES`). The straight
+connection then keeps only their uncovered fraction, and the probe seeds a
+Newton walk (`_pt_mnee_solve`) whose chain arrives with the generalized
+geometry term in place of the inverse square, capped at
+`MNEE_MAX_CONCENTRATION`. While the path has not scattered, that light is
+direct and skips the firefly clamp (`caustic`); after a scatter it goes
+through `direct` and the clamp.
+
+An area light or the environment is also found by the BSDF path that scatters
+at the receiver and then only crosses casters (`_PT_CAU_COUNT` counts them).
+The two share it by the power heuristic (`_pt_caustic_mis`): `pt_shade` holds
+such a path's emitter back in `pt_cau`, and `pt_caustic_cover`, launched after
+every `pt_shade` of a batch, re-runs the walk from the recorded receiver
+(`_pt_mnee_covered`). A covered path keeps `1 - w`; one the walk cannot
+deliver keeps everything. Do not "simplify" this to Cycles' cull of every such
+path: it lost all the light outside the seed's basin and darkened the floor
+under a resting glass ball by 36%. The coverage test must make exactly the
+caustic block's decisions (horizon test, probe, seed, solver, tolerance): a
+rejection a chain makes after its walk belongs in `_pt_mnee_admissible`,
+which both call, or the BSDF path loses `w` of light no chain delivered. `p_B`
+is 0 when `bounces_left < count + 1`, because that path cannot exist.
+
+A walk converges below `MNEE_THRESHOLD` or the chain's own f32 noise floor
+(`MNEE_ROUNDING`, `c_floor`), whichever is larger: from a scatter point a
+hundredth of a unit under its face no f32 walk reaches the fixed threshold.
+A medium vertex's `hit_p` is the free-flight point: `_tri_surface_point` and
+`_bezier_plane_point` are for htype 1 and 0 only. Fail-closed ceilings are
+`caustic_chain` (straight, tinted) and `caustic_solver` (dropped) in
+`truncation.py`. Scope: refraction only, one interface or one pair, one
+solution per light sample, no nested dielectrics along a chain.
+`test_pt_caustics.py` checks the walk against closed forms and finite
+differences; `test_pt_caustics_render.py` checks furnaces, a plate's optics
+and subsurface single scattering. See roadmap section 1.
 
 ## Under the path tracer an authored-appearance material samples its light rows
 

@@ -413,9 +413,9 @@ class Mob(
 
     Attributes
     ----------
-    two_sided, closed_shell, casts_shadows, receives_shadows
+    two_sided, closed_shell, casts_shadows, receives_shadows, casts_caustics
         Plain (non-animatable) geometry declarations, documented individually
-        below. All four are read once when the Mob is spawned, so they must be
+        below. All five are read once when the Mob is spawned, so they must be
         set before :meth:`~.Animatable.spawn`.
 
     Examples
@@ -573,6 +573,27 @@ class Mob(
     #: pipeline is never asked about ``two_sided``. ``casts_shadows`` has none
     #: of these exceptions: all three still cast.
     receives_shadows = True
+
+    #: Whether this Mob's refracting surfaces focus light into caustics when
+    #: the path tracer renders them with shadow caustics on
+    #: (``SETTINGS.raytracing.experimental.pt_caustics``). ``True`` (the
+    #: default) makes every smooth refracting triangle of the Mob a caustic
+    #: caster -- a glass solid, a water surface, a lens. ``False`` keeps its
+    #: glass as it was before caustics existed: shadow rays pass through it
+    #: tinted but unbent, which is cheaper and is what to choose for glass
+    #: whose caustic is not the point of the scene (a window, a display case).
+    #:
+    #: Only refraction matters here, so a Mob whose material neither
+    #: transmits nor has an index of refraction other than 1 is unaffected
+    #: either way, as is everything when ``pt_caustics`` is off. A Mob that
+    #: casts no shadow (:attr:`casts_shadows` ``False``) casts no caustic
+    #: either: the light it would bend never sees it.
+    #:
+    #: Resolved against the Mob's ancestors like :attr:`casts_shadows` -- an
+    #: opt-out anywhere above applies -- so ``group.casts_caustics = False``
+    #: covers a whole group. Set it before the Mob is spawned; it is a plain
+    #: attribute, not an animatable one.
+    casts_caustics = True
 
     # Backing store for :attr:`pass_index`; ``None`` until a value is set.
     _pass_index = None
@@ -801,6 +822,7 @@ class Mob(
         "closed_shell",
         "casts_shadows",
         "receives_shadows",
+        "casts_caustics",
     )
 
     def _adopt_structural_attrs(self, target):
@@ -879,6 +901,23 @@ class Mob(
             receives = receives and bool(getattr(node, "receives_shadows", True))
             stack.extend(getattr(node, "parents", None) or ())
         return casts, receives
+
+    def _resolved_caustic_flag(self):
+        """:attr:`casts_caustics` for this Mob, resolved against its ancestors
+        the way :meth:`_resolved_shadow_flags` resolves the shadow flags: an
+        opt-out anywhere above it applies to it.
+        """
+        casts = bool(getattr(self, "casts_caustics", True))
+        seen = {id(self)}
+        stack = list(getattr(self, "parents", None) or ())
+        while stack and casts:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            casts = bool(getattr(node, "casts_caustics", True))
+            stack.extend(getattr(node, "parents", None) or ())
+        return casts
 
     def __getattr__(self, name):
         # Reached only after normal lookup has already failed, so this costs

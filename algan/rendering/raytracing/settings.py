@@ -441,6 +441,31 @@ pt_animated_seed = env_flag("ALGAN_PT_ANIMATED_SEED", False)
 # in isolation (1.3-1.6x less low-frequency error energy at 1-2 samples in the
 # pairs it covers); it is the sharing that dilutes it.
 pt_blue_noise = env_flag("ALGAN_PT_BLUE_NOISE", False)
+# Shadow caustics in the path tracer: manifold next-event estimation (Hanika et
+# al. 2015; what Blender Cycles ships as "shadow caustics"; roadmap section 1,
+# ``pt_caustics_taichi.py``). A light sample whose straight shadow segment
+# crosses smooth refracting geometry -- a glass solid, a water surface -- is
+# also connected THROUGH it: Newton iterations move the crossing points across
+# the caster until the bent chain obeys Snell's law at each, and the light it
+# carries arrives as direct light, outside ``pt_firefly_clamp``. That is how a
+# point, spot or directional light focuses through glass at all (a BSDF path
+# can never find a delta light), and how an area light or an environment map
+# focuses without the clamp eating the focus. The straight shadow ray stops
+# passing a covered caster tinted-but-unbent, and a BSDF path that makes the
+# same journey to an area light or the environment shares it with the chain
+# by the power heuristic (``pt_caustic_cover`` re-runs the walk to tell which
+# ones the chains reach), so no light is counted twice or lost.
+#
+# Scope: refraction through one interface (a water surface, the boundary of a
+# subsurface solid -- light reaches a medium vertex inside one this way) or one
+# interface pair (into and out of a glass solid) per chain, the caster's
+# material at its 1e-4 GGX floor, and smooth normals on it. Reflective
+# caustics, rough casters and longer chains stay out. A caster is any smooth
+# refracting triangle of a lit material whose mob casts shadows and has not
+# opted out (``Mob.casts_caustics``). Off by default: every shadow ray from a
+# receiver probes its segment for casters and may run a Newton walk, on the
+# renderer whose cost per vertex is the thing being defended.
+pt_caustics = env_flag("ALGAN_PT_CAUSTICS", False)
 # Denoise path-traced output (samples_per_pixel > 1) with the Open Image
 # Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
 # linear HDR color guided by the albedo/normal AOVs the path tracer
@@ -4118,7 +4143,7 @@ def _build_core_shader_ids():
 
 
 _CORE_SHADER_IDS = None
-# Per-material parameter defaults (canonical 39-slot block; see shading_taichi).
+# Per-material parameter defaults (canonical 40-slot block; see shading_taichi).
 # Slots 12+ are the MeshPhysicalMaterial extension, defaults matching the
 # physical_shader signature (ior 1.5, specular_intensity 1, specular_color
 # white, clearcoat/sheen off, sheen_roughness 1, transmission/iridescence 0).
@@ -4175,11 +4200,16 @@ _MAT_DEFAULTS = [
     0.0,
     0.0,
     0.0,
+    # 39 no_caustic_cast: 0.0 is "this geometry bends light into caustics
+    # where its material refracts", the default of Mob.casts_caustics
+    # (shading_taichi._MAT_NO_CAUSTIC_CAST).
+    0.0,
 ]
 # Material-property name -> (start slot, width) in the canonical block.
-# ``one_sided`` (slot 26), ``no_shadow_receive`` (slot 33) and the raw
-# closed-interior flag (slot 38) are deliberately absent: these are declared by the mob's geometry, not by its material, and
-# ``_pack_material`` writes them directly.
+# ``one_sided`` (slot 26), ``no_shadow_receive`` (slot 33), the raw
+# closed-interior flag (slot 38) and ``no_caustic_cast`` (slot 39) are
+# deliberately absent: these are declared by the mob's geometry, not by its
+# material, and ``_pack_material`` writes them directly.
 _MAT_SLOTS = {
     "emissive": (0, 3),
     "emissive_intensity": (3, 1),

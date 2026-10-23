@@ -210,6 +210,40 @@ from algan.rendering.raytracing.light_tree import (
     LT_RIGHT,
     LT_SIN_THETA_O,
 )
+from algan.rendering.raytracing.pt_caustics_taichi import (
+    _PT_CAU_CLAMP,
+    _PT_CAU_COUNT,
+    _PT_CAU_DIRECT,
+    _PT_CAU_F,
+    _PT_CAU_K,
+    _PT_CAU_KIND,
+    _PT_CAU_NE,
+    _PT_CAU_NSIDE,
+    _PT_CAU_ONE_SIDED,
+    _PT_CAU_PB,
+    _PT_CAU_PY,
+    _PT_CAU_SPEC,
+    _PT_CAU_VAL,
+    _PT_CAU_WB,
+    _PT_CAU_WOLD,
+    _PT_CAU_X0,
+    _PT_CAU_Y,
+    MNEE_MAX_CONCENTRATION,
+    MNEE_MAX_VERTICES,
+    PT_STAT_CAUSTIC_CHAIN,
+    PT_STAT_CAUSTIC_SOLVER,
+    _pt_caster_id,
+    _pt_cau_pend,
+    _pt_cau_receiver,
+    _pt_caustic_mis,
+    _pt_mnee_admissible,
+    _pt_mnee_covered,
+    _pt_mnee_geometry,
+    _pt_mnee_leg,
+    _pt_mnee_probe,
+    _pt_mnee_solve,
+    _pt_mnee_turn,
+)
 from algan.rendering.raytracing.pt_media_taichi import (
     PT_MEDIA_SLOTS,
     PT_STAT_MEDIA_QUERY,
@@ -369,7 +403,9 @@ _PT_ACC_SCATTERED = 14
 
 # Device-side truncation tallies, read back by the host once per wave and fed
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
-PT_STATS_WIDTH = 4
+# Columns 2-3 are the media module's and 4-5 the caustic module's
+# (``PT_STAT_MEDIA_*``, ``PT_STAT_CAUSTIC_*``).
+PT_STATS_WIDTH = 6
 PT_STAT_TRUNC_SURFACES = 0
 PT_STAT_SHELL_RING = 1
 
@@ -449,7 +485,7 @@ _NEE_AUTHORED_ROW = 4
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 22
+NEE_META_WIDTH = 23
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -489,6 +525,9 @@ _NM_AUTHORED_COUNT = 19  # ... out of this many entries in the authored table
 # was.
 _NM_BLUE_NOISE = 20
 _NM_MEDIA = 21  # second-half offset in tri_shell, 0 = no volume transport
+# Offset of the caustic-caster section in tri_shell (``_pt_caster_id``), 0 =
+# no caster; read only by a kernel compiled with ``caustics`` on.
+_NM_CAUSTIC = 22
 
 # Blue-noise screen-space error distribution (roadmap section 7; Heitz et al.
 # 2019). The tile is ``PT_BN_TILE x PT_BN_TILE`` per-pixel sampler keys --
@@ -513,7 +552,7 @@ PT_BN_TILE_MASK = PT_BN_TILE - 1
 PT_BN_TILE_VALUES = PT_BN_TILE * PT_BN_TILE
 _PT_BN_SALT = 0x9E3779B1
 #: First word of the tile inside ``nee_meta`` (the header ends there).
-_NM_BN_BASE = 22
+_NM_BN_BASE = NEE_META_WIDTH
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -2435,6 +2474,228 @@ def _pt_meta_hit(nee_meta: ti.template()):
     )
 
 
+@ti.func
+def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
+                      has_tri: ti.template(), has_bez: ti.template(),
+                      x0, sorigin, n_recv, wi_vis, ldist, y, fixed, f, ff,
+                      pixel_size_per_t, base_dist,
+                      pixel_size_base: ti.template(), layer_offset_triangles,
+                      t_nodes: ti.template(), t_node_miss: ti.template(),
+                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
+                      t_first_leaf, tri_pos: ti.template(),
+                      tri_norm: ti.template(), tri_colors: ti.template(),
+                      tri_uvs: ti.template(), tri_tex_meta: ti.template(),
+                      textures: ti.template(), tri_extra: ti.template(),
+                      tri_mat: ti.template(), tri_mat_id: ti.template(),
+                      num_colored_triangles,
+                      b_nodes: ti.template(), b_node_miss: ti.template(),
+                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
+                      b_first_leaf, circuit_meta: ti.template(),
+                      circuit_colors: ti.template(),
+                      circuit_border_colors: ti.template(),
+                      edges_2d: ti.template(), edge_accel: ti.template(),
+                      tri_shell: ti.template(), caster_offset, media,
+                      media_offset, glass_energy: ti.template()):
+    """One light sample's caustic connection (roadmap section 1).
+
+    ``x0`` is the receiver, ``sorigin`` the shadow ray's spawn point off it
+    and ``n_recv`` its geometric normal on the light's side (zero at a medium
+    vertex); ``wi_vis`` / ``ldist`` are the straight shadow ray the
+    next-event sample traces, and ``y`` its light end -- the sampled point,
+    or with ``fixed`` the unit direction toward a directional light or an
+    environment sample. The straight segment is probed for caster crossings
+    (``_pt_mnee_probe``), which seed a manifold walk (``_pt_mnee_solve``) to
+    the bent chain that reaches the same light end by refracting at each of
+    them. Returns ``(straight, ok, w0, g, tau, nr2, e, d_path, overflow,
+    capped, media_over, media_cut, count)``:
+
+    * ``straight`` -- what the STRAIGHT connection keeps through the casters
+      (their uncovered fraction), the factor the caller applies to its own
+      contribution: a refracting caster bends the light it covers instead of
+      tinting it through. It stays 1 when the segment crosses more casters
+      than a chain may hold (``overflow``), which keeps the march's old
+      tinted reading there rather than dropping the light.
+    * ``ok`` -- a chain was found. Then ``w0`` is the receiver's direction
+      toward the first vertex (the receiver's BSDF is evaluated toward it),
+      ``g`` the generalized geometry term (``_pt_mnee_geometry``), ``tau``
+      the chain's RGB throughput, ``nr2`` the radiance change
+      ``(n_receiver / n_light)^2`` across it, ``e`` the unit direction the
+      light emits into (from ``y`` toward the last vertex) and ``d_path``
+      the chain's unfolded length. ``tau`` is each vertex's smooth-glass
+      transmission at the camera path's own Fresnel and coverage -- the
+      expectation of its delta-transmission throughput without the ``eta^2``
+      that ``nr2`` carries -- times every leg's visibility (the ordinary
+      shadow query: what is not a caster still blocks and tints), an
+      interior leg's Beer-Lambert absorption and, with media on, each leg's
+      medium transmittance.
+    * ``capped`` -- the walk gave up at ``MNEE_MAX_ITERATIONS`` still
+      walking; ``media_over`` / ``media_cut`` -- a leg's medium stack
+      overflowed or its walk was truncated (``PT_STAT_MEDIA_*``). Each of
+      these leaves ``ok`` at 0.
+    * ``count`` -- the caster interfaces the straight segment crosses: the
+      chain's vertices, when there is one.
+    """
+    straight = ti.math.vec3(1.0, 1.0, 1.0)
+    ok = 0
+    capped = 0
+    media_over = 0
+    media_cut = 0
+    w0 = ti.math.vec3(0.0, 0.0, 0.0)
+    g = 0.0
+    tau = ti.math.vec3(0.0, 0.0, 0.0)
+    nr2 = 1.0
+    e = ti.math.vec3(0.0, 0.0, 0.0)
+    d_path = 0.0
+    count, prims, bary_a, bary_b, straight_p, overflow = _pt_mnee_probe(
+        refit, sorigin, wi_vis,
+        _pt_shadow_tmax(sorigin, wi_vis, ldist - (sorigin - x0).dot(wi_vis)),
+        f, layer_offset_triangles, t_nodes, t_node_miss, t_leaf_prim,
+        t_leaf_tspan, t_first_leaf, tri_pos, tri_colors, tri_uvs,
+        tri_tex_meta, textures, tri_extra, circuit_meta,
+        num_colored_triangles, tri_shell, caster_offset)
+    if overflow == 0:
+        straight = straight_p
+    if (overflow == 0) and (count > 0):
+        cids = ti.Vector([-1] * MNEE_MAX_VERTICES)
+        for q in ti.static(range(MNEE_MAX_VERTICES)):
+            if q < count:
+                cids[q] = _pt_caster_id(tri_shell, f, prims[q], caster_offset)
+        solved, capped, prims, bary_a, bary_b, ps, ngs, etas, a_blks, \
+            b_blks, c_blks, _c_floor = _pt_mnee_solve(
+                refit, x0, n_recv, y, fixed, count, prims, bary_a, bary_b,
+                cids, f, layer_offset_triangles, t_nodes, t_node_miss,
+                t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos, tri_norm,
+                tri_mat, tri_extra, tri_uvs, tri_tex_meta, textures,
+                num_colored_triangles, tri_shell, caster_offset)
+        if solved == 1:
+            g, ok = _pt_mnee_geometry(x0, count, ps, ngs, a_blks, b_blks,
+                                      c_blks)
+        if ok == 1:
+            w0 = (ti.math.vec3(ps[0, 0], ps[0, 1], ps[0, 2]) - x0).normalized()
+            # The decisions the coverage test repeats (``pt_caustic_cover``).
+            ok = _pt_mnee_admissible(
+                refit, x0, sorigin, n_recv, y, fixed, count, prims, bary_a,
+                bary_b, ps, ngs, f, layer_offset_triangles, t_nodes,
+                t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
+                tri_norm, tri_mat, tri_shell, caster_offset)
+        # Vertices: the smooth-glass transmission the camera path's own
+        # delta lobe would carry across each one, at the same Fresnel,
+        # authored tint and coverage, without its ``eta^2`` (``nr2`` below).
+        # One dynamic loop with a static extraction keeps a single inlined
+        # copy of the material evaluation.
+        tau = ti.math.vec3(1.0, 1.0, 1.0)
+        eta_prod = 1.0
+        if ok == 1:
+            for q in range(count):
+                prim_q, a_q, b_q, rd_q, spec_q, ci_q, _turn_ok = \
+                    _pt_mnee_turn(q, count, x0, y, fixed, prims, bary_a,
+                                  bary_b, ps, f, tri_mat, tri_pos, tri_norm)
+                eta_q = 1.0
+                for qq in ti.static(range(MNEE_MAX_VERTICES)):
+                    if qq == q:
+                        eta_q = etas[qq]
+                w_q = 1.0 - a_q - b_q
+                color_q, alpha_q = _tri_color_g(
+                    0, f, prim_q, w_q, a_q, b_q, tri_colors, tri_colors,
+                    tri_uvs, tri_tex_meta, textures, num_colored_triangles)
+                met_q, rough_q = _tri_extra_g(
+                    0, f, prim_q, w_q, a_q, b_q, tri_extra, tri_colors,
+                    tri_uvs, tri_tex_meta, textures, num_colored_triangles)
+                ior_q, t_q = _tri_ior_transmission_g(
+                    0, f, prim_q, w_q, a_q, b_q, tri_extra, tri_colors,
+                    tri_uvs, tri_tex_meta, textures, num_colored_triangles)
+                t_q = ti.math.clamp(t_q, 0.0, 1.0)
+                alb_q = ti.math.vec3(color_q[0], color_q[1], color_q[2])
+                # The chain's index ratio is the walk's (light side over
+                # receiver side); the camera path's ``eta``, incident over
+                # transmitted along its own direction, is its inverse.
+                eta_cam = 1.0 / ti.max(eta_q, 1e-6)
+                _ed_q, _es_q, _et_q, f0_q, _r_q, layer_q = _pt_lit_lobes(
+                    glass_energy, tri_mat_id[f % tri_mat_id.shape[0], prim_q],
+                    tri_mat, f, prim_q, alb_q, met_q, rough_q, ior_q, t_q,
+                    spec_q, rd_q, eta_cam)
+                _rf_q, trans_q, _pr_q = _pt_glass_terms(
+                    f0_q, ti.math.clamp(ci_q, 0.0, 1.0), eta_cam, met_q, alb_q,
+                    t_q)
+                _bl_q, _br_q, bv_q = _pt_base_scale(layer_q, 1.0)
+                tau *= trans_q * (ti.math.clamp(alpha_q, 0.0, 1.0) * bv_q)
+                eta_prod *= eta_q
+        # Legs: x0 -> x_1 -> ... -> x_k -> y, each a straight shadow segment
+        # that crosses no caster but at its own ends (the admissibility test
+        # above) and is otherwise the ordinary shadow query's business.
+        if ok == 1:
+            m_stack = media
+            for q in range(count + 1):
+                origin, ray_d, reach, leg_d, leg_len, inner, b_prim, b_ng, \
+                    b_fixed = _pt_mnee_leg(q, count, x0, sorigin, n_recv, y,
+                                           fixed, prims, ps, ngs)
+                if b_fixed == 0:
+                    d_path += leg_len
+                if ok == 1:
+                    tau *= _pt_nee_visibility(
+                        refit, shadow_mode, has_tri, has_bez, origin, ray_d,
+                        reach, f, ff, pixel_size_per_t, base_dist,
+                        pixel_size_base, layer_offset_triangles,
+                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                        t_first_leaf, tri_pos, tri_colors, tri_uvs,
+                        tri_tex_meta, textures, tri_extra,
+                        num_colored_triangles,
+                        b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                        b_first_leaf, circuit_meta, circuit_colors,
+                        circuit_border_colors, edges_2d, edge_accel)
+                    # Inside a caster (never toward a light at infinity,
+                    # which is not admissible): the camera path's
+                    # Beer-Lambert, unless a scattering medium fills the
+                    # solid -- the medium walk below integrates that one.
+                    if inner >= 0:
+                        scattering = 0
+                        if media_offset > 0:
+                            if _pt_medium_id(tri_shell, f, inner,
+                                             media_offset) >= 0:
+                                _sa_m, ss_m, _g_m = _pt_medium_coeff(
+                                    tri_mat, f, inner)
+                                if ss_m.max() > 0.0:
+                                    scattering = 1
+                        if scattering == 0:
+                            tma = f % tri_mat.shape[0]
+                            for k in ti.static(range(3)):
+                                tau[k] *= ti.exp(
+                                    -tri_mat[tma, inner,
+                                             _MAT_ATTENUATION_SIGMA + k]
+                                    * leg_len)
+                    if media_offset > 0:
+                        m_vis, m_over, m_cut = _pt_medium_transmittance(
+                            refit, origin, ray_d, f,
+                            _pt_shadow_tmax(origin, ray_d, reach), m_stack,
+                            layer_offset_triangles, t_nodes, t_node_miss,
+                            t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
+                            tri_mat, tri_shell, media_offset)
+                        media_over += m_over
+                        media_cut += m_cut
+                        tau *= m_vis
+                        if b_prim >= 0:
+                            m_stack, m_push = _pt_medium_cross(
+                                m_stack, tri_shell, f, b_prim, media_offset,
+                                leg_d.dot(b_ng) < 0.0)
+                            media_over += m_push
+                        if (m_over != 0) or (m_cut != 0):
+                            ok = 0
+            if media_over != 0:
+                ok = 0
+        if ok == 1:
+            nr2 = 1.0 / ti.max(eta_prod * eta_prod, 1e-12)
+            if fixed == 0:
+                last = ti.math.vec3(ps[0, 0], ps[0, 1], ps[0, 2])
+                for qq in ti.static(range(1, MNEE_MAX_VERTICES)):
+                    if qq < count:
+                        last = ti.math.vec3(ps[qq, 0], ps[qq, 1], ps[qq, 2])
+                e = (last - y).normalized()
+            else:
+                e = -y
+    return straight, ok, w0, g, tau, nr2, e, d_path, overflow, capped, \
+        media_over, media_cut, count
+
+
 @ti.kernel
 def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              t_nodes: NODE_ARG, t_first_leaf: ti.i32,
@@ -2466,6 +2727,15 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              # ``ti.static`` gate read off a setting), and off is byte-for-byte
              # the kernel this file produced before sampling existed.
              auth_sampled: ti.template(),
+             # 1 = manifold next-event estimation (roadmap section 1,
+             # ``pt_caustics_taichi``): a lit receiver's light samples are
+             # also connected THROUGH the caustic casters ``tri_shell``'s
+             # caster section names, and the BSDF paths those connections
+             # cover share their light by MIS (``_PT_CAU_COUNT``,
+             # ``pt_caustic_cover``). The host compiles it in
+             # only for a batch with shadows on and a caster in it; off is
+             # the kernel this file produced before caustics existed.
+             caustics: ti.template(),
              frag_pipelines: ti.template(), frag_scatters: ti.template(),
              tri_pids: ti.template(),
              seed_root: ti.u32, sample_base: ti.i32, tile_pixels: ti.i32,
@@ -2479,6 +2749,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              pt_thru: ti.types.ndarray(), pt_acc: ti.types.ndarray(),
              pt_stats: ti.types.ndarray(),
              pt_aov: ti.types.ndarray(),
+             # The coverage test's per-path record (``PT_CAU_WIDTH``); a
+             # one-row dummy unless ``caustics`` is on.
+             pt_cau: ti.types.ndarray(),
              projected: ti.template(),
              arena_f32: ti.types.ndarray(),
              arena_i32: ti.types.ndarray(),
@@ -2607,6 +2880,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             (num_nee, far_clip, amb_packed, amb_count, anim_seed,
              tree_on, tree_mix, num_inf, quad_base,
              blue_noise) = _pt_meta_hit(nee_meta)
+            # Caustic state (``caustics``): the caster section's offset in
+            # tri_shell and the path's caustic count (``_PT_CAU_COUNT``).
+            # Declared either way; nothing reads them in a kernel without.
+            caster_offset = 0
+            cst = 0
+            if ti.static(caustics != 0):
+                caster_offset = ti.cast(nee_meta[_NM_CAUSTIC] + 0.5, ti.i32)
+                cst = ti.cast(pt_cau[r, _PT_CAU_COUNT] + 0.5, ti.i32)
             g = ray_offset + rs_pix[r]
             f_rel = g // pixels_per_frame
             f = time_start + f_rel
@@ -3000,11 +3281,15 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # whose shadow ray or bounce then hits the surface it left --
                 # speckle across every lit surface and mirror. A triangle hit
                 # is rebuilt from its barycentrics, a circuit's put back on
-                # its plane (_tri_surface_point, _bezier_plane_point).
+                # its plane (_tri_surface_point, _bezier_plane_point). A
+                # medium vertex (htype 3) stays where the free flight put it:
+                # its ``prim`` is the medium's triangle, and read as a circuit
+                # index it projected the scatter point onto an unrelated plane
+                # (another circuit's, or arena data past ``circuit_meta``).
                 hit_p = ro + t_hit * rd
                 if htype == 1:
                     hit_p = _tri_surface_point(f, prim, w0, a, b, tri_pos)
-                else:
+                elif htype == 0:
                     hit_p = _bezier_plane_point(f, prim, hit_p, circuit_meta)
                 # Where the material stages measure from: the eye, or off the
                 # pinhole the start of the camera ray through the hit
@@ -3091,6 +3376,15 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 sc_trans_o = ti.math.vec3(0.0, 0.0, 0.0)
                 sc_trans_d = ti.math.vec3(0.0, 0.0, 0.0)
                 sc_trans_w = ti.math.vec3(0.0, 0.0, 0.0)
+                # Caustic state of this crossing (``caustics``; declared
+                # unconditionally for the same scoping reason): whether it is
+                # a receiver that runs the caustic block, whether the path
+                # reaches it without having scattered (its caustics are then
+                # direct light, which the firefly clamp must not see; see the
+                # accumulation below), and that caustic light.
+                mnee_vertex = 0
+                cau_direct = 0
+                caustic = ti.math.vec3(0.0, 0.0, 0.0)
 
                 # ----------------------------------------------------------
                 # Local radiance of this crossing (emission semantics).
@@ -3167,6 +3461,48 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             w_emit = prev_pdf * prev_pdf \
                                 / ti.max(prev_pdf * prev_pdf
                                          + pdf_ne * pdf_ne, 1e-20)
+                        if ti.static(caustics != 0):
+                            # Found through casters from a receiver: a light
+                            # sample's chain there may have delivered this
+                            # very path (``_PT_CAU_COUNT``). Held back for
+                            # ``pt_caustic_cover``, which weights it against
+                            # that chain where the walk to this point is this
+                            # path -- whichever side of the emitter the
+                            # straight line from the receiver sees, so the
+                            # selection probability is asked for here even
+                            # where ``covered`` is 0 -- and adds it at weight
+                            # 1 where it is not.
+                            p_nc = 0.0
+                            if cst >= 2:
+                                p_nc = tri_emit_prob[prim]
+                                if tree_on:
+                                    p_nc = 0.0
+                                    ent_c = tri_emit_entry[prim]
+                                    if ent_c >= 0:
+                                        p_nc = tree_mix * _pt_lt_pmf(
+                                            lt_node_f, lt_node_i, lt_r,
+                                            lt_entry_leaf[lt_r, ent_c], ne_org)
+                            if p_nc > 0.0:
+                                held = 0
+                                if (not medium_vertex) and (
+                                        emissive.max() > 0.0):
+                                    clamp_h = 0.0
+                                    if bounces_left < max_b:
+                                        clamp_h = ti.max(firefly_clamp, 0.0)
+                                    held = _pt_cau_pend(
+                                        pt_cau, r, 1, hit_p,
+                                        ti.math.vec3(thru[0], thru[1],
+                                                     thru[2])
+                                        * emissive * alpha,
+                                        w_emit, cst - 1, f,
+                                        p_nc * ti.cast(n_ls, ti.f32)
+                                        / ti.max(area_e, 1e-12), fnrm,
+                                        ti.cast(tri_mat[tm, prim,
+                                                        _MAT_ONE_SIDED]
+                                                + 0.5, ti.i32),
+                                        clamp_h)
+                                if held == 1:
+                                    w_emit = 0.0
                     if medium_vertex:
                         emissive = ti.math.vec3(0.0, 0.0, 0.0)
                     direct = emissive * w_emit
@@ -3179,6 +3515,24 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if medium_vertex:
                         recv = 1
                         sorigin = hit_p
+                    # A caustic receiver: a shadow-receiving lit vertex that
+                    # does not refract itself (smooth or rough glass is a
+                    # caster's business) and is not an index-matched medium
+                    # boundary. A medium vertex is one -- which is how light
+                    # reaches the inside of a subsurface solid. So is nothing
+                    # while this launch holds an emitter path back for the
+                    # coverage test (an emitter crossing that is a receiver
+                    # itself): its record still describes that path's
+                    # receiver, so this vertex lights as with caustics off.
+                    if ti.static((caustics != 0) and (shadows != 0)):
+                        if (caster_offset > 0) and (num_nee > 0) \
+                                and (recv == 1) and (not glass) \
+                                and (not null_boundary) \
+                                and (pt_cau[r, _PT_CAU_KIND] < 0.5):
+                            mnee_vertex = 1
+                            if (scattered == 0) and (
+                                    pt_acc[r, _PT_ACC_SCATTERED] < 0.5):
+                                cau_direct = 1
                     # Deterministic fill from the direction-less rows.  A
                     # constant-radiance environment ``L`` over the diffuse
                     # lobe integrates to exactly ``e_diff * L`` -- the
@@ -3256,6 +3610,26 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             contrib = ti.math.vec3(0.0, 0.0, 0.0)
                             wi_vis = ti.math.vec3(0.0, 0.0, 0.0)
                             ldist = 1e7
+                            # The sample's light end for the caustic block
+                            # (``caustics``): its straight shadow ray, the
+                            # point (or with ``m_fixed`` the direction) a
+                            # chain must reach, the part of its estimator
+                            # that does not depend on the chain, and the
+                            # density it was drawn with (``n_ls`` samples'
+                            # worth, in the light end's own measure; none for
+                            # a light row, which no BSDF path hits). Recorded
+                            # whether or not the straight sample contributes:
+                            # a bent chain can reach a light the straight line
+                            # misses (a spot cone's edge, a one-sided panel).
+                            m_ready = 0
+                            m_fixed = 0
+                            m_wi = ti.math.vec3(0.0, 0.0, 0.0)
+                            m_ld = 1e7
+                            m_y = ti.math.vec3(0.0, 0.0, 0.0)
+                            m_ne = ti.math.vec3(0.0, 0.0, 0.0)
+                            m_one_sided = 0
+                            m_base = ti.math.vec3(0.0, 0.0, 0.0)
+                            m_py = 0.0
                             if kind == _NEE_LIGHT_ROW:
                                 if p_sel > 1e-12:
                                     ld, lc, _sw_r, wi_v, ld_d, valid = \
@@ -3263,6 +3637,20 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             light_pos, light_col, f, ref,
                                             hit_p, shade_n,
                                             u_pt[0], u_pt[1])
+                                    if ti.static(caustics != 0):
+                                        if valid == 1:
+                                            m_ready = 1
+                                            m_wi = wi_v
+                                            m_ld = ld_d
+                                            m_y = hit_p + wi_v * ld_d
+                                            if light_col.shape[2] > 3:
+                                                if ti.cast(light_col[
+                                                        f % light_col.shape[0],
+                                                        ref, 3] + 0.5,
+                                                        ti.i32) \
+                                                        == _LT_DIRECTIONAL:
+                                                    m_fixed = 1
+                                                    m_y = wi_v
                                     if (valid == 1) and (
                                             (lc[0] != 0.0)
                                             or (lc[1] != 0.0)
@@ -3302,6 +3690,32 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             u_pt[0], u_pt[1])
                                     to_e = pe - hit_p
                                     d_e = to_e.norm()
+                                    if ti.static(caustics != 0):
+                                        if (d_e > 1e-4) and (area_s > 1e-12):
+                                            m_ready = 1
+                                            m_wi = to_e / d_e
+                                            m_ld = d_e
+                                            m_y = pe
+                                            m_ne = ne
+                                            tm_m = f % tri_mat.shape[0]
+                                            if tri_mat[tm_m, ref,
+                                                       _MAT_ONE_SIDED] > 0.5:
+                                                m_one_sided = 1
+                                            _ec_m, ea_m = _tri_color_g(
+                                                0, f, ref, ew0, ew1, ew2,
+                                                tri_colors, tri_colors,
+                                                tri_uvs, tri_tex_meta,
+                                                textures,
+                                                num_colored_triangles)
+                                            m_base = ti.math.vec3(
+                                                tri_mat[tm_m, ref, 0],
+                                                tri_mat[tm_m, ref, 1],
+                                                tri_mat[tm_m, ref, 2]) \
+                                                * (tri_mat[tm_m, ref, 3]
+                                                   * ea_m * area_s * inv_ls
+                                                   / p_tri)
+                                            m_py = p_tri / area_s \
+                                                * ti.cast(n_ls, ti.f32)
                                     if (d_e > 1e-4) and (area_s > 1e-12):
                                         wi = to_e / d_e
                                         cos_l = (-wi).dot(ne)
@@ -3351,6 +3765,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         env_cdf, cdf_h, cdf_w,
                                         u_pt[0], u_pt[1])
                                     pdf_sa = env_share * pdf_e
+                                    if ti.static(caustics != 0):
+                                        if pdf_sa > 1e-12:
+                                            m_ready = 1
+                                            m_fixed = 1
+                                            m_wi = dir_e
+                                            m_y = dir_e
+                                            m_base = _sample_env_map(
+                                                f, dir_e, env_off, env_w,
+                                                env_h, env_intensity,
+                                                textures) \
+                                                * (inv_ls / pdf_sa)
+                                            m_py = pdf_sa \
+                                                * ti.cast(n_ls, ti.f32)
                                     if (pdf_sa > 1e-12) \
                                             and ((shade_n.dot(dir_e) > 1e-6)
                                                  or ((wl_spec + layer_l[_PL_W_COAT]
@@ -3379,6 +3806,132 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             w_mis * inv_ls / pdf_sa)
                                         wi_vis = dir_e
                                         ldist = 1e7
+                            if ti.static((caustics != 0) and (shadows != 0)):
+                                # Manifold next-event estimation (roadmap
+                                # section 1): the same light sample, connected
+                                # through the casters on its straight segment
+                                # by the refracting chain that reaches it.
+                                # The straight connection keeps only what the
+                                # casters leave uncovered; the chain arrives
+                                # MIS-weighted against the BSDF path that
+                                # makes the same journey (``_pt_caustic_mis``;
+                                # that path's share is ``pt_caustic_cover``'s)
+                                # and outside the firefly clamp while the path
+                                # is still direct (see ``caustic``).
+                                if (mnee_vertex == 1) and (m_ready == 1) \
+                                        and ((spec_n.dot(m_wi) > 1e-4)
+                                             or medium_vertex):
+                                    n_side = ti.math.vec3(0.0, 0.0, 0.0)
+                                    if not medium_vertex:
+                                        n_side = fnrm if fnrm.dot(-rd) >= 0.0 \
+                                            else -fnrm
+                                    (straight_m, m_ok, m_w0, m_g, m_tau,
+                                     m_nr2, m_e, m_d, m_over, m_capped,
+                                     m_mo, m_mc, m_k) = _pt_caustic_chain(
+                                        refit, shadow_mode, has_tri, has_bez,
+                                        hit_p, sorigin, n_side, m_wi, m_ld,
+                                        m_y, m_fixed, f, ff,
+                                        pixel_size_per_t, base_dist,
+                                        _pixel_size_base(cam_proj, f),
+                                        layer_offset_triangles,
+                                        t_nodes, t_node_miss, t_leaf_prim,
+                                        t_leaf_tspan, t_first_leaf,
+                                        tri_pos, tri_norm, tri_colors,
+                                        tri_uvs, tri_tex_meta, textures,
+                                        tri_extra, tri_mat, tri_mat_id,
+                                        num_colored_triangles,
+                                        b_nodes, b_node_miss, b_leaf_prim,
+                                        b_leaf_tspan, b_first_leaf,
+                                        circuit_meta, circuit_colors,
+                                        circuit_border_colors, edges_2d,
+                                        edge_accel, tri_shell, caster_offset,
+                                        media, media_offset, pt_glass_energy)
+                                    if m_over != 0:
+                                        ti.atomic_add(
+                                            pt_stats[PT_STAT_CAUSTIC_CHAIN], 1)
+                                    if m_capped != 0:
+                                        ti.atomic_add(
+                                            pt_stats[PT_STAT_CAUSTIC_SOLVER], 1)
+                                    if m_mo != 0:
+                                        ti.atomic_add(
+                                            pt_stats[PT_STAT_MEDIA_STACK], 1)
+                                    if m_mc != 0:
+                                        ti.atomic_add(
+                                            pt_stats[PT_STAT_MEDIA_QUERY], 1)
+                                    contrib *= straight_m
+                                    if m_ok == 1:
+                                        # Per emitter kind, the estimator the
+                                        # straight sample uses with the
+                                        # chain's geometry term in place of
+                                        # the inverse square law, capped as a
+                                        # concentration over the unobstructed
+                                        # light at the same path length.
+                                        m_light = ti.math.vec3(0.0, 0.0, 0.0)
+                                        # The solid angle the chain's first
+                                        # leg sweeps per unit light measure.
+                                        m_jac = m_g
+                                        if kind == _NEE_LIGHT_ROW:
+                                            # ``_light_eval`` at a stand-in
+                                            # point: the unfolded distance
+                                            # along the direction the light
+                                            # emits into, so the falloff, the
+                                            # range fade, the spot cone and an
+                                            # area cell's cosine all read the
+                                            # bent path.
+                                            tl_m = f % light_pos.shape[0]
+                                            lp_m = ti.math.vec3(
+                                                light_pos[tl_m, ref, 0],
+                                                light_pos[tl_m, ref, 1],
+                                                light_pos[tl_m, ref, 2])
+                                            _ld_m, lc_m, _sw_m, _fr_m = \
+                                                _light_eval(
+                                                    light_pos, light_col, f,
+                                                    ref, lp_m + m_e * m_d,
+                                                    shade_n)
+                                            conc = m_g
+                                            if m_fixed == 0:
+                                                conc = m_g * m_d * m_d
+                                            m_light = lc_m * (
+                                                ti.min(conc,
+                                                       MNEE_MAX_CONCENTRATION)
+                                                * inv_ls / p_sel)
+                                        elif kind == _NEE_EMISSIVE_TRI:
+                                            cos_m = m_e.dot(m_ne)
+                                            if (m_one_sided == 1) \
+                                                    and (cos_m <= 1e-6):
+                                                cos_m = 0.0
+                                            d2_m = ti.max(m_d * m_d, 1e-12)
+                                            m_light = m_base * (
+                                                ti.abs(cos_m)
+                                                * ti.min(m_g * d2_m,
+                                                         MNEE_MAX_CONCENTRATION)
+                                                / d2_m)
+                                            m_jac = m_g * ti.abs(cos_m)
+                                        else:
+                                            m_light = m_base * ti.min(
+                                                m_g, MNEE_MAX_CONCENTRATION)
+                                        f_cos_m, _pdf_m = _pt_vertex_f_pdf(
+                                            medium_vertex, phase_g,
+                                            pt_glass_energy,
+                                            e_diff_l, e_spec_l, f0_l,
+                                            rough, shade_n, rd, m_w0,
+                                            wl_pass, wl_diff, wl_spec,
+                                            wl_trans, eta, metalness,
+                                            albedo3, T, layer_l)
+                                        # The BSDF path makes this journey
+                                        # only with a bounce left for the
+                                        # receiver's scatter and one for each
+                                        # caster crossing after it.
+                                        p_b_m = _pdf_m
+                                        if bounces_left < m_k + 1:
+                                            p_b_m = 0.0
+                                        m_add = f_cos_m * m_light * m_tau \
+                                            * (m_nr2 * _pt_caustic_mis(
+                                                m_py, m_jac, p_b_m))
+                                        if cau_direct == 1:
+                                            caustic += m_add
+                                        else:
+                                            direct += m_add
                             if (contrib[0] != 0.0) or (contrib[1] != 0.0) \
                                     or (contrib[2] != 0.0):
                                 if rough_glass:
@@ -3698,6 +4251,18 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                    firefly_clamp,
                                                    firefly_clamp))
                 acc += add
+                if ti.static(caustics != 0):
+                    # A caustic received by a path that has not scattered
+                    # yet -- a camera ray, or one that only passed mirrors
+                    # and smooth glass, which choose no direction -- is
+                    # direct light and skips the clamp: a caustic is a
+                    # concentrated image of its emitter, and the clamp would
+                    # cap every focus at its value. Once the path has
+                    # scattered the caustic is indirect light like any other,
+                    # and it went through ``direct`` and the clamp above.
+                    acc += ti.math.vec4(thru[0] * caustic[0],
+                                        thru[1] * caustic[1],
+                                        thru[2] * caustic[2], 0.0) * alpha
 
                 # AOV guides: this crossing's contribution to the delta
                 # prefix, at the SAME weights the radiance composite uses
@@ -3730,6 +4295,16 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         absorbed = True
                         done = True
                         break
+                    if ti.static(caustics != 0):
+                        cst = mnee_vertex
+                        if mnee_vertex == 1:
+                            # The receiver the coverage test walks from: a
+                            # medium vertex has no side and no horizon.
+                            _pt_cau_receiver(
+                                pt_cau, r, hit_p,
+                                ti.math.vec3(0.0, 0.0, 0.0),
+                                ti.math.vec3(0.0, 0.0, 0.0), new_rd_m,
+                                prev_pdf, cau_direct)
                     mis_carry = 0
                     ro = hit_p
                     rd = new_rd_m
@@ -3894,6 +4469,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             # pairing, including custom reflection/refraction.
                             ring = ti.Vector([-1, -1, -1, -1])
                             mis_carry = 0
+                            if ti.static(caustics != 0):
+                                cst = 0
                             ro = c_ro
                             rd = c_rd
                             base_dist += t_hit
@@ -4019,6 +4596,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # replaces it.
                     smooth_cross = 0
                     prev_kept = prev_pdf
+                    # The caustic count after this bounce
+                    # (``_PT_CAU_COUNT``); each lobe below sets its own.
+                    cst_next = 0
                     if pick < w_pass + w_diff:
                         # A diffuse pick is non-delta: the AOV prefix ends at
                         # this crossing (whose albedo/normal it just added).
@@ -4065,6 +4645,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
                                 wl_trans, eta, metalness, albedo3, T,
                                 layer_l)
+                        if ti.static(caustics != 0):
+                            cst_next = mnee_vertex
                     elif pick >= w_base:
                         # Clearcoat or sheen (non-delta: close the prefix),
                         # each drawn by its own lobe and weighted by its own
@@ -4079,6 +4661,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         cc_r = layer_l[_PL_CC_ROUGH]
                         if (is_coat == 0) or (cc_r * cc_r >= 1e-4):
                             scattered = 1
+                            if ti.static(caustics != 0):
+                                cst_next = mnee_vertex
                         new_rd, tint_l, ok = _pt_sample_layer(
                             layer_l, spec_n, rd, u_dir, is_coat)
                         if glass and (rd.dot(fnrm) * new_rd.dot(fnrm) >= 0.0):
@@ -4123,6 +4707,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 # it. Only the smooth reflection is not.
                                 prev_pdf = prev_kept
                                 smooth_cross = 1
+                                if ti.static(caustics != 0):
+                                    # One more caster on a receiver's chain;
+                                    # glass that is not a caster is passed
+                                    # tinted by the chain's legs, as by NEE.
+                                    cst_next = cst
+                                    if (cst >= 1) and (_pt_caster_id(
+                                            tri_shell, f, prim,
+                                            caster_offset) >= 0):
+                                        cst_next = cst + 1
+                                        if cst_next > MNEE_MAX_VERTICES + 1:
+                                            cst_next = 0
                         else:
                             aov_open = 0
                             scattered = 1
@@ -4154,6 +4749,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             # Its alpha off the 1e-4 floor: a blurring lobe,
                             # not a mirror (``_PT_ACC_SCATTERED``).
                             scattered = 1
+                            if ti.static(caustics != 0):
+                                cst_next = mnee_vertex
                         p_sel = w_spec / w_sum
                         # VNDF sample about the RAY-FACING normal (see
                         # ``spec_n``): about ``shade_n`` an interior hit --
@@ -4230,6 +4827,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         # the smooth-glass crossing above does.
                         prev_pdf = prev_kept
                         smooth_cross = 1
+                        if ti.static(caustics != 0):
+                            cst_next = cst
                     if (media_offset > 0) and medium_boundary and (ok == 1):
                         if rd.dot(fnrm) * new_rd.dot(fnrm) > 0.0:
                             media, overflow_m = _pt_medium_cross(
@@ -4274,6 +4873,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             mis_carry = 1
                     else:
                         mis_carry = 0
+                    if ti.static(caustics != 0):
+                        if (cst_next == 1) and (smooth_cross == 0):
+                            # A blurring scatter at a receiver (a smooth
+                            # crossing only carries the count): what the
+                            # coverage test walks from, as the caustic block
+                            # above did -- this side, this horizon.
+                            _pt_cau_receiver(
+                                pt_cau, r, hit_p,
+                                fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm,
+                                spec_n, new_rd, prev_pdf, cau_direct)
+                        cst = cst_next
                     ring = ti.Vector([-1, -1, -1, -1])
                     ro = new_ro
                     rd = new_rd
@@ -4326,6 +4936,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 pt_acc[r, _PT_ACC_STOCH] = 1.0
             if scattered == 1:
                 pt_acc[r, _PT_ACC_SCATTERED] = 1.0
+            if ti.static(caustics != 0):
+                pt_cau[r, _PT_CAU_COUNT] = ti.cast(cst, ti.f32)
             for q in ti.static(range(_SHELL_RING_SLOTS)):
                 rs_int[r, _INT_RING0 + q] = ring[q]
             if aov_on:
@@ -4361,6 +4973,23 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         w_env = prev_pdf * prev_pdf \
                             / ti.max(prev_pdf * prev_pdf + p_e * p_e,
                                      1e-20)
+                        if ti.static(caustics != 0):
+                            # Through casters from a receiver: held back for
+                            # the coverage test, as at an emitter hit
+                            # (``_PT_CAU_COUNT``).
+                            if (cst >= 2) and (p_e > 0.0):
+                                clamp_e = 0.0
+                                if bounces_left < max_b:
+                                    clamp_e = ti.max(firefly_clamp, 0.0)
+                                if _pt_cau_pend(
+                                        pt_cau, r, 2, rd,
+                                        ti.math.vec3(leftover[0] * ec[0],
+                                                     leftover[1] * ec[1],
+                                                     leftover[2] * ec[2]),
+                                        w_env, cst - 1, f, p_e,
+                                        ti.math.vec3(0.0, 0.0, 0.0), 0,
+                                        clamp_e) == 1:
+                                    w_env = 0.0
                     env_add = ti.math.vec3(leftover[0] * ec[0],
                                            leftover[1] * ec[1],
                                            leftover[2] * ec[2]) * w_env
@@ -4415,6 +5044,22 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     w_env = prev_pdf_e * prev_pdf_e \
                         / ti.max(prev_pdf_e * prev_pdf_e + p_e * p_e,
                                  1e-20)
+                    if ti.static(caustics != 0):
+                        cst_e = ti.cast(pt_cau[r, _PT_CAU_COUNT] + 0.5,
+                                        ti.i32)
+                        if (cst_e >= 2) and (p_e > 0.0):
+                            clamp_x = 0.0
+                            if rs_int[r, 0] < rs_int[r, 4]:
+                                clamp_x = ti.max(firefly_clamp, 0.0)
+                            if _pt_cau_pend(
+                                    pt_cau, r, 2, rd,
+                                    ti.math.vec3(leftover_e[0] * ec[0],
+                                                 leftover_e[1] * ec[1],
+                                                 leftover_e[2] * ec[2]),
+                                    w_env, cst_e - 1, f, p_e,
+                                    ti.math.vec3(0.0, 0.0, 0.0), 0,
+                                    clamp_x) == 1:
+                                w_env = 0.0
                 env_add = ti.math.vec3(leftover_e[0] * ec[0],
                                        leftover_e[1] * ec[1],
                                        leftover_e[2] * ec[2]) * w_env
@@ -4500,13 +5145,13 @@ _PT_SHADE_PARAMS = (
     "tri_mat", "light_pos", "light_col", "num_lights", "pixel_world_scale",
     "layer_offset_triangles", "cam_origin", "refit", "has_tri", "has_bez",
     "shadows", "shadow_mode",
-    "vis_lights", "auth_sampled",
+    "vis_lights", "auth_sampled", "caustics",
     "frag_pipelines", "frag_scatters", "tri_pids", "seed_root",
     "sample_base",
     "tile_pixels", "rr_start", "firefly_clamp", "time_start", "width",
     "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
-    "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
+    "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov", "pt_cau",
     "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
     "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy", "cam_proj_table", "projected",
 )
@@ -4523,6 +5168,136 @@ def pt_shade(*args):
     `arena_args_taichi`.
     """
     return _pt_shade_launch(*args)
+
+
+@ti.kernel
+def pt_caustic_cover_arena(active: ti.types.ndarray(), num_active: ti.i32,
+                           t_nodes: NODE_ARG, t_first_leaf: ti.i32,
+                           num_colored_triangles: ti.i32,
+                           caster_offset: ti.i32,
+                           layer_offset_triangles: ti.f32,
+                           refit: ti.template(),
+                           pt_acc: ti.types.ndarray(),
+                           pt_cau: ti.types.ndarray(),
+                           arena_f32: ti.types.ndarray(),
+                           arena_i32: ti.types.ndarray(),
+                           aoff: ti.types.ndarray(),
+                           ashp: ti.types.ndarray()):
+    """The coverage test of the BSDF paths ``pt_shade`` held back (roadmap
+    section 1; launched after each ``pt_shade`` of a batch with ``caustics``
+    on, over the same active slots).
+
+    A path that scattered at a caustic receiver and then reached an emitter
+    through casters left its radiance in its ``pt_cau`` record instead of
+    adding it. Where a light sample at that receiver, aimed at the same light
+    end, would have walked to this same chain (``_pt_mnee_covered``), the
+    caustic block counted the path too, and the two share it by the power
+    heuristic: this adds the BSDF path's share, ``1 - _pt_caustic_mis``,
+    from the same densities the caustic block weighed, and leaves a direct
+    caustic outside the firefly clamp as the caustic block does. Everywhere
+    else the chain cannot deliver the path, and it is added at weight 1.
+    Where the straight segment to the light end held more casters than a
+    chain may, the caustic block kept the straight connection tinted, as
+    with caustics off, and the path gets the MIS weight it had then. The
+    record is cleared either way, so the next ``pt_shade`` starts with none.
+    """
+    # Arena-bound parameters, in _PT_CAUSTIC_COVER_ARENA's order.
+    t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
+    t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
+    t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
+    tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
+    tri_norm = ti.static(ArenaView(arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8])))
+    tri_extra = ti.static(ArenaView(arena_f32, aoff[5], (ashp[9], ashp[10], ashp[11])))
+    tri_colors = ti.static(ArenaView(
+        arena_f32, aoff[6], (ashp[12], ashp[13], ashp[14], ashp[15])))
+    tri_uvs = ti.static(ArenaView(arena_f32, aoff[7], (ashp[16], ashp[17], ashp[18])))
+    tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[8], (ashp[19], ashp[20])))
+    textures = ti.static(ArenaView(arena_f32, aoff[9], (ashp[21], ashp[22], ashp[23])))
+    circuit_meta = ti.static(ArenaView(
+        arena_f32, aoff[10], (ashp[24], ashp[25], ashp[26])))
+    tri_mat = ti.static(ArenaView(arena_f32, aoff[11], (ashp[27], ashp[28], ashp[29])))
+    tri_shell = ti.static(ArenaView(arena_i32, aoff[12], (ashp[30], ashp[31])))
+    for i in range(num_active):
+        r = active[i]
+        kind = ti.cast(pt_cau[r, _PT_CAU_KIND] + 0.5, ti.i32)
+        if kind > 0:
+            pt_cau[r, _PT_CAU_KIND] = 0.0
+            f = ti.cast(pt_cau[r, _PT_CAU_F] + 0.5, ti.i32)
+            x0 = ti.math.vec3(0.0, 0.0, 0.0)
+            n_side = ti.math.vec3(0.0, 0.0, 0.0)
+            spec = ti.math.vec3(0.0, 0.0, 0.0)
+            w_b = ti.math.vec3(0.0, 0.0, 0.0)
+            y = ti.math.vec3(0.0, 0.0, 0.0)
+            n_e = ti.math.vec3(0.0, 0.0, 0.0)
+            value = ti.math.vec3(0.0, 0.0, 0.0)
+            for c in ti.static(range(3)):
+                x0[c] = pt_cau[r, _PT_CAU_X0 + c]
+                n_side[c] = pt_cau[r, _PT_CAU_NSIDE + c]
+                spec[c] = pt_cau[r, _PT_CAU_SPEC + c]
+                w_b[c] = pt_cau[r, _PT_CAU_WB + c]
+                y[c] = pt_cau[r, _PT_CAU_Y + c]
+                n_e[c] = pt_cau[r, _PT_CAU_NE + c]
+                value[c] = pt_cau[r, _PT_CAU_VAL + c]
+            k = ti.cast(pt_cau[r, _PT_CAU_K] + 0.5, ti.i32)
+            one_sided = ti.cast(pt_cau[r, _PT_CAU_ONE_SIDED] + 0.5, ti.i32)
+            fixed = 0
+            if kind == 2:
+                fixed = 1
+            covered, overflow, jac = _pt_mnee_covered(
+                refit, x0, n_side, spec, w_b, y, n_e, one_sided, fixed, k, f,
+                layer_offset_triangles, t_nodes, t_node_miss, t_leaf_prim,
+                t_leaf_tspan, t_first_leaf, tri_pos, tri_norm, tri_colors,
+                tri_uvs, tri_tex_meta, textures, tri_extra, tri_mat,
+                circuit_meta, num_colored_triangles, tri_shell, caster_offset)
+            clamp = pt_cau[r, _PT_CAU_CLAMP]
+            if overflow == 1:
+                value *= pt_cau[r, _PT_CAU_WOLD]
+            elif covered == 1:
+                value *= 1.0 - _pt_caustic_mis(
+                    pt_cau[r, _PT_CAU_PY], jac, pt_cau[r, _PT_CAU_PB])
+                if pt_cau[r, _PT_CAU_DIRECT] > 0.5:
+                    clamp = 0.0
+            if clamp > 0.0:
+                value = ti.min(value, ti.math.vec3(clamp, clamp, clamp))
+            for c in ti.static(range(3)):
+                pt_acc[r, c] += value[c]
+
+
+#: What ``pt_caustic_cover`` binds through the arena (see ``_PT_SHADE_ARENA``).
+_PT_CAUSTIC_COVER_ARENA = (
+    ("t_node_miss", "i32", 1),
+    ("t_leaf_prim", "i32", 1),
+    ("t_leaf_tspan", "i32", 1),
+    ("tri_pos", "f32", 3),
+    ("tri_norm", "f32", 3),
+    ("tri_extra", "f32", 3),
+    ("tri_colors", "f32", 4),
+    ("tri_uvs", "f32", 3),
+    ("tri_tex_meta", "i32", 2),
+    ("textures", "f32", 3),
+    ("circuit_meta", "f32", 3),
+    ("tri_mat", "f32", 3),
+    ("tri_shell", "i32", 2),
+)
+
+_PT_CAUSTIC_COVER_PARAMS = (
+    "active", "num_active", "t_nodes", "t_node_miss", "t_leaf_prim",
+    "t_leaf_tspan", "t_first_leaf", "tri_pos", "tri_norm", "tri_extra",
+    "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
+    "num_colored_triangles", "circuit_meta", "tri_mat", "tri_shell",
+    "caster_offset", "layer_offset_triangles", "refit", "pt_acc", "pt_cau",
+)
+
+_pt_caustic_cover_launch = arena_packed(
+    __name__, "pt_caustic_cover_arena", _PT_CAUSTIC_COVER_PARAMS,
+    _PT_CAUSTIC_COVER_ARENA)
+
+
+def pt_caustic_cover(*args):
+    """Pack the arena-bound arguments, then launch ``pt_caustic_cover_arena``
+    (argument order ``_PT_CAUSTIC_COVER_PARAMS``).
+    """
+    return _pt_caustic_cover_launch(*args)
 
 
 @ti.kernel

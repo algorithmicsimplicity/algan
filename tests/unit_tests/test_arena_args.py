@@ -53,6 +53,7 @@ CONVERTED = [
     ("algan.rendering.raytracing.raster_taichi", "shadow_queue_trace"),
     ("algan.rendering.raytracing.optix_shadow_taichi", "optix_shadow_resolve"),
     ("algan.rendering.raytracing.path_tracer_taichi", "pt_shade"),
+    ("algan.rendering.raytracing.path_tracer_taichi", "pt_caustic_cover"),
     ("algan.rendering.raytracing.aux_passes_taichi", "aux_trace"),
 ]
 
@@ -218,6 +219,7 @@ STATICALLY_COUNTABLE = {
     "raster_shadow_trace",
     "deferred_shadow_trace",
     "pt_shade",
+    "pt_caustic_cover",
     "aux_trace",
 }
 
