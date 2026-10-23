@@ -1426,8 +1426,8 @@ removes it with the rest of the kernel cache.
   that followed wrote none, and a warm fresh process's first frame took 2.1 s
   against 3.2 s with the cache off.
 
-**Not published yet.** `1.3.3.post2` carries 0001-0011; 0012 needs the next
-revision (`PYPI.md`). Until then Algan finds no
+**Not published yet.** `1.3.3.post2` carries 0001-0011; 0012 goes out as
+`1.3.3.post3` (`PYPI.md`, "1.3.3.post3"). Until then Algan finds no
 `offline_cache_cpu_object_by_content_hash` field and passes nothing.
 
 **Not verified:** Windows (COFF) at run time -- it builds, and the COFF
