@@ -940,10 +940,14 @@ def _pt_lt_importance(lt_node_f: ti.template(), row, node, p):
         d = to_p.norm()
         # Inside the node's bounding sphere the point could be arbitrarily
         # close to an emitter, so the falloff reverts to the sphere's own
-        # scale and the bounds subtend every direction.
+        # scale and the bounds subtend every direction: theta_u = pi
+        # (PBRT-v4's ``EntireSphere``), which makes ``cos_p`` 1 below. It
+        # used to be pi/2, which left a residual angle and scored ZERO for a
+        # parent of spots whose cones do contain the point -- a delta light
+        # with no MIS backstop, so its light was lost.
         d2 = ti.max(d * d, ti.max(radius * radius, 1e-12))
-        cos_u = 0.0
-        sin_u = 1.0
+        cos_u = -1.0
+        sin_u = 0.0
         wi = axis
         if d > radius:
             sin_u = ti.math.clamp(radius / d, 0.0, 1.0)

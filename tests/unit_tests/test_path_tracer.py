@@ -3002,6 +3002,106 @@ def test_light_tree_selection_probabilities_sum_to_one():
     )
 
 
+def _light_tree_pmf(power, pos, axis, theta_o, theta_e, decay, points):
+    """``[P, E]`` selection probabilities of every entry from every point,
+    for a tree over point-like entries (degenerate boxes).
+    """
+    import numpy as np
+    import torch as _torch
+
+    from algan.rendering.raytracing.light_tree import build_light_tree
+    from algan.rendering.raytracing.path_tracer_taichi import (
+        pt_light_tree_pmf_probe,
+    )
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    node_f, node_i, leaf = build_light_tree(
+        power, pos, pos, axis, theta_o, theta_e, decay
+    )
+    out = _torch.zeros((len(points), len(power)), dtype=_torch.float32)
+    pt_light_tree_pmf_probe(
+        _torch.from_numpy(node_f[None].copy()),
+        _torch.from_numpy(node_i[None].copy()),
+        0,
+        _torch.tensor(np.asarray(points), dtype=_torch.float32),
+        _torch.from_numpy(leaf.astype(np.int32)),
+        out,
+    )
+    return out.numpy()
+
+
+def test_light_tree_never_zeroes_a_spot_whose_cone_holds_the_point():
+    """A spot light whose cone contains the shading point is selectable.
+
+    Inside a node's bounding sphere the bounds subtend every direction, so the
+    node's orientation cone can always be turned to face the point
+    (``theta_u = pi``, PBRT-v4's ``EntireSphere``). The importance used
+    ``theta_u = pi/2`` there, which left a residual angle: two spots aimed
+    down with 30-degree cones, at (-1, 0, 1) and (1, 0, -1), and a point light
+    far off at (10, 0, 0); a point 0.2 below the first spot sits inside the
+    spots' parent node, on the far side of its centre from their axis, so
+    the parent scored zero and the descent gave (spot, spot, point) the
+    probabilities (0, 0, 1). A spot is a delta light with no MIS backstop,
+    so the light it throws on that point was lost, not merely noisy.
+    """
+    import math
+
+    import numpy as np
+
+    pos = np.array([[-1.0, 0.0, 1.0], [1.0, 0.0, -1.0], [10.0, 0.0, 0.0]])
+    axis = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, 1.0]])
+    theta_o = np.array([0.0, 0.0, math.pi])
+    theta_e = np.array([math.pi / 6, math.pi / 6, math.pi / 2])
+    for decay in (0.0, 2.0):
+        pmf = _light_tree_pmf(
+            np.ones(3),
+            pos,
+            axis,
+            theta_o,
+            theta_e,
+            np.full(3, decay),
+            [[-1.0, 0.0, 0.8]],
+        )
+        assert pmf[0, 0] > 0.0, (
+            f"decay {decay}: the spot directly above the point has selection "
+            f"probability 0 (pmf {pmf[0].tolist()})"
+        )
+        assert abs(float(pmf[0].sum()) - 1.0) < 1e-4
+
+    # The same property over a random rig of roughly downward spots, with
+    # points down each spot's axis (inside its cone, and often inside a
+    # parent node's sphere): every spot whose cone holds a point must be
+    # selectable from it. This seed lost 15 pairs to the pi/2 bound.
+    rng = np.random.default_rng(1)
+    spots = 24
+    pos = rng.random((spots, 3)) * 6.0 - 3.0
+    axis = rng.normal(size=(spots, 3)) * 0.3
+    axis[:, 2] = -1.0
+    axis /= np.linalg.norm(axis, axis=-1, keepdims=True)
+    theta_e = rng.uniform(math.radians(10), math.radians(45), spots)
+    dist = rng.uniform(0.05, 1.5, (spots, 8))
+    points = (pos[:, None, :] + axis[:, None, :] * dist[..., None]).reshape(-1, 3)
+    pmf = _light_tree_pmf(
+        rng.random(spots) + 0.1,
+        pos,
+        axis,
+        np.zeros(spots),
+        theta_e,
+        np.full(spots, 2.0),
+        points,
+    )
+    to_p = points[:, None, :] - pos[None, :, :]
+    cos_to_p = (to_p * axis[None]).sum(-1) / np.linalg.norm(to_p, axis=-1)
+    inside = cos_to_p > np.cos(theta_e)[None] + 1e-3
+    assert inside.sum() > 50, "the sweep must actually put points in cones"
+    lost = inside & (pmf <= 0.0)
+    assert not lost.any(), (
+        f"{int(lost.sum())} of {int(inside.sum())} (point, spot) pairs with "
+        "the point inside the spot's cone have selection probability 0"
+    )
+
+
 def test_light_tree_build_is_deterministic():
     """Two builds of one input give byte-identical tensors.
 
