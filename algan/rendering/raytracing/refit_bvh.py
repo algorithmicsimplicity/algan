@@ -61,10 +61,12 @@ pairs and the A/B arm.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import torch
 
-from algan.environment import env_flag, env_int
+from algan.environment import env_flag, env_float, env_int
 from algan.rendering.mps_compat import (
     clamp_floor,
     cummax_values,
@@ -116,6 +118,32 @@ refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", True)
 # on the device.
 refit_host_topology_max_columns = env_int("ALGAN_REFIT_HOST_TOPOLOGY", 8192)
 
+# Time-split fallback for large in-batch motion. One topology over the
+# batch-union boxes is only as good as those boxes are: when primitives travel
+# far within a batch -- pieces rearranging, an explosion, a morph -- siblings
+# the topology grouped together end up apart at the batch's ends, every node
+# box stretches across the scene, and BVH-traced rays (shadows, reflections,
+# the path tracer) visit far more nodes. On an SAH proxy (expected sibling
+# blocks fetched per ray against a per-frame rebuild) that measured 1.3-2.4x
+# for exploding clusters, 2.2x for a grid-to-circle morph, 4.1x for two blobs
+# crossing and 16.5x for a per-primitive shuffle, against ~1.04 for the
+# benchmark scenes. So when the batch moves enough to matter (union boxes
+# past ``_TIME_SPLIT_MOTION`` times the per-frame boxes' area), the build also
+# tries one topology per half of the batch, and keeps the split when it cuts
+# that proxy summed over the frames by more than ``refit_time_split_gain``,
+# recursing into each half up to ``refit_time_split`` topologies in all. The
+# kernels already read each frame's own rows, links included, so per-segment
+# topologies need nothing from them: the segments are padded to one block
+# count and stacked in frame order. Exact either way -- every tree's bounds are
+# conservative per frame -- so this only moves traversal cost. 1 disables it.
+refit_time_split = env_int("ALGAN_REFIT_TIME_SPLIT", 8)
+refit_time_split_gain = env_float("ALGAN_REFIT_TIME_SPLIT_GAIN", 1.25)
+# Summed union-box area over summed mean per-frame box area below which a
+# batch is not worth a trial split: still or gently drifting geometry, whose
+# union topology the benchmark scenes already show is within a few percent of
+# a rebuild. Gates only the attempt; the gain test decides.
+_TIME_SPLIT_MOTION = 2.0
+
 # Depth budget of the emitted ARITY-ary tree. Must not exceed the traversal
 # kernels' fixed sibling-stack depth (raytrace_kernels_taichi._GROUP_STACK,
 # 16): the walk pushes at most one entry per level. The builder force-switches
@@ -161,10 +189,13 @@ class RefitBVH(STBVH):
                      every kernel signature.
     """
 
-    def __init__(self, blocks, num_blocks, num_time, device):
+    def __init__(self, blocks, num_blocks, num_time, device, time_segments=1):
         self.blocks = blocks
         self.num_blocks = int(num_blocks)
         self.num_time = int(num_time)
+        # How many topologies the frames are split between (see
+        # ``refit_time_split``); 1 is the shared-topology tree.
+        self.time_segments = int(time_segments)
         self.first_leaf = int(num_blocks)
         self.nodes = torch.zeros((1, 8), dtype=torch.float32, device=device)
         self.node_miss = torch.full((1,), -1, dtype=torch.int32, device=device)
@@ -191,6 +222,7 @@ class RefitBVH(STBVH):
         self.blocks = blocks
         self.num_blocks = like.num_blocks
         self.num_time = like.num_time
+        self.time_segments = getattr(like, "time_segments", 1)
         self.first_leaf = like.num_blocks
         self.num_leaves = 0
         self.nodes = nodes
@@ -493,16 +525,174 @@ def build_refit_bvh(
     ``[To, N]`` bool mask (``To`` in {1, Tc}) feeding the per-frame leaf
     opacity flag; a static tree (``Tc == 1``) also accepts a full ``[T, N]``
     mask and reduces it conservatively over frames, like ``build_stbvh``.
+
+    Moving geometry may come back as several topologies, one per run of
+    frames, when one shared topology would cost traversal far more than a
+    split does (see ``refit_time_split``); the layout and the kernels are the
+    same either way.
     """
     Tc, N, _ = frame_lo.shape
-    device = frame_lo.device
     if num_frames is None:
         num_frames = Tc
     if Tc not in (1, num_frames):
         raise ValueError(
             f"frame bounds have {Tc} frames but the batch has {num_frames}"
         )
+    tree, cost = _build_segment(frame_lo, frame_hi, opaque, casts, leaf_prim)
+    if Tc < 2 or refit_time_split < 2:
+        return tree
+    segments = _split_in_time(
+        frame_lo,
+        frame_hi,
+        opaque,
+        casts,
+        leaf_prim,
+        0,
+        Tc,
+        tree,
+        cost,
+        refit_time_split,
+    )
+    if len(segments) == 1:
+        return segments[0]
+    return _stack_in_time(segments)
 
+
+def _build_segment(frame_lo, frame_hi, opaque, casts, leaf_prim):
+    """One shared-topology tree over all of ``frame_lo``'s frames, and its
+    per-frame SAH-proxy cost (see :func:`_frame_costs`).
+    """
+    tree, nb_lo, nb_hi = _build_one(frame_lo, frame_hi, opaque, casts, leaf_prim)
+    return tree, _frame_costs(nb_lo, nb_hi)
+
+
+def _frame_costs(nb_lo, nb_hi):
+    """Expected sibling blocks a ray fetches, per frame: every block's box
+    area over the root's (the root included, so a one-block tree costs 1).
+
+    The surface-area proxy the time split is judged by. ``[Tb]`` float; a frame
+    whose root is empty costs 1, and a non-finite cost (coordinates past the
+    float range) makes the split comparison false, which keeps the tree.
+    """
+    area = _half_area(nb_lo, nb_hi)  # [Tb, B]
+    root = area[:, 0]
+    total = area.sum(1)
+    return torch.where(root > 0, total / torch.where(root > 0, root, 1.0), 1.0)
+
+
+def _moves_a_lot(frame_lo, frame_hi):
+    """Whether the frames' union boxes are much bigger than the boxes
+    themselves: the motion that can make a shared topology stale.
+    """
+    valid = (frame_hi >= frame_lo).all(-1)  # [T, N]
+    per_frame = torch.where(valid, _half_area(frame_lo, frame_hi), 0.0)
+    shown = valid.sum(0)
+    mean_area = per_frame.sum(0) / shown.clamp_min(1)
+    vlo = torch.where(
+        valid.unsqueeze(-1), frame_lo, torch.full_like(frame_lo, EMPTY_LO)
+    )
+    vhi = torch.where(
+        valid.unsqueeze(-1), frame_hi, torch.full_like(frame_hi, EMPTY_HI)
+    )
+    union_area = _half_area(vlo.amin(0), vhi.amax(0))
+    union = float(union_area.sum())
+    own = float(mean_area.sum())
+    if not math.isfinite(union) or union <= 0:
+        return False
+    return own <= 0 or union > _TIME_SPLIT_MOTION * own
+
+
+def _split_in_time(
+    frame_lo, frame_hi, opaque, casts, leaf_prim, s, e, tree, cost, budget
+):
+    """Frames ``[s, e)`` as a list of trees, one per run of frames: ``tree``
+    (whose per-frame ``cost`` is given) or, when one topology per half beats it
+    by ``refit_time_split_gain``, each half split again, ``budget`` trees at
+    most.
+    """
+    if budget < 2 or e - s < 2 or not _moves_a_lot(frame_lo[s:e], frame_hi[s:e]):
+        return [tree]
+    m = (s + e) // 2
+    halves = []
+    for a, b in ((s, m), (m, e)):
+        halves.append(
+            _build_segment(
+                frame_lo[a:b],
+                frame_hi[a:b],
+                _frames_of(opaque, a, b, frame_lo.shape[0]),
+                casts,
+                leaf_prim,
+            )
+        )
+    split_cost = float(halves[0][1].sum()) + float(halves[1][1].sum())
+    if not float(cost.sum()) > refit_time_split_gain * split_cost:
+        return [tree]
+    del tree
+    left_budget = budget // 2
+    (left, left_cost), (right, right_cost) = halves
+    del halves
+    return _split_in_time(
+        frame_lo, frame_hi, opaque, casts, leaf_prim, s, m, left, left_cost, left_budget
+    ) + _split_in_time(
+        frame_lo,
+        frame_hi,
+        opaque,
+        casts,
+        leaf_prim,
+        m,
+        e,
+        right,
+        right_cost,
+        budget - left_budget,
+    )
+
+
+def _frames_of(opaque, a, b, frames):
+    """Frames ``[a, b)`` of an opacity mask that is per frame or constant."""
+    if opaque is None or opaque.shape[0] != frames:
+        return opaque
+    return opaque[a:b]
+
+
+def _stack_in_time(trees):
+    """One ``RefitBVH`` holding each tree's frames in order, every tree's rows
+    padded with unreachable blocks to the largest block count.
+
+    The walk finds frame ``f``'s root at row ``f * num_blocks`` and follows
+    that frame's own link words, so nothing tells it the topologies differ.
+    """
+    B = max(t.num_blocks for t in trees)
+    a = bvh_arity
+    first = trees[0].blocks
+    bits = torch.int16 if first.dtype == torch.float16 else torch.int32
+    parts = []
+    for t in trees:
+        rows = t.blocks.view(bits).view(t.num_time, t.num_blocks, 8, a)
+        if t.num_blocks < B:
+            pad = torch.zeros(
+                (t.num_time, B - t.num_blocks, 8, a), dtype=bits, device=first.device
+            )
+            # No child in any slot. Nothing links here, but a stray row should
+            # still read as empty rather than as a leaf of primitive 0.
+            pad[:, :, 6:] = LINK_INVALID
+            rows = torch.cat((rows, pad), 1)
+        parts.append(rows)
+    blocks = torch.cat(parts, 0).reshape(-1, 8, a).view(first.dtype).contiguous()
+    return RefitBVH(
+        blocks,
+        B,
+        sum(t.num_time for t in trees),
+        first.device,
+        time_segments=sum(t.time_segments for t in trees),
+    )
+
+
+def _build_one(frame_lo, frame_hi, opaque, casts, leaf_prim):
+    """The shared-topology tree over every frame given, and its per-frame node
+    boxes ``[Tc, B, 3]`` (the cost proxy's input).
+    """
+    Tc, N, _ = frame_lo.shape
+    device = frame_lo.device
     valid = (frame_hi >= frame_lo).all(-1)  # [Tc, N]
     ever = valid.any(0)
 
@@ -729,7 +919,8 @@ def _refit_blocks(
     vlo, vhi, child_kind, child_ref, levels, Tc, N, opaque, casts, leaf_prim
 ):
     """Per-frame bounds and link words of a built topology, packed into the
-    kernel-facing ``RefitBVH`` blocks.
+    kernel-facing ``RefitBVH`` blocks; returned with the per-frame node boxes
+    ``nb_lo`` / ``nb_hi`` (``[Tb, B, 3]``) the refit computed on the way.
     """
     device = vlo.device
     a = bvh_arity
@@ -820,7 +1011,7 @@ def _refit_blocks(
             )
         if bvh_block_f16:
             blocks = blocks.view(torch.float16)
-        return RefitBVH(blocks, B, Tb, device)
+        return RefitBVH(blocks, B, Tb, device), nb_lo, nb_hi
 
     ch_lo = torch.empty((Tb, B, a, 3), device=device)
     ch_hi = torch.empty((Tb, B, a, 3), device=device)
@@ -899,4 +1090,4 @@ def _refit_blocks(
             blk[:, 3 + d] = hi_flat[..., d]
         blk[:, 6] = link_flat.view(torch.float32)
         blocks = blk.contiguous()
-    return RefitBVH(blocks, B, Tb, device)
+    return RefitBVH(blocks, B, Tb, device), nb_lo, nb_hi

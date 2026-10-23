@@ -366,8 +366,10 @@ class PointLight(Light):
         renders a white matte surface facing the light white.
     decay
         Distance falloff exponent (0 = none -- the legacy Algan default;
-        2 = physically correct inverse-square). Must be finite and at least
-        ``0``. Defaults to ``0``.
+        2 = physically correct inverse-square). As in three.js, the falloff
+        divisor ``d ** decay`` is floored at ``0.01``, so a surface the light
+        nearly touches is lit at most 100 times as brightly as one at
+        distance 1. Must be finite and at least ``0``. Defaults to ``0``.
     distance
         Maximum range of the light, in world units (0 = unlimited). When set,
         the light fades out smoothly toward this distance. Must be finite and

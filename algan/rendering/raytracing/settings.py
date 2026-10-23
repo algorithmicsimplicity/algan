@@ -325,12 +325,12 @@ pt_light_tree = env_flag("ALGAN_PT_LIGHT_TREE", True)
 # to end -- area sampling from the next-event table, ``_pt_lit_f_pdf`` on both
 # ends, power-heuristic MIS, and a BSDF ray that can FIND them, which is what
 # puts an area light in a mirror -- so one light costs 2 table entries instead
-# of 16 and the light tree's leaves stop multiplying. The quads are invisible
-# to camera-segment rays and cast no shadow, matching the deterministic
-# renderer where an area light is neither drawn nor an occluder; the row
-# model's ``decay`` / ``distance`` survive as a per-emitter radiance
-# multiplier evaluated identically at both MIS ends (roadmap section 6a-ter).
-# False restores the packed cell rows exactly, byte for byte: it is the A/B
+# of 16 and the light tree's leaves stop multiplying. The quads are ordinary
+# opaque, shadow-casting surfaces, visible to camera, reflection and
+# refraction rays, emitting from their front side only (``area_light_quads``).
+# Their emission is distance-independent radiance: the inverse-square falloff
+# comes from the geometry, which is why ``RectAreaLight`` fixes ``decay`` at 2
+# and there is no finite-range fade (roadmap section 6a-ter). False restores the packed cell rows exactly, byte for byte: it is the A/B
 # arm and the regression guard, host-side only with no kernel variant.
 pt_area_light_quads = env_flag("ALGAN_PT_AREA_LIGHT_QUADS", True)
 # Let the path tracer's next-event visibility rays take the opaque any-hit
@@ -909,7 +909,10 @@ wf_mem_trim = env_flag("ALGAN_WF_MEM_TRIM", False)
 # instance tree (stbvh.py). Measured headroom (benchmarks/_rt2_refit_sah.py):
 # the classic STBVH costs 1.37-2.33x more expected node visits than a refit
 # topology, and refit staleness across a batch is <= 1.04 vs a per-frame
-# rebuild. The traversal kernels select the walk with a compile-time
+# rebuild on the benchmark scenes. Large in-batch motion (rearranging pieces,
+# explosions, morphs) can make one topology much staler than that; the build
+# then splits the batch into per-segment topologies (``refit_time_split`` in
+# refit_bvh.py). The traversal kernels select the walk with a compile-time
 # ``refit`` template, so both modes coexist in one process (in-process A/B).
 # The set of exact intersections found is identical; discovery order and
 # box-face boundary cases differ, so output parity is epsilon-level (the same

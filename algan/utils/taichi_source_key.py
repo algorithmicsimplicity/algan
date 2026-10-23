@@ -69,6 +69,11 @@ variable that can reach a kernel, and a serialization of ``SETTINGS.raytracing``
 (with ``.experimental``) and ``SETTINGS.computing``, so a toggle read through a
 path the walk cannot follow (a local ``import`` of the settings module inside
 a helper is followed; ``getattr`` by string is not) still changes the key.
+Neither belt keys what provably cannot reach a kernel: a variable whose only
+effect is seeding a renderer setting (the setting is hashed by value instead,
+see ``_settings_seed_variables``), and the host-only computing fields in
+``_HOST_ONLY_COMPUTING_FIELDS`` -- otherwise a memory-fraction tweak, another
+machine's RAM, or a variable set to its own default misses every entry.
 
 Known gaps -- what the key does not see:
 
@@ -134,6 +139,7 @@ import functools
 import importlib
 import inspect
 import os
+import re
 import sys
 import time
 import types
@@ -1314,8 +1320,76 @@ _ENV_NOT_IN_KEY = frozenset(
         "ALGAN_CACHE_DIR",
         "ALGAN_VIDEO_ENCODER",
         "ALGAN_MANIM_SVG_CACHE_MB",
+        # Live overrides of the host-only ``SETTINGS.computing`` fields in
+        # :data:`_HOST_ONLY_COMPUTING_FIELDS`: torch.compile and the batch-prep
+        # scheduler, never a Taichi kernel.
+        "ALGAN_TORCH_COMPILE",
+        "ALGAN_PREFETCH_GPU_PREP",
+        "ALGAN_OVERLAP_HEADROOM_FRACTION",
+        # Only seeds ``SETTINGS.computing.render_device``, which
+        # :func:`_settings_fingerprint` hashes by value (and the arch it
+        # selects is in the compile config besides). Keyed on presence, setting
+        # it to its own default used to miss every entry.
+        "ALGAN_RENDER_DEVICE",
     }
 )
+
+#: ``SETTINGS.computing`` fields no kernel reads: memory budgeting, batch
+#: sizing and scheduling, and the torch-side switches. Left out of the settings
+#: belt so that tuning one, or a machine with a different amount of RAM
+#: (``cpu_render_memory_budget`` defaults to a share of it), does not miss
+#: every index entry. A field that is not listed stays in, so a new one is
+#: keyed until someone shows it is host-only;
+#: ``tests/unit_tests/test_taichi_source_key_fingerprint.py`` checks that no
+#: kernel module mentions any of these.
+_HOST_ONLY_COMPUTING_FIELDS = frozenset(
+    {
+        "animation_memory_fraction",
+        "rendering_memory_fraction",
+        "max_animation_batch_size",
+        "cpu_render_memory_budget",
+        "available_memory_override",
+        "use_torch_scatter",
+        "prefetch_gpu_prep",
+        "overlap_pool_headroom_fraction",
+        "torch_compile",
+    }
+)
+
+#: A module-level ``field = env_*("ALGAN_...", ...)`` line: an import-time
+#: variable seeding a renderer setting. Single-line only -- a seed this misses
+#: just stays in the key, which costs a miss and never a wrong hit.
+_SEED_LINE = re.compile(r"^([a-z][a-z0-9_]*)\b[^\n=]*=(?!=)([^\n]*)", re.M)
+_ENV_READ = re.compile(r"\benv_[a-z_]+\(\s*\"(ALGAN_[A-Z0-9_]+)\"")
+
+
+@functools.cache
+def _settings_seed_variables():
+    """The ``ALGAN_`` variables whose only effect is the default of a renderer setting.
+
+    Each is read once, at import, into a ``SETTINGS.raytracing`` field that
+    :func:`_settings_fingerprint` already hashes by value, so keying the
+    variable as well adds nothing but misses: ``ALGAN_PT_SEED=0`` (its default)
+    and no variable at all compile the same kernels. Derived from the storage
+    modules' source rather than listed, since those modules are where a seed is
+    added; ``tests/unit_tests/test_taichi_source_key_fingerprint.py`` checks
+    that nothing outside a storage module's top level reads any of them.
+    """
+    from algan.settings import raytracing_settings
+
+    raytracing_settings._resolve()
+    owners = raytracing_settings._FIELD_MODULE
+    seeds = set()
+    for module in {id(m): m for m in owners.values()}.values():
+        try:
+            with open(module.__file__, encoding="utf-8") as handle:
+                source = handle.read()
+        except (OSError, TypeError):
+            continue
+        for field, rest in _SEED_LINE.findall(source):
+            if owners.get(field) is module:
+                seeds.update(_ENV_READ.findall(rest))
+    return frozenset(seeds)
 
 
 def _environment_fingerprint():
@@ -1327,6 +1401,8 @@ def _environment_fingerprint():
         if name in skip:
             continue
         value = env_str(name, None)
+        if value is not None and name in _settings_seed_variables():
+            continue
         if value is not None:
             # Quoted, not bare: `hash_iterable_strings` joins its inputs with a
             # single "_", so a bare `A=1_B=2` in one variable and `A=1`, `B=2`
@@ -1348,6 +1424,7 @@ def _settings_fingerprint(ctx):
     computing = {
         name: str(value) if type(value).__name__ == "device" else value
         for name, value in computing.items()
+        if name not in _HOST_ONLY_COMPUTING_FIELDS
     }
     _hash_value(computing, ctx)
     ctx.out.append(")")
@@ -1507,7 +1584,7 @@ def compute_key(kernel, args):
     Returns ``(key, None)`` or ``(None, reason)`` when the key is poisoned.
     Pure: it neither touches the compiler nor stores anything.
     """
-    from algan.taichi_compat import BACKEND, submodule
+    from algan.taichi_compat import BACKEND, backend_distribution, submodule
 
     global _MEMO_ACTIVE
     started = time.perf_counter()
@@ -1532,6 +1609,10 @@ def compute_key(kernel, args):
         out.append(
             f"compiler:{BACKEND}:{getattr(compiler, '__version_str__', compiler.__version__)}"
         )
+        # The banner names the upstream release only; the wheel's ``.postN``
+        # is what moves when Algan's patch series (frontend and codegen
+        # changes among them) does.
+        out.append(f"distribution:{backend_distribution()}")
         out.append(f"schema:{fast_caching._CACHE_VALUE_SCHEMA_VERSION}")
         out.append(f"autodiff:{kernel.autodiff_mode}")
         # Decorator flags the transformer branches on (`@qd.kernel(graph=,

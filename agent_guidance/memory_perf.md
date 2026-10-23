@@ -558,7 +558,30 @@ explainer PREVIEW 0.58 vs 0.66 s, graphics PREVIEW 1.78 vs 1.88 s (pinned:
   `Speech` block. `save_video` mixes it exactly as before.
 - **Views of packed Mobs.** `Mob._set_data_sub_inds` builds the selected
   members' rows from their offsets instead of splitting the whole batch (one
-  `.item()` per member at every hierarchy level).
+  `.item()` per member at every hierarchy level). Each packed level works its
+  offsets out once (`Mob._member_offsets`, keyed on the identity of its
+  `parent_batch_sizes` tensor), a view shares its source's tensor attributes
+  and relation table instead of deep-copying them, and the batch-size read
+  takes the row count without copying the rows. A view now costs the same
+  however large the pack (`test_a_view_costs_the_same_whatever_the_pack_size`
+  counts lines run and tensor elements allocated), so viewing every glyph of
+  an N-glyph `Text` is O(N), not O(N^2). The sharing relies on nothing writing
+  into a Mob's tensor attributes in place: assign a new tensor instead.
+  Measured October 23 on a loaded CPU: a glyph view of a 100/400/1600-glyph
+  `Text` went from 445/604/872 µs to about 225 µs at every size; authoring the
+  backprop video's scene 6 (`Project.validate`, 28,693 views) went from 64 to
+  50 s, the views' share from 24.5 to 13 s, with the recorded timeline
+  unchanged byte for byte.
+- **Lazy `set_<attr>`/`get_<attr>` accessors.** Every Animatable used to
+  install a closure pair per animatable attribute at construction and on
+  every clone. That was 124 of the 157 GC-tracked objects a glyph view kept
+  alive, and the churn set off cyclic GC over the whole heap. They are now
+  built on first use (`Animatable._generated_accessor`, through `__getattr__`),
+  and a view keeps 41. Scene 6 under equal load, master → both changes:
+  `validate` 46–53 → 40 s, views 16–19 → 7.2 s, GC 5.2–5.6 → 3.1 s, full
+  collections 12 → 8. The recorded timeline is unchanged byte for byte. An
+  accessor whose name the class defines (`Mob.set_location`) is still built
+  at construction, so it shadows the class method as it always has.
 
 All of these memos reproduce the uncached state bit for bit
 (`tests/unit_tests/test_authoring_memos.py`). The daemon keeps them warm
@@ -672,3 +695,45 @@ Not done: the bezier count/write and resolve kernels are now most of a stroke
 frame; the resolve launch costs ~15 ms of host time even on the fast-launch
 path (inside the C++ launch); `ALGAN_PREFETCH_GPU_PREP=1` crashes at HD in
 `scene_builder._iter_primitive_source_tensors` (`shader_param_names` None).
+
+## Bezier edge tables built once for static circuits (October 23)
+
+`build_bezier_edge_acceleration` (`rendering/raytracing/bezier_acceleration.py`)
+gave every (frame, circuit) group its own scanline and spatial bins, built from
+about twenty T*E-sized int64 temporaries. `_dedup_time_group` collapses
+`edges_2d` only when the whole batch is constant, so one moving circuit kept a
+batch T frames wide. On the backprop video's network scenes 99.8% of circuits
+were static, yet one 139-frame batch of scene 4 (E = 135,785) took 17 s and
+peaked at 11.6 GB: the card paged (WDDM), the build was 67% of scene 4's render
+through the arena preflight that runs it, and its raw `CUDA error: out of
+memory` (not a probe failure the preflight catches) crashed scene 5.
+
+A circuit whose edges are bitwise the same in every frame (`_static_circuits`,
+compared through an integer view, so `-0.0` against `0.0` is a change) now has
+its bins built once, and its header at every later frame is a copy of its
+frame-0 header. The kernels reach edges only through a group's header offsets
+and then read `edges_2d[f]` themselves, so the same bits give the same bins.
+Construction runs in chunks of at most `_CHUNK_PAIRS` (4 M) (frame, edge) pairs,
+so a batch whose circuits do move (the network growing: 277 frames, 30 M pairs,
+12.9 s paging) builds in 0.2 s. `ALGAN_OPT_DISABLE=acceldedup` builds every
+group in one chunk: the previous buffer, word for word.
+`tests/unit_tests/test_bezier_acceleration_dedup.py` holds both arms to a frozen
+copy of the old builder, decoding the shared bins the way the kernels address
+them; 64 real builds from scenes 4, 5, 6, 15, 23 and 29 passed the same check.
+
+Measured on the RTX 5080, the whole backprop video at PREVIEW, warm, fresh
+processes, master and branch alternated twice: render 174.6 / 170.9 s ->
+126.4 / 127.5 s, whole video 305 / 308 s -> 249 / 264 s. Scene 4's render
+27-32 s -> 8.6 s, scene 5's 24-25 s -> 6 s, scene 23's 11.3 s -> 3.7 s.
+
+Pixels: with the windows pinned (`max_animation_batch_size=16`) scenes 0, 4, 5,
+6, 23 and 29 are byte-identical to master. Unpinned, the smaller merge peak
+lets the preflight choose other windows, which moves animated frames of scenes
+4, 5, 6 and 15 by up to 60 levels -- as far as master's own output moves when
+only `available_memory_override` changes (8 GiB). Scene 15's windows differ even
+under the cap, because some of its batches are memory-bound below 16 frames;
+the disable arm moves the same scenes, its merge peak differing too (it
+gathers the pairs instead of viewing them). One small cost seen: scene 21
+renders ~1 s slower in every A/B, all of it in `bloom fft conv` (0.27 -> 1.08 s)
+and `memory reclaim` on identical frames -- allocator state after the build,
+not the build, which got faster; not chased.

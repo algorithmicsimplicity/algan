@@ -654,6 +654,62 @@ def test_sheen_scales_the_base_layer_by_three_js_energy_compensation():
     torch.testing.assert_close(on, off * comp + lobe, rtol=1e-5, atol=1e-6)
 
 
+def test_clearcoat_attenuates_the_layers_under_it_as_three_js_does():
+    """Turning clearcoat on scales everything under the coat by
+    ``1 - clearcoat * Fcc(N.V)`` (Schlick, F0 0.04) and adds the coat lobe on
+    top -- three.js's ``meshphysical`` output and the path tracer's
+    ``_PL_ATT``. It used to add the lobe to an unattenuated base, so a coated
+    surface reflected more than arrived. Emission is left alone, as in the
+    path tracer.
+    """
+    corners, normals, albedo = _triangles(16, seed=5)
+    base = {
+        "roughness": 0.5,
+        "metalness": 0.2,
+        "clearcoat_roughness": 0.3,
+        "sheen": 0.0,
+        "emissive": (0.1, 0.05, 0.0),
+        "emissive_intensity": 1.0,
+    }
+    pos, nrm = corners, F.normalize(normals, dim=-1)
+    (_l, _v, _h, n_dot_l, n_dot_v, n_dot_h, v_dot_h) = ms._light_geometry(
+        pos, nrm, torch.tensor(CAMERA), torch.tensor(LIGHT_POS)
+    )
+
+    def shade(clearcoat):
+        kwargs = _shader_kwargs(ms.physical_shader, {**base, "clearcoat": clearcoat}, 2)
+        return ms.physical_shader(
+            None,
+            corners,
+            normals,
+            albedo,
+            torch.tensor(CAMERA).view(1, 1, 3),
+            torch.tensor(LIGHT_POS).view(1, 1, 3),
+            torch.tensor((*LIGHT_RGB, 0.0)).view(1, 1, 4),
+            1.0,
+            0.5,
+            **kwargs,
+        )[..., :3]
+
+    emission = torch.tensor(base["emissive"])
+    off = shade(0.0) - emission
+    cc = 0.8
+    on = shade(cc) - emission
+    r = torch.tensor(base["clearcoat_roughness"])
+    lobe = (
+        cc
+        * ms.ggx_distribution(n_dot_h, r)
+        * ms.smith_geometry(n_dot_v, n_dot_l, r)
+        * ms.fresnel_schlick(v_dot_h, 0.04)
+        / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
+        * torch.tensor(LIGHT_RGB)
+        * n_dot_l
+    )
+    att = 1.0 - cc * ms.fresnel_schlick(n_dot_v, 0.04)
+    assert float(lobe.amax()) > 1e-3, "the coat lobe must be visible to be pinned"
+    torch.testing.assert_close(on, off * att + lobe, rtol=1e-4, atol=1e-5)
+
+
 def test_light_geometry_returns_unit_directions_and_its_documented_clamps():
     """Unit light, view and half vectors; ``N.L``, ``N.H`` and ``V.H`` floored at
     0 and ``N.V`` at ``1e-4`` -- the floor that keeps ``4 N.V N.L`` and the

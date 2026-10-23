@@ -16,12 +16,23 @@ def fxaa(
     edge_threshold_min=0.0625,
     subpixel_quality=0.75,
     memory=None,
+    *,
+    luma_space="perceptual",
 ):
     """Apply FXAA using only tensors backed by ``ManualMemory``.
 
     ``images`` is ``[B, C, H, W]`` float data.  The returned tensor is a
     persistent arena allocation; every intermediate is released when this
     function returns.
+
+    The thresholds assume a perceptual luma in ``[0, 1]``, as in Lottes's
+    FXAA and three.js (which runs it after tone mapping and output
+    encoding). ``luma_space`` says what the colour channels hold:
+    ``"perceptual"`` (already 0-1 and display-encoded), ``"bytes"``
+    (display-encoded 0-255) or ``"linear"`` (linear light, possibly above 1,
+    whose luma is clamped to 1 and square-rooted -- the usual gamma-2
+    stand-in for the encode). Only the edge detection reads the luma; the
+    blend still filters the colour channels as given.
     """
     if memory is None:
         raise ValueError("fxaa requires a ManualMemory arena")
@@ -41,6 +52,12 @@ def fxaa(
         weights[0, 2, 0, 0] = 0.114
         torch.mul(images[:, :3], weights, out=product)
         torch.sum(product, dim=1, keepdim=True, out=luma)
+        if luma_space == "bytes":
+            luma.div_(255.0)
+        elif luma_space == "linear":
+            luma.clamp_(0.0, 1.0).sqrt_()
+        elif luma_space != "perceptual":
+            raise ValueError(f"unknown FXAA luma_space {luma_space!r}")
 
         luma_padded = memory.get_tensor((B, 1, H + 2, W + 2), images.dtype)
         torch.ops.aten.replication_pad2d.out(luma, [1, 1, 1, 1], out=luma_padded)

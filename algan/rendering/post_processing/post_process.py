@@ -462,9 +462,13 @@ def post_process_frames(
         fxaa_out = self.get_tensor(frame_out.shape, frame_out.dtype)
         with self.temp():
             fxaa_input = self.cast(frame_out, torch.float32)
-            fxaa_float = fxaa(fxaa_input.permute(0, 3, 1, 2), memory=self).permute(
-                0, 2, 3, 1
-            )
+            # Under post-process tonemapping the frame is linear HDR here
+            # (the tonemap and OETF run last); otherwise it is display bytes.
+            fxaa_float = fxaa(
+                fxaa_input.permute(0, 3, 1, 2),
+                memory=self,
+                luma_space="linear" if hdr else "bytes",
+            ).permute(0, 2, 3, 1)
             fxaa_out.copy_(fxaa_float)
         frame_out = fxaa_out
 

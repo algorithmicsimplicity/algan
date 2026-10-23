@@ -3231,6 +3231,48 @@ def test_light_tree_never_zeroes_a_spot_whose_cone_holds_the_point():
     )
 
 
+def test_light_tree_selects_a_two_sided_emitter_from_behind():
+    """A two-sided emissive triangle emits about ``+n`` and ``-n``, so the
+    light tree must select it as readily from behind as from in front.
+
+    Its cone used to be ``theta_o = pi/2`` about ``+n``, which does not hold
+    ``-n``: a receiver 5 units behind a small two-sided triangle, against a
+    point light, picked the triangle with probability 0.0275 against 0.667 in
+    front (24x fewer shadow rays; unbiased, as the BSDF still finds it, but
+    noisy).
+    """
+    import numpy as np
+    import torch as _torch
+
+    from algan.rendering.raytracing.path_tracer import _light_tree_geometry
+    from algan.rendering.raytracing.shading_taichi import _MAT_ONE_SIDED
+
+    # One small triangle in the z = 0 plane, facing +z, two-sided.
+    tri = _torch.tensor([[[-0.1, -0.1, 0.0, 0.1, -0.1, 0.0, 0.0, 0.1, 0.0]]])
+    tri_mat = _torch.zeros(1, 1, _MAT_ONE_SIDED + 1)
+    merged = {"tri_pos": tri, "tri_mat": tri_mat}
+    none = _torch.zeros(0, dtype=_torch.long)
+    bn, bx, ax, to, te, _dk = _light_tree_geometry(
+        merged, None, None, none, none, _torch.tensor([0]), [0]
+    )
+    assert float(to[0, 0]) == np.pi
+    centre = (bn[0, 0] + bx[0, 0]) / 2.0
+    # The triangle and a point light at (0, 5, 0), both at decay 2.
+    pos = np.stack([centre, np.array([0.0, 5.0, 0.0])])
+    pmf = _light_tree_pmf(
+        np.ones(2),
+        pos,
+        np.stack([ax[0, 0], np.array([0.0, 0.0, 1.0])]),
+        np.array([float(to[0, 0]), np.pi]),
+        np.array([float(te[0, 0]), np.pi / 2]),
+        np.full(2, 2.0),
+        [[0.0, 0.0, 5.0], [0.0, 0.0, -5.0]],
+    )
+    front, behind = float(pmf[0, 0]), float(pmf[1, 0])
+    assert behind > 0.4, f"selected from behind with probability {behind:.4f}"
+    assert abs(front - behind) < 1e-4, (front, behind)
+
+
 def test_light_tree_build_is_deterministic():
     """Two builds of one input give byte-identical tensors.
 
@@ -3796,6 +3838,40 @@ def test_internal_glass_reflection_keeps_furnace_energy(tmp_path):
 SMALL_SETTINGS = SMOKE_TEST.set(resolution=(32, 32))
 
 
+def test_a_near_black_lambert_surface_does_not_show_the_sky_behind_it(tmp_path):
+    """A path whose throughput drops below ``min_weight`` right after a
+    scatter is retired as absorbed, not as an escape.
+
+    It used to escape along its *incoming* direction (the scatter had not yet
+    replaced ``rd``), so a MeshLambert surface with linear albedo in
+    ``(0, 1e-3)`` showed the environment behind it: 151.6 counts here against
+    0 for albedo 0 and 0.002. The sky lights only the hemisphere behind the
+    plane, so every correct estimate of the plane is black.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        env = torch.zeros((4, 8, 3))
+        env[:, :4] = 2000.0  # u < 0.5: the -z hemisphere, behind the plane
+        scene.set_environment_map(env, ambient=False)
+        plane = Prism(width=40.0, height=40.0, depth=0.2)
+        plane.set_material(MeshLambertMaterial(color=(0.0005, 0.0005, 0.0005)))
+        plane.spawn(animate=False)
+
+    image = _render_scene_exp(
+        tmp_path,
+        "near_black.png",
+        build,
+        8,
+        video=SMALL_SETTINGS,
+        linear_color_space=False,
+        tonemapping=False,
+        experimental={"post_process_tonemap": False, "pt_firefly_clamp": 0},
+    )
+    assert _center_patch_mean(image, half=4) < 2.0
+
+
 def _floor_under_glass(ior):
     """A white Lambert floor under a lossless smooth glass slab.
 
@@ -3928,6 +4004,104 @@ def test_an_emitter_behind_an_index_matched_pane_lights_as_without_it(tmp_path):
     b = _center_patch_mean(paned, half=3)
     assert a > 30, "the quad must light the floor"
     assert b == pytest.approx(a, abs=2.0), (a, b)
+
+
+def _split_backdrop(x, y, t):
+    """Black on the left half of the frame, white on the right."""
+    right = (x + 0 * (y + t) >= 0.5).float()
+    return right.expand(*right.shape[:-1], 3)
+
+
+def _slab_against_split_backdrop(material):
+    """A slab filling the frame, facing the camera, with only the split
+    backdrop behind the camera to light it.
+    """
+
+    def build(scene):
+        scene.set_background(_split_backdrop)
+        Scene.clear_lights()
+        slab = Prism(width=40.0, height=40.0, depth=0.2)
+        slab.set_material(material)
+        slab.spawn(animate=False)
+
+    return build
+
+
+def _half_means(img):
+    """Mean RGB of the left and right halves, a two-pixel border dropped."""
+    w = img.shape[1]
+    left = img[2:-2, 2 : w // 2 - 2, :3].double().mean()
+    right = img[2:-2, w // 2 + 2 : -2, :3].double().mean()
+    return float(left), float(right)
+
+
+def test_a_scattered_path_sees_the_average_backdrop_not_the_pixel_behind(tmp_path):
+    """The background is a screen-space picture: the only direction it has is
+    the camera ray's. A diffuse bounce used to read the backdrop pixel behind
+    its camera ray anyway, so a white wall in front of a half-black,
+    half-white backdrop came out black on the left and white on the right --
+    the image painted onto the wall. A scattered path now sees the frame's
+    average backdrop, the uniform sky a solid color already is.
+    """
+    img = _render_scene_exp(
+        tmp_path,
+        "split_lambert.png",
+        _slab_against_split_backdrop(MeshLambertMaterial(color=WHITE)),
+        16,
+        **_furnace_opts(False, 2),
+    )
+    left, right = _half_means(img)
+    assert left == pytest.approx(127.5, abs=3), (left, right)
+    assert right == pytest.approx(127.5, abs=3), (left, right)
+
+
+def test_a_mirror_still_shows_the_backdrop_behind_it(tmp_path):
+    """Mirror-smooth reflection keeps the camera ray's line of sight, so it
+    keeps the deterministic renderer's convention (a mirror shows the
+    backdrop behind it), while a rough metal blurs it to the average.
+    """
+    mirror = _render_scene_exp(
+        tmp_path,
+        "split_mirror.png",
+        _slab_against_split_backdrop(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.0)
+        ),
+        16,
+        **_furnace_opts(False, 2),
+    )
+    left, right = _half_means(mirror)
+    assert left < 10, (left, right)
+    assert right > 240, (left, right)
+
+    rough = _render_scene_exp(
+        tmp_path,
+        "split_rough.png",
+        _slab_against_split_backdrop(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.5)
+        ),
+        16,
+        **_furnace_opts(False, 2),
+    )
+    left, right = _half_means(rough)
+    assert left == pytest.approx(right, abs=6), (left, right)
+
+
+def test_scattered_background_flags_solid_frames_and_averages_the_rest():
+    from algan.rendering.raytracing.path_tracer import scattered_background
+
+    class _Memory:
+        def get_tensor(self, shape, dtype):
+            return torch.empty(shape, dtype=dtype)
+
+    out = torch.zeros((2, 6, 5), dtype=torch.uint8)
+    out[0, :, :3] = 34
+    out[0, :, 4] = 255
+    out[1, 3:, :3] = 255
+    table = scattered_background(_Memory(), out)
+    assert table[:, 4].tolist() == [1.0, 0.0]
+    assert table[0, :3].tolist() == [34.0, 34.0, 34.0]
+    assert table[1, :3].tolist() == [127.5, 127.5, 127.5]
+    assert table[1, 3] == 0.0
 
 
 def test_rough_glass_blurs_transmission_but_index_matched_glass_does_not(tmp_path):

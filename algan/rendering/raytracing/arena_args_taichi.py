@@ -213,9 +213,10 @@ def _whole_storage(sample):
 #: 720p frame on a T4 (``benchmarks/performance/reports/t4_2026_09/
 #: pt_longvideo_1.md``), 8% of the frame. The key holds integers only, never a
 #: tensor, so the cache cannot keep a released arena alive -- the reason
-#: ``_whole_storage`` is still rebuilt per launch. Bounded and evicted oldest
-#: first: a render loop cycles through a handful of tensor sets, not
-#: thousands.
+#: ``_whole_storage`` is still rebuilt per launch. Bounded and evicted least
+#: recently used: a render loop cycles through a handful of tensor sets, not
+#: thousands, but the sheet route misses on almost every launch, and evicting
+#: by insertion order let those misses push out the path tracer's hot set.
 _TABLE_CACHE_SIZE = 64
 _table_cache = {}
 
@@ -334,8 +335,9 @@ def pack(spec, tensors):
         )
 
     key = _table_key(spec, tensors)
-    cached = _table_cache.get(key) if key is not None else None
+    cached = _table_cache.pop(key, None) if key is not None else None
     if cached is not None:
+        _table_cache[key] = cached  # most recently used goes last
         n_offsets, table, tags = cached
         samples = {}
         for (_name, tag, _ndim), t in zip(spec, tensors):

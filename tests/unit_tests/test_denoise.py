@@ -279,6 +279,45 @@ def test_missing_override_path_degrades_to_denoise_off():
 
 
 @pytest.mark.usefixtures("_fresh_weight_state")
+def test_a_failed_download_is_retried_by_a_later_render_job(tmp_path, monkeypatch):
+    """A network blip on a warm daemon's first render must not leave every
+    later render noisy: the failure lasts for the job, and after the retry
+    interval the next job downloads again. Fetches inside the interval are
+    not repeated, so an offline machine is not charged a timeout per render.
+    """
+    SETTINGS.raytracing.experimental.set(denoise_weights="")
+    monkeypatch.setattr(weights_mod, "_cache_path", lambda: tmp_path / "w.tza")
+    calls = []
+
+    def flaky(target):
+        calls.append(target)
+        if len(calls) == 1:
+            return None  # the network failed
+        target.write_bytes(b"weights")
+        return True
+
+    monkeypatch.setattr(weights_mod, "_download", flaky)
+    clock = [1000.0]
+    monkeypatch.setattr(weights_mod.time, "monotonic", lambda: clock[0])
+
+    assert denoise_mod.get_denoiser(torch.device("cpu")) is None
+    assert denoise_mod.get_denoiser(torch.device("cpu")) is None
+    assert len(calls) == 1, "one attempt per render job"
+    denoise_mod._begin_render_job()
+    assert weights_mod.weights_path() is None
+    assert len(calls) == 1, "inside the retry interval nothing is fetched"
+    clock[0] += weights_mod._DOWNLOAD_RETRY_SECONDS + 1.0
+    assert weights_mod.weights_path() == str(tmp_path / "w.tza")
+    assert len(calls) == 2
+
+
+def test_the_weights_url_is_pinned_to_a_commit():
+    """Tracking ``master`` would break the sha256 pin on any re-upload."""
+    assert "/master/" not in weights_mod.WEIGHTS_URL
+    assert weights_mod.WEIGHTS_COMMIT in weights_mod.WEIGHTS_URL
+
+
+@pytest.mark.usefixtures("_fresh_weight_state")
 def test_unparseable_weights_degrade_to_denoise_off(tmp_path):
     bad = tmp_path / "bad.tza"
     bad.write_bytes(b"junk that is not a tensor archive")

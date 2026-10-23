@@ -194,9 +194,11 @@ class Denoiser:
 
 
 #: Per-(device, precision) cache. "" marks a load that failed (stay off);
-#: ``_OUT_OF_MEMORY`` one that ran out of memory, which lasts for one render job.
+#: ``_OUT_OF_MEMORY`` one that ran out of memory and ``_NO_WEIGHTS`` one with no
+#: weights file to load, both of which last for one render job.
 _denoisers: dict[str, Denoiser | str] = {}
 _OUT_OF_MEMORY = "out of memory"
+_NO_WEIGHTS = "no weights"
 
 
 def resolve_precision(device) -> tuple[torch.dtype, bool]:
@@ -230,7 +232,9 @@ def get_denoiser(device) -> Denoiser | None:
         return cached if isinstance(cached, Denoiser) else None
     path = weights_path()
     if path is None:
-        _denoisers[key] = ""
+        # Off for this render job only: ``weights_path`` decides whether a
+        # later job may try again (a failed download) or not (a bad file).
+        _denoisers[key] = _NO_WEIGHTS
         return None
     try:
         with open(path, "rb") as f:
@@ -257,9 +261,11 @@ def get_denoiser(device) -> Denoiser | None:
 
 def _begin_render_job() -> None:
     """Render-loop hook: a new render job tries again a load that ran out of
-    memory in the last one.
+    memory in the last one, and asks ``weights_path`` again for weights it
+    could not have.
     """
-    for key in [key for key, cached in _denoisers.items() if cached == _OUT_OF_MEMORY]:
+    retry = (_OUT_OF_MEMORY, _NO_WEIGHTS)
+    for key in [key for key, cached in _denoisers.items() if cached in retry]:
         del _denoisers[key]
 
 

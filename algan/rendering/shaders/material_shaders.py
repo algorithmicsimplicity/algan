@@ -754,12 +754,15 @@ def _physical_fused(
     cc_ndf = ggx_distribution(n_dot_h, clearcoat_roughness)
     cc_geom = smith_geometry(n_dot_v, n_dot_l, clearcoat_roughness)
     cc_fresnel = fresnel_schlick(v_dot_h, 0.04)
-    clearcoat_spec = (
-        clearcoat
-        * (cc_ndf * cc_geom * cc_fresnel)
-        / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
+    cc = (
+        clearcoat.clamp(0.0, 1.0)
+        if torch.is_tensor(clearcoat)
+        else max(min(clearcoat, 1.0), 0.0)
     )
-    direct = direct + clearcoat_spec * radiance * n_dot_l
+    clearcoat_spec = (
+        cc * (cc_ndf * cc_geom * cc_fresnel) / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
+    )
+    coat = clearcoat_spec * radiance * n_dot_l
 
     # The Charlie fibre lobe itself (KHR_materials_sheen / Three.js BRDF_Sheen).
     sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
@@ -767,10 +770,13 @@ def _physical_fused(
 
     kA = ambient_strength * ambient_light_intensity * env_map_intensity
     ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
+    # What the coat lets through to the layers under it (Three.js's
+    # ``1 - clearcoat * Fcc(n.v)``); see shading_taichi._stage_physical.
+    cc_att = 1.0 - cc * fresnel_schlick(n_dot_v, 0.04)
     # No per-light transmission term: the transmitted share is carried by the
     # renderer's own continuation, and adding it here again double counted.
     # See shading_taichi._stage_physical.
-    out = (ambient + direct) * _energy_scale_core(
+    out = ((ambient + direct) * cc_att + coat) * _energy_scale_core(
         n_dot_l * _INV_PI * radiance.amax(-1, keepdim=True) + kA, linear_space
     ) + emissive * emissive_intensity
     return _recombine_core(out, glow, linear_space)

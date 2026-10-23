@@ -240,7 +240,7 @@ setting to reach for is a modest sample count with a short bounce budget,
 there only if the scene needs indirect light or the denoised result is still
 noisy. See :ref:`renderer-settings` in the performance guide.
 
-Five further consequences of the split, not covered there:
+Six further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
   fragment route. Direct light comes from sampling one emitter per lit surface
@@ -287,9 +287,8 @@ Five further consequences of the split, not covered there:
     its own ``clearcoat_roughness`` -- takes what it reflects from the layers
     under it, ``1 - clearcoat * F(n.v)``, and it reflects the environment and
     the rest of the scene like any other lobe. The deterministic renderer
-    adds its coat on top of an unattenuated base and lights it with direct
-    light only, so a coated surface is a few percent brighter there and its
-    coat shows no surroundings. The coat does not dim the surface's own
+    takes the same share from the base but lights its coat with direct
+    light only, so its coat shows no surroundings. The coat does not dim the surface's own
     emission here (Three.js's does). The sheen is Three.js's
     Charlie-distribution lobe with its albedo scaling of the base; as in
     Three.js's direct lighting it is not energy-conserving at grazing angles
@@ -319,14 +318,50 @@ Five further consequences of the split, not covered there:
   ``samples = 16`` area light also costs the sampler two emitters here rather
   than sixteen, so raising ``samples`` for the deterministic renderer's sake
   no longer makes path-traced renders slower.
+* **The background lights the scene here.** Without an environment map, a
+  path that leaves the scene picks up the background. Seen straight on,
+  through smooth glass or in a mirror, that is the background pixel behind
+  it, as in the deterministic renderer. After a diffuse or glossy bounce it
+  is the frame's *average* background: a solid colour acts as a uniform sky
+  of that colour, and an image or procedural background as a uniform sky of
+  its average colour. The deterministic renderer traces no diffuse bounce, so
+  there the background lights nothing, and a non-black background makes a
+  path-traced scene brighter than its ``samples_per_pixel = 1`` preview -- a
+  white surface in front of a mid-grey background gains up to that grey.
+  Keep the default black background, and light with an environment map,
+  when the sky should light the scene from a direction.
 * Its raw output is stochastic, so low sample counts are visibly noisy. By
   default it is **denoised** (``SETTINGS.raytracing.denoise``) with the Open
   Image Denoise RT filter re-implemented in torch, guided by albedo and
   normal information the render accumulates alongside the image. The weights
   (about 2 MB) are fetched once into the cache directory on first use; a
-  machine that cannot fetch them renders without denoising after one warning.
+  machine that cannot fetch them renders without denoising after one warning,
+  and a later render tries the download again once ten minutes have passed.
   Flat 2-D content composites deterministically inside the path tracer (zero
   variance), so vector graphics and text stay exact with or without it.
+* **Unlit content is an emitter for the path tracer's bounce light.**
+  A :class:`~algan.rendering.shaders.materials.MeshBasicMaterial` surface,
+  text and other flat 2-D content shine with their own colour, and with
+  ``max_bounces`` above 1 that light reaches lit surfaces nearby: a white
+  label beside a mesh brightens it.
+  Neither Three.js nor the deterministic renderer does this. Such content is
+  only found by the light a surface scatters into it, not by the emitter
+  sampling that finds lights and emissive meshes, so the light it gives is
+  noisier than an emissive mesh of the same brightness would be. Keep bright
+  unlit content away from lit geometry, or lower ``max_bounces``, when that
+  glow is unwanted.
+* **Very bright indirect light is clamped.** Any path that has bounced at
+  least once adds at most
+  ``SETTINGS.raytracing.experimental.pt_firefly_clamp`` (default ``10``, in
+  units of an authored white; ``0`` disables it) to a pixel. That removes the
+  fireflies a rare bright path leaves, at the cost of a little darkening of
+  genuinely bright bounce light. Two side effects are visible: the cap is
+  applied per colour channel, so a saturated emitter seen through a bounce
+  shifts toward white (a red light 50 times brighter than white comes out
+  pinker); and a mirror or smooth glass counts as a bounce, so an emitter
+  brighter than the cap -- a :class:`~.RectAreaLight` panel usually is, as
+  its radiance is ``intensity / A`` -- looks dimmer in a mirror than seen
+  directly.
 * Path-traced output is *stochastic*. Two renders of the same scene converge
   to the same image but need not be identical frame for frame, and the
   renderer makes no byte-identity promise. Raise ``samples_per_pixel`` (or
@@ -535,6 +570,16 @@ effect:
   through ``Mob.two_sided``, not by the material.
 
 Textures do work — through a different door. See the next section.
+
+One property is accepted but means something narrower than in Three.js:
+``env_map_intensity``. In Three.js it scales how strongly a material picks
+up the environment map, in both its reflections and its diffuse light. Here
+it scales only the deterministic renderer's small constant ambient fill
+(``ambient_strength_linear``); environment reflections and the environment's
+diffuse light are unaffected, and the path tracer ignores it. Setting it to
+``0`` does not stop an object reflecting the sky. To change how strongly the
+whole scene is lit by the map, pass ``intensity`` to
+:meth:`~algan.scene.Scene.set_environment_map`.
 
 :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`'s
 ``attenuation_color`` and ``attenuation_distance`` *are* honoured: light
@@ -952,9 +997,11 @@ Other anti-aliasing notes
 * ``supersampling`` is **ignored** on the analytic path, which
   always renders at output resolution. It applies only on the supersampled
   fallback.
-* FXAA is available (``video_settings.fxaa``). It runs on linear HDR values
-  before tonemapping, where its luma-based edge detection is not the one it was
-  designed around.
+* FXAA is available (``video_settings.fxaa``). It filters the linear HDR
+  frame before tonemapping, but finds edges on a perceptual luma (the linear
+  luma clamped to 1 and square-rooted), the space its thresholds were
+  designed around. The tonemap is not applied first, so a highlight above
+  white reads as white to the edge test.
 * A filled shape's drawn region is given a minimum half-width of 0.3 output
   pixels so that hairlines, thin glyph stems and degenerate zero-area fills
   survive at all
@@ -1398,6 +1445,15 @@ Neither renderer does any of these, at any setting:
 * **Displacement mapping** or height-map tessellation. Geometry comes from the
   mob; a texture never moves a vertex.
 * **Wireframe rendering.**
+* **Distance fog.** There is no equivalent of Three.js's ``scene.fog`` or
+  ``FogExp2``. A homogeneous medium on a large closed solid gives real fog
+  under the path tracer (`Homogeneous volumes and subsurface scattering`_).
+* **Environment-map rotation.** The map's axes are fixed to the world's
+  (equirectangular, ``UP`` at the top); rotate the image itself to turn it.
+* **A per-light shadow switch.** With ``shadows`` on, every light casts
+  shadows; there is no equivalent of Three.js's ``light.castShadow`` (which
+  is off by default there). Control shadows per object instead, through a
+  mob's ``casts_shadows`` and ``receives_shadows``.
 * **Motion vectors or cryptomatte.** Depth, normal and object-ID passes are
   written on request (see `Auxiliary passes`_), but there is no motion-vector
   pass and no cryptomatte-style coverage matte.
