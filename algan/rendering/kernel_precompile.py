@@ -1004,7 +1004,12 @@ def compile_spec(spec, on_started=None, before_writing=None):
         prog.config(), prog.get_device_caps(), kernel.materialized_kernels[key]
     )
     outcome = {"status": "offline-hit" if result.cache_hit else "compiled"}
-    _prepare(prog, result.compiled_kernel_data, outcome)
+    # Read once, here: the dump below frees the kernel, and the binding's
+    # getter on `result` inspects the object it returns (its dynamic type), so
+    # reading it again after the dump reads freed memory -- a segfault on a
+    # CPU worker once enough was freed and reused.
+    compiled_kernel_data = result.compiled_kernel_data
+    _prepare(prog, compiled_kernel_data, outcome)
     if before_writing is not None:
         before_writing()
     if kernel.fast_checksum:
@@ -1025,9 +1030,9 @@ def compile_spec(spec, on_started=None, before_writing=None):
                 kernel.checkpoint_user_labels_by_cp_id
             ),
         )
-    kernel.compiled_kernel_data_by_key[key] = result.compiled_kernel_data
+    kernel.compiled_kernel_data_by_key[key] = compiled_kernel_data
     program().dump_cache_data_to_disk()
-    _DUMPED_HERE[id(result.compiled_kernel_data)] = result.compiled_kernel_data
+    _DUMPED_HERE[id(compiled_kernel_data)] = compiled_kernel_data
     outcome["seconds"] = time.perf_counter() - started
     return outcome
 
