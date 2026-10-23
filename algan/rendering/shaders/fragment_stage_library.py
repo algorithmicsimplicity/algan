@@ -14,7 +14,9 @@ rather than replacing it, so it layers over a lit base material::
     ball.spawn()
 
 Each stage's parameters become ordinary animatable attributes of the Mob, so
-``ball.rim_gain = 2`` animates like any other attribute.
+``ball.rim_gain = 2`` animates like any other attribute. Their colours are
+linear-light values used exactly as set, not display-referred like a Mob's
+``color`` (see :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`).
 
 Why these are stages rather than material parameters
 ----------------------------------------------------
