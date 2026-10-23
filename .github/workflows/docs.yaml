@@ -37,12 +37,15 @@ jobs:
       # graphviz: inheritance diagrams on the reference landing page.
       # LaTeX + pango: Tex/Text glyph geometry, needed to import algan and to
       # autodoc the text mobs.
+      # From a .deb cache, so a slow Ubuntu mirror cannot stall the build; see
+      # the action.
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            graphviz libpango1.0-dev texlive-latex-base texlive-latex-extra \
+        uses: ./.github/actions/install-apt-packages
+        with:
+          packages: >-
+            graphviz libpango1.0-dev texlive-latex-base texlive-latex-extra
             texlive-fonts-recommended latexmk dvisvgm ffmpeg
+          cache-name: docs
 
       - run: uv sync --locked --all-extras --dev
 
