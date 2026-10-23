@@ -175,6 +175,16 @@ _CACHE_DIRECTORY = Path(
 # always wins. ``clear_cache()`` removes it with the content caches -- it is
 # seconds to rebuild, not the minutes a compiled kernel costs.
 os.environ.setdefault("CUDA_CACHE_PATH", str(_CACHE_DIRECTORY / "cuda"))
+# torch.compile's on-disk cache (Inductor's FX-graph, AOTAutograd and generated
+# code) likewise, instead of its default ``/tmp/torchinductor_<user>``: ``/tmp``
+# is a tmpfs or aged out on many Linux systems, which turns the next process's
+# warm compile into a ~35-40 s cold one, and a cache outside this directory
+# escapes ``ALGAN_CACHE_DIR`` isolation and ``clear_cache()``. Inductor reads
+# the variable lazily, on its first cache access, so setting it after the torch
+# import is in time; ``setdefault`` so an explicit user value always wins.
+os.environ.setdefault(
+    "TORCHINDUCTOR_CACHE_DIR", str(_CACHE_DIRECTORY / "torchinductor")
+)
 # One cache directory per kernel compiler. The two write different artifact
 # formats under different cache keys, so a shared directory would let one
 # backend's entries sit in the other's LRU budget and be pruned by it. Each
