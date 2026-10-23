@@ -23,6 +23,7 @@ from algan import (
     RIGHT,
     UP,
     WHITE,
+    DensityGrid,
     MeshLambertMaterial,
     MeshPhysicalMaterial,
     PointLight,
@@ -230,14 +231,79 @@ def test_a_point_light_through_a_glass_plate_lights_the_floor_as_optics_says(
         assert ratio < 1.0
 
 
-@pytest.mark.parametrize("caustics", [True, False])
-def test_a_point_light_reaches_inside_a_subsurface_block(tmp_path, caustics):
+def test_subsurface_delta_lights_leave_glass_shadows_straight(tmp_path):
+    """With ``pt_caustics`` off, a subsurface solid in the batch builds a
+    caster section of its own boundary so delta lights reach its interior
+    (``pt_subsurface_delta_lights``). Only its scatter points receive through
+    it: the floor under a glass plate elsewhere keeps the straight, tinted
+    light sample it has without the setting, rather than gaining a caustic.
+    """
+    from test_path_tracer import (
+        SMALL_SETTINGS,
+        _center_patch_mean,
+        _render_scene_result,
+    )
+
+    plate = _point_light_over_plate(True)
+
+    def build(scene):
+        plate(scene)
+        # Off to the side, out of view and out of the plate's light: it is
+        # there to switch the caster section on.
+        block = Prism(width=2, height=2, depth=1)
+        block.set_material(
+            MeshPhysicalMaterial(
+                color=WHITE, transmission=1, ior=1.5, roughness=0, sigma_s=4.0
+            )
+        )
+        block.move_to(RIGHT * 17 + UP * 17 + OUT * 0.7)
+        block.spawn(animate=False)
+
+    patches = {}
+    for subsurface in (True, False):
+        image, _ = _render_scene_result(
+            tmp_path,
+            f"plate-{subsurface}.png",
+            build,
+            8,
+            video=SMALL_SETTINGS,
+            max_bounces=0,
+            shadows=True,
+            linear_color_space=False,
+            tonemapping=False,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_firefly_clamp": 0,
+                "pt_error_target": 0,
+                "pt_caustics": False,
+                "pt_subsurface_delta_lights": subsurface,
+            },
+        )
+        patches[subsurface] = _center_patch_mean(image, half=4)
+    assert patches[False] > 0
+    assert patches[True] == pytest.approx(patches[False], rel=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("caustics", "subsurface", "grid"),
+    [
+        (True, True, False),
+        (False, True, False),
+        (False, True, True),
+        (False, False, False),
+    ],
+)
+def test_a_point_light_reaches_inside_a_subsurface_block(
+    tmp_path, caustics, subsurface, grid
+):
     """A scattering interior is reached from a delta light only through its
     refracting boundary, which the straight shadow connection does not cross.
-    Without caustics the inside of a subsurface block under a point light
-    therefore stays dark; with them each scatter point's light sample
-    connects through the top face along the bent path, as a surface point's
-    does through glass. Two bounces (in through the face, then the scatter)
+    Each scatter point's light sample connects through the top face along the
+    bent path instead, as a surface point's does through glass with caustics
+    on -- and with them off too, by default (``pt_subsurface_delta_lights``).
+    With both off the inside of the block stays dark. A uniform density grid
+    of 1 (``grid``) is the same medium tracked instead of integrated, so the
+    chain's legs ratio-track it and must land on the same answer. Two bounces (in through the face, then the scatter)
     keep it to single scattering, which for a white isotropic medium lit and
     seen from straight above reads
 
@@ -265,9 +331,15 @@ def test_a_point_light_reaches_inside_a_subsurface_block(tmp_path, caustics):
         floor.set_material(MeshLambertMaterial(color=BLACK))
         floor.spawn(animate=False)
         block = Prism(width=4, height=4, depth=depth)
+        density = {"density": DensityGrid(torch.ones(2, 2, 2))} if grid else {}
         block.set_material(
             MeshPhysicalMaterial(
-                color=WHITE, transmission=1, ior=n, roughness=0, sigma_s=sigma_s
+                color=WHITE,
+                transmission=1,
+                ior=n,
+                roughness=0,
+                sigma_s=sigma_s,
+                **density,
             )
         )
         block.move(OUT * (top_z - depth / 2))
@@ -288,6 +360,7 @@ def test_a_point_light_reaches_inside_a_subsurface_block(tmp_path, caustics):
             "pt_error_target": 0,
             "pt_firefly_clamp": 0,
             "pt_caustics": caustics,
+            "pt_subsurface_delta_lights": subsurface,
         },
     )
     top = _center_patch_mean(image, half=4)
@@ -300,12 +373,13 @@ def test_a_point_light_reaches_inside_a_subsurface_block(tmp_path, caustics):
     transmittance = 1 - ((n - 1) / (n + 1)) ** 2
     single = 255 * transmittance**2 / n**2 * sigma_s / (4 * math.pi) * intensity
     single *= spread
-    if caustics:
+    if caustics or subsurface:
         # What this pins: a scatter point used to be moved onto an unrelated
         # plane (its medium triangle read as a circuit), and a walk from one
         # just under the face could not converge in f32 (``MNEE_ROUNDING``),
         # dropping the least attenuated light. Here they cost about 2% and 3%.
-        assert top == pytest.approx(single, rel=0.02)
+        # Ratio tracking is unbiased but noisier than the closed form.
+        assert top == pytest.approx(single, rel=0.04 if grid else 0.02)
         _assert_no_caustic_truncation(result)
     else:
         assert top < 0.02 * single, top

@@ -538,9 +538,10 @@ caustics from area emitters.
   connection keeps only the casters' uncovered fraction, since the covered
   light now arrives bent.
 * *Receivers* are lit, shadow-receiving vertices that do not refract
-  themselves, *including medium vertices*: with `pt_caustics` on, a point,
-  spot or directional light reaches a subsurface interior through its smooth
-  boundary, which §4 records as impossible with it off.
+  themselves, *including medium vertices*: a point, spot or directional
+  light reaches a subsurface interior through its smooth boundary. With
+  `pt_caustics` off that case alone stays on (§4, "Delta lights inside
+  subsurface objects").
 * *The firefly clamp.* A chain received by a path that has not scattered yet
   (a camera ray, or one that passed only mirrors and smooth glass) is direct
   light and skips `pt_firefly_clamp`: a caustic is a concentrated image of
@@ -984,10 +985,42 @@ boundary then borders a scattering region.
 `test_glass_casts_the_same_shadow_with_or_without_unrelated_media` (clear and
 absorbing, shadows on and off) and
 `test_a_scattering_interior_still_stops_straight_shadow_connections` pin both
-sides. One consequence is unchanged and documented: with `pt_caustics` off
-a point, spot or directional light never reaches a subsurface interior, since
-only NEE can reach a delta light. §1's chains reach it through a smooth
-boundary, with the medium vertex as their receiver.
+sides. One consequence was documented as a limit: a point, spot or
+directional light never reached a subsurface interior, since only NEE can
+reach a delta light and the straight connection stops at the boundary. §1's
+chains reach it through a smooth boundary, with the medium vertex as their
+receiver, and now do so by default.
+
+**Delta lights inside subsurface objects — LANDED 2026-10-23.** The fix is
+§1's machinery, scoped down so it costs nothing outside the case it fixes.
+With `pt_caustics` off and `experimental.pt_subsurface_delta_lights` on (the
+default, `ALGAN_PT_SUBSURFACE_DELTA_LIGHTS`), a batch with a scattering
+medium still gets a caster section (`pt_caustics._prepare_casters`), but it
+holds only the smooth casters that bound a scattering, closed, physical
+interior (`_scattering_boundary_mask`), and `nee_meta[_NM_CAUSTIC]` carries
+its offset negated. `pt_shade` reads the sign as "media only": a crossing is a
+caustic receiver only when it is a medium vertex. Everything downstream keys
+off the receiver -- the chain, the caustic count `cst`, the `pt_cau` record
+and so the coverage test's MIS -- so a surface vertex lights exactly as it
+does with no section at all: glass keeps its straight, tinted shadow and no
+caustic appears on a floor. With `pt_caustics` on the setting does nothing;
+every caster is in the section and every receiver walks.
+
+What it does not cover is what §1 does not: a rough boundary is not a caster
+(its transmission is a GGX lobe, not a manifold constraint), so a subsurface
+solid with `roughness` above the 1e-2 floor is still dark to a delta light
+inside; a chain holds two interfaces, so a concave solid whose boundary the
+straight segment leaves, re-enters and leaves again keeps the stopped
+straight connection there, counted as `caustic_chain`; and only the medium's
+own boundary bends a chain, other glass on its legs passing straight and
+tinted.
+`test_a_point_light_reaches_inside_a_subsurface_block` runs the analytic
+single-scattering check with caustics on, with them off (this path), with
+them off through a uniform density grid (the chain's legs ratio-track it),
+and with both switches off (dark); `test_subsurface_delta_lights_leave_glass_shadows_straight`
+pins that a glass plate's floor reads the same with the section built;
+`test_without_caustics_the_section_holds_only_subsurface_boundaries` pins the
+host mask.
 
 ### Contracts and diagnostics
 
@@ -998,8 +1031,9 @@ boundary, with the medium vertex as their receiver.
 * No new scene-specific kernel template gate or arena argument. Runtime
   `nee_meta[21]` enables the second shell-table half; scenes with zero
   scattering retain their old scene arrays and transport. The header grows
-  to 22 words (23 since §1's `nee_meta[22]`, the caster section's offset)
-  and the optional blue-noise tile follows it.
+  to 22 words (23 since §1's `nee_meta[22]`, the caster section's offset,
+  negative when only medium vertices receive through it) and the optional
+  blue-noise tile follows it.
 * Sampler pair `2 + 6b + 4` chooses the RGB channel and flight distance;
   a documented hash salt plus straight-subsegment ordinal makes draws fresh
   across transparent subdivisions without depending on batch boundaries.

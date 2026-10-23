@@ -2,6 +2,15 @@
 
 ``_prepare_casters`` appends the caustic-caster section to ``pt_shade``'s
 ``tri_shell`` table. The kernel module holds everything else.
+
+The same chains are how a point, spot or directional light reaches the
+inside of a subsurface solid: no sampled ray can hit a delta light, and the
+straight shadow connection stops at a scattering interior's refracting
+boundary. So with ``pt_caustics`` off the section is still built for a batch
+with a scattering medium in it (``pt_subsurface_delta_lights``), holding only
+those media's smooth boundaries, and the kernel lets only medium vertices
+receive through it: every surface keeps the straight, tinted shadow it has
+without caustics.
 """
 
 from __future__ import annotations
@@ -10,7 +19,9 @@ import torch
 
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.shading_taichi import (
+    _MAT_MEDIUM_CLOSED,
     _MAT_NO_CAUSTIC_CAST,
+    _MAT_SIGMA_S,
     _MID_LAMBERT,
     _MID_PHYSICAL,
 )
@@ -90,25 +101,61 @@ def _caster_mask(merged):
     return refracts & lit & opted & shadow
 
 
-def _prepare_casters(memory, merged, shells):
-    """Return ``(tri_shell, caster offset)``.
+def _scattering_boundary_mask(merged):
+    """``[rows, n]`` bool: triangles that bound a scattering interior.
+
+    The physical, closed-shell triangles with a positive ``sigma_s`` -- the
+    shells ``pt_media._prepare_media`` puts in its section because a path
+    scatters inside them. Glass, zero-density cavities and an index-matched
+    fog's neighbours are not among them.
+    """
+    mat = merged["tri_mat"]
+    if int(mat.shape[-1]) <= _MAT_MEDIUM_CLOSED:
+        return torch.zeros((1, int(mat.shape[1])), dtype=torch.bool, device=mat.device)
+    physical = merged["tri_mat_id"] == _MID_PHYSICAL
+    scattering = (mat[..., _MAT_SIGMA_S : _MAT_SIGMA_S + 3] > 0).any(-1)
+    closed = mat[..., _MAT_MEDIUM_CLOSED] > 0.5
+    physical, scattering, closed = torch.broadcast_tensors(physical, scattering, closed)
+    return physical & scattering & closed
+
+
+def _prepare_casters(memory, merged, shells, media_offset=0):
+    """Return ``(tri_shell, caster offset, media only)``.
 
     ``shells`` is ``pt_shade``'s shell table as ``_prepare_media`` left it:
-    the opacity ring's columns, then the media section's when there is one,
-    or the ``[1, 1]`` placeholder. The caster section appended after them
-    holds each triangle's ``tri_obj`` surface id where ``_caster_mask``
-    keeps it and -1 elsewhere; the offset is its first column. Offset 0 --
-    ``pt_caustics`` off or nothing in the merge that could refract -- returns
-    ``shells`` unchanged, and the caller compiles the kernel without
-    caustics, so such a render is the renderer it was before they existed.
+    the opacity ring's columns, then the media section's when there is one
+    (``media_offset`` > 0), or the ``[1, 1]`` placeholder. The caster section
+    appended after them holds each triangle's ``tri_obj`` surface id where
+    ``_caster_mask`` keeps it and -1 elsewhere; the offset is its first
+    column.
+
+    With ``pt_caustics`` on every caster is in it and every receiver walks
+    through it. With it off and ``pt_subsurface_delta_lights`` on, a batch
+    with a scattering medium still gets a section, of that medium's casters
+    only, and ``media only`` is True: the kernel then lets only medium
+    vertices receive through it, so delta lights reach a subsurface interior
+    and nothing else changes. Offset 0 -- neither applies, or nothing in the
+    merge that could refract -- returns ``shells`` unchanged, and the caller
+    compiles the kernel without caustics, so such a render is the renderer it
+    was before they existed.
     """
-    if not rt_settings.pt_caustics or merged.get("has_refractive") is False:
-        return shells, 0
+    media_only = False
+    if not rt_settings.pt_caustics:
+        if not (rt_settings.pt_subsurface_delta_lights and int(media_offset) > 0):
+            return shells, 0, False
+        media_only = True
+    if merged.get("has_refractive") is False:
+        return shells, 0, False
     if int(merged.get("num_triangles", 0)) == 0 or merged.get("tri_mat") is None:
-        return shells, 0
+        return shells, 0, False
     caster = _caster_mask(merged)
+    if media_only:
+        caster, boundary = torch.broadcast_tensors(
+            caster, _scattering_boundary_mask(merged).to(caster.device)
+        )
+        caster = caster & boundary
     if not bool(caster.any()):
-        return shells, 0
+        return shells, 0, False
     identities = torch.where(
         caster,
         merged["tri_obj"].to(torch.int32),
@@ -126,4 +173,4 @@ def _prepare_casters(memory, merged, shells):
 
     with memory.scope("pt_caster_shells", rows=rows):
         combined = _arena_copy(memory, combined)
-    return combined, head
+    return combined, head, media_only

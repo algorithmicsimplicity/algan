@@ -447,6 +447,12 @@ section of `tri_shell` at `nee_meta[_NM_CAUSTIC]` (`_pt_caster_id`). A
 triangle that casts no shadow must not be a caster: the walks skip it, so the
 BSDF paths through it would be held for chains that never form. The geometry
 lives in `pt_caustics_taichi.py`; `pt_shade` owns the radiometry.
+With `pt_caustics` off, `pt_subsurface_delta_lights` (default on) still builds
+a section of the smooth boundaries of scattering interiors for a batch with a
+medium, and stores its offset negated: the kernel then admits only medium
+vertices as receivers, which is how delta lights reach a subsurface interior.
+Anything new that keys off a receiver must go through `mnee_vertex` so that
+gate covers it too.
 
 In the light loop, a receiver (`mnee_vertex`: a lit, shadow-receiving vertex
 that does not refract itself, including a medium vertex, which is how delta

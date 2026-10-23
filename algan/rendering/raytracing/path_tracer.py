@@ -1384,14 +1384,19 @@ def path_trace_render(
     nee_meta[_NM_MEDIA] = float(media_offset)
     # MNEE caustics (``pt_caustics``) connect next-event rays through glass,
     # so they need the shadow query that tells them where the glass is.
-    # Without a caster the kernel compiles without them.
+    # Without a caster the kernel compiles without them. With caustics off
+    # the same chains still carry delta lights into a scattering interior
+    # (``pt_subsurface_delta_lights``); a negative word tells the kernel that
+    # only medium vertices receive through them.
     caustics = 0
     caster_offset = 0
     if int(shadows) and int(has_tri):
         from algan.rendering.raytracing.pt_caustics import _prepare_casters
 
-        tri_shell, caster_offset = _prepare_casters(memory, merged, tri_shell)
-        nee_meta[_NM_CAUSTIC] = float(caster_offset)
+        tri_shell, caster_offset, media_only = _prepare_casters(
+            memory, merged, tri_shell, media_offset
+        )
+        nee_meta[_NM_CAUSTIC] = float(-caster_offset if media_only else caster_offset)
         caustics = 1 if caster_offset > 0 else 0
     from algan.rendering.raytracing.pt_volume import prepare_volumes
 

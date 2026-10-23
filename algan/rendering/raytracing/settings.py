@@ -466,6 +466,20 @@ pt_blue_noise = env_flag("ALGAN_PT_BLUE_NOISE", False)
 # receiver probes its segment for casters and may run a Newton walk, on the
 # renderer whose cost per vertex is the thing being defended.
 pt_caustics = env_flag("ALGAN_PT_CAUSTICS", False)
+# Point, spot and directional lights inside subsurface objects. A scattering
+# interior behind a refracting boundary (``MeshPhysicalMaterial`` with
+# ``sigma_s`` on a closed solid of ``ior`` other than 1) is reached by a delta
+# light only along the path bent at that boundary, which no sampled ray can
+# find and the straight shadow ray, which stops there, does not take. With
+# ``pt_caustics`` off this still builds the caustic-caster section for a
+# batch with such a medium in it, holding only the media's smooth boundaries,
+# and lets only the medium's scatter points walk through it, so their light
+# samples connect the way ``pt_caustics`` connects them and every surface keeps
+# the straight, tinted shadow it has without caustics. A rough boundary is no
+# caster and stays dark to a delta light. Off renders such an interior as it
+# was before (unlit by delta lights) and compiles no caustic kernel for it.
+# No effect while ``pt_caustics`` is on, which covers this case already.
+pt_subsurface_delta_lights = env_flag("ALGAN_PT_SUBSURFACE_DELTA_LIGHTS", True)
 # Denoise path-traced output (samples_per_pixel > 1) with the Open Image
 # Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
 # linear HDR color guided by the albedo/normal AOVs the path tracer
