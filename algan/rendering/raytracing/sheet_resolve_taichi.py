@@ -286,6 +286,20 @@ def sheet_resolve_shade_arena(
     # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
     if ti.static(megakernel_register_cap()):
         ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
+    # Taps the five continuation fans below unroll (``for s in
+    # ti.static(range(fan_taps))``). Each tap inlines a jittered surface
+    # sample, a normal fetch and a pool spawn, so at ``sec_aa`` 4 the fans are
+    # most of this kernel's compile time. The event pass (mode 1) compiles
+    # their bodies out: all a body produces is the pool spawns, which mode 1
+    # never makes, and the re-aimed ``ro``/``rd``, which nothing reads after
+    # the ``break`` that follows. What surrounds the bodies -- the fan
+    # conditions, the ``weight`` scale by ``1 / sec_n``, ``bounces_left``,
+    # ``bounced`` -- stays, so mode 1 walks the same transport as mode 2.
+    # ``sec_aa`` stays specialised in mode 1 all the same: the ``event_dp``
+    # footprint below reads it, and so does raster_shadow_trace. (The host
+    # passes ``sec_aa`` 1 to the shading launches of a batch with nothing a
+    # fan could reflect or refract through; raster_pipeline.)
+    fan_taps = ti.static(sec_aa if mode != 1 else 0)
     for t in range(num_covered):
         r = t
         pixel = covered_idx[t]
@@ -979,7 +993,7 @@ def sheet_resolve_shade_arena(
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
                         wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
-                        for s in ti.static(range(sec_aa)):
+                        for s in ti.static(range(fan_taps)):
                             if (sec_pm >> s) & 1:
                                 rdj, hpj, nj, _b1, _b2 = \
                                     _jittered_surface_sample(
@@ -1037,7 +1051,7 @@ def sheet_resolve_shade_arena(
                         weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
                         placed = False
                         jtap = 0
-                        for s in ti.static(range(sec_aa)):
+                        for s in ti.static(range(fan_taps)):
                             if (sec_pm >> s) & 1:
                                 rdj, hpj, nj, _b1, _b2 = \
                                     _jittered_surface_sample(
@@ -1097,7 +1111,7 @@ def sheet_resolve_shade_arena(
                                 and (rwt_max > sec_min_energy) and (sec_n > 1):
                             rwsub = rwt * (1.0 / ti.cast(sec_n, ti.f32))
                             jtap = 0
-                            for s in ti.static(range(sec_aa)):
+                            for s in ti.static(range(fan_taps)):
                                 if (sec_pm >> s) & 1:
                                     rdj, hpj, nj, _b1, _b2 = \
                                         _jittered_surface_sample(
@@ -1237,7 +1251,7 @@ def sheet_resolve_shade_arena(
                             and (sec_n > 1):
                         wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
                         jtap = 0
-                        for s in ti.static(range(sec_aa)):
+                        for s in ti.static(range(fan_taps)):
                             if (sec_pm >> s) & 1:
                                 rdj, hpj, nj, _b1, _b2 = \
                                     _jittered_surface_sample(
@@ -1296,7 +1310,7 @@ def sheet_resolve_shade_arena(
                     weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
                     placed = False
                     jtap = 0
-                    for s in ti.static(range(sec_aa)):
+                    for s in ti.static(range(fan_taps)):
                         if (sec_pm >> s) & 1:
                             rdj, hpj, nj, _b1, _b2 = _jittered_surface_sample(
                                 f, px, py,

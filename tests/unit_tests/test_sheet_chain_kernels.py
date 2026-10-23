@@ -31,7 +31,7 @@ from algan.rendering.raytracing.sheet_compact_taichi import (
     pair_expand_write,
     solid_shell_ceiling,
 )
-from algan.rendering.raytracing.sheets import _lexsort
+from algan.rendering.raytracing.sheets import _lexsort, _segment_exclusive_prefix
 from algan.settings import SETTINGS
 from algan.taichi_compat import template_dtype, ti
 
@@ -39,6 +39,7 @@ EXPERIMENTAL = SETTINGS.raytracing.experimental
 # Dtype template arguments as the renderer passes them (template_dtype): a raw
 # compiler dtype is not weakly referenceable and makes Quadrants warn.
 ACC_F64 = template_dtype(ti.f64)
+ACC_F32 = template_dtype(ti.f32)
 IDX_I64 = template_dtype(ti.i64)
 
 
@@ -157,6 +158,104 @@ def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments(
             ACC_F64,
         )
         assert _bits_equal(want, got), f"n={n}"
+
+
+def _large_shell_stream(nseg, seed):
+    """A frame-scale stream: ``nseg`` closed (pixel, surface) segments of one
+    to four crossings each, plus a pass-through fragment per five segments.
+
+    Returns the kernel's inputs plus each row's segment ordinal and each
+    segment's first row along ``o2`` (the torch arm's ``seg`` / ``first``).
+    """
+    g = torch.Generator().manual_seed(seed)
+    lengths = torch.randint(1, 5, (nseg,), generator=g)
+    closed_key = torch.repeat_interleave(torch.arange(nseg), lengths)
+    n_pass = nseg // 5
+    key = torch.cat([closed_key, -(torch.arange(n_pass) + 1)])
+    n = int(key.numel())
+    # Stream order is not segment order: shuffle, as the compaction's sort
+    # input is.
+    key = key.index_select(0, torch.randperm(n, generator=g)).contiguous()
+    o2 = _lexsort(key, torch.rand(n, generator=g)).contiguous()
+    back = torch.rand(n, generator=g) < 0.5
+    cov = torch.rand(n, generator=g)
+    k2 = key.index_select(0, o2)
+    seg_start = torch.ones(n, dtype=torch.bool)
+    seg_start[1:] = k2[1:] != k2[:-1]
+    seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
+    first = torch.nonzero(seg_start).reshape(-1)
+    return key, o2, back, cov, seg, first
+
+
+def test_float32_shell_ceiling_spend_does_not_degrade_with_stream_length(
+    wide_kernel_arms,
+):
+    """MPS-friendly mode (``acc_t`` f32) on a stream the size of a 1080p frame.
+
+    The spend -- the coverage a fragment's in-segment predecessors already
+    took -- used to be a difference of two entries of a global prefix over the
+    whole stream. Here that prefix ends near 1.5e6, where f32 spacing is
+    0.125, so a fragment late in the stream had its spend, and with it the
+    coverage it keeps, off by up to 0.24 (measured before the fix). The f64
+    arm is the reference: what the f32 arm computes should differ from it
+    only by rounding at the scale of one pixel's coverage.
+    """
+    key, o2, back, cov, _seg, _first = _large_shell_stream(1_200_000, seed=5)
+    n = int(key.numel())
+    back_u8 = back.contiguous().view(torch.uint8)
+
+    c64 = cov.to(torch.float64).index_select(0, o2)
+    excl64 = torch.cumsum(c64, 0).sub_(c64)
+    want = cov.clone()
+    solid_shell_ceiling(
+        key, o2, back_u8, excl64, cov.to(torch.float64), n, want, ACC_F64
+    )
+
+    c32 = cov.index_select(0, o2)
+    excl32 = torch.cumsum(c32, 0).sub_(c32)
+    assert float(excl32[-1]) > 1e6, "the stream is too small to show the effect"
+    got = cov.clone()
+    # The global f32 prefix the f32 arm used to difference; it no longer reads
+    # it (nor ``scratch``).
+    solid_shell_ceiling(key, o2, back_u8, excl32, cov.clone(), n, got, ACC_F32)
+
+    err = (got - want).abs().max().item()
+    assert err < 1e-5, f"f32 ceiling is off the f64 one by up to {err:.3g}"
+
+
+def test_float32_segment_prefix_matches_the_float64_global_difference():
+    """The torch arm's f32 spend (``_segment_exclusive_prefix``) on the same
+    frame-scale stream, against the f64 global-prefix difference it replaces
+    in that mode -- and exactly against a serial walk on a small stream,
+    including one-row and empty ones.
+    """
+    key, o2, _back, cov, seg, first = _large_shell_stream(1_200_000, seed=6)
+    c64 = cov.to(torch.float64).index_select(0, o2)
+    excl64 = torch.cumsum(c64, 0).sub_(c64)
+    want = excl64 - excl64.index_select(0, first).index_select(0, seg)
+    got = _segment_exclusive_prefix(cov.index_select(0, o2), seg, first)
+    assert got.dtype == torch.float32
+    err = (got.to(torch.float64) - want).abs().max().item()
+    assert err < 1e-5, f"segmented f32 prefix is off by up to {err:.3g}"
+
+    # The old construction on the same data, to show what the test guards.
+    c32 = cov.index_select(0, o2)
+    excl32 = torch.cumsum(c32, 0).sub_(c32)
+    old = excl32 - excl32.index_select(0, first).index_select(0, seg)
+    assert (old.to(torch.float64) - want).abs().max().item() > 1e-2
+
+    for n in (0, 1, 2, 37):
+        _k, small_o2, _b, small_cov, small_seg, small_first = _large_shell_stream(
+            max(n, 1), seed=n
+        )
+        values = small_cov.index_select(0, small_o2)[:n]
+        sseg, sfirst = small_seg[:n], small_first[small_first < n]
+        got = _segment_exclusive_prefix(values, sseg, sfirst)
+        serial = torch.zeros_like(values)
+        for i in range(1, n):
+            if sseg[i] == sseg[i - 1]:
+                serial[i] = serial[i - 1] + values[i - 1]
+        assert torch.allclose(got, serial, atol=1e-6), n
 
 
 # ------------------------------------------------------- band stats fusion

@@ -3504,7 +3504,7 @@ def _warn_secondary_clamped(requested):
         f"{_secondary_tap_ceiling()} and was clamped to it: the "
         f"continuation-position mask is a 32-bit field, one bit per tap, and "
         f"every extra distinct count is paid again in kernel compile time "
-        f"because the resolve unrolls ti.static(range(sec_aa)) at four call "
+        f"because the resolve unrolls ti.static(range(sec_aa)) at five call "
         f"sites."
     )
 
