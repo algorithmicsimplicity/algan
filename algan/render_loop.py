@@ -5015,16 +5015,23 @@ class RenderLoopMixin:
                                 )
                             )
                             resume_ind = max(current_time_ind, resume_ind)
+                            resumed = False
                             if produced_output and resume_ind > current_time_ind:
                                 remaining = new_time_ind - resume_ind
                                 current_time_ind = resume_ind
                                 duration = max(1, remaining)
+                                resumed = remaining > 0
                             elif produced_output:
                                 # Nothing survived the batch, so there is no
                                 # prefix to keep and no smaller window that
                                 # this failure justifies.
                                 raise
-                            if duration <= 1:
+                            # Only a window that was itself one frame long is
+                            # out of options. One frame left over from a
+                            # longer window is not: refetched alone, it
+                            # carries one frame of geometry instead of the
+                            # whole window's, which is the term that failed.
+                            if duration <= 1 and not resumed:
                                 raise
                             self._note_render_arena_underestimate()
                             # Not a failure: the model sizes a chunk from
