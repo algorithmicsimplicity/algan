@@ -118,6 +118,10 @@ from algan.rendering.raytracing.pt_media_taichi import (
     PT_STAT_MEDIA_QUERY,
     PT_STAT_MEDIA_STACK,
 )
+from algan.rendering.raytracing.pt_volume_taichi import (
+    PT_STAT_VOLUME_STEPS,
+    PT_VOL_MAX_STEPS,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     kbuf,
     max_surfaces_per_ray,
@@ -1199,6 +1203,7 @@ def path_trace_render(
     out,
     accum,
     accum_odd=None,
+    density_volumes=None,
 ):
     """Path trace frames ``[time_start, time_end)`` into ``accum``.
 
@@ -1252,6 +1257,12 @@ def path_trace_render(
     ``1 / samples``) still yields per-pixel means. ``None`` -- which is what
     ``pt_error_target = 0`` produces -- is the uniform loop, byte for byte as
     it was before adaptive sampling existed.
+
+    ``density_volumes`` is the render loop's snapshot of the batch's live
+    density grids, ``(entries, xforms)`` (``density_grid
+    ._density_volume_snapshot``), or None when there are none. The grids the
+    batch's interiors name are uploaded per call (``pt_volume.prepare_volumes``)
+    beside the medium shell table.
     """
     # Local import: tracer imports this module lazily at dispatch, and these
     # helpers live beside the deterministic orchestration it reuses.
@@ -1360,6 +1371,11 @@ def path_trace_render(
     tri_shell = _build_shell_table(memory, merged)
     tri_shell, pt_tri_extra, media_offset = _prepare_media(memory, merged, tri_shell)
     nee_meta[_NM_MEDIA] = float(media_offset)
+    from algan.rendering.raytracing.pt_volume import prepare_volumes
+
+    pt_vol_i, pt_vol_f = prepare_volumes(
+        memory, merged, density_volumes, num_frames, media_offset
+    )
     logger.log(
         PERF,
         "path tracer: next-event setup %.1f ms (%d entries, %d tree nodes, %d frames)",
@@ -1685,6 +1701,8 @@ def path_trace_render(
                             nee_inf_ref,
                             pt_glass_energy,
                             cam_proj_table,
+                            pt_vol_i,
+                            pt_vol_f,
                             projected,
                         )
                     active = compactor.select(rs_int, 0, source=active)
@@ -1756,6 +1774,11 @@ def path_trace_render(
             ring_over = int(pt_stats[PT_STAT_SHELL_RING].item())
             if ring_over:
                 record_truncation("closed_shell_ring", ring_over, cap=_SHELL_RING_SLOTS)
+            tracking_over = int(pt_stats[PT_STAT_VOLUME_STEPS].item())
+            if tracking_over:
+                record_truncation(
+                    "medium_tracking", tracking_over, cap=PT_VOL_MAX_STEPS
+                )
         except (InsufficientMemoryException, RuntimeError):
             # Release the tile's state before the chunk-halving retry in
             # render_chunk sees the exception (mirrors run_tile).

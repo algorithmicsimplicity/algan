@@ -54,6 +54,9 @@ single-stage pipeline)::
     37 g (Henyey-Greenstein phase anisotropy)
     38 medium_closed (raw closed-shell GEOMETRY declaration, independent of
     transmission-exempt opacity compositing)
+    39 density_volume (the key of the density grid that scales the interior's
+    coefficients, declared by the GEOMETRY's Mob; 0.0 is a homogeneous
+    interior -- see ``_MAT_DENSITY_VOLUME``)
 
 Shared geometry/transport slots must treat zero padding as the pre-existing
 behavior. Pipeline-specific slots may have nonzero defaults when their reads
@@ -75,10 +78,18 @@ from algan.rendering.raytracing.color_space_taichi import (
 from algan.taichi_compat import ti
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 39
+MAT_W = 40
 _MAT_SIGMA_S = 34  # RGB scattering coefficient, inverse scene units
 _MAT_PHASE_G = 37  # Henyey-Greenstein anisotropy
 _MAT_MEDIUM_CLOSED = 38  # raw geometric declaration, NOT the opacity ceiling
+# Slot 39: which density grid scales this closed interior's coefficients, as
+# the positive key ``set_material`` gave the Mob that owns the grid (see
+# ``algan.rendering.shaders.density_grid``). Declared by the MOB like slots 26,
+# 33 and 38 -- every triangle under the owner carries it, whatever its own
+# material block -- and read only by the path tracer's medium walk
+# (``pt_volume_taichi._pt_medium_volume``). 0.0 is "homogeneous", what every
+# interior was before density grids, which is what the padding rule requires.
+_MAT_DENSITY_VOLUME = 39
 
 # Slot 26 of that block: 1.0 when the primitive's geometry declares an outside,
 # so a back-facing hit is shaded with its own normal instead of the viewer's

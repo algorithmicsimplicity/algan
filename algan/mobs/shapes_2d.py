@@ -39,6 +39,7 @@ from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import get_orthonormal_vector, map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.stroke_style import _warn_background_stroke
+from algan.rendering.shaders.density_grid import _density_key
 from algan.settings import SETTINGS
 from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.settings.shape_style_profiles import _manim_shape_style_for
@@ -840,6 +841,8 @@ class TriangleVertices(Mob):
         primitive.declare_one_sided(not self.two_sided)
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
         primitive.declare_shadow_flags(*self._resolved_shadow_flags())
+        # The density grid ``set_material`` bound, by key (0: homogeneous).
+        primitive.declare_density_volume(_density_key(self))
         return primitive
 
 

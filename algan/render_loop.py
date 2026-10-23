@@ -689,6 +689,11 @@ def _slice_render_state(render_state, start, end, total_frames):
             "light_active", [None] * len(render_state["lights"])
         )
     ]
+    # ``(entries, xforms)``: the grids are per-batch, their per-frame
+    # world-to-box rows are not.
+    if render_state.get("density_volumes") is not None:
+        entries, xforms = render_state["density_volumes"]
+        out["density_volumes"] = (entries, sliced(xforms))
     return out
 
 
@@ -2539,6 +2544,13 @@ class RenderLoopMixin:
                     camera_lens=render_state.get("camera_lens"),
                     camera_projection=camera.camera_projection,
                     **({"aux_passes": True} if aux_sink is not None else {}),
+                    # Only when a grid is live, so a render kernel that has no
+                    # use for one never sees the keyword.
+                    **(
+                        {"density_volumes": render_state["density_volumes"]}
+                        if render_state.get("density_volumes") is not None
+                        else {}
+                    ),
                 )
                 if aux_sink is not None:
                     # The renderer's side channel (render_batch_raytraced);
@@ -4047,6 +4059,21 @@ class RenderLoopMixin:
         projection_fn = getattr(camera, "_get_render_projection", None)
         if projection_fn is not None and camera._is_pinhole():
             projection_fn = None
+        # Density grids follow their owner Mob's frame, read here from the
+        # same materialized rows as the camera (only the path tracer renders
+        # them, so a deterministic render snapshots nothing).
+        density_volumes = None
+        if SETTINGS.raytracing.samples_per_pixel > 1:
+            from algan.rendering.shaders.density_grid import (
+                _density_volume_snapshot,
+            )
+
+            density_volumes = _density_volume_snapshot(
+                self,
+                window_start_time,
+                window_end_time,
+                int(camera_location.shape[0]),
+            )
         return {
             **({"frame_indices": frame_indices} if frame_indices is not None else {}),
             "ray_origin": camera_location.unsqueeze(-2).to(device),
@@ -4061,6 +4088,11 @@ class RenderLoopMixin:
             "lights": lights,
             "light_objects": light_objects,
             "light_active": light_active,
+            **(
+                {"density_volumes": density_volumes}
+                if density_volumes is not None
+                else {}
+            ),
         }
 
     def get_frames(

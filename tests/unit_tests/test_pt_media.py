@@ -11,8 +11,11 @@ from algan import (
     BLACK,
     ORIGIN,
     OUT,
+    RIGHT,
     SMOKE_TEST,
+    UP,
     WHITE,
+    Circle,
     DirectionalLight,
     MeshPhysicalMaterial,
     PointLight,
@@ -145,14 +148,9 @@ def test_volume_scatter_renders_with_exterior_and_interior_camera(tmp_path, inte
     assert float(image[..., :3].float().mean()) > 0.5, "the volume must scatter light"
 
 
-@pytest.mark.parametrize("shadows", [True, False])
-def test_homogeneous_slab_single_scatter_matches_closed_form(tmp_path, shadows):
-    """Full renderer reference: a collimated beam crosses a two-unit slab.
-
-    At one allowed volume collision, back lighting gives a constant integrand
-    sigma_s * phase(1) * exp(-sigma_t * D). Absorption is applied to BOTH
-    camera and light segments, once each, including when surface shadows are
-    disabled. A narrow field of view keeps obliquity below 0.01%.
+def _slab_single_scatter(tmp_path, name, shadows, decoys=0):
+    """``(measured, closed form)`` for the slab below, with ``decoys`` small
+    filled circles far outside the view and out of the beam.
     """
     from test_path_tracer import _render_scene_exp
 
@@ -178,13 +176,17 @@ def test_homogeneous_slab_single_scatter_matches_closed_form(tmp_path, shadows):
             )
         )
         slab.spawn(animate=False)
+        for k in range(decoys):
+            Circle(radius=0.05, filled=True).move(
+                RIGHT * 40 + UP * (0.2 * k) + OUT * 3
+            ).spawn(animate=False)
         DirectionalLight(
             location=-OUT * 5, target=ORIGIN, color=WHITE, intensity=radiance
         ).spawn(animate=False)
 
     image = _render_scene_exp(
         tmp_path,
-        f"slab_{shadows}.png",
+        name,
         build,
         512,
         video=SMOKE_TEST,
@@ -199,7 +201,35 @@ def test_homogeneous_slab_single_scatter_matches_closed_form(tmp_path, shadows):
         },
     )
     expected = radiance * ss * depth * math.exp(-(sa + ss) * depth) / (4 * math.pi)
-    actual = float(image[..., :3].float().mean()) / 255
+    return float(image[..., :3].float().mean()) / 255, expected
+
+
+@pytest.mark.parametrize("shadows", [True, False])
+def test_homogeneous_slab_single_scatter_matches_closed_form(tmp_path, shadows):
+    """Full renderer reference: a collimated beam crosses a two-unit slab.
+
+    At one allowed volume collision, back lighting gives a constant integrand
+    sigma_s * phase(1) * exp(-sigma_t * D). Absorption is applied to BOTH
+    camera and light segments, once each, including when surface shadows are
+    disabled. A narrow field of view keeps obliquity below 0.01%.
+    """
+    actual, expected = _slab_single_scatter(tmp_path, f"slab_{shadows}.png", shadows)
+    assert actual == pytest.approx(expected, abs=0.004), (actual, expected)
+
+
+def test_a_scatter_point_stays_where_it_was_sampled(tmp_path):
+    """Circuits elsewhere in the scene do not move a medium vertex.
+
+    A scatter point is on no surface, but its ``prim`` is the shell triangle
+    the path entered through, and the hit point's snap-to-surface once read
+    that index as a circuit's: each vertex jumped onto the plane of whichever
+    circle shared its triangle's index -- here three units in front of the
+    slab, out of the medium, so the slab's single scatter changed. Seen in a
+    tessellated fog sphere, every entry facet showed its own brightness.
+    """
+    actual, expected = _slab_single_scatter(
+        tmp_path, "slab_decoys.png", True, decoys=16
+    )
     assert actual == pytest.approx(expected, abs=0.004), (actual, expected)
 
 

@@ -167,7 +167,11 @@ pair                           use
 2 + 6b + 1                     bounce ``b``: BSDF direction (2D)
 2 + 6b + 2, 3                  bounce ``b``: reserved (legacy light slots)
 2 + 6b + 4                     medium free flight: x RGB channel, y distance;
-                               seed salted by straight-subsegment ordinal
+                               seed salted by straight-subsegment ordinal. In
+                               a density grid: the FIRST tentative collision's
+                               x event, y distance; every later one is a hash
+                               of that salted seed and the sample index
+                               (``pt_volume_taichi``)
 2 + 6b + 5                     medium HG continuation direction (2D)
 2 + 6B + (2L+1)c + 2s + 0      crossing ``c``, NEE sample ``s``: x entry
                                select (an authored crossing's sampling arm:
@@ -182,6 +186,11 @@ pair                           use
 The lobe select used to draw white noise from the hash RNG, on the argument
 that a crossing has no fixed dimension index; indexing on ``processed``, the
 trick next-event estimation already used, gives it one (roadmap section 7).
+
+A shadow connection through a density grid has no fixed number of draws at
+all, so its ratio tracking is hash-only: seeded from ``path_seed``, the
+connection's own NEE pair (or, on the authored summing arm, its crossing and
+light row) and the sample index -- still a pure function of path identity.
 """
 
 from algan.rendering.raytracing.arena_args_taichi import (
@@ -223,6 +232,12 @@ from algan.rendering.raytracing.pt_media_taichi import (
     _pt_medium_sample,
     _pt_medium_top,
     _pt_medium_transmittance,
+)
+from algan.rendering.raytracing.pt_volume_taichi import (
+    PT_STAT_VOLUME_STEPS,
+    _pt_medium_volume,
+    _pt_vol_seed,
+    _pt_vol_track,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
@@ -369,9 +384,11 @@ _PT_ACC_SCATTERED = 14
 
 # Device-side truncation tallies, read back by the host once per wave and fed
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
-PT_STATS_WIDTH = 4
+PT_STATS_WIDTH = 5
 PT_STAT_TRUNC_SURFACES = 0
 PT_STAT_SHELL_RING = 1
+# Slots 2-3 are the medium stack's (pt_media_taichi), slot 4 the density-grid
+# tracker's (pt_volume_taichi.PT_STAT_VOLUME_STEPS).
 
 # Russian-roulette survival floor: a path is never continued with less than
 # this probability, bounding the throughput amplification at 1/floor.
@@ -2586,6 +2603,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     nee_inf_ref = ti.static(ArenaView(arena_i32, aoff[36], (ashp[76],)))
     pt_glass_energy = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[38], (ashp[79], ashp[80])))
+    pt_vol_i = ti.static(ArenaView(arena_i32, aoff[39], (ashp[81],)))
+    pt_vol_f = ti.static(ArenaView(arena_f32, aoff[40], (ashp[82],)))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     # Quadrants patch 0005's per-kernel register cap, off unless
@@ -2758,7 +2777,32 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     medium_albedo = sigma_s_m / ti.max(sigma_t_m, 1e-30)
                     seg_m = t_hit - t_prev
                     weight_m = ti.exp(-sigma_t_m * seg_m)
-                    if (bounces_left > 0) and (sigma_s_m.max() > 0.0):
+                    vol_m = _pt_medium_volume(pt_vol_i, tri_mat, f, medium_prim)
+                    if vol_m >= 0:
+                        # A density grid (pt_volume_taichi): spectral tracking
+                        # when the flight may scatter, ratio tracking when it
+                        # may not. Its first tentative collision takes the
+                        # flight's Sobol pair, as the homogeneous flight
+                        # below does; later ones hash the flight's seed.
+                        flight_seed = _pt_hash_combine(
+                            path_seed, ti.u32(0xA511E9B3) + ti.cast(media_segments, ti.u32))
+                        pair_m = PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * (max_b - bounces_left) + 4
+                        u_m = pt_sample_2d_seeded(flight_seed, pair_m, s_index)
+                        scatter_m = 0
+                        if (bounces_left > 0) and (sigma_s_m.max() > 0.0):
+                            scatter_m = 1
+                        hit_m, t_m, weight_m, steps_m = _pt_vol_track(
+                            pt_vol_i, pt_vol_f, vol_m, f, ro, rd, t_prev, t_hit,
+                            sigma_a_m, sigma_s_m,
+                            ti.math.vec3(thru[0], thru[1], thru[2]), scatter_m,
+                            _pt_vol_seed(flight_seed, s_index), u_m)
+                        ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], steps_m)
+                        media_segments += 1
+                        stoch = 1
+                        if hit_m != 0:
+                            medium_vertex = True
+                            t_hit = t_m
+                    elif (bounces_left > 0) and (sigma_s_m.max() > 0.0):
                         # Fresh domain per straight subsegment, not per launch:
                         # unrelated transparent layers may subdivide a flight.
                         # The 2D Sobol prefix remains pure under batch splitting.
@@ -3000,11 +3044,16 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # whose shadow ray or bounce then hits the surface it left --
                 # speckle across every lit surface and mirror. A triangle hit
                 # is rebuilt from its barycentrics, a circuit's put back on
-                # its plane (_tri_surface_point, _bezier_plane_point).
+                # its plane (_tri_surface_point, _bezier_plane_point). A
+                # medium vertex (htype 3) is on no surface and stays where it
+                # was sampled: its ``prim`` is the shell triangle it entered
+                # through, and read as a circuit it projected the vertex onto
+                # an unrelated plane -- each entry facet's fog printed with
+                # its own brightness.
                 hit_p = ro + t_hit * rd
                 if htype == 1:
                     hit_p = _tri_surface_point(f, prim, w0, a, b, tri_pos)
-                else:
+                elif htype == 0:
                     hit_p = _bezier_plane_point(f, prim, hit_p, circuit_meta)
                 # Where the material stages measure from: the eye, or off the
                 # pinhole the start of the camera ray through the hit
@@ -3442,13 +3491,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 rd.dot(fnrm) < 0.0)
                                     m_dist = _pt_shadow_tmax(m_origin, wi_vis,
                                         ldist - (m_origin - hit_p).dot(wi_vis))
-                                    m_vis, m_over2, m_cut = _pt_medium_transmittance(
+                                    # A density grid on the way is ratio-tracked
+                                    # from this light sample's own stream.
+                                    m_seed = _pt_vol_seed(_pt_vol_seed(
+                                        path_seed ^ ti.u32(0x3C6EF372), pair_sel), s_index)
+                                    m_vis, m_over2, m_cut, m_steps = _pt_medium_transmittance(
                                         refit, m_origin, wi_vis, f, m_dist, m_stack,
                                         layer_offset_triangles,
                                         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset,
+                                        pt_vol_i, pt_vol_f, m_seed)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], m_over + m_over2)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], m_cut)
+                                    ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], m_steps)
                                     if m_over != 0:
                                         m_vis = ti.math.vec3(0.0, 0.0, 0.0)
                                     vis3 *= m_vis
@@ -3556,15 +3611,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     wi_m, distance_m, valid_m = _pt_light_sample_point(
                                         light_pos, light_col, f, li, hit_p, u_pt[0], u_pt[1])
                                     if valid_m == 1:
-                                        vis_m, over_m, cut_m = _pt_medium_transmittance(
+                                        seed_m = _pt_vol_seed(_pt_vol_seed(
+                                            path_seed ^ ti.u32(0x3C6EF372), pair_sel), s_index)
+                                        vis_m, over_m, cut_m, steps_m = _pt_medium_transmittance(
                                             refit, sorigin_a, wi_m, f,
                                             _pt_shadow_tmax(sorigin_a, wi_m,
                                                 distance_m - (sorigin_a - hit_p).dot(wi_m)),
                                             media, layer_offset_triangles,
                                             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                                            t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                            t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset,
+                                            pt_vol_i, pt_vol_f, seed_m)
                                         ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], over_m)
                                         ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], cut_m)
+                                        ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], steps_m)
                                         base_m = light_vis_index(s, 0)
                                         for channel_m in ti.static(range(3)):
                                             vis[base_m + channel_m] *= vis_m[channel_m]
@@ -3633,15 +3692,20 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 wi_m, distance_m, valid_m = _pt_light_sample_point(
                                     light_pos, light_col, f, li_m, hit_p, u1_m, u2_m)
                                 if valid_m == 1:
-                                    vis_m, over_m, cut_m = _pt_medium_transmittance(
+                                    seed_m = _pt_vol_seed(_pt_vol_seed(
+                                        path_seed ^ ti.u32(0x7A3D1F55),
+                                        processed * 64 + li_m), s_index)
+                                    vis_m, over_m, cut_m, steps_m = _pt_medium_transmittance(
                                         refit, sorigin_m, wi_m, f,
                                         _pt_shadow_tmax(sorigin_m, wi_m,
                                             distance_m - (sorigin_m - hit_p).dot(wi_m)),
                                         media, layer_offset_triangles,
                                         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset,
+                                        pt_vol_i, pt_vol_f, seed_m)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], over_m)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], cut_m)
+                                    ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], steps_m)
                                     base_m = light_vis_index(li_m, 0)
                                     for channel_m in ti.static(range(3)):
                                         vis[base_m + channel_m] *= vis_m[channel_m]
@@ -4486,6 +4550,8 @@ _PT_SHADE_ARENA = (
     ("nee_inf_ref", "i32", 1),
     ("pt_glass_energy", "f32", 2),
     ("cam_proj_table", "f32", 2),
+    ("pt_vol_i", "i32", 1),
+    ("pt_vol_f", "f32", 1),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -4508,7 +4574,8 @@ _PT_SHADE_PARAMS = (
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
     "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
     "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
-    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy", "cam_proj_table", "projected",
+    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy", "cam_proj_table",
+    "pt_vol_i", "pt_vol_f", "projected",
 )
 
 _pt_shade_launch = arena_packed(

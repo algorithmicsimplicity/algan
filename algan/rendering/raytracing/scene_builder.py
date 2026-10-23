@@ -2745,14 +2745,29 @@ def _merge_scene(
         _note(values.reshape(1, -1))
         if values.numel():
             _note(torch.stack([(mat_ids == value).any(-1) for value in values], -1))
-    from algan.rendering.raytracing.shading_taichi import _MAT_SIGMA_S, _MID_PHYSICAL
+    from algan.rendering.raytracing.shading_taichi import (
+        _MAT_DENSITY_VOLUME,
+        _MAT_SIGMA_S,
+        _MID_PHYSICAL,
+    )
 
-    scattering = (scene["tri_mat_id"] == _MID_PHYSICAL) & (
+    physical = scene["tri_mat_id"] == _MID_PHYSICAL
+    scattering = physical & (
         scene["tri_mat"][..., _MAT_SIGMA_S : _MAT_SIGMA_S + 3] != 0
     ).any(dim=-1)
+    # A density grid's interior is a tracked medium even when it only absorbs
+    # (``pt_media._prepare_media``), so it switches the medium walk on too.
+    density = (
+        physical & (scene["tri_mat"][..., _MAT_DENSITY_VOLUME] > 0.5)
+        if scene["tri_mat"].shape[-1] > _MAT_DENSITY_VOLUME
+        else torch.zeros_like(physical)
+    )
     if signature is not None:
         _note(_frame_any(scattering))
-    scene["has_scattering_media"] = bool(scattering.any())
+        _note(_frame_any(density))
+    scene["has_density_media"] = bool(density.any())
+    scene["has_homogeneous_media"] = bool((scattering & ~density).any())
+    scene["has_scattering_media"] = bool(scattering.any()) or scene["has_density_media"]
     # Area-light radiance is already linear in the light snapshot. Decode the
     # authored geometry first, then insert emitters before the ONE BVH build
     # and arena preflight/upload. The deterministic merge keeps its row model.
