@@ -36,6 +36,7 @@ from algan import (
     BLACK,
     BLUE,
     DOWN,
+    GRAY,
     GREEN,
     LEFT,
     ORIGIN,
@@ -648,6 +649,109 @@ def test_ggx_furnace_keeps_energy_with_compensation(tmp_path):
         f"GGX furnace lost energy: sphere disc mean {mean:.1f}/255"
     )
     assert mean <= 256, f"GGX furnace GAINED energy: {mean:.1f}/255"
+
+
+_LINEAR_BYTES = {
+    "linear_color_space": False,
+    "tonemapping": False,
+    "experimental": {"post_process_tonemap": False},
+}
+
+
+def _physical_sphere_scene(material, background=BLACK, env=None, light=True):
+    def build(scene):
+        scene.set_background(background)
+        Scene.clear_lights()
+        if env is not None:
+            scene.set_environment_map(env, ambient=False)
+        if light:
+            PointLight(location=OUT * 4.0 + UP * 2.0 + RIGHT * 2.0, color=WHITE).spawn(
+                animate=False
+            )
+        sphere = Sphere(radius=1.0)
+        sphere.set_material(material)
+        sphere.spawn(animate=False)
+
+    return build
+
+
+def test_clearcoat_and_sheen_change_a_path_traced_render(tmp_path):
+    """MeshPhysicalMaterial's clearcoat and sheen reach the path tracer.
+
+    It used to read none of their slots, so a grey physical sphere under a
+    point light rendered byte-identically with ``clearcoat`` 0 and 1 and with
+    ``sheen`` 0 and 1, while the deterministic renderer drew both layers.
+    The coat adds a sharp highlight of its own over the rough base; the sheen
+    brightens the rim.
+    """
+
+    def render(name, **layers):
+        material = MeshPhysicalMaterial(color=GRAY, roughness=0.8, **layers)
+        return _render_scene_exp(
+            tmp_path,
+            name,
+            _physical_sphere_scene(material),
+            16,
+            **_LINEAR_BYTES,
+        ).float()[..., :3]
+
+    bare = render("layers_bare.png")
+    coat = render("layers_coat.png", clearcoat=1.0, clearcoat_roughness=0.3)
+    sheen = render(
+        "layers_sheen.png", sheen=1.0, sheen_roughness=0.5, sheen_color=WHITE
+    )
+    assert float(bare.max()) > 10, "the test sphere is not lit"
+    coat_gain = float(coat.max() - bare.max())
+    assert coat_gain > 30, (
+        f"clearcoat added no highlight: brightest byte {float(bare.max()):.0f} "
+        f"bare, {float(coat.max()):.0f} coated"
+    )
+    sheen_gain = float(sheen.sum() / bare.sum())
+    assert sheen_gain > 1.05, (
+        f"sheen changed the image by a factor {sheen_gain:.3f} (1 = ignored)"
+    )
+
+
+def test_clearcoat_furnace_does_not_gain_energy(tmp_path):
+    """White furnace with a coat: a white dielectric sphere under a uniform
+    environment, bare and with ``clearcoat = 1`` (a smooth coat, the
+    default, and a rough one), all with linear output bytes so a gain is not
+    hidden by clipping. What the coat reflects it takes from the base
+    (``1 - clearcoat * F(n.v)``), so the coated sphere must not come out
+    brighter than the bare one. Next-event sampling of the environment and
+    the BSDF-sampled escapes are MIS-weighted against each other here, so a
+    coat pdf that disagreed between the two ends would also show as a gain
+    or a loss.
+    """
+    env = torch.full((4, 8, 3), 0.25)
+    furnace = 255.0 * 0.25
+
+    def render(name, **layers):
+        material = MeshPhysicalMaterial(
+            color=WHITE, roughness=0.5, metalness=0.0, **layers
+        )
+        img = _render_scene_exp(
+            tmp_path,
+            name,
+            _physical_sphere_scene(material, env=env, light=False),
+            64,
+            **_LINEAR_BYTES,
+        ).float()[..., :3]
+        return _center_patch_mean(img, half=4), float(img.mean())
+
+    bare_c, bare_m = render("cc_furnace_bare.png")
+    for rough in (0.0, 0.3):
+        c, m = render(
+            f"cc_furnace_{rough}.png", clearcoat=1.0, clearcoat_roughness=rough
+        )
+        assert c <= max(bare_c, furnace) + 1.5, (
+            f"coat roughness {rough}: sphere centre {c:.2f} against the bare "
+            f"sphere's {bare_c:.2f} (furnace {furnace:.2f}) -- energy gained"
+        )
+        assert m <= max(bare_m, furnace) + 0.75, (
+            f"coat roughness {rough}: frame mean {m:.2f} against {bare_m:.2f}"
+        )
+        assert c > 0.9 * furnace, f"coat roughness {rough}: centre {c:.2f} lost energy"
 
 
 def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):

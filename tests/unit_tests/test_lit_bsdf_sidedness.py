@@ -30,7 +30,10 @@ import pytest
 import torch
 
 from algan.rendering.raytracing.glass_energy import glass_energy_table
-from algan.rendering.raytracing.path_tracer_taichi import _pt_lit_f_pdf
+from algan.rendering.raytracing.path_tracer_taichi import (
+    _pt_layer_none,
+    _pt_lit_f_pdf,
+)
 from algan.rendering.taichi_runtime import init_taichi
 from algan.taichi_compat import ti
 
@@ -65,6 +68,7 @@ def _diffuse_probe(
             0.0,  # metalness
             one,  # albedo
             0.0,  # transmission
+            _pt_layer_none(),  # no clearcoat or sheen
         )
         out[i, 0] = f_cos[0]
         out[i, 1] = pdf
