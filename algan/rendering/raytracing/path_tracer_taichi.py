@@ -59,9 +59,11 @@ Surface treatment by pipeline id (see ``shading_taichi``):
   the sampled continuation above. The direction-less ambient / hemisphere
   rows contribute ``e_diff * L``, the physical answer for a constant-radiance
   environment over the diffuse lobe, and no specular fill (indirect transport
-  replaces that). Light units are the deterministic renderer's; the response
-  is not, so a lit surface is not as bright as its ``spp == 1`` render --
-  which is deliberate (roadmap section 5). Phong has no Blinn-Phong highlight
+  replaces that). Light units and the diffuse response are the
+  deterministic renderer's, so a front-lit matte surface reads the same in
+  both (``test_a_lit_lambert_surface_reads_the_same_in_both_renderers``);
+  the specular lobes still differ where the deterministic renderer
+  approximates (roadmap section 5). Phong has no Blinn-Phong highlight
   here: it is GGX like the other lit pipelines. Emissive triangles illuminate
   their surroundings through next-event estimation and BSDF-sampled paths,
   combined with MIS where both strategies can reach the emitter.

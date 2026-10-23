@@ -339,6 +339,29 @@ Six further consequences of the split, not covered there:
   and a later render tries the download again once ten minutes have passed.
   Flat 2-D content composites deterministically inside the path tracer (zero
   variance), so vector graphics and text stay exact with or without it.
+* **Unlit content is an emitter for the path tracer's bounce light.**
+  A :class:`~algan.rendering.shaders.materials.MeshBasicMaterial` surface,
+  text and other flat 2-D content shine with their own colour, and with
+  ``max_bounces`` above 1 that light reaches lit surfaces nearby: a white
+  label beside a mesh brightens it.
+  Neither Three.js nor the deterministic renderer does this. Such content is
+  only found by the light a surface scatters into it, not by the emitter
+  sampling that finds lights and emissive meshes, so the light it gives is
+  noisier than an emissive mesh of the same brightness would be. Keep bright
+  unlit content away from lit geometry, or lower ``max_bounces``, when that
+  glow is unwanted.
+* **Very bright indirect light is clamped.** Any path that has bounced at
+  least once adds at most
+  ``SETTINGS.raytracing.experimental.pt_firefly_clamp`` (default ``10``, in
+  units of an authored white; ``0`` disables it) to a pixel. That removes the
+  fireflies a rare bright path leaves, at the cost of a little darkening of
+  genuinely bright bounce light. Two side effects are visible: the cap is
+  applied per colour channel, so a saturated emitter seen through a bounce
+  shifts toward white (a red light 50 times brighter than white comes out
+  pinker); and a mirror or smooth glass counts as a bounce, so an emitter
+  brighter than the cap -- a :class:`~.RectAreaLight` panel usually is, as
+  its radiance is ``intensity / A`` -- looks dimmer in a mirror than seen
+  directly.
 * Path-traced output is *stochastic*. Two renders of the same scene converge
   to the same image but need not be identical frame for frame, and the
   renderer makes no byte-identity promise. Raise ``samples_per_pixel`` (or
@@ -547,6 +570,16 @@ effect:
   through ``Mob.two_sided``, not by the material.
 
 Textures do work — through a different door. See the next section.
+
+One property is accepted but means something narrower than in Three.js:
+``env_map_intensity``. In Three.js it scales how strongly a material picks
+up the environment map, in both its reflections and its diffuse light. Here
+it scales only the deterministic renderer's small constant ambient fill
+(``ambient_strength_linear``); environment reflections and the environment's
+diffuse light are unaffected, and the path tracer ignores it. Setting it to
+``0`` does not stop an object reflecting the sky. To change how strongly the
+whole scene is lit by the map, pass ``intensity`` to
+:meth:`~algan.scene.Scene.set_environment_map`.
 
 :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`'s
 ``attenuation_color`` and ``attenuation_distance`` *are* honoured: light
@@ -1412,6 +1445,15 @@ Neither renderer does any of these, at any setting:
 * **Displacement mapping** or height-map tessellation. Geometry comes from the
   mob; a texture never moves a vertex.
 * **Wireframe rendering.**
+* **Distance fog.** There is no equivalent of Three.js's ``scene.fog`` or
+  ``FogExp2``. A homogeneous medium on a large closed solid gives real fog
+  under the path tracer (`Homogeneous volumes and subsurface scattering`_).
+* **Environment-map rotation.** The map's axes are fixed to the world's
+  (equirectangular, ``UP`` at the top); rotate the image itself to turn it.
+* **A per-light shadow switch.** With ``shadows`` on, every light casts
+  shadows; there is no equivalent of Three.js's ``light.castShadow`` (which
+  is off by default there). Control shadows per object instead, through a
+  mob's ``casts_shadows`` and ``receives_shadows``.
 * **Motion vectors or cryptomatte.** Depth, normal and object-ID passes are
   written on request (see `Auxiliary passes`_), but there is no motion-vector
   pass and no cryptomatte-style coverage matte.

@@ -95,9 +95,13 @@ surface white.
 :class:`~.PointLight` defaults to ``intensity=PI``; the other light types
 default to ``1``.
 
-Every light's ``intensity`` means what it does in Three.js, whose renderer has
-worked in these units by default since r155 (for a point or spot light, with
-``decay=2``). Earlier versions of Algan's deterministic renderer lit matte
+Every light's ``intensity`` except :class:`~.RectAreaLight`'s means what it
+does in Three.js, whose renderer has worked in these units by default since
+r155 (for a point or spot light, with ``decay=2``). Three.js gives an area
+light's intensity as luminance, so its radiance is ``color * intensity``;
+Algan's is power-normalised to ``color * intensity / A`` for a panel of area
+``A`` (see `Rect-Area Light`_). To port a Three.js area light, multiply its
+intensity by ``width * height``. Earlier versions of Algan's deterministic renderer lit matte
 surfaces ``pi`` times brighter than this. To keep an older scene's look,
 multiply every ``intensity`` it passes by ``PI``; a :class:`~.PointLight`
 created without one already matches, through its new default. Matte shading then looks as it did; the highlights of
