@@ -39,6 +39,15 @@ class InsufficientMemoryException(Exception):
     pass
 
 
+class CudaContextLost(RuntimeError):
+    """A CUDA error left the device unusable for the rest of this process.
+
+    Raised by :func:`raise_if_cuda_context_lost` in place of an out-of-memory
+    error that a retry would otherwise absorb. :func:`is_cuda_oom` does not
+    match it, so no retry loop takes it for a smaller window that might fit.
+    """
+
+
 def is_cuda_oom(exc):
     """True if ``exc`` is an out-of-memory failure from *either* GPU allocator.
 
@@ -55,6 +64,8 @@ def is_cuda_oom(exc):
     """
     if isinstance(exc, torch.OutOfMemoryError):
         return True
+    if isinstance(exc, CudaContextLost):
+        return False
     if isinstance(exc, RuntimeError):
         msg = str(exc).lower()
         return (
@@ -63,6 +74,47 @@ def is_cuda_oom(exc):
             or "cudaerrormemoryallocation" in msg
         )
     return False
+
+
+def raise_if_cuda_context_lost(exc):
+    """Raise :class:`CudaContextLost` if CUDA stopped working after ``exc``.
+
+    For the out-of-memory retries, between matching ``exc`` with
+    :func:`is_cuda_oom` and freeing memory to try a smaller window. Most
+    out-of-memory errors leave CUDA working: torch's allocator refusing a
+    block (:class:`torch.OutOfMemoryError`, never checked here) and Taichi's
+    pool failing an allocation both do, and a retry is the right answer. A raw
+    ``CUDA error: out of memory`` from a CUDA call can instead leave the
+    context failing every later call with the same error. Seen on 2026-10-23,
+    twice, on Windows while another process held most of the VRAM: raised from
+    ``torch.repeat_interleave`` in the bezier acceleration build during the
+    arena preflight, after which ``torch.cuda.synchronize`` and
+    ``torch.cuda.empty_cache`` raised it on every call -- including the
+    retry's own ``release_torch_memory``, which replaced the original error
+    with one from the cleanup, and the daemon's release minutes later.
+
+    Nothing inside the process can bring such a context back, so this tells
+    the two apart with one ``torch.cuda.synchronize()`` and, when that fails
+    too, ends the render with an error that says so. Not reproducible on
+    demand -- one process filling the VRAM and then loading new torch kernels
+    raised nothing, since WDDM pages other processes' idle allocations out --
+    so the check is empirical rather than a reading of the error code.
+    """
+    if isinstance(exc, (torch.OutOfMemoryError, CudaContextLost)):
+        return
+    if not (torch.cuda.is_available() and torch.cuda.is_initialized()):
+        return
+    try:
+        torch.cuda.synchronize()
+    except RuntimeError as probe:
+        raise CudaContextLost(
+            f"CUDA stopped working after an out-of-memory error ({exc}): "
+            f"checked again, it reports {str(probe).splitlines()[0]!r}. "
+            "Another process probably took GPU memory while this one was "
+            "rendering. The GPU cannot be used again in this process; free "
+            "GPU memory and run the script again (a render daemon restarts "
+            "in a new process on its own)."
+        ) from exc
 
 
 def is_out_of_memory(exc):

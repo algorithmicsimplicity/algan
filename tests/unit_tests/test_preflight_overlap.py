@@ -986,3 +986,110 @@ def test_peak_ratio_model_survives_concurrent_observers_and_readers():
     assert errors == []
     assert len(model._samples) == memory_model_history
     assert model.is_calibrated()
+
+
+# ---------------------------------------------------------------------------
+# A CUDA error the context does not recover from
+# ---------------------------------------------------------------------------
+#
+# On 2026-10-23, twice, a raw ``RuntimeError: CUDA error: out of memory`` came
+# out of the bezier acceleration build inside the preflight's merge while
+# another process held the VRAM. The handler matched it as an OOM -- and then
+# its own ``release_torch_memory`` raised the same error from
+# ``torch.cuda.empty_cache``, as every later CUDA call did, so the render (and
+# a daemon) died of a cleanup error. These fake the CUDA calls: neither state
+# can be produced on demand.
+
+
+def _fake_cuda(monkeypatch, *, answers):
+    from algan.utils import memory_utils
+
+    probes = []
+
+    def synchronize():
+        probes.append(1)
+        if not answers:
+            raise RuntimeError("CUDA error: out of memory")
+
+    monkeypatch.setattr(memory_utils.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(memory_utils.torch.cuda, "is_initialized", lambda: True)
+    monkeypatch.setattr(memory_utils.torch.cuda, "synchronize", synchronize)
+    return probes
+
+
+def _merge_that_runs_out(monkeypatch, scene):
+    released = []
+    monkeypatch.setattr(
+        render_loop_module,
+        "release_torch_memory",
+        lambda force_gc=True: released.append(force_gc),
+    )
+    original = RuntimeError("CUDA error: out of memory")
+
+    def failing_merge(primitive_batch, *, render_state=None, track_peak=None):
+        raise original
+
+    scene._prepare_merged_host_scene = failing_merge
+    return original, released
+
+
+def test_preflight_merge_oom_on_a_working_context_is_a_probe_failure(monkeypatch):
+    scene, _observations = _make_preflight_driver(monkeypatch, overlapped=False)
+    probes = _fake_cuda(monkeypatch, answers=True)
+    _original, released = _merge_that_runs_out(monkeypatch, scene)
+
+    fits = scene._prepared_batch_fits_render_arena(
+        [_PreflightPrimitive(projected=False)],
+        {"lights": []},
+        (),
+        False,
+        num_frames=3,
+    )
+
+    assert fits is False
+    assert probes == [1]
+    assert released == [False]
+
+
+def test_preflight_merge_oom_on_a_lost_context_says_so(monkeypatch):
+    from algan.utils.memory_utils import CudaContextLost, is_cuda_oom
+
+    scene, _observations = _make_preflight_driver(monkeypatch, overlapped=False)
+    _fake_cuda(monkeypatch, answers=False)
+    original, released = _merge_that_runs_out(monkeypatch, scene)
+
+    with pytest.raises(CudaContextLost, match="cannot be used again") as raised:
+        scene._prepared_batch_fits_render_arena(
+            [_PreflightPrimitive(projected=False)],
+            {"lights": []},
+            (),
+            False,
+            num_frames=3,
+        )
+
+    # The original error is the cause, not buried under one from the cleanup,
+    # which never ran; and no retry loop above takes it for an OOM to absorb.
+    assert raised.value.__cause__ is original
+    assert released == []
+    assert not is_cuda_oom(raised.value)
+
+
+def test_allocator_oom_is_never_probed(monkeypatch):
+    """torch's own allocator refusing a block leaves CUDA working."""
+    from algan.utils.memory_utils import raise_if_cuda_context_lost
+
+    probes = _fake_cuda(monkeypatch, answers=False)
+    raise_if_cuda_context_lost(torch.OutOfMemoryError("CUDA out of memory."))
+    assert probes == []
+
+
+def test_no_cuda_means_nothing_to_probe(monkeypatch):
+    from algan.utils import memory_utils
+
+    monkeypatch.setattr(memory_utils.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        memory_utils.torch.cuda,
+        "synchronize",
+        lambda: pytest.fail("probed a device that is not there"),
+    )
+    memory_utils.raise_if_cuda_context_lost(RuntimeError("out of memory"))

@@ -439,6 +439,11 @@ print("KERNELS", len(_impl.get_runtime().kernels))
 # either side of a mid-process reset.
 
 
+def _exit_hooks(taichi_runtime):
+    """What one registration puts on ``atexit``, in order (it runs LIFO)."""
+    return [taichi_runtime.flush_kernel_cache, taichi_runtime.write_ptx_at_exit]
+
+
 def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
     """Wired into ``start_program``, and not re-registered on a re-init."""
     import atexit
@@ -457,7 +462,7 @@ def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
     taichi_runtime.start_program()
     taichi_runtime.start_program()
 
-    assert registered == [taichi_runtime.flush_kernel_cache]
+    assert registered == _exit_hooks(taichi_runtime)
 
 
 def test_the_kernel_profiler_starts_through_the_runtime(monkeypatch):
@@ -487,7 +492,7 @@ def test_the_kernel_profiler_starts_through_the_runtime(monkeypatch):
         assert profiling_utils.enable_taichi_kernel_profiler() is True
         assert program().config().kernel_profiler
         assert taichi_runtime._FLUSH_REGISTERED is True
-        assert registered == [taichi_runtime.flush_kernel_cache]
+        assert registered == _exit_hooks(taichi_runtime)
         assert swept == [taichi_runtime._TAICHI_CACHE_DIRECTORY]
     finally:
         taichi_runtime.start_program()
@@ -517,7 +522,7 @@ def test_building_a_specialization_registers_the_flush(monkeypatch):
 
     _salted(torch.zeros(1), time.time_ns() % 1_000_000_007)
 
-    assert registered == [taichi_runtime.flush_kernel_cache]
+    assert registered == _exit_hooks(taichi_runtime)
 
 
 def test_a_render_job_never_dumps_the_live_program(monkeypatch):
@@ -615,6 +620,133 @@ def test_the_flush_can_be_turned_off(monkeypatch):
     monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
     assert taichi_runtime.flush_kernel_cache() is False
     assert program() is live
+
+
+def test_a_real_compile_marks_kernels_unsaved_until_a_flush(monkeypatch):
+    """What the daemon's between-run flush waits for.
+
+    The salt is new to every run, so the offline cache cannot serve it and
+    the compile reports no ``cache_hit``.
+    """
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    monkeypatch.setattr(taichi_runtime, "_UNSAVED_KERNELS", False)
+
+    @ti.kernel
+    def _salted(out: ti.types.ndarray(), salt: ti.template()):
+        out[0] += salt
+
+    _salted(torch.zeros(1), time.time_ns() % 1_000_000_007)
+    assert taichi_runtime._UNSAVED_KERNELS is True
+
+
+def test_persisting_between_renders_skips_a_program_with_nothing_unsaved(
+    monkeypatch,
+):
+    """A daemon re-rendering a script it has rendered before pays nothing.
+
+    Even with ``_BUILT_A_SPECIALIZATION`` set -- a source-key miss that the
+    offline cache then served -- there is no kernel to write, and the teardown
+    would only make the next run reload every kernel.
+    """
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    live = program()
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    monkeypatch.setattr(taichi_runtime, "_UNSAVED_KERNELS", False)
+    monkeypatch.setattr(
+        taichi_runtime.ti, "reset", lambda: pytest.fail("reset without need")
+    )
+    assert taichi_runtime.persist_new_kernels() is False
+    assert program() is live
+
+
+def test_persisting_between_renders_flushes_what_was_compiled(monkeypatch):
+    """The same teardown as the exit flush, and both markers clear after it."""
+    from algan.rendering import kernel_precompile, taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    calls = []
+    monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(
+        kernel_precompile, "flush_manifest", lambda: calls.append("manifest")
+    )
+    # Restored afterwards: the stubbed reset leaves the program running.
+    monkeypatch.setattr(taichi_runtime, "_ARCH_READY_FOR", None)
+    monkeypatch.setattr(taichi_runtime, "_forget_compiled_in_settings", lambda: None)
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    monkeypatch.setattr(taichi_runtime, "_UNSAVED_KERNELS", True)
+
+    assert taichi_runtime.persist_new_kernels() is True
+    assert calls == ["reset", "manifest"]
+    assert taichi_runtime._UNSAVED_KERNELS is False
+    assert taichi_runtime._BUILT_A_SPECIALIZATION is False
+    # Nothing left to write, so a second call is free.
+    assert taichi_runtime.persist_new_kernels() is False
+    assert calls == ["reset", "manifest"]
+
+
+def test_persisting_waits_for_a_render_that_holds_the_arch(monkeypatch):
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    live = program()
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    monkeypatch.setattr(taichi_runtime, "_UNSAVED_KERNELS", True)
+    with taichi_runtime.render_job_holding_the_arch():
+        assert taichi_runtime.persist_new_kernels() is False
+    assert program() is live
+    assert taichi_runtime._UNSAVED_KERNELS is True
+
+
+def test_a_failed_teardown_writes_the_cache_directly_and_retires_the_runtime(
+    monkeypatch,
+):
+    """``finalize`` syncs the device before it writes; a dead context loses all.
+
+    On 2026-10-23 a daemon's CUDA context failed every call after an
+    out-of-memory error, so the reset raised from its first synchronize and
+    ~21 kernels never reached the disk. The flush then asks the program for
+    the (host-only) write itself, and the runtime -- its kernels freed by
+    that write -- refuses every later launch. Stubbed here, so the live
+    program is untouched; the subprocess test in
+    ``test_daemon_kernel_persistence.py`` does it for real.
+    """
+    from algan.rendering import kernel_precompile, taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    calls = []
+
+    def failing_reset():
+        calls.append("reset")
+        raise RuntimeError("CUDA error: out of memory")
+
+    monkeypatch.setattr(taichi_runtime.ti, "reset", failing_reset)
+    monkeypatch.setattr(
+        type(program()),
+        "dump_cache_data_to_disk",
+        lambda self: calls.append("dump"),
+    )
+    monkeypatch.setattr(
+        kernel_precompile, "flush_manifest", lambda: calls.append("manifest")
+    )
+    monkeypatch.setattr(taichi_runtime, "_ARCH_READY_FOR", None)
+    monkeypatch.setattr(taichi_runtime, "_ABANDONED", None)
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    monkeypatch.setattr(taichi_runtime, "_UNSAVED_KERNELS", True)
+
+    assert taichi_runtime.persist_new_kernels() is True
+    assert calls == ["reset", "dump", "manifest"]
+    assert taichi_runtime.runtime_abandoned()
+    assert taichi_runtime._UNSAVED_KERNELS is False
+    with pytest.raises(RuntimeError, match="cannot launch kernels again"):
+        taichi_runtime.ensure_taichi_for_render()
+    # And no second attempt at exit.
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    assert taichi_runtime.flush_kernel_cache() is False
+    assert calls == ["reset", "dump", "manifest"]
 
 
 def test_flushing_drops_the_program_so_the_compiler_writes_its_cache():

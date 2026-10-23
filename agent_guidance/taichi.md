@@ -20,7 +20,19 @@ behind, so every cold start measured through `profile_scene` was wrong. The
 flush is also registered when the first specialization is built, whatever
 started the program. There is deliberately no mid-process dump: Quadrants'
 `KernelCompilationManager::dump` frees the kernels it writes, so a program that
-launches again afterwards reads freed memory. In particular, Algan disables
+launches again afterwards reads freed memory. A process that renders again
+tears the program down instead: the render daemon calls
+`taichi_runtime.persist_new_kernels()` after every run, which flushes only when
+the program built a kernel the offline cache did not serve (`_UNSAVED_KERNELS`,
+from `CompileResult.cache_hit`), so a daemon that later dies keeps what it
+compiled and a run that compiled nothing pays nothing; the run after one that
+did reloads its kernels (+3.5 s on the PREVIEW explainer on an RTX 5080,
+measured 2026-10-23 against kernels left resident). `Program::finalize`
+synchronizes the device *before* it writes, so on a CUDA context an error left
+unusable `ti.reset()` raises and writes nothing; the flush then calls
+`dump_cache_data_to_disk()` itself and abandons the runtime
+(`runtime_abandoned()`), after which `ensure_taichi_for_render` refuses rather
+than launching freed kernels. In particular, Algan disables
 `advanced_optimization`; historical tonemapping regressions under the enabled
 arm motivate this default. `ALGAN_ADV_OPT=1` is a comparison switch, not evidence
 that every renderer kernel supports that configuration.
@@ -175,7 +187,8 @@ cores (a render already uses every core; three at once on four cores took ~4x
 longer each). **When a
 kernel's signature or a pipeline's choice of kernels changes, regenerate the
 built-in list** with `scripts/generate_kernel_specs.py`;
-`test_every_builtin_spec_still_matches_a_live_kernel` fails until you do. A
+`test_every_builtin_spec_still_matches_a_live_kernel` (in `--fast`) fails until
+you do. A
 stale entry only costs parallelism, never correctness -- but the test checks
 arity, not template values, and those decide whether a first run's pool
 helps at all: the shading megakernels specialize on the light count (rounded
@@ -191,20 +204,44 @@ from that (and three small CUDA-only kernels). With it, a cold first
 `explainer` PREVIEW render on an RTX 5080 took 43 s against 73-77 s with no
 pool, bit-identical.
 
-Workers never launch, so on CUDA they produce the `.qdc` and nothing more: the
+Workers never launch: a launch with placeholder arguments is not safe
+(out-of-range reads, unbounded loops over garbage data). On the published
+wheel that leaves a CUDA worker producing the `.qdc` and nothing more, and the
 render still generates PTX and pays the driver JIT at each kernel's first
 launch (~14 s of a cold `explainer` render on an RTX 5080: first launches
-36 s, of which the backend compile was 22 s). A launch with placeholder
-arguments is not safe (out-of-range reads, unbounded loops over garbage data);
-moving that work needs a compiler entry point that registers a kernel with the
-launcher without launching it.
+36 s, of which the backend compile was 22 s). Quadrants patch 0011 adds the
+entry point that does that work without the launch, `Program.prepare_kernel`,
+and makes `dump_cache_data_to_disk` write the PTX cache too; where the wheel
+has it, a CUDA worker prepares every spec before its dump
+(`kernel_precompile.prepare_for_launch`, off under `ALGAN_PRECOMPILE_PTX=0`).
+The render finds that PTX even though its PTX index was read at `init`,
+before the pool finished: 0011 lets a content-hash lookup take a file the
+index lacks. 0011 does not make the dump safe mid-process: its PTX half keeps
+what it wrote, but the `.qdc` half still frees every kernel it writes, so the
+rule above stands -- and a worker never prepares a kernel it compiled and
+dumped itself (`_DUMPED_HERE`), whose handle that dump freed. At exit the rule
+does not bite, and `taichi_runtime.write_ptx_at_exit` dumps there when the
+flush will not: a process whose kernels all came from the index builds no
+specialization, so the flush skips it, and Quadrants has no exit hook of its
+own -- without it, PTX such a process generated (a cached kernel whose PTX was
+missing) was never written, and every later process generated it again.
+`quadrants_patches/check_ptx_cache.py <cache dir>` shows, without a GPU, which
+cached kernels have their content-keyed PTX on disk.
 
 **Loading cached kernels cannot overlap authoring on a thread.** On a warm
 cache a fresh process's first render spends ~2.5 s (`explainer`) to ~4.4 s
 (`graphics`) in `Program.load_fast_cache` and each kernel's first
 `launch_kernel`, and a 0.5 ms ticker thread got no turns at all during either:
 both hold the GIL throughout, so a background loader would stop the authoring
-thread for as long as it saved the render.
+thread for as long as it saved the render. What it can do is less: ~90 % of a
+cached kernel's load is LLVM parsing the IR text in its `.qdc` (CPU arch,
+`sheet_resolve_shade_arena`: 151 of 166 ms), and the first launch then
+verifies, clones, prints and hashes the module again to find its PTX.
+Quadrants patch 0010 keys the PTX cache by the SHA-256 the `.qdc` already
+stores and parses the IR only on a PTX miss, so on CUDA a fully cached kernel
+skips all of that. `taichi_init_kwargs` turns it on where the wheel has it;
+`ALGAN_PTX_CACHE_BY_CONTENT_HASH=0` is the off arm, and neither arm moves a
+key (`quadrants_patches/README.md`, 0010).
 
 **Torch's lazy CUDA kernel loading does overlap**, because torch's bindings
 release the GIL inside each op. `rendering/device_warmup.py` calls the ops the

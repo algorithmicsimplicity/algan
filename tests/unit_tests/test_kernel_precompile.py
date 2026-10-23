@@ -152,12 +152,18 @@ def test_a_spec_that_no_longer_matches_its_kernel_is_unportable():
         )
 
 
+@pytest.mark.fast
 def test_every_builtin_spec_still_matches_a_live_kernel():
     """The built-in list against today's kernels (``scripts/generate_kernel_specs.py``).
 
     A stale entry is skipped by the workers, never an error, so this is the
     only place a kernel signature change that invalidates it is noticed.
     Regenerate the list when it fails.
+
+    Marked ``fast`` alone in this file (``tests/README.md`` says why): the
+    signature change that breaks it is made in a kernel module, and outside
+    the fast loop it went unnoticed -- ``det_sum`` left all ten megakernel
+    entries stale on master.
     """
     builtin = kp.read_builtin_specs(with_requirements=True)
     if not builtin:

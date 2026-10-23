@@ -42,6 +42,13 @@ off unless ``ALGAN_READONLY_NDARRAY_LDG=1``, and then set on CUDA only (see
 :func:`taichi_init_kwargs`). ``invariant_arg_loads`` (0004) defaults **on**,
 and ``fast_math`` below is what makes 0007's fast ``expf`` live, so those two
 are the patches an Algan render runs through by default.
+
+``offline_cache_ptx_by_content_hash`` (``0010-cuda-ptx-cache-by-content-hash.patch``)
+is the one Algan turns on itself where the wheel has it: on CUDA, a kernel
+whose ``.qdc`` and PTX are both cached is loaded without its LLVM IR being
+parsed, printed or hashed. ``ALGAN_PTX_CACHE_BY_CONTENT_HASH=0`` is the off
+arm; on any other arch, or a wheel without the patch, the keyword is not
+passed (:func:`ptx_cache_by_content_hash_supported`).
 """
 
 from __future__ import annotations
@@ -390,8 +397,13 @@ def _install_taichi_compile_logger():
         # serve, so it holds kernel data the offline cache may not. Only
         # `flush_kernel_cache` reads this, and only to skip the flush entirely
         # for a process that compiled nothing.
-        global _BUILT_A_SPECIALIZATION
+        global _BUILT_A_SPECIALIZATION, _UNSAVED_KERNELS
         _BUILT_A_SPECIALIZATION = True
+        # The narrower fact: the offline cache did not serve it either, so
+        # until a flush the kernel exists only in this program. What the
+        # daemon's between-run flush (`persist_new_kernels`) waits for.
+        if not cache_hit:
+            _UNSAVED_KERNELS = True
         # And so the flush is registered here too, not only by `start_program`:
         # whatever brought this program up, the kernel it just built reaches
         # the disk at exit.
@@ -502,8 +514,11 @@ def _sync_devices():
 
     The one device-sync helper in the package: nothing else calls
     ``torch.cuda.synchronize``, ``torch.mps.synchronize`` or ``ti.sync``
-    directly. Syncs whichever torch backend is present (CUDA, MPS) and then
-    Taichi; on a CPU-only build every arm is a no-op.
+    directly, apart from the probe in
+    ``memory_utils.raise_if_cuda_context_lost``, which asks whether CUDA still
+    answers rather than waiting for work. Syncs whichever torch backend is
+    present (CUDA, MPS) and then Taichi; on a CPU-only build every arm is a
+    no-op.
 
     Only the main thread syncs. Stage boundaries can run on the batch-prep
     worker thread (scene prefetch), where syncing would serialize against the
@@ -789,6 +804,26 @@ def cpu_prep_kernel_enabled(name):
 _INIT_OVERRIDES = {}
 
 
+def ptx_cache_by_content_hash_supported():
+    """Whether the installed compiler has Quadrants patch 0010's config field.
+
+    ``offline_cache_ptx_by_content_hash`` keys the CUDA PTX cache by the
+    SHA-256 each ``.qdc`` already stores and defers parsing a cached kernel's
+    IR until a PTX miss needs it (``quadrants_patches/README.md``, 0010). A
+    wheel without the patch would reject the keyword, so it is asked of the
+    config type, which every Quadrants build exposes before ``init``.
+    """
+    if BACKEND != "quadrants":
+        return False
+    from algan.taichi_compat import submodule
+
+    try:
+        config_type = submodule("_lib.core.quadrants_python").CompileConfig
+    except Exception:
+        return False
+    return hasattr(config_type, "offline_cache_ptx_by_content_hash")
+
+
 def taichi_init_kwargs():
     """Algan's Taichi runtime config, as a kwargs dict.
 
@@ -866,6 +901,19 @@ def taichi_init_kwargs():
     # the off arm's init -- and every key -- is what it was before the switch.
     if kwargs["arch"] == ti.cuda and env_flag("ALGAN_READONLY_NDARRAY_LDG", False):
         kwargs["readonly_ndarray_ldg"] = True
+    # Quadrants patch 0010: a cached CUDA kernel's PTX is found by the content
+    # hash its .qdc already carries, so its IR is never parsed, printed or
+    # hashed when the PTX is there. On by default where the wheel has it;
+    # ALGAN_PTX_CACHE_BY_CONTENT_HASH=0 is the A/B off arm. The field's
+    # `offline_cache` prefix keeps it out of the compiler's key and the source
+    # key alike, so both arms share every artifact. CUDA only: no other arch
+    # has a PTX cache, and the CPU arch needs every module parsed to JIT it.
+    if (
+        kwargs["arch"] == ti.cuda
+        and env_flag("ALGAN_PTX_CACHE_BY_CONTENT_HASH", True)
+        and ptx_cache_by_content_hash_supported()
+    ):
+        kwargs["offline_cache_ptx_by_content_hash"] = True
     kwargs.update(_INIT_OVERRIDES)
     if kwargs["arch"] == ti.metal:
         queue = _torch_mps_command_queue()
@@ -1040,8 +1088,11 @@ def start_program(**overrides):
     compiled-in setting moving) uses Algan's config alone, so an override does
     not survive one.
     """
+    global _UNSAVED_KERNELS
     _remove_stale_offline_cache_locks(_TAICHI_CACHE_DIRECTORY)
     ti.init(**{**taichi_init_kwargs(), **overrides})
+    # ``init`` resets first, and finalizing the old program wrote its kernels.
+    _UNSAVED_KERNELS = False
     # The trace counters' field (a diagnostic, ALGAN_TRACE_COUNTERS) belongs
     # to one program: replaced here, before this program compiles anything.
     from algan.rendering.raytracing import trace_counters_taichi
@@ -1107,6 +1158,13 @@ def ensure_taichi_for_render():
     Returns whether Taichi was re-initialized.
     """
     global _ARCH_READY_FOR
+    if _ABANDONED is not None:
+        raise RuntimeError(
+            "The Taichi runtime failed to shut down "
+            f"({_ABANDONED}) and cannot launch kernels again in this process. "
+            "The kernels it had compiled were saved to the cache; run the "
+            "script again in a new process."
+        )
     wanted = render_device()
     if not _already_initialized():
         init_taichi()
@@ -1197,7 +1255,9 @@ def render_job_holding_the_arch():
                 # taichi_fast_launch's plans -- dangles, and the next launch
                 # of such a kernel reads freed memory (segfaults on the macOS
                 # CPU arch). Only a process that will never launch again may
-                # dump: the precompile workers, and the exit flush.
+                # dump: the precompile workers, and the exit flush. A process
+                # that renders again tears the program down to write it
+                # instead (`persist_new_kernels`, the daemon between runs).
                 # The specializations this job used, for the next process's
                 # pool and for `algan warmup` (rendering/kernel_precompile.py).
                 kernel_precompile.flush_manifest()
@@ -1237,7 +1297,16 @@ def render_job_holding_the_arch():
 
                 # This retains the ordinary pressure gates and reset fallback,
                 # but now collection can also see the unfrozen scene graph.
-                release_torch_memory(force_gc=False)
+                # Housekeeping, so it never fails the job -- and on a CUDA
+                # context an error left unusable its `empty_cache` raises the
+                # same error again, which here replaced the render's own
+                # exception with one from the cleanup.
+                try:
+                    release_torch_memory(force_gc=False)
+                except Exception as exc:  # noqa: BLE001
+                    get_logger().log(
+                        PERF, "Deferred memory-pressure release failed: %r", exc
+                    )
 
 
 def render_is_active():
@@ -1253,6 +1322,22 @@ def render_is_active():
 #: under-setting would lose kernels, which is the bug this exists for.
 _BUILT_A_SPECIALIZATION = False
 
+#: Set when the compiler built a kernel the offline cache could not serve
+#: (``CompileResult.cache_hit`` false), so the live program holds a kernel no
+#: file does. Narrower than :data:`_BUILT_A_SPECIALIZATION`, because acting on
+#: it costs more: :func:`persist_new_kernels` tears the program down between a
+#: daemon's runs, and the next run reloads every kernel it launches. Errs the
+#: same way: the Taichi backend, which reports no ``cache_hit``, counts every
+#: compile its native log does not show was a load.
+_UNSAVED_KERNELS = False
+
+#: The first line of the exception that stopped ``ti.reset()`` part-way, once
+#: :func:`flush_kernel_cache` has written the cache without it; ``None`` while
+#: the runtime is sound. The program is left neither running nor torn down,
+#: and the write freed its kernels, so :func:`ensure_taichi_for_render` refuses
+#: from then on.
+_ABANDONED = None
+
 #: One ``atexit`` registration per process, from :func:`start_program` or, for
 #: a program something else brought up, from the first specialization built.
 _FLUSH_REGISTERED = False
@@ -1266,7 +1351,56 @@ def _register_kernel_cache_flush():
     # handlers (``atexit`` is LIFO): Taichi releases the device first, which is
     # the order the destructor path used to get for free.
     atexit.register(flush_kernel_cache)
+    # After it, so it runs first (LIFO) and can see whether the flush will.
+    atexit.register(write_ptx_at_exit)
     _FLUSH_REGISTERED = True
+
+
+def write_ptx_at_exit():
+    """At exit, write the PTX a process generated when the flush will not.
+
+    :func:`flush_kernel_cache` tears the program down -- and so writes every
+    cache -- only in a process that built a specialization. One whose kernels
+    all came from the cache skips it, Quadrants registers no exit hook of its
+    own, and the program is not reliably destroyed at interpreter teardown, so
+    on CUDA the PTX such a process generated was never written: for cached
+    kernels whose PTX was missing, or re-keyed from an older cache (Quadrants
+    patch 0010). Every later process generated it again -- the off arm of the
+    first 0010 A/B paid that in every process.
+
+    Where the wheel has patch 0011, ``dump_cache_data_to_disk`` writes the PTX
+    cache too, so this calls it. That dump frees the kernels it writes, which
+    is why nothing calls it mid-process; at exit nothing launches again.
+    CUDA only (the one arch with a PTX cache), under the flush's own
+    conditions: not under ``ALGAN_FLUSH_KERNEL_CACHE=0``, only on the main
+    thread with no render holding the arch. Returns whether a dump ran.
+    """
+    if _BUILT_A_SPECIALIZATION:
+        return False
+    if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    if render_is_active() or _live_arch() != ti.cuda:
+        return False
+    from algan.taichi_compat import program
+
+    prog = program()
+    if not hasattr(prog, "prepare_kernel"):
+        return False
+    started = time.perf_counter()
+    try:
+        prog.dump_cache_data_to_disk()
+    except Exception as exc:
+        get_logger().log(PERF, "Writing generated PTX at exit failed: %r", exc)
+        return False
+    get_logger().log(
+        PERF,
+        "Wrote generated PTX to %s in %.2f s.",
+        _TAICHI_CACHE_DIRECTORY,
+        time.perf_counter() - started,
+    )
+    return True
 
 
 def _reset_after_interruption():
@@ -1278,11 +1412,13 @@ def _reset_after_interruption():
     run even if initialization did not finish or no kernel was compiled.
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
+    global _UNSAVED_KERNELS
     if render_is_active() or threading.current_thread() is not threading.main_thread():
         raise RuntimeError("Cannot recover the compiler while a render is active")
     ti.reset()
     _ARCH_READY_FOR = None
     _BUILT_A_SPECIALIZATION = False
+    _UNSAVED_KERNELS = False
     _PRESSURE_RESET_PENDING = False
     _forget_compiled_in_settings()
 
@@ -1323,6 +1459,7 @@ def reset_quadrants_for_memory_pressure():
     therefore mean "not applicable", "declined" or "safely deferred".
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
+    global _UNSAVED_KERNELS
     if BACKEND != "quadrants":
         return False
     if not _already_initialized():
@@ -1352,6 +1489,7 @@ def reset_quadrants_for_memory_pressure():
         get_logger().log(PERF, "Quadrants pressure reset failed: %r", exc)
         return False
     _BUILT_A_SPECIALIZATION = False
+    _UNSAVED_KERNELS = False
     _ARCH_READY_FOR = None
     _PRESSURE_RESET_PENDING = False
     _forget_compiled_in_settings()
@@ -1394,9 +1532,22 @@ def flush_kernel_cache(*, force=False):
     specialization is built. That also covers the interrupted case -- a
     ``KeyboardInterrupt`` unwinds ``render_job_holding_the_arch`` normally, so
     an hour of compilation survives a Ctrl-C instead of evaporating. A process
-    killed outright still loses whatever it compiled: a mid-process dump would
-    free the kernels the program is still launching (see
-    :func:`render_job_holding_the_arch`).
+    killed outright still loses whatever it compiled since its last flush: a
+    mid-process dump would free the kernels the program is still launching (see
+    :func:`render_job_holding_the_arch`). A process that renders many times
+    flushes between renders instead (:func:`persist_new_kernels`).
+
+    **When the reset itself fails.** ``Program::finalize`` synchronizes the
+    device and tears down the runtime *before* it writes the cache, so on a
+    CUDA context an earlier error left unusable the reset throws and writes
+    nothing. That is how a daemon lost ~21 kernels on 2026-10-23: a render hit
+    ``CUDA error: out of memory`` while another process held the VRAM, every
+    later CUDA call failed the same way, and the next process spent ~95 s
+    recompiling them. The write is host-only, so the flush then asks the
+    program for it directly. That frees the kernels it writes, and a program
+    whose finalize failed is unusable anyway, so the runtime is abandoned:
+    :func:`ensure_taichi_for_render` refuses from then on, which turns the next
+    launch into an error rather than a read of freed memory.
 
     Safe for the same reason :func:`ensure_taichi_for_render` may re-init:
     Algan holds no ``ti.field`` or ``ti.Ndarray``, every kernel argument being a
@@ -1418,14 +1569,15 @@ def flush_kernel_cache(*, force=False):
     Returns
     -------
     bool
-        Whether the runtime was actually torn down (and therefore dumped).
+        Whether the cache was written: the runtime was torn down, or, when the
+        teardown failed, the program wrote it directly and was abandoned.
     """
-    global _BUILT_A_SPECIALIZATION, _ARCH_READY_FOR
+    global _BUILT_A_SPECIALIZATION, _ARCH_READY_FOR, _UNSAVED_KERNELS
     if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
         return False
     if not (force or _BUILT_A_SPECIALIZATION):
         return False
-    if not _already_initialized():
+    if _ABANDONED is not None or not _already_initialized():
         return False
     if threading.current_thread() is not threading.main_thread():
         return False
@@ -1440,19 +1592,21 @@ def flush_kernel_cache(*, force=False):
     try:
         ti.reset()
     except Exception as exc:
-        # Never the reason a process fails to exit. The old behaviour (dump at
-        # destruction, or not at all) is what a failure here falls back to.
-        get_logger().log(PERF, "Kernel cache flush failed: %r", exc)
-        return False
+        # Never the reason a process fails to exit, and not the end of the
+        # kernels it compiled either.
+        if not _abandon_program(exc):
+            return False
+    else:
+        _ARCH_READY_FOR = None
+        _forget_compiled_in_settings()
+        get_logger().log(
+            PERF,
+            "Flushed newly compiled kernels to %s in %.2f s.",
+            _TAICHI_CACHE_DIRECTORY,
+            time.perf_counter() - started,
+        )
     _BUILT_A_SPECIALIZATION = False
-    _ARCH_READY_FOR = None
-    _forget_compiled_in_settings()
-    get_logger().log(
-        PERF,
-        "Flushed newly compiled kernels to %s in %.2f s.",
-        _TAICHI_CACHE_DIRECTORY,
-        time.perf_counter() - started,
-    )
+    _UNSAVED_KERNELS = False
     # The manifest confirms a compiled spec only once its artifact exists, and
     # for what this process compiled since its last render job ended, that is
     # now (rendering/kernel_precompile.py).
@@ -1461,6 +1615,79 @@ def flush_kernel_cache(*, force=False):
 
         kernel_precompile.flush_manifest()
     return True
+
+
+def _abandon_program(exc):
+    """``ti.reset()`` raised ``exc`` part-way: write the cache, then retire the runtime.
+
+    See "When the reset itself fails" in :func:`flush_kernel_cache`. Returns
+    whether the cache was written.
+    """
+    global _ABANDONED, _ARCH_READY_FOR
+    from algan.taichi_compat import program
+
+    # One line: CUDA's messages carry several of advice after the error.
+    _ABANDONED = f"{type(exc).__name__}: {(str(exc).splitlines() or [''])[0]}"
+    # The arch guard compares this on every launch, so clearing it sends the
+    # next one through ensure_taichi_for_render, which refuses.
+    _ARCH_READY_FOR = None
+    prog = program()
+    try:
+        # No program means ``clear`` dropped it, so ``finalize`` ran to its
+        # end, the write included, and the failure came later in the reset --
+        # which still leaves kernels that were never reset holding freed data.
+        if prog is not None:
+            prog.dump_cache_data_to_disk()
+    except Exception as dump_exc:
+        get_logger().warning(
+            "The Taichi runtime failed to shut down (%s), and writing its "
+            "compiled kernels to %s without it failed too (%r). They are lost.",
+            _ABANDONED,
+            _TAICHI_CACHE_DIRECTORY,
+            dump_exc,
+        )
+        return False
+    get_logger().warning(
+        "The Taichi runtime failed to shut down (%s). Its newly compiled "
+        "kernels were written to %s directly; this process cannot launch "
+        "kernels again.",
+        _ABANDONED,
+        _TAICHI_CACHE_DIRECTORY,
+    )
+    return True
+
+
+def runtime_abandoned():
+    """Whether a failed teardown has retired this process's Taichi runtime."""
+    return _ABANDONED is not None
+
+
+def persist_new_kernels():
+    """Write kernels the offline cache does not hold yet, now rather than at exit.
+
+    For a process that outlives its renders -- the render daemon calls it when
+    a run ends. Its exit-time :func:`flush_kernel_cache` is the only other
+    write, so before this every kernel a daemon compiled was lost with it: a
+    daemon killed by a CUDA error on 2026-10-23 took ~21 with it, and the next
+    process spent ~95 s recompiling them.
+
+    Only when the program built a kernel the offline cache could not serve
+    (:data:`_UNSAVED_KERNELS`); otherwise a no-op, so a daemon re-rendering a
+    script it has rendered before pays nothing. When there is something to
+    write it is the same teardown as the exit flush, for the same reason --
+    ``dump`` frees what it writes -- so the next render loads every kernel it
+    launches back from the cache: +3.5 s on the explainer benchmark at PREVIEW
+    on an RTX 5080 (3.7-4.1 s against 0.43-0.55 s resident). That is the
+    load a fresh process pays on a warm cache, which the PTX-cache Quadrants
+    patch (0010, not yet released) took from 3.6 s to 1.3 s for that scene.
+    Subject to the flush's own conditions: main thread, no render holding the
+    arch, ``ALGAN_FLUSH_KERNEL_CACHE``.
+
+    Returns whether anything was written.
+    """
+    if not _UNSAVED_KERNELS:
+        return False
+    return flush_kernel_cache()
 
 
 def install_render_arch_guard():

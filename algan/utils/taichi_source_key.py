@@ -1278,6 +1278,11 @@ _ENV_NOT_IN_KEY = frozenset(
         # and must write entries under exactly the keys the render computes.
         "ALGAN_PRECOMPILE_JOBS",
         "ALGAN_PRECOMPILE_WORKER",
+        # Which cache file serves a kernel's PTX and which process makes it
+        # (Quadrants patches 0010 and 0011), never what the PTX is: both A/B
+        # arms must find each other's index entries.
+        "ALGAN_PTX_CACHE_BY_CONTENT_HASH",
+        "ALGAN_PRECOMPILE_PTX",
         # When start-up work happens (rendering/device_warmup.py, the
         # first-run pool), never what a kernel compiles to.
         "ALGAN_STARTUP_WARMUP",
