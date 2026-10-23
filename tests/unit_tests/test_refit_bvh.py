@@ -284,3 +284,126 @@ def test_host_topology_is_quiet_about_huge_coordinates():
     finally:
         refit_bvh.refit_host_topology_max_columns = device
     assert torch.equal(_block_bits(host), _block_bits(reference))
+
+
+# --- time split under large in-batch motion ----------------------------------
+
+
+def _shuffle_bounds(n=512, frames=16, seed=5):
+    """Every box travels from one grid cell to a random other one over the
+    batch: the motion that leaves one union topology spanning the scene.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    start = torch.rand(n, 3, generator=generator)
+    end = start[torch.randperm(n, generator=generator)]
+    t = torch.linspace(0, 1, frames).view(frames, 1, 1)
+    centre = start * (1 - t) + end * t
+    return centre - 0.01, centre + 0.01
+
+
+def _frame_walk(tree, frame):
+    """Leaves reachable from ``frame``'s root, with the box each leaf's parent
+    slot gives it, by following that frame's own link words.
+    """
+    from algan.rendering.raytracing.refit_bvh import LINK_PRIM_MASK, bvh_arity
+
+    words = _block_bits(tree)
+    if tree.blocks.dtype == torch.float16:
+        link = (words[:, 6].to(torch.int32) & 0xFFFF) | (
+            words[:, 7].to(torch.int32) << 16
+        )
+    else:
+        link = words[:, 6]
+    bounds = tree.blocks.float()
+    row0 = (frame % tree.num_time) * tree.num_blocks
+    leaves, stack = {}, [0]
+    while stack:
+        block = stack.pop()
+        for child in range(bvh_arity):
+            word = int(link[row0 + block, child])
+            if word == -1:
+                continue
+            if word >= 0:
+                stack.append(word)
+                continue
+            box = bounds[row0 + block, 0:6, child]
+            leaves[word & LINK_PRIM_MASK] = (box[:3], box[3:])
+    return leaves
+
+
+@pytest.mark.parametrize("half", [False, True])
+def test_large_motion_splits_the_batch_and_every_frame_still_finds_every_box(
+    half, monkeypatch
+):
+    from algan import SETTINGS
+    from algan.rendering.raytracing import refit_bvh
+
+    monkeypatch.setattr(refit_bvh, "bvh_block_f16", half)
+    lo, hi = _shuffle_bounds()
+    hidden = torch.zeros(lo.shape[:2], dtype=torch.bool)
+    hidden[:5, ::7] = True  # appears late
+    lo[hidden], hi[hidden] = 1e17, -1e17
+    with SETTINGS.raytracing.experimental.override(refit_time_split=1):
+        shared = build_refit_bvh(lo, hi)
+    tree = build_refit_bvh(lo, hi)
+
+    assert shared.time_segments == 1
+    assert 1 < tree.time_segments <= refit_bvh.refit_time_split
+    assert tree.num_time == lo.shape[0]
+    assert tree.blocks.shape[0] == tree.num_time * tree.num_blocks
+    for frame in range(lo.shape[0]):
+        leaves = _frame_walk(tree, frame)
+        visible = (~hidden[frame]).nonzero().flatten().tolist()
+        assert sorted(leaves) == visible
+        for prim, (box_lo, box_hi) in leaves.items():
+            assert (box_lo <= lo[frame, prim]).all()
+            assert (box_hi >= hi[frame, prim]).all()
+
+
+def test_the_split_cuts_the_traversal_proxy_against_one_shared_topology():
+    """What the split is for: summed over the batch, the per-segment trees
+    fetch fewer sibling blocks per ray than the one shared topology did.
+    """
+    from algan.rendering.raytracing import refit_bvh
+
+    lo, hi = _shuffle_bounds()
+    shared, shared_cost = refit_bvh._build_segment(lo, hi, None, None, None)
+    segments = refit_bvh._split_in_time(
+        lo,
+        hi,
+        None,
+        None,
+        None,
+        0,
+        lo.shape[0],
+        shared,
+        shared_cost,
+        refit_bvh.refit_time_split,
+    )
+    assert len(segments) > 1
+    split_cost, start = 0.0, 0
+    for segment in segments:
+        stop = start + segment.num_time
+        _, cost = refit_bvh._build_segment(
+            lo[start:stop], hi[start:stop], None, None, None
+        )
+        split_cost += float(cost.sum())
+        start = stop
+    assert start == lo.shape[0]
+    assert float(shared_cost.sum()) > refit_bvh.refit_time_split_gain * split_cost
+
+
+@pytest.mark.parametrize("motion", ["static", "drift"])
+def test_still_or_drifting_geometry_keeps_one_topology(motion):
+    from algan import SETTINGS
+
+    generator = torch.Generator().manual_seed(9)
+    centre = torch.rand(1, 300, 3, generator=generator).expand(12, -1, -1)
+    if motion == "drift":
+        centre = centre + torch.linspace(0, 0.02, 12).view(12, 1, 1)
+    lo, hi = (centre - 0.01).contiguous(), (centre + 0.01).contiguous()
+    with SETTINGS.raytracing.experimental.override(refit_time_split=1):
+        shared = build_refit_bvh(lo, hi)
+    tree = build_refit_bvh(lo, hi)
+    assert tree.time_segments == 1
+    assert torch.equal(_block_bits(tree), _block_bits(shared))

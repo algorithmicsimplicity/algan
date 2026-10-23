@@ -909,7 +909,10 @@ wf_mem_trim = env_flag("ALGAN_WF_MEM_TRIM", False)
 # instance tree (stbvh.py). Measured headroom (benchmarks/_rt2_refit_sah.py):
 # the classic STBVH costs 1.37-2.33x more expected node visits than a refit
 # topology, and refit staleness across a batch is <= 1.04 vs a per-frame
-# rebuild. The traversal kernels select the walk with a compile-time
+# rebuild on the benchmark scenes. Large in-batch motion (rearranging pieces,
+# explosions, morphs) can make one topology much staler than that; the build
+# then splits the batch into per-segment topologies (``refit_time_split`` in
+# refit_bvh.py). The traversal kernels select the walk with a compile-time
 # ``refit`` template, so both modes coexist in one process (in-process A/B).
 # The set of exact intersections found is identical; discovery order and
 # box-face boundary cases differ, so output parity is epsilon-level (the same
