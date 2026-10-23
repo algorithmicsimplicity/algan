@@ -36,6 +36,7 @@ from algan import (
     BLACK,
     BLUE,
     DOWN,
+    GRAY,
     GREEN,
     LEFT,
     ORIGIN,
@@ -673,6 +674,109 @@ def test_ggx_furnace_keeps_energy_with_compensation(tmp_path):
             f"GGX furnace at roughness {roughness}: the metal reflects "
             f"{ratio:.3f}x what arrives"
         )
+
+
+_LINEAR_BYTES = {
+    "linear_color_space": False,
+    "tonemapping": False,
+    "experimental": {"post_process_tonemap": False},
+}
+
+
+def _physical_sphere_scene(material, background=BLACK, env=None, light=True):
+    def build(scene):
+        scene.set_background(background)
+        Scene.clear_lights()
+        if env is not None:
+            scene.set_environment_map(env, ambient=False)
+        if light:
+            PointLight(location=OUT * 4.0 + UP * 2.0 + RIGHT * 2.0, color=WHITE).spawn(
+                animate=False
+            )
+        sphere = Sphere(radius=1.0)
+        sphere.set_material(material)
+        sphere.spawn(animate=False)
+
+    return build
+
+
+def test_clearcoat_and_sheen_change_a_path_traced_render(tmp_path):
+    """MeshPhysicalMaterial's clearcoat and sheen reach the path tracer.
+
+    It used to read none of their slots, so a grey physical sphere under a
+    point light rendered byte-identically with ``clearcoat`` 0 and 1 and with
+    ``sheen`` 0 and 1, while the deterministic renderer drew both layers.
+    The coat adds a sharp highlight of its own over the rough base; the sheen
+    brightens the rim.
+    """
+
+    def render(name, **layers):
+        material = MeshPhysicalMaterial(color=GRAY, roughness=0.8, **layers)
+        return _render_scene_exp(
+            tmp_path,
+            name,
+            _physical_sphere_scene(material),
+            16,
+            **_LINEAR_BYTES,
+        ).float()[..., :3]
+
+    bare = render("layers_bare.png")
+    coat = render("layers_coat.png", clearcoat=1.0, clearcoat_roughness=0.3)
+    sheen = render(
+        "layers_sheen.png", sheen=1.0, sheen_roughness=0.5, sheen_color=WHITE
+    )
+    assert float(bare.max()) > 10, "the test sphere is not lit"
+    coat_gain = float(coat.max() - bare.max())
+    assert coat_gain > 30, (
+        f"clearcoat added no highlight: brightest byte {float(bare.max()):.0f} "
+        f"bare, {float(coat.max()):.0f} coated"
+    )
+    sheen_gain = float(sheen.sum() / bare.sum())
+    assert sheen_gain > 1.05, (
+        f"sheen changed the image by a factor {sheen_gain:.3f} (1 = ignored)"
+    )
+
+
+def test_clearcoat_furnace_does_not_gain_energy(tmp_path):
+    """White furnace with a coat: a white dielectric sphere under a uniform
+    environment, bare and with ``clearcoat = 1`` (a smooth coat, the
+    default, and a rough one), all with linear output bytes so a gain is not
+    hidden by clipping. What the coat reflects it takes from the base
+    (``1 - clearcoat * F(n.v)``), so the coated sphere must not come out
+    brighter than the bare one. Next-event sampling of the environment and
+    the BSDF-sampled escapes are MIS-weighted against each other here, so a
+    coat pdf that disagreed between the two ends would also show as a gain
+    or a loss.
+    """
+    env = torch.full((4, 8, 3), 0.25)
+    furnace = 255.0 * 0.25
+
+    def render(name, **layers):
+        material = MeshPhysicalMaterial(
+            color=WHITE, roughness=0.5, metalness=0.0, **layers
+        )
+        img = _render_scene_exp(
+            tmp_path,
+            name,
+            _physical_sphere_scene(material, env=env, light=False),
+            64,
+            **_LINEAR_BYTES,
+        ).float()[..., :3]
+        return _center_patch_mean(img, half=4), float(img.mean())
+
+    bare_c, bare_m = render("cc_furnace_bare.png")
+    for rough in (0.0, 0.3):
+        c, m = render(
+            f"cc_furnace_{rough}.png", clearcoat=1.0, clearcoat_roughness=rough
+        )
+        assert c <= max(bare_c, furnace) + 1.5, (
+            f"coat roughness {rough}: sphere centre {c:.2f} against the bare "
+            f"sphere's {bare_c:.2f} (furnace {furnace:.2f}) -- energy gained"
+        )
+        assert m <= max(bare_m, furnace) + 0.75, (
+            f"coat roughness {rough}: frame mean {m:.2f} against {bare_m:.2f}"
+        )
+        assert c > 0.9 * furnace, f"coat roughness {rough}: centre {c:.2f} lost energy"
 
 
 def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):
@@ -3024,6 +3128,106 @@ def test_light_tree_selection_probabilities_sum_to_one():
     assert np.abs(sums - 1.0).max() < 1e-4, (
         f"leaf selection probabilities sum to [{sums.min():.6f}, "
         f"{sums.max():.6f}], not 1"
+    )
+
+
+def _light_tree_pmf(power, pos, axis, theta_o, theta_e, decay, points):
+    """``[P, E]`` selection probabilities of every entry from every point,
+    for a tree over point-like entries (degenerate boxes).
+    """
+    import numpy as np
+    import torch as _torch
+
+    from algan.rendering.raytracing.light_tree import build_light_tree
+    from algan.rendering.raytracing.path_tracer_taichi import (
+        pt_light_tree_pmf_probe,
+    )
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    node_f, node_i, leaf = build_light_tree(
+        power, pos, pos, axis, theta_o, theta_e, decay
+    )
+    out = _torch.zeros((len(points), len(power)), dtype=_torch.float32)
+    pt_light_tree_pmf_probe(
+        _torch.from_numpy(node_f[None].copy()),
+        _torch.from_numpy(node_i[None].copy()),
+        0,
+        _torch.tensor(np.asarray(points), dtype=_torch.float32),
+        _torch.from_numpy(leaf.astype(np.int32)),
+        out,
+    )
+    return out.numpy()
+
+
+def test_light_tree_never_zeroes_a_spot_whose_cone_holds_the_point():
+    """A spot light whose cone contains the shading point is selectable.
+
+    Inside a node's bounding sphere the bounds subtend every direction, so the
+    node's orientation cone can always be turned to face the point
+    (``theta_u = pi``, PBRT-v4's ``EntireSphere``). The importance used
+    ``theta_u = pi/2`` there, which left a residual angle: two spots aimed
+    down with 30-degree cones, at (-1, 0, 1) and (1, 0, -1), and a point light
+    far off at (10, 0, 0); a point 0.2 below the first spot sits inside the
+    spots' parent node, on the far side of its centre from their axis, so
+    the parent scored zero and the descent gave (spot, spot, point) the
+    probabilities (0, 0, 1). A spot is a delta light with no MIS backstop,
+    so the light it throws on that point was lost, not merely noisy.
+    """
+    import math
+
+    import numpy as np
+
+    pos = np.array([[-1.0, 0.0, 1.0], [1.0, 0.0, -1.0], [10.0, 0.0, 0.0]])
+    axis = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, 1.0]])
+    theta_o = np.array([0.0, 0.0, math.pi])
+    theta_e = np.array([math.pi / 6, math.pi / 6, math.pi / 2])
+    for decay in (0.0, 2.0):
+        pmf = _light_tree_pmf(
+            np.ones(3),
+            pos,
+            axis,
+            theta_o,
+            theta_e,
+            np.full(3, decay),
+            [[-1.0, 0.0, 0.8]],
+        )
+        assert pmf[0, 0] > 0.0, (
+            f"decay {decay}: the spot directly above the point has selection "
+            f"probability 0 (pmf {pmf[0].tolist()})"
+        )
+        assert abs(float(pmf[0].sum()) - 1.0) < 1e-4
+
+    # The same property over a random rig of roughly downward spots, with
+    # points down each spot's axis (inside its cone, and often inside a
+    # parent node's sphere): every spot whose cone holds a point must be
+    # selectable from it. This seed lost 15 pairs to the pi/2 bound.
+    rng = np.random.default_rng(1)
+    spots = 24
+    pos = rng.random((spots, 3)) * 6.0 - 3.0
+    axis = rng.normal(size=(spots, 3)) * 0.3
+    axis[:, 2] = -1.0
+    axis /= np.linalg.norm(axis, axis=-1, keepdims=True)
+    theta_e = rng.uniform(math.radians(10), math.radians(45), spots)
+    dist = rng.uniform(0.05, 1.5, (spots, 8))
+    points = (pos[:, None, :] + axis[:, None, :] * dist[..., None]).reshape(-1, 3)
+    pmf = _light_tree_pmf(
+        rng.random(spots) + 0.1,
+        pos,
+        axis,
+        np.zeros(spots),
+        theta_e,
+        np.full(spots, 2.0),
+        points,
+    )
+    to_p = points[:, None, :] - pos[None, :, :]
+    cos_to_p = (to_p * axis[None]).sum(-1) / np.linalg.norm(to_p, axis=-1)
+    inside = cos_to_p > np.cos(theta_e)[None] + 1e-3
+    assert inside.sum() > 50, "the sweep must actually put points in cones"
+    lost = inside & (pmf <= 0.0)
+    assert not lost.any(), (
+        f"{int(lost.sum())} of {int(inside.sum())} (point, spot) pairs with "
+        "the point inside the spot's cone have selection probability 0"
     )
 
 
