@@ -468,8 +468,8 @@ Built-in presets are immutable, so this creates a modified copy:
     fast_hd = HD.set(frames_per_second=24, supersampling=1)
 
 The render device is a setting: ``SETTINGS.computing.set(render_device="cuda")``,
-at the top of the script. The animation device is not -- set
-``ALGAN_ANIMATION_DEVICE`` before importing Algan.
+at the top of the script. The animation device is not, and stays on the CPU:
+``ALGAN_ANIMATION_DEVICE`` supports only ``cpu``, and any other value warns.
 
 .. seealso::
 
