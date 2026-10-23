@@ -53,14 +53,16 @@ identify the patch set.
 
 ### Testing
 ```
-.venv/Scripts/python.exe -m pytest -q --fast    # curated, opt-in development suite
-.venv/Scripts/python.exe -m pytest -q           # all configured suites; requires matching render baselines
+.venv/Scripts/python.exe -m pytest -q --fast            # curated, opt-in development suite
+.venv/Scripts/python.exe -m pytest -q --group pre-pr    # before opening a pull request (~10 min)
+.venv/Scripts/python.exe -m pytest -q                   # all configured suites; requires matching render baselines
 ```
 - **`--fast` is the suite to run after every change.** It is **opt-in**: only tests marked `fast` run, everything else is deselected. It prints where it landed against a 75s budget (`fast suite: 21s of its 75s budget (28%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
 - **A test you add is outside it unless you mark it.** Mark `fast` only when a change *elsewhere* in the codebase is liable to break the test — the timeline, the Mob base, the Scene, anything that records or materializes state. A test that only fails when its own module changes is a feature test: leave it unmarked. Being cheap is not a reason. `tests/README.md` lists what is in and why.
 - What is in: the timeline (recording/replay/state query/materialization), lifespans, rate functions, Mob transforms + hierarchy + layout, Scene containment, `SETTINGS`, the public authoring surface (`test_ux_regressions.py`), and **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is most of the budget.
 - **Separate cold compilation from warm test time.** The first test to use a kernel variant pays its compile or cache-load cost. Repeat representative runs before changing fast-suite membership; test counts and timings vary with the checkout, backend and cache state.
-- Run the **full** suite after touching the renderer. CI runs the portable subset, `tests/unit_tests tests/fast`, without `--fast`; it does not run the heavy full-render and path-traced baseline suites. CI does not run on a draft pull request: it starts when the PR is marked ready for review, and runs on every push after that.
+- **Run `--group pre-pr` before opening a pull request**, not before every push: pushing to a branch untested is fine. It is a coverage-maximising slice of `tests/unit_tests tests/fast` that fits in ten minutes; CI runs the smaller `--group ci` (about two minutes) on every PR and push to master. `tests/README.md`, "Test groups", says how they are picked and regenerated.
+- Run the **full** suite after touching the renderer. The weekly scheduled CI run (and a PR labelled `full-ci`) runs all of `tests/unit_tests tests/fast` on every platform; no CI run covers the heavy full-render and path-traced baseline suites. CI does not run on a draft pull request: it starts when the PR is marked ready for review, and runs on every push after that.
 - Renders are compared **pixel-wise** against device/mode-specific baselines: the fast baseline is committed, while heavy suites resolve their release-hosted assets. See `tests/README.md` for baseline selection. Any channel deviation > 2 fails; diff videos land in the suite's `output_errors/`.
 - Small (≤2) pixel differences across runs are expected and tolerated: torch CPU rate-function evaluation rounds differently depending on materialization window, so exact byte-identity across re-windowed state is unattainable.
 - On Windows, run render work **one process at a time**: killed/timed-out background runs orphan child processes that keep output mp4s locked.

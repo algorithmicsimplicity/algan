@@ -1996,6 +1996,24 @@ outright, one silently inert):
   paragraph. The warning and every deterministic out-of-memory raise now
   carry it, `tracer.py`'s single-pixel shared-pool overflows included.
 
+* **MeshPhysicalMaterial's clearcoat and sheen were silently dropped —
+  FIXED.** `_pt_lit_lobes` read slots 4-7 and 12-16 only, so a coated or
+  sheened physical material path-traced as a plain standard one, with no
+  warning (the shipped `PLASTIC` and `CERAMIC` presets carry a coat). Both
+  are now lobes of the lit BSDF, layered as Three.js layers them: the base
+  is scaled by `1 - clearcoat * F_coat(n.v)` and by the sheen's albedo
+  scaling, the coat is a colourless GGX dielectric (F0 0.04) with its own
+  roughness, the sheen is Charlie x Neubelt. One `_PL_*` vector carries them
+  from `_pt_lit_lobes` to `_pt_lit_f_pdf` (both MIS ends) and to the
+  continuation, which picks them after the base lobes, so a material without
+  them evaluates and draws exactly as before. Not reproduced: the coat's
+  attenuation of emission (one MIS end reads the emissive slot raw), and
+  energy conservation of a low-roughness sheen at grazing angles, which
+  Three.js's direct lighting does not have either. Covered by
+  `tests/unit_tests/test_pt_clearcoat_sheen.py` (each lobe's sampler against
+  its evaluator, the mixture pdf, energy) and two renders in
+  `test_path_tracer.py`.
+
 **The standing rule this section implies:** when the deterministic renderer
 gains a feature, the question is not "does the path tracer match it" (§5 says
 that is not a goal) but "**can the path tracer still render a scene that uses

@@ -281,6 +281,22 @@ Five further consequences of the split, not covered there:
     renderer's direct lighting leaves out. A rough highlight is therefore
     brighter here, by more the rougher and more metallic the material is. A
     smooth one barely changes.
+  * :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`'s
+    ``clearcoat`` and ``sheen`` are lobes of that BSDF, layered as Three.js
+    layers them. The coat -- a colourless dielectric GGX lobe (ior 1.5) with
+    its own ``clearcoat_roughness`` -- takes what it reflects from the layers
+    under it, ``1 - clearcoat * F(n.v)``, and it reflects the environment and
+    the rest of the scene like any other lobe. The deterministic renderer
+    adds its coat on top of an unattenuated base and lights it with direct
+    light only, so a coated surface is a few percent brighter there and its
+    coat shows no surroundings. The coat does not dim the surface's own
+    emission here (Three.js's does). The sheen is Three.js's
+    Charlie-distribution lobe with its albedo scaling of the base; as in
+    Three.js's direct lighting it is not energy-conserving at grazing angles
+    with a low ``sheen_roughness`` -- the albedo fit the scaling uses falls
+    short of the lobe's own albedo there (0.33 against 0.79 at 85 degrees and
+    roughness 0.3) -- so a low-roughness sheen rim can come out brighter than
+    what lights it.
   * The ambient and hemisphere fill reaches **diffuse only**, as it does in
     the deterministic renderer. A constant irradiance arriving from every
     direction, through the diffuse lobe's ``albedo / pi``, is exactly what the

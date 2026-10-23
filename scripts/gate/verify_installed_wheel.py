@@ -35,6 +35,7 @@ def main():
     root = resources.files("algan")
     required = (
         "rendering/raytracing/_glass_energy_lut.npz",
+        "rendering/raytracing/_ggx_albedo_lut.npz",
         "external_libraries/manim/_config/default.cfg",
         "viewer/static/index.html",
         "viewer/static/viewer.css",
@@ -55,6 +56,15 @@ def main():
 
     assert glass_energy_table().shape == GLASS_ENERGY_SHAPE
     print("glass energy lookup decodes from installed wheel")
+
+    from algan.rendering.raytracing.ggx_albedo import (
+        GGX_COSINE_SIZE,
+        GGX_ROUGHNESS_SIZE,
+        ggx_albedo_table,
+    )
+
+    assert ggx_albedo_table().shape == (GGX_ROUGHNESS_SIZE * GGX_COSINE_SIZE, 2)
+    print("GGX albedo lookup decodes from installed wheel")
 
 
 if __name__ == "__main__":

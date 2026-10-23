@@ -33,7 +33,9 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     interface with coupled, reciprocal energy compensation. Both rough
     reflection and refraction combine spherical-cap VNDF sampling
     (Dupuy & Benyoub 2023) with a broad compensation lobe; smooth glass
-    is delta. Transmitted
+    is delta. A MeshPhysicalMaterial's clearcoat (VNDF-sampled GGX) and
+    sheen (cosine-sampled Charlie) are two more lobes of the same pick,
+    layered over the base as Three.js layers them (``_PL_CC``). Transmitted
     radiance includes the relative index-squared factor, with eta-aware
     roulette and the shared nested-IOR stack and Beer-Lambert absorption.
     Homogeneous interiors sample RGB-mixture free flights, HG phase directions,
@@ -184,6 +186,11 @@ from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
 )
+from algan.rendering.raytracing.ggx_albedo import (
+    GGX_COSINE_SIZE,
+    GGX_ROUGHNESS_SIZE,
+)
+from algan.rendering.raytracing.glass_energy import GLASS_ENERGY_SHAPE
 from algan.rendering.raytracing.glass_energy_taichi import (
     _pt_glass_energy_lookup,
     _pt_glass_ms_parameters,
@@ -248,10 +255,13 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     SHADOW_VIS_CHANNELS,
+    _d_charlie,
+    _ibl_sheen_brdf,
     _light_eval,
     _prep_normal,
     _run_frag_pipeline,
     _sided_shading_normal,
+    _v_neubelt,
     light_vis_index,
 )
 from algan.rendering.raytracing.texture_mips_taichi import _triangle_uv_footprint
@@ -270,7 +280,6 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _LT_ENV_SH,
     _LT_HEMISPHERE,
     _PI,
-    _env_brdf_approx,
     _material_reflectance,
     _offset_transmitted_origin,
     _refract_ray,
@@ -301,7 +310,7 @@ _PAIR_BSDF_DIR = 1
 # throughput the background shows through, the camera-segment alpha
 # transparency, and whether this path ever took a STOCHASTIC decision (see
 # ``pt_reduce``).
-PT_ACC_WIDTH = 10
+PT_ACC_WIDTH = 14
 _PT_ACC_LEFTOVER = 4
 _PT_ACC_ALPHA = 8
 #: 1.0 once the path has made any random choice beyond the sub-pixel jitter:
@@ -328,6 +337,21 @@ _PT_ACC_ALPHA = 8
 #: yet", so the host requires this to be zero as well (see
 #: ``path_tracer._pt_active_pixels``).
 _PT_ACC_STOCH = 9
+#: The emitter-MIS origin, for a path whose last scatter vertex is behind a
+#: smooth transmission (glass, a tinted pane). Next-event estimation at that
+#: vertex reached the emitters *through* the transmissive surface (the shadow
+#: query tints rather than blocks it), so the BSDF continuation that crosses
+#: the surface and finds an emitter has to be MIS-weighted against that NEE,
+#: not counted at weight 1 -- weight 1 counted the same light twice, and a
+#: white furnace under an index-matched slab came out 16% over unity. The
+#: crossing therefore keeps ``prev_pdf``, and the solid-angle pdf NEE would
+#: have had for an emissive triangle is measured from the scatter vertex
+#: recorded here (columns 10-12, a world point), not from the crossing's exit
+#: point. Column 13 is 1.0 while that is in force: set by the first smooth
+#: transmission after a scatter, cleared by the next scatter. Zeroed with the
+#: rest of the row before ``pt_generate``, so a camera segment starts clear.
+_PT_ACC_MIS_ORIGIN = 10
+_PT_ACC_MIS_CARRY = 13
 
 # Device-side truncation tallies, read back by the host once per wave and fed
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
@@ -346,13 +370,16 @@ _INV_PI = 0.3183098861837907
 # power-heuristic MIS weight applied when a BSDF-sampled path finds an
 # emitter (an emissive triangle, or the environment map at escape).
 #   == -1 camera segment -- the path has never scattered; emission weight 1.
-#   == 0  the last scatter was a delta lobe (refraction, a tinted pane) or a
-#         vertex that runs no surface NEE (authored appearance, a circuit):
-#         emission weight 1 -- next-event estimation never covered it.
+#   == 0  the last scatter was a delta reflection (a mirror, glass's smooth
+#         reflection) or a vertex that runs no surface NEE (authored
+#         appearance, a circuit): emission weight 1 -- next-event estimation
+#         never covered it.
 #   > 0   the lobe-mixture pdf of the sampled direction at a lit vertex that
 #         ran the NEE block: emission there is MIS-weighted against it.
 # Pass-through crossings keep the value (the ray, and with it the pdf at its
-# origin vertex, continues unchanged).
+# origin vertex, continues unchanged). So do smooth transmissions (refraction,
+# a tinted pane): NEE's shadow ray passes them tinted, so it covered what lies
+# beyond them -- see ``_PT_ACC_MIS_CARRY``.
 # -2 marks an authored diffuse continuation whose direct term already
 # includes area-light rows. Pass-throughs preserve it; another scatter replaces it.
 _SCA_PREV_PDF = 5
@@ -742,17 +769,55 @@ def _pt_smith_lambda(cos_theta, alpha):
     return 0.5 * (ti.sqrt(1.0 + alpha * alpha * t2) - 1.0)
 
 
+#: Where the opaque GGX albedo table starts inside ``pt_glass_energy``
+#: (``ggx_albedo.pt_energy_tables``: the glass table, then this one).
+_GGX_TABLE_OFFSET = GLASS_ENERGY_SHAPE[0]
+
+
 @ti.func
-def _pt_ggx_energy(f0, n_dot_v, roughness):
+def _pt_ggx_albedo(table: ti.template(), n_dot_v, roughness):
+    """``(A, B)`` of the path tracer's own GGX lobe (``ggx_albedo``): with
+    Schlick Fresnel it reflects ``f0 * A + B`` of what arrives from ``n_dot_v``,
+    and ``A + B`` is the white single-scatter albedo ``E1`` that the Turquin
+    compensation divides by. Bilinear over roughness and ``sqrt(n.v)``.
+    """
+    r = ti.math.clamp(roughness, 0.0, 1.0) * (GGX_ROUGHNESS_SIZE - 1)
+    c = ti.sqrt(ti.math.clamp(n_dot_v, 0.0, 1.0)) * (GGX_COSINE_SIZE - 1)
+    ir = ti.min(ti.cast(r, ti.i32), GGX_ROUGHNESS_SIZE - 2)
+    ic = ti.min(ti.cast(c, ti.i32), GGX_COSINE_SIZE - 2)
+    fr, fc = r - ir, c - ic
+    out = ti.math.vec2(0.0, 0.0)
+    for dr, dc in ti.static(ti.ndrange(2, 2)):
+        w = (fr if dr else 1.0 - fr) * (fc if dc else 1.0 - fc)
+        row = _GGX_TABLE_OFFSET + (ir + dr) * GGX_COSINE_SIZE + ic + dc
+        out += w * ti.math.vec2(table[row, 0], table[row, 1])
+    return out
+
+
+@ti.func
+def _pt_ggx_compensation(table: ti.template(), f0, n_dot_v, roughness):
+    """Turquin's multiple-scattering factor ``1 + f0 (1 - E1) / E1``.
+
+    ``E1`` has to be the albedo of the lobe being compensated -- the exact
+    Smith one this module samples -- or the factor creates energy: with
+    Karis's split-sum fit standing in for it, a white rough metal reflected
+    up to 27% more than arrived.
+    """
+    ab = _pt_ggx_albedo(table, n_dot_v, roughness)
+    e1s = ti.math.clamp(ab[0] + ab[1], 1e-3, 1.0)
+    return 1.0 + f0 * ((1.0 - e1s) / e1s)
+
+
+@ti.func
+def _pt_ggx_energy(table: ti.template(), f0, n_dot_v, roughness):
     """Single-scatter GGX directional albedo with Turquin multiple-scattering
     compensation folded in: ``E_ss(f0) * (1 + f0 (1 - E1)/E1)`` per channel,
-    with both terms from the shared Karis split-sum fit (exactly the energy
-    the deterministic glossy route uses).
+    both from the tabulated albedo of the lobe ``_pt_lit_f_pdf`` evaluates.
+    A white lobe (``f0 = 1``) therefore reflects exactly what arrives.
     """
-    e_ss = _env_brdf_approx(f0, n_dot_v, roughness)
-    e1 = _env_brdf_approx(ti.math.vec3(1.0, 1.0, 1.0), n_dot_v, roughness)
-    e1s = ti.math.clamp(e1[0], 1e-3, 1.0)
-    return ti.min(e_ss * (1.0 + f0 * ((1.0 - e1s) / e1s)),
+    ab = _pt_ggx_albedo(table, n_dot_v, roughness)
+    e_ss = f0 * ab[0] + ab[1]
+    return ti.min(e_ss * _pt_ggx_compensation(table, f0, n_dot_v, roughness),
                   ti.math.vec3(1.0, 1.0, 1.0))
 
 
@@ -940,10 +1005,14 @@ def _pt_lt_importance(lt_node_f: ti.template(), row, node, p):
         d = to_p.norm()
         # Inside the node's bounding sphere the point could be arbitrarily
         # close to an emitter, so the falloff reverts to the sphere's own
-        # scale and the bounds subtend every direction.
+        # scale and the bounds subtend every direction: theta_u = pi
+        # (PBRT-v4's ``EntireSphere``), which makes ``cos_p`` 1 below. It
+        # used to be pi/2, which left a residual angle and scored ZERO for a
+        # parent of spots whose cones do contain the point -- a delta light
+        # with no MIS backstop, so its light was lost.
         d2 = ti.max(d * d, ti.max(radius * radius, 1e-12))
-        cos_u = 0.0
-        sin_u = 1.0
+        cos_u = -1.0
+        sin_u = 0.0
         wi = axis
         if d > radius:
             sin_u = ti.math.clamp(radius / d, 0.0, 1.0)
@@ -1294,18 +1363,210 @@ def _pt_sample_glass(glass_energy: ti.template(), rd, n, rough, eta, f0,
     return wi, tint, transmitted, delta, valid
 
 
+# MeshPhysicalMaterial's two layers over the base BSDF, as Three.js composes
+# them (``meshphysical.glsl`` / ``RE_Direct_Physical``):
+#
+#   f = (1 - cc F_c(n.v)) * [s(v, l) * f_base + f_sheen] + cc * f_coat
+#
+# ``f_coat`` is a colourless GGX dielectric (F0 0.04, i.e. ior 1.5, F90 1)
+# with its own roughness, ``f_sheen`` is Charlie x Neubelt on
+# ``sheen_color * sheen``, and ``s(v, l) = 1 - max3(sheen) * max(E(n.v),
+# E(n.l))`` is the sheen's albedo scaling of the base. ``_pt_lit_lobes``
+# hands the per-crossing values on in ONE vector (slots ``_PL_*``) so that
+# every NEE response, every MIS pdf and the continuation read the same layer.
+# The coat and the sheen are lobes of their own in the continuation's pick,
+# each with its own selection weight; a material with neither gets
+# ``_pt_layer_none()``, whose scales are exactly 1 and weights exactly 0, so
+# it evaluates and samples bit for bit as before. Emission is NOT
+# attenuated by the coat (Three.js does): the emitter tables read the
+# emissive slot raw, and attenuating one MIS end only would bias it.
+_PL_CC = 0  # clearcoat weight, [0, 1]
+_PL_CC_ROUGH = 1  # clearcoat roughness, [0, 1]
+_PL_SHEEN_R = 2  # sheen roughness, [1e-4, 1] (as _stage_physical clamps it)
+_PL_SHEEN_C = 3  # 3 slots: sheen_color * sheen (WebGLMaterials premultiplies)
+_PL_SHEEN_MAX = 6  # max3 of the above
+_PL_SHEEN_EV = 7  # E(n.v): Three.js's IBLSheenBRDF fit of the sheen albedo
+_PL_ATT = 8  # 1 - cc * F_c(n.v): what the coat lets through to the base
+_PL_W_COAT = 9  # selection weights: the lobes' energies from
+_PL_W_SHEEN = 10  # _pt_lit_lobes, times alpha once the caller scales them
+_PL_WIDTH = 11
+
+
 @ti.func
-def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
-                  rough, ior, T, shade_n, rd, eta):
+def _pt_layer_none():
+    """The layer vector of a surface with neither clearcoat nor sheen."""
+    layer = ti.Vector([0.0] * _PL_WIDTH)
+    layer[_PL_SHEEN_R] = 1.0
+    layer[_PL_ATT] = 1.0
+    return layer
+
+
+@ti.func
+def _pt_coat_fresnel(cos_t):
+    """Three.js's clearcoat Fresnel: Schlick with F0 0.04 and F90 1."""
+    return 0.04 + 0.96 * ti.pow(1.0 - ti.math.clamp(cos_t, 0.0, 1.0), 5.0)
+
+
+@ti.func
+def _pt_physical_layer(params: ti.template(), tm, prim, n_dot_v):
+    """Clearcoat and sheen of a MeshPhysicalMaterial crossing, read from the
+    same slots (17-23) ``_stage_physical`` reads, with their selection
+    energies at ``n_dot_v``. A block narrower than those slots has neither.
+    """
+    layer = _pt_layer_none()
+    if params.shape[2] > 23:
+        cc = ti.math.clamp(params[tm, prim, 17], 0.0, 1.0)
+        sheen = params[tm, prim, 19]
+        sheen_c = ti.max(ti.math.vec3(params[tm, prim, 21],
+                                      params[tm, prim, 22],
+                                      params[tm, prim, 23]) * sheen,
+                         ti.math.vec3(0.0, 0.0, 0.0))
+        sheen_max = ti.max(sheen_c[0], ti.max(sheen_c[1], sheen_c[2]))
+        sheen_r = ti.math.clamp(params[tm, prim, 20], 1e-4, 1.0)
+        layer[_PL_CC] = cc
+        layer[_PL_CC_ROUGH] = ti.math.clamp(params[tm, prim, 18], 0.0, 1.0)
+        layer[_PL_SHEEN_R] = sheen_r
+        for k in ti.static(range(3)):
+            layer[_PL_SHEEN_C + k] = sheen_c[k]
+        layer[_PL_SHEEN_MAX] = sheen_max
+        if cc > 0.0:
+            # The coat's albedo is close to its Fresnel at n.v (exactly that
+            # when smooth): what it takes from the base is what it reflects.
+            fc_v = cc * _pt_coat_fresnel(n_dot_v)
+            layer[_PL_ATT] = 1.0 - fc_v
+            layer[_PL_W_COAT] = fc_v
+        if sheen_max > 0.0:
+            e_v = _ibl_sheen_brdf(ti.math.clamp(n_dot_v, 0.0, 1.0), sheen_r)
+            layer[_PL_SHEEN_EV] = e_v
+            layer[_PL_W_SHEEN] = sheen_max * e_v
+    return layer
+
+
+@ti.func
+def _pt_base_scale(layer, cos_l):
+    """What the coat and the sheen leave of the base BSDF toward a direction
+    of cosine ``cos_l``: ``(att * s(v, l), s(v, l) / s(v, v), att * s(v, v))``.
+
+    The first scales a base lobe evaluated from scratch (GGX); the second
+    one whose energy ``_pt_lit_lobes`` already scaled by the third (the
+    diffuse, whose ``e_diff`` is its whole response); the third is the
+    direction-free part (glass, the selection energies, the ambient fill).
+    All three are exactly 1 for ``_pt_layer_none()``.
+    """
+    att = layer[_PL_ATT]
+    sheen_max = layer[_PL_SHEEN_MAX]
+    s_l = 1.0
+    s_v = 1.0
+    if sheen_max > 0.0:
+        e_v = layer[_PL_SHEEN_EV]
+        e_l = _ibl_sheen_brdf(ti.math.clamp(cos_l, 0.0, 1.0),
+                              layer[_PL_SHEEN_R])
+        s_v = ti.max(1.0 - sheen_max * e_v, 0.0)
+        s_l = ti.max(1.0 - sheen_max * ti.max(e_v, e_l), 0.0)
+    return att * s_l, s_l / ti.max(s_v, 1e-6), att * s_v
+
+
+@ti.func
+def _pt_coat_f_pdf(layer, n, rd, wi):
+    """The clearcoat lobe toward ``wi``: ``(f_cos, pdf)``, the coat's BSDF
+    times cosine (scalar: it is colourless) and the density of its own VNDF
+    sampler (``_pt_sample_layer``). ``n`` faces the ray; exact height-
+    correlated Smith, like the base GGX here and Three.js's
+    ``BRDF_GGX_Clearcoat``. No multiple-scattering compensation, as there.
+    """
+    f_cos = 0.0
+    pdf = 0.0
+    cc = layer[_PL_CC]
+    cos_l = n.dot(wi)
+    if (cc > 0.0) and (cos_l > 1e-6):
+        v = -rd
+        cos_v = ti.max(n.dot(v), 1e-4)
+        h = (v + wi).normalized()
+        n_dot_h = ti.math.clamp(n.dot(h), 0.0, 1.0)
+        rc = layer[_PL_CC_ROUGH]
+        a_c = ti.max(rc * rc, 1e-4)
+        d = _pt_ggx_ndf(n_dot_h, a_c)
+        lam_v = _pt_smith_lambda(cos_v, a_c)
+        lam_l = _pt_smith_lambda(cos_l, a_c)
+        q = d / ti.max(4.0 * cos_v, 1e-6)
+        f_cos = cc * _pt_coat_fresnel(v.dot(h)) * q / (1.0 + lam_v + lam_l)
+        pdf = q / (1.0 + lam_v)
+    return f_cos, pdf
+
+
+@ti.func
+def _pt_sheen_f_pdf(layer, n, rd, wi):
+    """The sheen lobe toward ``wi``: ``(f_cos, pdf)`` -- Charlie x Neubelt
+    (``_stage_physical``'s lobe, term for term) times cosine, and the
+    cosine-hemisphere density it is sampled with.
+    """
+    f_cos = ti.math.vec3(0.0, 0.0, 0.0)
+    pdf = 0.0
+    cos_l = n.dot(wi)
+    if (layer[_PL_SHEEN_MAX] > 0.0) and (cos_l > 1e-6):
+        v = -rd
+        cos_v = ti.max(n.dot(v), 1e-4)
+        n_dot_h = ti.math.clamp(n.dot((v + wi).normalized()), 0.0, 1.0)
+        lobe = _d_charlie(n_dot_h, layer[_PL_SHEEN_R]) \
+            * _v_neubelt(cos_v, cos_l) * cos_l
+        f_cos = ti.math.vec3(layer[_PL_SHEEN_C + 0], layer[_PL_SHEEN_C + 1],
+                             layer[_PL_SHEEN_C + 2]) * lobe
+        pdf = cos_l * _INV_PI
+    return f_cos, pdf
+
+
+@ti.func
+def _pt_sample_layer(layer, n, rd, u, coat):
+    """Draw the clearcoat (``coat == 1``: VNDF about ``n``, which faces the
+    ray) or the sheen lobe (cosine-weighted). Returns ``(wi, weight, ok)``
+    with ``weight`` that lobe's own ``f_cos / pdf`` -- exactly what
+    ``_pt_coat_f_pdf`` / ``_pt_sheen_f_pdf`` give for ``wi``.
+    """
+    wi = rd
+    weight = ti.math.vec3(0.0, 0.0, 0.0)
+    ok = 0
+    if coat == 1:
+        t_b, b_b = _pt_onb(n)
+        wo_l = ti.math.vec3(t_b.dot(-rd), b_b.dot(-rd),
+                            ti.max(n.dot(-rd), 1e-4))
+        rc = layer[_PL_CC_ROUGH]
+        a_c = ti.max(rc * rc, 1e-4)
+        h_l = _pt_vndf_half_vector(wo_l, a_c, u)
+        h_w = (t_b * h_l[0] + b_b * h_l[1] + n * h_l[2]).normalized()
+        wi = (rd - 2.0 * rd.dot(h_w) * h_w).normalized()
+        cos_l = n.dot(wi)
+        if cos_l > 1e-6:
+            lam_v = _pt_smith_lambda(wo_l[2], a_c)
+            lam_l = _pt_smith_lambda(cos_l, a_c)
+            w = layer[_PL_CC] * _pt_coat_fresnel((-rd).dot(h_w)) \
+                * (1.0 + lam_v) / (1.0 + lam_v + lam_l)
+            weight = ti.math.vec3(w, w, w)
+            ok = 1
+    else:
+        wi = _pt_cosine_direction(n, u)
+        fc, pdf = _pt_sheen_f_pdf(layer, n, rd, wi)
+        if pdf > 0.0:
+            weight = fc / pdf
+            ok = 1
+    return wi, weight, ok
+
+
+@ti.func
+def _pt_lit_lobes(energy: ti.template(), pid, params: ti.template(), f, prim,
+                  albedo3, metalness, rough, ior, T, shade_n, rd, eta):
     """Continuation-lobe energies of a physically-integrated (lit) hit:
-    ``(e_diff, e_spec, e_trans, f0, rough_eff)``. The single source for the
-    sampled continuation AND for every direct-lighting response (roadmap
-    section 5) -- one BSDF, so MIS weights sum to one and a light row and an
-    emissive triangle of matched radiance light a surface identically.
+    ``(e_diff, e_spec, e_trans, f0, rough_eff, layer)``. The single source
+    for the sampled continuation AND for every direct-lighting response
+    (roadmap section 5) -- one BSDF, so MIS weights sum to one and a light
+    row and an emissive triangle of matched radiance light a surface
+    identically.
 
     ``rough_eff`` is the GGX roughness the caller must carry downstream: it
     is the crossing's own ``rough`` for every pipeline except phong, whose
-    highlight is authored as a Blinn-Phong exponent instead.
+    highlight is authored as a Blinn-Phong exponent instead. ``layer`` is a
+    physical material's clearcoat and sheen (see ``_PL_CC``), and
+    ``_pt_layer_none()`` for everything else; the three base energies come
+    back already scaled by what those layers leave of the base at ``n.v``.
     """
     one3 = ti.math.vec3(1.0, 1.0, 1.0)
     e_diff = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1313,6 +1574,7 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
     e_trans = ti.math.vec3(0.0, 0.0, 0.0)
     f0 = ti.math.vec3(0.0, 0.0, 0.0)
     rough_eff = rough
+    layer = _pt_layer_none()
     # |cos|, not cos. The GGX reflection lobe lives on whichever side of the
     # interface the ray arrived from, and ``shade_n`` is the surface's own
     # declared side: a one-sided solid keeps its OUTWARD normal when a
@@ -1342,7 +1604,7 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
         shininess = ti.max(params[tmp, prim, 7], 1e-3)
         rough_eff = ti.math.clamp(
             ti.sqrt(ti.sqrt(2.0 / (shininess + 2.0))), 0.03, 1.0)
-        e_spec = _pt_ggx_energy(f0, n_dot_v, rough_eff)
+        e_spec = _pt_ggx_energy(energy, f0, n_dot_v, rough_eff)
         e_diff = albedo3 * (one3 - e_spec)
     else:
         tm = f % params.shape[0]
@@ -1361,7 +1623,7 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
                 params[tm, prim, 16]) \
                 * (ratio * ratio * params[tm, prim, 13])
         f0 = diel_f0 * (1.0 - met) + albedo3 * met
-        e_spec = _pt_ggx_energy(f0, n_dot_v, rough)
+        e_spec = _pt_ggx_energy(energy, f0, n_dot_v, rough)
         diel_pass = 0.0
         if eta <= 0.0:
             # Only this arm consumes it: the eta > 0 arm below overwrites
@@ -1380,16 +1642,23 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
             diel_pass = (1.0 - met) * (1.0 - diel[0])
             e_spec = ti.max(e_spec, _pt_fresnel(f0, n_dot_v, eta, met, albedo3))
             if ti.abs(eta - 1.0) < 1e-4:
-                e_spec = met * _pt_ggx_energy(albedo3, n_dot_v, rough)
+                e_spec = met * _pt_ggx_energy(energy, albedo3, n_dot_v, rough)
         e_trans = albedo3 * (diel_pass * T)
         e_diff = albedo3 * ((1.0 - met) * (1.0 - T)) * (one3 - e_spec)
-    return e_diff, e_spec, e_trans, f0, rough_eff
+        if pid == _MID_PHYSICAL:
+            layer = _pt_physical_layer(params, tm, prim, n_dot_v)
+            _bl, _ratio, base_v = _pt_base_scale(layer, n_dot_v)
+            e_diff *= base_v
+            e_spec *= base_v
+            e_trans *= base_v
+    return e_diff, e_spec, e_trans, f0, rough_eff, layer
 
 
 @ti.func
 def _pt_lit_f_pdf(glass_energy: ti.template(), e_diff, e_spec, f0, rough,
                   shade_n, rd, wi,
-                  w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, T):
+                  w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, T,
+                  layer):
     """Physical BSDF response of a lit vertex toward ``wi`` and the pdf with
     which its continuation sampler generates ``wi``.
 
@@ -1397,18 +1666,24 @@ def _pt_lit_f_pdf(glass_energy: ti.template(), e_diff, e_spec, f0, rough,
     continuation's mixture density. Rough glass includes reflection and
     transmission from one GGX distribution; opaque GGX retains Turquin
     compensation. Smooth glass and straight pass-through are deltas and
-    add no solid-angle density. Both ends of every MIS pair -- next-event
+    add no solid-angle density. A physical material's clearcoat and sheen
+    (``layer``, from ``_pt_lit_lobes``) attenuate that base and add two
+    lobes of their own, with selection weights ``layer[_PL_W_COAT]`` and
+    ``layer[_PL_W_SHEEN]``. Both ends of every MIS pair -- next-event
     samples toward emitters and BSDF paths that find them -- use this one
     function, which is what makes the power-heuristic weights sum to one.
     """
     f_cos = ti.math.vec3(0.0, 0.0, 0.0)
     pdf = 0.0
-    w_sum = w_pass + w_diff + w_spec + w_trans
+    w_coat = layer[_PL_W_COAT]
+    w_sheen = layer[_PL_W_SHEEN]
+    w_sum = w_pass + w_diff + w_spec + w_trans + w_coat + w_sheen
     cos_i = shade_n.dot(wi)
     spec_n = shade_n
     if spec_n.dot(rd) > 0.0:
         spec_n = -spec_n
     cos_s = spec_n.dot(wi)
+    base_l, base_ratio, base_v = _pt_base_scale(layer, cos_s)
     # The diffuse lobe REFLECTS, so it needs ``wi`` above the horizon of the
     # declared side (``cos_i``) AND on the same side as the outgoing direction
     # (``cos_s``). The two differ only on a one-sided surface hit from behind,
@@ -1421,17 +1696,16 @@ def _pt_lit_f_pdf(glass_energy: ti.template(), e_diff, e_spec, f0, rough,
     # Transmitting interfaces are unaffected: the caller sets
     # ``shade_n = spec_n`` for glass, making the second test an identity.
     if (cos_i > 1e-6) and (cos_s > 1e-6) and (w_sum > 1e-6):
-        f_cos = e_diff * (_INV_PI * cos_i)
+        f_cos = e_diff * (_INV_PI * cos_i * base_ratio)
         pdf = (w_diff / w_sum) * (_INV_PI * cos_i)
     glass = (eta > 0.0) and (ti.abs(eta - 1.0) >= 1e-4)
     if glass and (w_sum > 1e-6):
         fg, pg = _pt_glass_f_pdf(glass_energy, f0, rough, spec_n, rd, wi,
                                 eta, metalness, albedo, T)
-        f_cos += fg
+        f_cos += fg * base_v
         pdf += ((w_spec + w_trans) / w_sum) * pg
     elif (cos_s > 1e-6) and (w_sum > 1e-6):
         if w_spec > 0.0:
-            one3 = ti.math.vec3(1.0, 1.0, 1.0)
             v = -rd
             h = (v + wi).normalized()
             n_dot_v = ti.max(spec_n.dot(v), 1e-4)
@@ -1443,12 +1717,17 @@ def _pt_lit_f_pdf(glass_energy: ti.template(), e_diff, e_spec, f0, rough,
             lam_l = _pt_smith_lambda(cos_s, a_g)
             g1_v = 1.0 / (1.0 + lam_v)
             g2 = 1.0 / (1.0 + lam_v + lam_l)
+            g2 *= base_l  # what the coat and sheen leave of this lobe
             fres = _pt_fresnel(f0, v_dot_h, eta, metalness, albedo)
-            e1 = _env_brdf_approx(one3, n_dot_v, rough)
-            e1s = ti.math.clamp(e1[0], 1e-3, 1.0)
-            comp = one3 + f0 * ((1.0 - e1s) / e1s)
+            comp = _pt_ggx_compensation(glass_energy, f0, n_dot_v, rough)
             f_cos += fres * comp * (d * g2 / ti.max(4.0 * n_dot_v, 1e-6))
             pdf += (w_spec / w_sum) * (g1_v * d / ti.max(4.0 * n_dot_v, 1e-6))
+    # The clearcoat and sheen reflect on the ray's side, glass included.
+    if (cos_s > 1e-6) and (w_sum > 1e-6) and (w_coat + w_sheen > 0.0):
+        fc_c, pc_c = _pt_coat_f_pdf(layer, spec_n, rd, wi)
+        fc_s, pc_s = _pt_sheen_f_pdf(layer, spec_n, rd, wi)
+        f_cos += fc_s + ti.math.vec3(fc_c, fc_c, fc_c)
+        pdf += (w_coat * pc_c + w_sheen * pc_s) / w_sum
     return f_cos, pdf
 
 
@@ -1963,7 +2242,7 @@ def _pt_authored_surface(media_enabled, pipelines: ti.template(), pids: ti.templ
 def _pt_vertex_f_pdf(medium_vertex, phase_g, glass_energy: ti.template(),
                      e_diff, e_spec, f0, rough,
                      shade_n, rd, wi, w_pass, w_diff, w_spec, w_trans,
-                     eta, metalness, albedo, transmission):
+                     eta, metalness, albedo, transmission, layer):
     f_cos = ti.math.vec3(0.0, 0.0, 0.0)
     pdf = 0.0
     if medium_vertex:
@@ -1972,7 +2251,8 @@ def _pt_vertex_f_pdf(medium_vertex, phase_g, glass_energy: ti.template(),
     else:
         f_cos, pdf = _pt_lit_f_pdf(
             glass_energy, e_diff, e_spec, f0, rough, shade_n, rd, wi,
-            w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, transmission)
+            w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, transmission,
+            layer)
     return f_cos, pdf
 
 
@@ -2351,6 +2631,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             base_dist = rs_sca[r, 4]
             prev_pdf = rs_sca[r, _SCA_PREV_PDF]
             eta_scale = rs_sca[r, _SCA_ETA_SCALE]
+            mis_carry = ti.cast(pt_acc[r, _PT_ACC_MIS_CARRY] > 0.5, ti.i32)
+            mis_org = ti.math.vec3(pt_acc[r, _PT_ACC_MIS_ORIGIN],
+                                   pt_acc[r, _PT_ACC_MIS_ORIGIN + 1],
+                                   pt_acc[r, _PT_ACC_MIS_ORIGIN + 2])
             bounces_left = rs_int[r, 0]
             processed = rs_int[r, 1]
             acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
@@ -2737,16 +3021,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 wl_diff = 0.0
                 wl_spec = 0.0
                 wl_trans = 0.0
+                # Clearcoat / sheen of a physical crossing; its two
+                # selection weights ride the vector (scaled by alpha below).
+                layer_l = _pt_layer_none()
                 if lit and (suppressed == 0) and (not medium_vertex):
                     # ``rough`` is REPLACED by the lobe set's own GGX width:
                     # phong authors its highlight as a Blinn-Phong exponent,
                     # so its lobes, its NEE responses and its continuation
                     # must all read the converted roughness. Every other
                     # pipeline gets its own value back unchanged.
-                    e_diff_l, e_spec_l, e_trans_l, f0_l, rough = \
+                    e_diff_l, e_spec_l, e_trans_l, f0_l, rough, layer_l = \
                         _pt_lit_lobes(
-                            pid, tri_mat, f, prim, albedo3, metalness, rough,
-                            ior, T, shade_n, rd, eta)
+                            pt_glass_energy, pid, tri_mat, f, prim, albedo3,
+                            metalness, rough, ior, T, shade_n, rd, eta)
                     wl_diff = alpha * ti.max(e_diff_l[0],
                                              ti.max(e_diff_l[1],
                                                     e_diff_l[2]))
@@ -2756,13 +3043,16 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     wl_trans = alpha * ti.max(e_trans_l[0],
                                               ti.max(e_trans_l[1],
                                                      e_trans_l[2]))
+                    layer_l[_PL_W_COAT] = alpha * layer_l[_PL_W_COAT]
+                    layer_l[_PL_W_SHEEN] = alpha * layer_l[_PL_W_SHEEN]
                 rough_glass = glass and (rough * rough >= 1e-4)
                 # Interpolating three identical f32 transmission values can
                 # land one ulp below 1. Do not turn those nominally null
                 # boundaries into depth-consuming scatters (or black pixels
                 # when max_bounces == 0). The tolerance is below min_weight.
                 null_boundary = medium_boundary and (not glass) and (alpha > 0.999999) \
-                    and (wl_diff <= 1e-6) and (wl_spec <= 1e-6) and (wl_trans > 0.0)
+                    and (wl_diff <= 1e-6) and (wl_spec <= 1e-6) and (wl_trans > 0.0) \
+                    and (layer_l[_PL_W_COAT] + layer_l[_PL_W_SHEEN] <= 1e-6)
 
                 # Custom-scatter state for this crossing: whether a user
                 # scatter owns it, the radiance it committed, and its three
@@ -2817,7 +3107,18 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if (prev_pdf > 0.0) and (tri_emit_prob[prim] > 0.0) \
                             and (fn_len > 1e-12):
                         covered = 1
-                        cos_l = (-rd).dot(fnrm)
+                        # Behind a smooth transmission, NEE connected the
+                        # scatter vertex to this point straight through the
+                        # surface: measure from there (``_PT_ACC_MIS_CARRY``).
+                        ne_org = ro
+                        ne_dist2 = t_hit * t_hit
+                        ne_dir = rd
+                        if mis_carry == 1:
+                            ne_org = mis_org
+                            ne_vec = hit_p - mis_org
+                            ne_dist2 = ne_vec.dot(ne_vec)
+                            ne_dir = ne_vec / ti.max(ti.sqrt(ne_dist2), 1e-12)
+                        cos_l = (-ne_dir).dot(fnrm)
                         if tri_mat[tm, prim, _MAT_ONE_SIDED] > 0.5:
                             if cos_l <= 1e-6:
                                 covered = 0
@@ -2829,9 +3130,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             # PREVIOUS vertex. Flat CDF: a table lookup.
                             # Light tree: a query, because selection is a
                             # function of the shading point -- walked up
-                            # from the triangle's leaf at ``ro``, which is
-                            # the previous scatter origin (rs_ro is not
-                            # touched by a pass-through crossing).
+                            # from the triangle's leaf at the previous
+                            # scatter origin: ``ro`` (rs_ro is not touched by
+                            # a pass-through crossing), or the recorded
+                            # origin behind a smooth transmission.
                             p_ne = tri_emit_prob[prim]
                             if tree_on:
                                 p_ne = 0.0
@@ -2839,8 +3141,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 if ent_m >= 0:
                                     p_ne = tree_mix * _pt_lt_pmf(
                                         lt_node_f, lt_node_i, lt_r,
-                                        lt_entry_leaf[lt_r, ent_m], ro)
-                            pdf_ne = p_ne * (t_hit * t_hit) \
+                                        lt_entry_leaf[lt_r, ent_m], ne_org)
+                            pdf_ne = p_ne * ne_dist2 \
                                 / ti.max(area_e * c_l, 1e-12) \
                                 * ti.cast(n_ls, ti.f32)
                             w_emit = prev_pdf * prev_pdf \
@@ -2960,7 +3262,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, ld,
                                             wl_pass, wl_diff, wl_spec,
-                                            wl_trans, eta, metalness, albedo3, T)
+                                            wl_trans, eta, metalness, albedo3, T,
+                                            layer_l)
                                         contrib = f_cos_r * lc \
                                             * (inv_ls / p_sel)
                                         wi_vis = wi_v
@@ -3006,7 +3309,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 e_diff_l, e_spec_l, f0_l,
                                                 rough, shade_n, rd, wi,
                                                 wl_pass, wl_diff, wl_spec,
-                                                wl_trans, eta, metalness, albedo3, T)
+                                                wl_trans, eta, metalness, albedo3, T,
+                                                layer_l)
                                             if bounces_left <= 0:
                                                 pdf_b = 0.0
                                             pdf_sa = p_tri * (d_e * d_e) \
@@ -3030,7 +3334,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     pdf_sa = env_share * pdf_e
                                     if (pdf_sa > 1e-12) \
                                             and ((shade_n.dot(dir_e) > 1e-6)
-                                                 or ((wl_spec > 0.0) and
+                                                 or ((wl_spec + layer_l[_PL_W_COAT]
+                                                      + layer_l[_PL_W_SHEEN] > 0.0) and
                                                      (spec_n.dot(dir_e) > 1e-6))
                                                  or rough_glass or medium_vertex):
                                         ec = _sample_env_map(
@@ -3042,7 +3347,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, dir_e,
                                             wl_pass, wl_diff, wl_spec,
-                                            wl_trans, eta, metalness, albedo3, T)
+                                            wl_trans, eta, metalness, albedo3, T,
+                                            layer_l)
                                         if bounces_left <= 0:
                                             pdf_b = 0.0
                                         pdf_h = pdf_sa \
@@ -3404,6 +3710,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         absorbed = True
                         done = True
                         break
+                    mis_carry = 0
                     ro = hit_p
                     rd = new_rd_m
                     base_dist += t_hit
@@ -3562,6 +3869,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             # A new geometric segment needs a fresh shell
                             # pairing, including custom reflection/refraction.
                             ring = ti.Vector([-1, -1, -1, -1])
+                            mis_carry = 0
                             ro = c_ro
                             rd = c_rd
                             base_dist += t_hit
@@ -3577,14 +3885,16 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     continue
 
                 # ----------------------------------------------------------
-                # Continuation: pass-through | diffuse | specular | transmit.
+                # Continuation: pass-through | diffuse | specular | transmit
+                # | clearcoat | sheen.
                 # ----------------------------------------------------------
-                one3 = ti.math.vec3(1.0, 1.0, 1.0)
                 w_pass = 1.0 - alpha
                 e_diff = ti.math.vec3(0.0, 0.0, 0.0)
                 e_spec = ti.math.vec3(0.0, 0.0, 0.0)
                 e_trans = ti.math.vec3(0.0, 0.0, 0.0)
                 f0 = ti.math.vec3(0.0, 0.0, 0.0)
+                w_coat = 0.0
+                w_sheen = 0.0
                 diel_pass = 0.0
                 if needs_normal and (bounces_left > 0):
                     # ``spec_n``, not ``shade_n``: the reflection lobe's
@@ -3597,6 +3907,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         e_spec = e_spec_l
                         e_trans = e_trans_l
                         f0 = f0_l
+                        w_coat = layer_l[_PL_W_COAT]
+                        w_sheen = layer_l[_PL_W_SHEEN]
                     elif authored:
                         e_diff = albedo3
                     elif metalness >= 0.0:
@@ -3605,7 +3917,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - met) \
                             + albedo3 * met
                         if met > 0.0:
-                            e_spec = _pt_ggx_energy(f0, n_dot_v, rough)
+                            e_spec = _pt_ggx_energy(
+                                pt_glass_energy, f0, n_dot_v, rough)
                         if T > 1e-4:
                             _R3c, diel_pass = _material_reflectance(
                                 rd, shade_n, met, ior, albedo3, T)
@@ -3616,7 +3929,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                           e_spec[2]))
                 w_trans = alpha * ti.max(e_trans[0], ti.max(e_trans[1],
                                                             e_trans[2]))
-                w_sum = w_pass + w_diff + w_spec + w_trans
+                # The layers' lobes sit past the base ones in the pick, so a
+                # material without them draws exactly as it always did.
+                w_base = w_pass + w_diff + w_spec + w_trans
+                w_sum = w_base + w_coat + w_sheen
                 if w_sum <= 1e-6:
                     # Fully absorbed (e.g. an opaque unlit surface): nothing
                     # continues and the background must NOT show through --
@@ -3674,6 +3990,11 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     new_rd = rd
                     new_ro = hit_p
                     ok = 1
+                    # A smooth transmission keeps the last scatter's MIS
+                    # state (``_PT_ACC_MIS_CARRY``); every other pick
+                    # replaces it.
+                    smooth_cross = 0
+                    prev_kept = prev_pdf
                     if pick < w_pass + w_diff:
                         # A diffuse pick is non-delta: the AOV prefix ends at
                         # this crossing (whose albedo/normal it just added).
@@ -3682,7 +4003,11 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         new_rd = _pt_cosine_direction(shade_n, u_dir)
                         if glass and (rd.dot(fnrm) * new_rd.dot(fnrm) >= 0.0):
                             ok = 0
-                        tint = e_diff * (alpha / ti.max(p_sel, 1e-6))
+                        # ``e_diff`` carries the sheen's scaling at l = v;
+                        # this is the rest of it toward ``new_rd`` (1 without).
+                        _bl_d, s_ratio, _bv_d = _pt_base_scale(
+                            layer_l, spec_n.dot(new_rd))
+                        tint = e_diff * (alpha * s_ratio / ti.max(p_sel, 1e-6))
                         if glass:
                             # A mixed diffuse/glass material must evaluate
                             # the full mixture for either sampling strategy.
@@ -3690,9 +4015,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 pt_glass_energy,
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
-                                wl_trans, eta, metalness, albedo3, T)
+                                wl_trans, eta, metalness, albedo3, T,
+                                layer_l)
                             tint = fc_mix * (alpha / ti.max(pdf_mix, 1e-12))
-                        diff_mean = (alpha / ti.max(p_sel, 1e-6)) \
+                        diff_mean = (alpha * s_ratio / ti.max(p_sel, 1e-6)) \
                             * ((e_diff[0] + e_diff[1] + e_diff[2]) / 3.0)
                         if glass:
                             diff_mean = (tint[0] + tint[1] + tint[2]) / 3.0
@@ -3712,7 +4038,39 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 pt_glass_energy,
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
-                                wl_trans, eta, metalness, albedo3, T)
+                                wl_trans, eta, metalness, albedo3, T,
+                                layer_l)
+                    elif pick >= w_base:
+                        # Clearcoat or sheen (non-delta: close the prefix),
+                        # each drawn by its own lobe and weighted by its own
+                        # ``f_cos / pdf`` over its selection probability --
+                        # the same per-lobe estimator as the base lobes.
+                        aov_open = 0
+                        is_coat = 0
+                        p_sel = w_sheen / w_sum
+                        if pick < w_base + w_coat:
+                            is_coat = 1
+                            p_sel = w_coat / w_sum
+                        new_rd, tint_l, ok = _pt_sample_layer(
+                            layer_l, spec_n, rd, u_dir, is_coat)
+                        if glass and (rd.dot(fnrm) * new_rd.dot(fnrm) >= 0.0):
+                            ok = 0
+                        if ok == 1:
+                            tint = tint_l * (alpha / ti.max(p_sel, 1e-12))
+                            gmean = (tint[0] + tint[1] + tint[2]) / 3.0
+                            thru = ti.math.vec4(thru[0] * tint[0],
+                                                thru[1] * tint[1],
+                                                thru[2] * tint[2],
+                                                thru[3] * gmean)
+                            new_ro = _pt_offset_ray_origin(
+                                hit_p,
+                                fnrm if fnrm.dot(new_rd) > 0.0 else -fnrm)
+                            _fc_l, prev_pdf = _pt_lit_f_pdf(
+                                pt_glass_energy,
+                                e_diff_l, e_spec_l, f0_l, rough, shade_n,
+                                rd, new_rd, wl_pass, wl_diff, wl_spec,
+                                wl_trans, eta, metalness, albedo3, T,
+                                layer_l)
                     elif glass:
                         # Remapping the outer lobe draw leaves a uniform
                         # independent Fresnel draw after choosing the facet.
@@ -3727,14 +4085,24 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             ok = 0
                         prev_pdf = 0.0
                         if delta_g == 1:
-                            tint_g *= alpha * w_sum / ti.max(wg, 1e-12)
+                            _bl_g, _r_g, bv_g = _pt_base_scale(layer_l, 1.0)
+                            tint_g *= alpha * w_sum / ti.max(wg, 1e-12) * bv_g
+                            if crossed == 1:
+                                # NEE from the last scatter vertex already
+                                # reached past this surface (its shadow ray
+                                # passes transmissive blockers, tinted), so
+                                # what the crossing finds is MIS-covered by
+                                # it. Only the smooth reflection is not.
+                                prev_pdf = prev_kept
+                                smooth_cross = 1
                         else:
                             aov_open = 0
                             fc_g, prev_pdf = _pt_lit_f_pdf(
                                 pt_glass_energy,
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
-                                wl_trans, eta, metalness, albedo3, T)
+                                wl_trans, eta, metalness, albedo3, T,
+                                layer_l)
                             if prev_pdf <= 1e-12:
                                 ok = 0
                             tint_g = fc_g * (alpha / ti.max(prev_pdf, 1e-12))
@@ -3774,14 +4142,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             v_dot_h = ti.max((-rd).dot(h_w), 1e-4)
                             fres = _pt_fresnel(
                                 f0, v_dot_h, eta, metalness, albedo3)
+                            # What the clearcoat and sheen leave this lobe.
+                            bl_s, _r_s, _bv_s = _pt_base_scale(
+                                layer_l, n_dot_l2)
+                            fres = fres * bl_s
                             lam_v = _pt_smith_lambda(wo_l[2], a_g)
                             lam_l = _pt_smith_lambda(n_dot_l2, a_g)
                             g_ratio = (1.0 + lam_v) \
                                 / ti.max(1.0 + lam_v + lam_l, 1e-6)
                             # Turquin compensation on the sampled lobe.
-                            e1 = _env_brdf_approx(one3, wo_l[2], rough)
-                            e1s = ti.math.clamp(e1[0], 1e-3, 1.0)
-                            comp = one3 + f0 * ((1.0 - e1s) / e1s)
+                            comp = _pt_ggx_compensation(
+                                pt_glass_energy, f0, wo_l[2], rough)
                             tint = fres * g_ratio * comp \
                                 * (alpha / ti.max(p_sel, 1e-6))
                             gmean = (tint[0] + tint[1] + tint[2]) / 3.0
@@ -3798,7 +4169,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     pt_glass_energy,
                                     e_diff_l, e_spec_l, f0_l, rough,
                                     shade_n, rd, new_rd, wl_pass, wl_diff,
-                                    wl_spec, wl_trans, eta, metalness, albedo3, T)
+                                    wl_spec, wl_trans, eta, metalness, albedo3, T,
+                                    layer_l)
                     else:
                         p_sel = w_trans / w_sum
                         if htype == 1:
@@ -3819,9 +4191,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             thru[1] * tint[1],
                                             thru[2] * tint[2],
                                             thru[3] * gmean)
-                        # Refraction / a tinted pane is a delta lobe: what
-                        # it finds next is not MIS-covered by any NEE.
-                        prev_pdf = 0.0
+                        # Refraction / a tinted pane is a delta lobe, but
+                        # NEE from the last scatter vertex passed this
+                        # surface too (tinted): keep that vertex's pdf, as
+                        # the smooth-glass crossing above does.
+                        prev_pdf = prev_kept
+                        smooth_cross = 1
                     if (media_offset > 0) and medium_boundary and (ok == 1):
                         if rd.dot(fnrm) * new_rd.dot(fnrm) > 0.0:
                             media, overflow_m = _pt_medium_cross(
@@ -3854,6 +4229,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if ti.max(thru[0], ti.max(thru[1], thru[2])) * eta_scale < min_weight:
                         done = True
                         break
+                    if smooth_cross == 1:
+                        if mis_carry == 0:
+                            # ``ro`` is still the last scatter vertex: the
+                            # first crossing behind it records it.
+                            mis_org = ro
+                            mis_carry = 1
+                    else:
+                        mis_carry = 0
                     ring = ti.Vector([-1, -1, -1, -1])
                     ro = new_ro
                     rd = new_rd
@@ -3882,6 +4265,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             for k in ti.static(range(4)):
                 pt_thru[r, k] = thru[k]
                 pt_acc[r, k] += acc[k]
+            pt_acc[r, _PT_ACC_MIS_CARRY] = ti.cast(mis_carry, ti.f32)
+            for k in ti.static(range(3)):
+                pt_acc[r, _PT_ACC_MIS_ORIGIN + k] = mis_org[k]
             rs_sca[r, 0] = t_alpha
             rs_sca[r, 1] = t_prev
             rs_sca[r, 2] = layer_prev

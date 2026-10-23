@@ -126,6 +126,7 @@ render:
 | `test_mps_friendly.py` (per test) | MPS-friendly mode substitutes a float32 accumulator, an int32 reduction or a log-step scan wherever Metal cannot run the wide one, and the *call sites* are all over the renderer while the substitutions live in one module. So the marked tests are the cheap half — the flag's resolution, the dtype selectors, the scan against `cummax`/`cummin`, and an AST walk that fails if any renderer module reaches for `torch.float64`, `ti.f64` or `cummax` directly. That walk is the one that trips on a change made elsewhere: a new float64 accumulator anywhere under `algan/rendering/` is an Apple GPU that aborts, and nothing else in the loop would say so. No Taichi, no render. The kernel-variant comparisons and the end-to-end render beside them are unmarked. |
 | `test_kernel_control_flow.py` | A `continue` under a compile-time gate — `if ti.static(...)` or a statically unrolled `for ... in ti.static(range(n))` — emits a bare `ContinueStmt` and leaves every statement after it in an already-terminated block, which is **invalid SPIR-V**. Same shape of argument as the walk above: it trips on a kernel written anywhere under `algan/`, and the consequence is an Apple GPU that will not build a pipeline, which nothing else in the loop can see (LLVM executes the invalid module correctly, so the CPU and CUDA suites are both green on it). `../algan/rendering/DESIGN_mps_support.md` §1.2c is what it cost the once. An AST walk: no Taichi, no render, about half a second. |
 | `test_arena_args.py` (one test) | That every launch site of an arena-converted kernel passes the argument count its wrapper packs from. The list a site must match (`call_params`) lives in the kernel module, the sites live in the tracer, the raster pipeline and the path tracer, and nothing in Python connects them — so adding a kernel parameter breaks the sites from elsewhere, and the wrapper's own arity check only fires when that particular launch renders. Only the static arity test is marked; the prologue/spec comparisons beside it move when their own kernel does, and the Metal buffer-count walk parses the whole package. Source reading, no Taichi, no render: about half a second. |
+| `test_kernel_precompile.py` (one test, not the module) | Only `test_every_builtin_spec_still_matches_a_live_kernel`, for the same reason as `test_arena_args.py`'s row: the built-in precompile list (`algan/rendering/kernel_specs_builtin.json`) records every argument of the kernels it names, so a parameter added to one of them in a `*_taichi.py` module makes its entries stale from elsewhere. Nothing else notices: a worker skips a stale spec without an error, and the first render on a new machine quietly compiles its megakernels one at a time again. `det_sum` did exactly that to all ten megakernel entries and reached master unnoticed, because this file runs in neither the fast loop nor the cheap PR list. It resolves and re-encodes each entry against the live kernel: no compile, no render, under a second. Regenerate with `scripts/generate_kernel_specs.py` when it fails. The pool and worker tests beside it compile kernels and stay out. |
 | `test_weight_floor_exit.py` (one test) | That the argument *index* the file's render arms assert on still names `weight_floor_exit`. The arms are unmarked by design — a render each — so when `vis_lights` joined the parameter list after the gate, the stale count reached master and only the 25-minute CI run saw it. This reads the count and the index straight off the kernel module for nothing. It does not replace the arms: it cannot see whether either gate variant compiles, which is what they are for. |
 | `test_shape_anchors.py` | Where a shape's `location` sits, which is the point every rotation and every scale is taken about, and the origin the texture grid is laid out from. It is derived from geometry in two places (`_circuit_location_and_basis` for circuits, `Polyhedron` for the flat solids) and consumed by the transforms, the frame and the layout — so it moves from the Mob base, from the circuit frame, or from either derivation, and an anchor that drifts off a shape's centroid does not raise: it makes the shape orbit a point beside itself, which only shows up in pixels. Construction and tensor assertions, no render. |
 | `test_taichi_warmstart.py` (one test, not the module) | Only `test_the_memoization_is_live_on_this_compiler`, and only because the thing it guards is invisible: the warm-start memoization is version-gated to the compiler internals it patches, so a compiler bump in `pyproject.toml`, a new backend in `taichi_compat`, or an env-var rename turns it off — and a silent no-op reads exactly like a slow machine. That is not hypothetical; it cost ~25 s per render for the length of the Quadrants evaluation (`../taichi_patches/PLAN.md` §6.1). Everything else in the file is a feature test for the memo and stays out. No Taichi init, no render: it reads one module-level string. |
@@ -169,13 +170,12 @@ anyway.
 | PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
 | Shadows, refraction, glow, Monte Carlo, glTF, camera moves | Another kernel variant or tracer path each | `tests/full_renders/` |
 
-**CI is not the fast suite.** It names `tests/unit_tests tests/fast` as paths
-and runs everything under them, `fast`-marked or not (see the comment in
-`.github/workflows/test.yaml`). The fast suite is a development loop; CI can
-afford twelve minutes and should keep spending them.
-
-It runs those paths in four ordinary matrix arms: Linux 3.10/3.13 with the
-`auto` render device, plus macOS 3.10 once on CPU and once on MPS. The macOS
+**CI is not the fast suite.** A pull request and a push to master run the
+**CI group** (next section), on Linux 3.10 with the `auto` render device and
+macOS 3.10 on CPU. The weekly run, `workflow_dispatch` and a PR labelled
+`full-ci` run everything under `tests/unit_tests tests/fast` in four matrix
+arms instead: Linux 3.10 and 3.14 with the `auto` render device, plus macOS
+3.10 once on CPU and once on MPS. The macOS
 CPU arm preserves the portability check. The MPS arm pins
 `ALGAN_RENDER_DEVICE=mps` and, before pytest, asserts both that torch exposes an
 MPS device and that Algan's own startup resolver returns `mps`; a silent CPU
@@ -207,13 +207,56 @@ removing a line:
 entry whose test has been renamed or deleted is an `xfail` that silently marks
 nothing, so it fails collection-time rather than passing quietly.
 
+## Test groups: CI and pre-PR
+
+Two lists of node ids, `tests/groups/ci.txt` and `tests/groups/pre-pr.txt`,
+that `--group` narrows a run to. They exist to catch a change breaking
+something far from where it was made, so they are picked by measurement, not
+by hand: `scripts/select_test_groups.py` takes one run of the suite with
+per-test coverage and durations and adds tests greedily by lines of `algan/`
+newly covered per second until each budget is spent.
+
+| Group | Command | Who runs it | Size |
+| --- | --- | --- | --- |
+| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~5700 tests, ~80 s of test time on a runner, 82% of the lines the whole suite covers |
+| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~6400 tests, ~7 minutes on a runner, effectively 100% of those lines |
+
+The CI group always contains the fast suite, every test that takes 10 ms or
+less, and a short named list of guards (`ALWAYS_CI` in the script) that read
+the source rather than run it, such as
+`test_every_builtin_spec_still_matches_a_live_kernel`: they cover almost no
+lines, so the greedy pass would never choose them, yet they are what trips on
+a change made elsewhere. The pre-PR group always contains the whole CI group.
+
+**Regenerate** when a group drifts (a big new test file, a budget overrun),
+not on every change. `test_test_groups.py` fails when a listed test is renamed
+or deleted; dropping that line by hand is fine. To regenerate, measure on a
+warm kernel cache:
+
+```bash
+<venv-python> -m pytest -q -p no:cacheprovider tests/unit_tests tests/fast -n 1 \
+    --durations=0 --cov=algan --cov-context=test --cov-report= > durations.txt
+<venv-python> scripts/select_test_groups.py --durations durations.txt --coverage .coverage
+```
+
+The current lists were measured on GitHub runners (ten shards, py3.14 under
+coverage), because a whole-suite coverage run is more than a development
+container comfortably holds.
+
+**The weekly full run** (Mondays 04:23 UTC, `schedule` in `test.yaml`,
+`docs.yaml` and `code_quality.yaml`) runs everything under `tests/unit_tests
+tests/fast` on all four arms with a cold kernel cache, plus the Sphinx build
+and the packaging jobs. `tests/full_renders` and `tests/path_traced` are not in
+it: their baselines are per machine (see "Baselines are per machine too"
+below), so they gate locally. A PR labelled `full-ci` gets the same run.
+
 ## The full suite
 
 ```bash
 <venv-python> -m pytest -q
 ```
 
-Everything, about twelve minutes on CUDA. Run it before pushing, after touching
+Everything, about twelve minutes on CUDA. Run it after touching
 the renderer, and whenever the fast suite's coverage table above says the thing
 you changed lives here.
 
@@ -443,7 +486,7 @@ carries PN surfaces, shadows, refraction or glTF — which is what
 `pn_criterion_kernel` under `fast_math` predicts, since which tessellation
 levels sit on a boundary depends on the CPU evaluating the criterion.
 
-So **CI runs `tests/unit_tests` and `tests/fast`**, the two that are portable,
+So **CI runs only `tests/unit_tests` and `tests/fast`**, the two that are portable,
 and `test_full_render_scene` skips itself when `CI` is set. Run it anyway with
 `ALGAN_RUN_FULL_RENDERS=1` — on the machine whose baselines these are, or to
 re-measure the spread.
