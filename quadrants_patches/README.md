@@ -80,7 +80,8 @@ what changed in each patch.
 **0010 and 0011 were added on 2026-10-22**, written against the tree the nine
 produce. All eleven apply strictly in order onto a pristine `v1.3.3`, **55
 files, +1127/−72**, and the result is byte-identical to the tree they were
-written in. Neither has been compiled: see "0010-0011 — what is verified".
+written in. Both have been built and verified on an RTX 5080: see "0010-0011 —
+what is verified". Neither is published yet.
 
 Numeric order is the convention rather than a constraint, and it is worth being
 precise about which, because several patches share a file:
@@ -1284,7 +1285,7 @@ from run `39777784064`, which predates the two `dump()` fixes above):
   hit), but warm2 was not served. Cause, by reading: the step deletes the
   `C*.ptx` files while the index still lists them, and `dump()` inserted the
   re-stored entries beside the old ones -- which fails for a listed key -- so
-  the files were never written again. Fixed in 0011 (above); needs a rebuild.
+  the files were never written again. Fixed in 0011 (above); the second run passes.
 * Fresh process with warm caches (`profile_scene` RUN 1 incl. authoring, PREVIEW
   6 s, the arms alternating in one cache): explainer **1.25-1.65 s on** against
   ~4.6 s for the release wheel; graphics **2.7-2.9 s on** against ~7.9 s. The
@@ -1304,8 +1305,49 @@ from run `39777784064`, which predates the two `dump()` fixes above):
   LLVM→PTX and ptxas onto exactly that path. The pool's progress lines now
   give each job's PTX time, so the next run can confirm it.
 
-**Still not checked:** the patches as amended (a rebuild), `run` passing in
-full, and frame parity between the arms.
+**Second GPU run, 2026-10-23** (RTX 5080, test wheel
+`quadrants-1.3.4.dev0+g00423caa9.d20261023-cp313-cp313-win_amd64.whl`, sha256
+`f0f8359c098bd9c58a793c91ec2dc13b4922f90570ca7af2da7bbb4d7ae2fe7c`, from run
+[`39884398417`](https://github.com/algorithmicsimplicity/algan/actions/runs/39884398417)
+at `a235a7a5`, whose eleven patch digests match this directory):
+
+* `verify_ptx_cache.py binding` and `run`: **PASS in full**, migrate and warm2
+  included (warm2 served 2, parsed 0). The prepare step's `CUDA_CACHE_PATH` was
+  non-empty, so the `os._exit` review finding above does not bite on this
+  driver (617.42).
+* A/B on the branch merged with master (`benchmarks/performance`, PREVIEW 6 s,
+  one fresh process per run, every arm in a cache of its own; "off" is
+  `ALGAN_PTX_CACHE_BY_CONTENT_HASH=0 ALGAN_PRECOMPILE_PTX=0` on the test wheel,
+  "release" is `algan-quadrants 1.3.3.post1`). Warm is three runs after three
+  settling runs; RUN 1 end-to-end, then the whole process's wall time:
+
+  | | on | off | release |
+  | --- | --- | --- | --- |
+  | explainer warm, RUN 1 | **1.27-1.30 s** | 3.35-3.39 s | 3.57-3.60 s |
+  | explainer warm, process | **6.5-6.7 s** | 8.5-8.6 s | 9.0-9.2 s |
+  | graphics warm, RUN 1 | **2.55 s** | 5.77-5.86 s | 5.64-5.74 s |
+  | graphics warm, process | **9.5-9.7 s** | 12.8-12.9 s | 12.0-12.4 s |
+  | explainer cold, RUN 1 | 57.3 / 41.5 s | 44.9 / 44.1 s | 44.7 / 44.4 s |
+  | graphics cold, RUN 1 | 60.1 / 60.8 s | 62.3 / 63.3 s | 70.0 / 67.4 s |
+
+  Warm is a clear win, about 2.1 s (explainer) and 3.1 s (graphics) of the
+  first render, which is the cached kernels' load: kernel materialization is
+  ~0.5 s on against ~3.4 s off. The off arm now matches the release wheel,
+  so the first run's slower off arm is gone with `write_ptx_at_exit`. Cold
+  is still within noise: the precompile pool covers only the built-in list on
+  a first run, and torch's own first-use cost (the driver JIT filling a fresh
+  `CUDA_CACHE_PATH`) swings a fresh cache's first few processes by 10-20 s in
+  every arm, which is why warm is measured only after three settling runs.
+* **Frame parity:** both scenes' videos are byte-identical between on and off,
+  cold and warm, between repeat runs of one arm, and against the release
+  wheel. (Before the merge, graphics differed by up to 125 between two runs of
+  *one* arm: the branch lacked master's CUDA determinism fix.) The fast
+  suite's render is byte-identical between the test and release wheels; it
+  misses its committed CUDA baseline by 92 on this machine with either, as it
+  does at master.
+
+**Still not checked:** the other platforms' legs (only Windows py3.13 was
+built), and the full-render suites on CUDA.
 
 **A test wheel** (diagnostic, nothing published):
 

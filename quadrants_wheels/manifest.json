@@ -1,14 +1,14 @@
 {
   "_comment": "Written by scripts/build_quadrants_wheels.py. The wheels beside this file are gitignored; this manifest is committed so that which wheel a measurement used stays recoverable.",
   "workflow": "quadrants_build.yaml",
-  "run_id": 39777784064,
-  "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/39777784064",
-  "run_name": "Quadrants wheels: windows py3.13 [algan-68497279af]",
+  "run_id": 39571753107,
+  "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/39571753107",
+  "run_name": "Quadrants wheels: linux,linux_arm64,macos,windows py3.11,3.13 [algan-eb9562b177]",
   "conclusion": "success",
-  "ref": "claude/quadrants-ptx-4fa32f",
-  "head_sha": "430da022d76acf0fecdf21093e19a5f4572de370",
-  "downloaded_at": "2026-10-22T13:02:52+00:00",
-  "patches_from": "commit 430da022d76a",
+  "ref": "claude/quadrants-v1.3.3-rebase",
+  "head_sha": "ca897f2011055ce90cbec1dd5e38d15577a9e024",
+  "downloaded_at": "2026-10-21T10:36:54+00:00",
+  "patches_from": "commit ca897f201105",
   "patches": [
     {
       "name": "0001-metal-zero-copy-ndarray.patch",
@@ -45,24 +45,72 @@
     {
       "name": "0009-python-3.14.patch",
       "sha256": "11eb8caee82e6d5f50b756a55128ae7f2ecf6055efa43813f0377c3ac882571a"
-    },
-    {
-      "name": "0010-cuda-ptx-cache-by-content-hash.patch",
-      "sha256": "974f4c973a1362b195d92048f6be5437f1c34e6dc84704db1775bb82fd4838f9"
-    },
-    {
-      "name": "0011-prepare-kernel-without-launch.patch",
-      "sha256": "2c63e81187e62eb492b221582a3453e446b3b54490396031b8a28e863968912b"
     }
   ],
   "wheels": [
     {
-      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261022-cp313-cp313-win_amd64.whl",
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-manylinux_2_28_x86_64.whl",
+      "platform": "linux",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 31713945,
+      "sha256": "034e07547300b2c820a90825223ce9946f80d48c00bba7378f9bab6e6e47bf27"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-manylinux_2_28_x86_64.whl",
+      "platform": "linux",
+      "python": "3.13",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 31714740,
+      "sha256": "befc4a437dbc9da389a2c756b06bf52c1c5493ebfd6fb38be2bd3671733fa716"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-manylinux_2_34_aarch64.whl",
+      "platform": "linux_arm64",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 28950113,
+      "sha256": "290145ab8a68e6d315526d5a5c6fd499d1b49293d3b5b1e7779a3ce6f9107f77"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-manylinux_2_34_aarch64.whl",
+      "platform": "linux_arm64",
+      "python": "3.13",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 28949471,
+      "sha256": "db9755ede36d89a269e46c5a4ffb81410e99fb4c6b6b5a73efbcc9431735b074"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-macosx_13_0_arm64.whl",
+      "platform": "macos",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 23380623,
+      "sha256": "41c8699752a3ff08af1cb1ff209bde38a4b4ab777f53eff883612ae99a7c6a24"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-macosx_13_0_arm64.whl",
+      "platform": "macos",
+      "python": "3.13",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 23379373,
+      "sha256": "44b09cf4d0f4bb9d65ab563909501c28bdd8ab0d6dee48a36b51c7d59bc0725d"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp311-cp311-win_amd64.whl",
+      "platform": "windows",
+      "python": "3.11",
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 26840125,
+      "sha256": "cc8a7b872b82b6185b740d4b1959e83ada50d85982af48477d7cd6306050074d"
+    },
+    {
+      "file": "quadrants-1.3.4.dev0+g00423caa9.d20261021-cp313-cp313-win_amd64.whl",
       "platform": "windows",
       "python": "3.13",
-      "version": "1.3.4.dev0+g00423caa9.d20261022",
-      "bytes": 26842389,
-      "sha256": "9e4ccf7be494987914e2d0981b96774ebeb20b022f89712e94861aa7ef4637a4"
+      "version": "1.3.4.dev0+g00423caa9.d20261021",
+      "bytes": 26840114,
+      "sha256": "fb6f39344a4ce2a63df5ed676c6ec60c6b914d4faae5dd83af3781fcb0a4dc70"
     }
   ]
 }
