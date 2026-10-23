@@ -285,3 +285,19 @@ The published wheel was checked on the RTX 5080 (Windows, cp313):
 `verify_invariant_load.py` pass, `benchmarks/_taichi_source_key_check.py`
 passes, and the fast scene renders identically to 1.3.3.post1 on the same
 checkout.
+
+## 1.3.3.post3: the CPU object cache, patch 0012
+
+The 1.3.3.post2 patch set plus `0012-cpu-object-cache-by-content-hash`
+(`quadrants_patches/README.md`, "0012"). It is off unless
+`offline_cache_cpu_object_by_content_hash` is set, and Algan sets it through
+feature detection, so a wheel without it changes nothing. Before publication
+the macOS and Linux builds were checked at run time (README, "0012"), and
+`quadrants_build.yaml` run 39906249562 built macOS, Windows and Linux wheels
+with all twelve patches.
+
+**Stage 1** (this change): `ALGAN_QUADRANTS_VERSION` and `DOWNSTREAM_VERSION`
+move to `1.3.3.post3`; `pyproject.toml` and `uv.lock` stay on the published
+post2. **Stage 2**, after the publish run from `master`: bump `pyproject.toml`,
+then `uv lock --upgrade-package algan-quadrants --refresh-package
+algan-quadrants` with uv 0.7.9.
