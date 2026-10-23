@@ -184,6 +184,11 @@ from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
 )
+from algan.rendering.raytracing.ggx_albedo import (
+    GGX_COSINE_SIZE,
+    GGX_ROUGHNESS_SIZE,
+)
+from algan.rendering.raytracing.glass_energy import GLASS_ENERGY_SHAPE
 from algan.rendering.raytracing.glass_energy_taichi import (
     _pt_glass_energy_lookup,
     _pt_glass_ms_parameters,
@@ -270,7 +275,6 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _LT_ENV_SH,
     _LT_HEMISPHERE,
     _PI,
-    _env_brdf_approx,
     _material_reflectance,
     _offset_transmitted_origin,
     _refract_ray,
@@ -742,17 +746,55 @@ def _pt_smith_lambda(cos_theta, alpha):
     return 0.5 * (ti.sqrt(1.0 + alpha * alpha * t2) - 1.0)
 
 
+#: Where the opaque GGX albedo table starts inside ``pt_glass_energy``
+#: (``ggx_albedo.pt_energy_tables``: the glass table, then this one).
+_GGX_TABLE_OFFSET = GLASS_ENERGY_SHAPE[0]
+
+
 @ti.func
-def _pt_ggx_energy(f0, n_dot_v, roughness):
+def _pt_ggx_albedo(table: ti.template(), n_dot_v, roughness):
+    """``(A, B)`` of the path tracer's own GGX lobe (``ggx_albedo``): with
+    Schlick Fresnel it reflects ``f0 * A + B`` of what arrives from ``n_dot_v``,
+    and ``A + B`` is the white single-scatter albedo ``E1`` that the Turquin
+    compensation divides by. Bilinear over roughness and ``sqrt(n.v)``.
+    """
+    r = ti.math.clamp(roughness, 0.0, 1.0) * (GGX_ROUGHNESS_SIZE - 1)
+    c = ti.sqrt(ti.math.clamp(n_dot_v, 0.0, 1.0)) * (GGX_COSINE_SIZE - 1)
+    ir = ti.min(ti.cast(r, ti.i32), GGX_ROUGHNESS_SIZE - 2)
+    ic = ti.min(ti.cast(c, ti.i32), GGX_COSINE_SIZE - 2)
+    fr, fc = r - ir, c - ic
+    out = ti.math.vec2(0.0, 0.0)
+    for dr, dc in ti.static(ti.ndrange(2, 2)):
+        w = (fr if dr else 1.0 - fr) * (fc if dc else 1.0 - fc)
+        row = _GGX_TABLE_OFFSET + (ir + dr) * GGX_COSINE_SIZE + ic + dc
+        out += w * ti.math.vec2(table[row, 0], table[row, 1])
+    return out
+
+
+@ti.func
+def _pt_ggx_compensation(table: ti.template(), f0, n_dot_v, roughness):
+    """Turquin's multiple-scattering factor ``1 + f0 (1 - E1) / E1``.
+
+    ``E1`` has to be the albedo of the lobe being compensated -- the exact
+    Smith one this module samples -- or the factor creates energy: with
+    Karis's split-sum fit standing in for it, a white rough metal reflected
+    up to 27% more than arrived.
+    """
+    ab = _pt_ggx_albedo(table, n_dot_v, roughness)
+    e1s = ti.math.clamp(ab[0] + ab[1], 1e-3, 1.0)
+    return 1.0 + f0 * ((1.0 - e1s) / e1s)
+
+
+@ti.func
+def _pt_ggx_energy(table: ti.template(), f0, n_dot_v, roughness):
     """Single-scatter GGX directional albedo with Turquin multiple-scattering
     compensation folded in: ``E_ss(f0) * (1 + f0 (1 - E1)/E1)`` per channel,
-    with both terms from the shared Karis split-sum fit (exactly the energy
-    the deterministic glossy route uses).
+    both from the tabulated albedo of the lobe ``_pt_lit_f_pdf`` evaluates.
+    A white lobe (``f0 = 1``) therefore reflects exactly what arrives.
     """
-    e_ss = _env_brdf_approx(f0, n_dot_v, roughness)
-    e1 = _env_brdf_approx(ti.math.vec3(1.0, 1.0, 1.0), n_dot_v, roughness)
-    e1s = ti.math.clamp(e1[0], 1e-3, 1.0)
-    return ti.min(e_ss * (1.0 + f0 * ((1.0 - e1s) / e1s)),
+    ab = _pt_ggx_albedo(table, n_dot_v, roughness)
+    e_ss = f0 * ab[0] + ab[1]
+    return ti.min(e_ss * _pt_ggx_compensation(table, f0, n_dot_v, roughness),
                   ti.math.vec3(1.0, 1.0, 1.0))
 
 
@@ -1295,8 +1337,8 @@ def _pt_sample_glass(glass_energy: ti.template(), rd, n, rough, eta, f0,
 
 
 @ti.func
-def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
-                  rough, ior, T, shade_n, rd, eta):
+def _pt_lit_lobes(energy: ti.template(), pid, params: ti.template(), f, prim,
+                  albedo3, metalness, rough, ior, T, shade_n, rd, eta):
     """Continuation-lobe energies of a physically-integrated (lit) hit:
     ``(e_diff, e_spec, e_trans, f0, rough_eff)``. The single source for the
     sampled continuation AND for every direct-lighting response (roadmap
@@ -1342,7 +1384,7 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
         shininess = ti.max(params[tmp, prim, 7], 1e-3)
         rough_eff = ti.math.clamp(
             ti.sqrt(ti.sqrt(2.0 / (shininess + 2.0))), 0.03, 1.0)
-        e_spec = _pt_ggx_energy(f0, n_dot_v, rough_eff)
+        e_spec = _pt_ggx_energy(energy, f0, n_dot_v, rough_eff)
         e_diff = albedo3 * (one3 - e_spec)
     else:
         tm = f % params.shape[0]
@@ -1361,7 +1403,7 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
                 params[tm, prim, 16]) \
                 * (ratio * ratio * params[tm, prim, 13])
         f0 = diel_f0 * (1.0 - met) + albedo3 * met
-        e_spec = _pt_ggx_energy(f0, n_dot_v, rough)
+        e_spec = _pt_ggx_energy(energy, f0, n_dot_v, rough)
         diel_pass = 0.0
         if eta <= 0.0:
             # Only this arm consumes it: the eta > 0 arm below overwrites
@@ -1380,7 +1422,7 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
             diel_pass = (1.0 - met) * (1.0 - diel[0])
             e_spec = ti.max(e_spec, _pt_fresnel(f0, n_dot_v, eta, met, albedo3))
             if ti.abs(eta - 1.0) < 1e-4:
-                e_spec = met * _pt_ggx_energy(albedo3, n_dot_v, rough)
+                e_spec = met * _pt_ggx_energy(energy, albedo3, n_dot_v, rough)
         e_trans = albedo3 * (diel_pass * T)
         e_diff = albedo3 * ((1.0 - met) * (1.0 - T)) * (one3 - e_spec)
     return e_diff, e_spec, e_trans, f0, rough_eff
@@ -1431,7 +1473,6 @@ def _pt_lit_f_pdf(glass_energy: ti.template(), e_diff, e_spec, f0, rough,
         pdf += ((w_spec + w_trans) / w_sum) * pg
     elif (cos_s > 1e-6) and (w_sum > 1e-6):
         if w_spec > 0.0:
-            one3 = ti.math.vec3(1.0, 1.0, 1.0)
             v = -rd
             h = (v + wi).normalized()
             n_dot_v = ti.max(spec_n.dot(v), 1e-4)
@@ -1444,9 +1485,7 @@ def _pt_lit_f_pdf(glass_energy: ti.template(), e_diff, e_spec, f0, rough,
             g1_v = 1.0 / (1.0 + lam_v)
             g2 = 1.0 / (1.0 + lam_v + lam_l)
             fres = _pt_fresnel(f0, v_dot_h, eta, metalness, albedo)
-            e1 = _env_brdf_approx(one3, n_dot_v, rough)
-            e1s = ti.math.clamp(e1[0], 1e-3, 1.0)
-            comp = one3 + f0 * ((1.0 - e1s) / e1s)
+            comp = _pt_ggx_compensation(glass_energy, f0, n_dot_v, rough)
             f_cos += fres * comp * (d * g2 / ti.max(4.0 * n_dot_v, 1e-6))
             pdf += (w_spec / w_sum) * (g1_v * d / ti.max(4.0 * n_dot_v, 1e-6))
     return f_cos, pdf
@@ -2745,8 +2784,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # pipeline gets its own value back unchanged.
                     e_diff_l, e_spec_l, e_trans_l, f0_l, rough = \
                         _pt_lit_lobes(
-                            pid, tri_mat, f, prim, albedo3, metalness, rough,
-                            ior, T, shade_n, rd, eta)
+                            pt_glass_energy, pid, tri_mat, f, prim, albedo3,
+                            metalness, rough, ior, T, shade_n, rd, eta)
                     wl_diff = alpha * ti.max(e_diff_l[0],
                                              ti.max(e_diff_l[1],
                                                     e_diff_l[2]))
@@ -3579,7 +3618,6 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # ----------------------------------------------------------
                 # Continuation: pass-through | diffuse | specular | transmit.
                 # ----------------------------------------------------------
-                one3 = ti.math.vec3(1.0, 1.0, 1.0)
                 w_pass = 1.0 - alpha
                 e_diff = ti.math.vec3(0.0, 0.0, 0.0)
                 e_spec = ti.math.vec3(0.0, 0.0, 0.0)
@@ -3605,7 +3643,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - met) \
                             + albedo3 * met
                         if met > 0.0:
-                            e_spec = _pt_ggx_energy(f0, n_dot_v, rough)
+                            e_spec = _pt_ggx_energy(
+                                pt_glass_energy, f0, n_dot_v, rough)
                         if T > 1e-4:
                             _R3c, diel_pass = _material_reflectance(
                                 rd, shade_n, met, ior, albedo3, T)
@@ -3779,9 +3818,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             g_ratio = (1.0 + lam_v) \
                                 / ti.max(1.0 + lam_v + lam_l, 1e-6)
                             # Turquin compensation on the sampled lobe.
-                            e1 = _env_brdf_approx(one3, wo_l[2], rough)
-                            e1s = ti.math.clamp(e1[0], 1e-3, 1.0)
-                            comp = one3 + f0 * ((1.0 - e1s) / e1s)
+                            comp = _pt_ggx_compensation(
+                                pt_glass_energy, f0, wo_l[2], rough)
                             tint = fres * g_ratio * comp \
                                 * (alpha / ti.max(p_sel, 1e-6))
                             gmean = (tint[0] + tint[1] + tint[2]) / 3.0
