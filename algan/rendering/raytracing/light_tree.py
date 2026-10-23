@@ -25,7 +25,7 @@ light rows, and every emissive lit triangle. Each carries
   its own normal an emitter still emits (``theta_e``). A point light is a
   full cone (``theta_o = pi``), a spot is its outer cone, a one-sided area
   cell or triangle is ``theta_o = 0, theta_e = pi/2``, a two-sided triangle
-  ``theta_o = pi/2``.
+  ``theta_o = pi`` (its normals are ``+n`` and ``-n``).
 
 **Directional rows and the environment entry stay out.** They are infinite
 lights: they have no position, so no spatial structure can discriminate
