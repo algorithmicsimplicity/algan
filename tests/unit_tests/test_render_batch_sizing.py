@@ -956,3 +956,30 @@ def test_sparse_preflight_retries_preserve_selection_without_gap_frames(monkeypa
     assert all(duration <= 2 for duration in rendered_durations)
     assert all(value in indices for selection in selections for value in selection)
     assert selections[0] == indices
+
+
+def test_the_window_slicer_keeps_keys_it_does_not_know():
+    """``_slice_render_state`` slices the per-frame rows and passes every
+    other key through. It used to rebuild the dict from a whitelist, which
+    silently dropped any key it did not name (``lone_still`` among them) from
+    every prefix retry and overlapped-prep window.
+    """
+    n = 6
+    rows = torch.arange(n, dtype=torch.float32).view(n, 1, 1).expand(n, 1, 3)
+    state = {
+        "ray_origin": rows,
+        "screen_point": rows,
+        "screen_basis": rows,
+        "lights": [(rows, rows, rows)],
+        "light_objects": ["light"],
+        "light_active": [torch.ones(n, dtype=torch.bool)],
+        "lone_still": True,
+        "future_key": "kept",
+    }
+    window = render_loop_module._slice_render_state(state, 2, 5, n)
+    assert window["lone_still"] is True
+    assert window["future_key"] == "kept"
+    assert torch.equal(window["ray_origin"], rows[2:5])
+    assert torch.equal(window["lights"][0][1], rows[2:5])
+    assert window["light_active"][0].shape == (3,)
+    assert "camera_lens" not in window

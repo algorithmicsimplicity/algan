@@ -2722,10 +2722,20 @@ def render_batch_raytraced(
             middle = (start + end) // 2
             return render_chunk(start, middle) + render_chunk(middle, end)
 
+    # ``render_chunk`` rolls back only the attempt that failed. A failure that
+    # escapes a split leaves its successful siblings' counts behind, yet none
+    # of this batch's frames reach the caller, which re-renders them: roll the
+    # whole batch back so the retry does not count them twice.
+    batch_truncations = snapshot_truncations()
+    batch_path_samples = snapshot_path_samples()
     try:
         chunks = render_chunk(time_start, time_end)
         if depth_records:
             attach_depth_order(primitives[0], depth_records, merged, order_eye)
+    except BaseException:
+        restore_truncations(batch_truncations)
+        restore_path_samples(batch_path_samples)
+        raise
     finally:
         # ``render_chunk`` calls itself, so it closes over its own cell: a
         # reference cycle that holds everything it captured -- ``memory``, the

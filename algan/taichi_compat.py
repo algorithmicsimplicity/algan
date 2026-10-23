@@ -103,6 +103,7 @@ handled by their owners rather than papered over here:
 
 from __future__ import annotations
 
+import functools
 import importlib
 import os
 import warnings
@@ -351,10 +352,43 @@ def backend_version() -> tuple:
     return tuple(getattr(importlib.import_module(BACKEND), "__version__", ()) or ())
 
 
+#: Distributions that can provide each backend's import package, in the order
+#: they are looked up. ``algan-quadrants`` is the published build carrying
+#: Algan's patches; a diagnostic build is plain ``quadrants``.
+_BACKEND_DISTRIBUTIONS = {
+    "quadrants": ("algan-quadrants", "quadrants"),
+    "taichi": ("taichi",),
+}
+
+
+@functools.cache
+def backend_distribution() -> str:
+    """``"algan-quadrants 1.3.3.post1"`` -- the installed wheel providing the
+    backend, or ``""`` when no known distribution is installed.
+
+    Unlike the import package's ``__version__`` (``1.3.3``) it carries the
+    ``.postN`` revision, which is what tells one patch set of the same
+    upstream release from another (``AGENTS.md``: a version banner alone does
+    not identify the patch set). Memoized: the source key asks per kernel.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    for name in _BACKEND_DISTRIBUTIONS.get(BACKEND, (BACKEND,)):
+        try:
+            return f"{name} {version(name)}"
+        except PackageNotFoundError:
+            continue
+    return ""
+
+
 def describe_backend() -> str:
-    """``"taichi 1.7.4"`` -- the backend and version, for logs and ``algan info``."""
+    """``"quadrants 1.3.3 (algan-quadrants 1.3.3.post1)"`` -- the backend, its
+    version and the wheel that provides it, for logs and ``algan info``.
+    """
     version = ".".join(str(part) for part in backend_version())
-    return f"{BACKEND} {version}" if version else BACKEND
+    described = f"{BACKEND} {version}" if version else BACKEND
+    distribution = backend_distribution()
+    return f"{described} ({distribution})" if distribution else described
 
 
 __all__ = [
@@ -364,6 +398,7 @@ __all__ = [
     "KERNEL_ARGUMENTS_ATTR",
     "KERNEL_SPECIALIZATIONS_ATTR",
     "PROGRAM_ATTR",
+    "backend_distribution",
     "backend_version",
     "describe_backend",
     "is_compiler_func",

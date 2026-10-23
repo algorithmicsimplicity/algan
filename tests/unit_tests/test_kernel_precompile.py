@@ -977,6 +977,31 @@ def test_a_touched_program_starts_no_pool(untouched, monkeypatch):
     assert started == []
 
 
+def test_a_program_after_a_reset_starts_untouched(monkeypatch):
+    """The touched program is held by weak reference, not by ``id``: once the
+    compiler resets, the freed program's address can be reused by the next
+    one, and an ``id`` match would have skipped its first-touch pool wait.
+    """
+
+    class Program:
+        pass
+
+    import algan.taichi_compat as compat
+
+    monkeypatch.setattr(kp, "_STARTER", None)
+    monkeypatch.setattr(kp, "_POOL", None)
+    live = [Program()]
+    monkeypatch.setattr(compat, "program", lambda: live[0])
+    monkeypatch.setattr(kp, "_TOUCHED_PROGRAM", None)
+    kp.before_first_materialization()
+    assert kp._program_touched()
+    first_id = id(live[0])
+    live[0] = Program()  # the reset frees the first program
+    second = live[0]
+    # Whether or not CPython reused the address, the new program is untouched.
+    assert not kp._program_touched(), f"reused id: {id(second) == first_id}"
+
+
 # --- end to end -------------------------------------------------------------------
 
 _CHILD = r"""

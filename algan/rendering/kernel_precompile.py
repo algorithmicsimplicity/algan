@@ -124,6 +124,7 @@ import sys
 import threading
 import time
 import types
+import weakref
 from pathlib import Path
 
 from algan.environment import env_flag, env_int, env_is_set, env_overrides, env_str
@@ -1965,17 +1966,36 @@ def _pool_for_current_settings(reason):
 # The first touch
 # ---------------------------------------------------------------------------
 
-#: ``id`` of the compiler program whose kernel cache this process has touched.
+#: The compiler program whose kernel cache this process has touched.
 #: The compiler reads the offline cache's index the first time a program uses
 #: it and never again (measured on Quadrants 1.3: a process that had compiled
 #: one kernel did not see a second one another process dumped afterwards --
 #: not through the source-keyed index, not through the offline cache, not
 #: after dumping its own). So a worker's artifact helps this process only if
-#: it is on disk before this process's first materialization. An ``id``, not
-#: the object, so a program that is reset is not kept alive; a new program
-#: after a reset starts untouched.
+#: it is on disk before this process's first materialization. A weak
+#: reference, so a program that is reset is not kept alive, and a new program
+#: after a reset starts untouched -- even one allocated at the freed one's
+#: address, which a bare ``id`` would have mistaken for it. A program type
+#: that refuses weak references falls back to the ``id``.
 _TOUCHED_PROGRAM = None
 _TOUCH_LOCK = threading.Lock()
+
+
+def _program_token(prog):
+    """What :data:`_TOUCHED_PROGRAM` holds for ``prog``."""
+    try:
+        return weakref.ref(prog)
+    except TypeError:
+        return id(prog)
+
+
+def _is_touched(prog):
+    token = _TOUCHED_PROGRAM
+    if prog is None or token is None:
+        return False
+    if isinstance(token, weakref.ref):
+        return token() is prog
+    return token == id(prog)
 
 
 def _program_touched():
@@ -1985,7 +2005,7 @@ def _program_touched():
         prog = program()
     except Exception:  # noqa: BLE001
         return False
-    return prog is not None and id(prog) == _TOUCHED_PROGRAM
+    return _is_touched(prog)
 
 
 def before_first_materialization():
@@ -2003,20 +2023,20 @@ def before_first_materialization():
     from algan.taichi_compat import program
 
     try:
-        prog_id = id(program())
+        prog = program()
     except Exception:  # noqa: BLE001
         return
-    if prog_id == _TOUCHED_PROGRAM:
+    if _is_touched(prog):
         return
     with _TOUCH_LOCK:
-        if prog_id == _TOUCHED_PROGRAM:
+        if _is_touched(prog):
             return
         try:
             _wait_for_pool()
         except Exception:  # noqa: BLE001 -- the render compiles regardless
             pass
         finally:
-            _TOUCHED_PROGRAM = prog_id
+            _TOUCHED_PROGRAM = _program_token(prog)
 
 
 def _wait_for_pool():
