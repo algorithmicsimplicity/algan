@@ -109,8 +109,8 @@ def Indicate(mob, scale_factor: float = 1.2, color=YELLOW, runtime: float = 1.0)
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime. The scale pulse is relative to each part's own size, so a
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation. The scale pulse is relative to each part's own size, so a
     composite Mob whose parts were scaled separately keeps its proportions.
 
     Parameters
@@ -229,8 +229,8 @@ def Wiggle(
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime. Position and orientation are rebuilt each frame from the
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation. Position and orientation are rebuilt each frame from the
     pre-wiggle state, so nothing accumulates.
 
     Parameters
@@ -292,12 +292,13 @@ def Blink(
     """Flash a Mob on and off.
 
     Visibility is switched instantly rather than faded, so the Mob blinks crisply.
-    Each cycle costs ``time_on + time_off`` seconds.
+    Each cycle costs ``time_on + time_off`` seconds; unless ``hide_at_end`` is set,
+    a final ``time_on`` seconds of visibility follows the last cycle.
 
     Animation
     ---------
-    Recorded as an animation whose runtime comes from these parameters rather than
-    the enclosing context. Opacity is driven through the Mob's color, so parts with
+    Recorded as an animation whose runtime comes from these parameters; an
+    enclosing context's ``runtime`` rescales it like any other animation. Opacity is driven through the Mob's color, so parts with
     their own colors keep them.
 
     Parameters
@@ -312,7 +313,7 @@ def Blink(
         How many on/off cycles to perform. Defaults to ``1``.
     hide_at_end
         Whether to leave the Mob hidden when the blinking stops. Defaults to False,
-        which leaves it visible.
+        which shows it again and holds it for a further ``time_on`` seconds.
 
     Returns
     -------
@@ -342,8 +343,8 @@ def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, runtime: float = 2.0)
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime. The spotlight is spawned and despawned instantly around it,
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation. The spotlight is spawned and despawned instantly around it,
     so it costs no extra video time.
 
     Parameters
@@ -518,8 +519,8 @@ def ShowPassingFlash(mob, time_width: float = 0.1, runtime: float = 1.0):
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime. A transient stroke-only clone is spawned and despawned
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation. A transient stroke-only clone is spawned and despawned
     around the flash, so the Mob does not need to be spawned beforehand. A visible
     source Mob is hidden during the traversal and restored exactly afterwards.
 
@@ -573,8 +574,8 @@ def ShowPassingFlashWithThinningStrokeWidth(
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime. The layers are clones created instantly beforehand; the
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation. The layers are clones created instantly beforehand; the
     original Mob is untouched.
 
     Parameters
@@ -655,8 +656,8 @@ def Flash(
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime. The lines are created instantly beforehand and removed by
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation. The lines are created instantly beforehand and removed by
     their own flashes.
 
     Parameters
@@ -744,8 +745,8 @@ def Circumscribe(
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime. The frame is created and despawned around it, so nothing is
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation. The frame is created and despawned around it, so nothing is
     left in the scene.
 
     Parameters
@@ -754,8 +755,9 @@ def Circumscribe(
         The Mob to circumscribe.
     shape
         Outline shape: ``Rectangle``, ``Square`` or ``Circle`` (the classes
-        themselves, not instances). Defaults to ``None``, meaning a rectangle around
-        the Mob's bounding box.
+        themselves, not instances). ``None``, ``Rectangle`` and ``Square`` all draw
+        a rectangle around the Mob's bounding box (``Square`` is not made square);
+        ``Circle`` draws a circle through the box's corners, widened by ``buff``. Defaults to ``None``.
     fade_in
         Whether the frame fades in. Defaults to False.
     fade_out
@@ -779,7 +781,7 @@ def Circumscribe(
 
     Raises
     ------
-    ValueError
+    :class:`.AlganConfigurationError`
         If ``shape`` is not ``Rectangle``, ``Square``, ``Circle`` or ``None``.
     """
     from algan.mobs.shapes_2d import Circle, Rectangle, Square, SurroundingRectangle
@@ -811,7 +813,10 @@ def Circumscribe(
             filled=False,
         )
     else:
-        raise AlganConfigurationError("shape should be either Rectangle or Circle.")
+        raise AlganConfigurationError(
+            "shape should be Rectangle, Square, Circle or None (the classes "
+            f"themselves); got {shape!r}."
+        )
 
     if fade_in and fade_out:
         with Seq(animation_manager=animation_manager):
@@ -879,8 +884,8 @@ def ApplyWave(
 
     Animation
     ---------
-    Recorded as an animation of ``runtime`` seconds, regardless of the enclosing
-    context's runtime.
+    Recorded as an animation of ``runtime`` seconds; an enclosing context's
+    ``runtime`` rescales it like any other animation.
 
     Parameters
     ----------

@@ -35,6 +35,8 @@ _EMPTY_TILING_MESSAGES = (
 
 @dataclass(frozen=True)
 class MorphConversion:
+    """Hold one primitive family's conversion to the morph medium and its optional hooks."""
+
     to_pn_soup: Callable
     pre_animate: Callable | None = None
     post_animate: Callable | None = None
@@ -59,10 +61,16 @@ def register_morph_conversion(
 
 
 def get_morph_conversion(family):
+    """Return the conversion registered for ``family``, or ``None`` if there is none."""
     return _MORPH_CONVERSIONS.get(family)
 
 
 def convert_to_pn_soup(mob, *, add_to_scene=False):
+    """Convert ``mob`` to the PN triangle soup used to morph across primitive families.
+
+    Raises :class:`NotImplementedError` if no conversion is registered for the
+    Mob's family, and :class:`MorphConversionError` if the conversion fails.
+    """
     conversion = get_morph_conversion(mob._morph_family)
     if conversion is None:
         raise NotImplementedError(

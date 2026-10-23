@@ -591,6 +591,17 @@ class AnimationContext:
         )
         if self.lag_ratio is not None:
             self.lag_ratio = _finite_number("ratio", self.lag_ratio, "a finite number")
+            if self.lag_ratio < 0:
+                # A negative ratio moves the cursor backwards, so each later
+                # animation starts before the one recorded ahead of it -- and
+                # before the block itself began, overlapping whatever came
+                # earlier, or at the top level at a negative scene time whose
+                # opening part is never shown.
+                raise AlganConfigurationError(
+                    f"ratio={self.lag_ratio!r} is negative, which would start "
+                    f"each animation before the block began. Use a ratio of "
+                    f"zero or more: 0 plays them together, 1 one after another."
+                )
         _reject_invalid_easing(self, self.easing)
         _reject_invalid_easing(self, self.composed_easing, "composed_easing")
         if self.new_mobs is None:
@@ -702,6 +713,7 @@ class AnimationContext:
 
     @current_time.setter
     def current_time(self, value):
+        """Move the authoring cursor to ``value`` seconds."""
         self.timespan.current_time = _finite_number("current_time", value)
 
     @property
@@ -714,6 +726,7 @@ class AnimationContext:
 
     @end_time.setter
     def end_time(self, value):
+        """Set this context's end time to ``value`` seconds."""
         self.timespan.original_end = _finite_number("end_time", value)
 
     def add_exit_callback(self, callback):
@@ -1257,7 +1270,7 @@ class Lag(AnimationContext):
         ``0`` is fully simultaneous, ``1`` fully sequential, ``0.1`` starts each
         animation when the previous one is a tenth done. Can be larger than 1,
         in which case it introduces a pause (wait) after each animation finishes.
-        Must be finite. Defaults to ``0.5``.
+        Must be finite and zero or more. Defaults to ``0.5``.
     runtime
         Duration of the whole block in seconds; the animations inside are
         rescaled to fit, keeping their relative timing. Must be finite and

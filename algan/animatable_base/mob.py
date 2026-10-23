@@ -630,6 +630,7 @@ class Mob(
 
     @pass_index.setter
     def pass_index(self, value: int | None) -> None:
+        """Set the object-index number; see the getter for accepted values."""
         self._pass_index = _validate_pass_index(value)
 
     def _resolved_pass_index(self):
@@ -2022,6 +2023,7 @@ class Mob(
 
     @location.setter
     def location(self, location: torch.Tensor):
+        """Move the Mob and its children to a new world-space position."""
         recursive = not self._prevent_recursive_sets
         # The funnel for move, move_to, set_location and set(location=...): a
         # scalar would broadcast to the (1, 1, 1) diagonal instead of raising.
@@ -2068,6 +2070,7 @@ class Mob(
 
     @basis.setter
     def basis(self, basis: torch.Tensor):
+        """Set the Mob's orientation and scale, turning and scaling its children with it."""
         value = cast_to_tensor(basis)
         # The other authoring funnel beside set_animated_attribute: rotate,
         # scale and scale_coefficient all land here rather than there.

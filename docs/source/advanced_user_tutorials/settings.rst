@@ -347,9 +347,11 @@ runtime Python settings object.
 Supported initialization variables include:
 
 ``ALGAN_ANIMATION_DEVICE``
-    Torch device used for animation materialization. The default is ``cpu``.
-    Unlike the render device this one cannot change: every Mob's authoring
-    state is allocated on it from the first one onward.
+    Torch device used for animation materialization. The default, ``cpu``, is
+    the only supported value: any other warns at import, is untested, and
+    measured 2-4x slower (see :doc:`performance_and_quality`). Unlike the
+    render device this one cannot change: every Mob's authoring state is
+    allocated on it from the first one onward.
 
 ``ALGAN_HOME`` and ``ALGAN_CACHE_DIR``
     Base and content-cache locations.

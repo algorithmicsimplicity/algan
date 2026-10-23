@@ -40,6 +40,23 @@ from algan.utils.tensor_utils import (
 
 
 def distance(x, y, memory=None, *args, **kwargs):
+    """Return the Euclidean distance between ``x`` and ``y`` along the last dim.
+
+    Parameters
+    ----------
+    x, y : torch.Tensor
+        Points of shape ``(*, D)``; leading dims broadcast against each other.
+    memory : optional
+        Scratch-tensor allocator. When given, the result is written into a tensor
+        from it instead of being computed with :func:`torch.cdist`.
+    *args, **kwargs
+        Passed to :func:`torch.cdist` (only used when ``memory`` is None).
+
+    Returns
+    -------
+    torch.Tensor
+        Distances of shape ``(*, 1)`` (the last dim is kept with size 1).
+    """
     if memory is None:
         return torch.cdist(x.unsqueeze(-2), y.unsqueeze(-2), *args, **kwargs).squeeze(
             -2
@@ -56,6 +73,38 @@ def distance(x, y, memory=None, *args, **kwargs):
 def intersect_line_with_plane(
     line_direction, plane_point, plane_normal, line_point=0, dim=-1, memory=None
 ):
+    """Intersect lines with planes.
+
+    The line is ``line_point + t * line_direction``; the plane passes through
+    ``plane_point`` with normal ``plane_normal`` (normalized internally, so its
+    length does not matter). All arguments broadcast over leading dims, with
+    the 3 coordinates on ``dim``.
+
+    Parameters
+    ----------
+    line_direction : torch.Tensor
+        Line directions. Need not be unit length; ``t`` is measured in units
+        of this vector.
+    plane_point, plane_normal : torch.Tensor
+        A point on each plane and its normal.
+    line_point : torch.Tensor or float, default 0
+        A point on each line (the origin by default).
+    dim : int, default -1
+        The coordinate dimension. A non-negative ``dim`` is converted to a
+        negative one relative to the highest-rank argument.
+    memory : optional
+        Scratch-tensor allocator for the in-place path. That path overwrites
+        ``plane_normal`` and ``line_direction`` and returns ``t`` with the
+        opposite sign to the default path (the points are the same).
+
+    Returns
+    -------
+    intersection_points : torch.Tensor
+        The intersection points.
+    intersection_distances : torch.Tensor
+        The line parameter ``t`` of each intersection, with ``dim`` kept as
+        size 1. Infinite or NaN where a line is parallel to its plane.
+    """
     if dim > 0:
         maxdim = max(
             [
@@ -93,6 +142,18 @@ def intersect_line_with_plane(
 def intersect_line_with_plane_colinear(
     line_direction, plane_point, plane_co1, plane_co2, line_point=0
 ):
+    """Intersect lines with planes given by two in-plane vectors.
+
+    The plane normal is the normalized cross product ``plane_co1 x plane_co2``
+    (last dim); everything else is as in :func:`intersect_line_with_plane`,
+    with coordinates on the last dim.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        ``(intersection_points, intersection_distances)``, as returned by
+        :func:`intersect_line_with_plane`.
+    """
     plane_normal = F.normalize(
         broadcast_cross_product(plane_co1, plane_co2, dim=-1), p=2, dim=-1
     )
@@ -167,6 +228,29 @@ def get_rotation_around_axis(num_degrees, axis, dim=0):
 
 
 def rotate_vector_around_axis(vector, num_degrees, axis, dim=0):
+    """Rotate ``vector`` by ``num_degrees`` about ``axis``.
+
+    Uses the rotation built by :func:`get_rotation_around_axis`, applied to the
+    vector as a row vector, so the rotation is counter-clockwise seen from the
+    tip of ``axis``.
+
+    Parameters
+    ----------
+    vector : torch.Tensor
+        Vectors to rotate, with 3 coordinates on ``dim``.
+    num_degrees : torch.Tensor or float
+        Rotation angle in **degrees**.
+    axis : torch.Tensor
+        Rotation axis, with 3 coordinates on ``dim``; normalized internally.
+    dim : int, default 0
+        The coordinate dimension of ``vector`` and ``axis``. Tensor arguments
+        are first left-padded with size-1 dims to a common rank.
+
+    Returns
+    -------
+    torch.Tensor
+        The rotated vectors, with the same shape as ``vector``.
+    """
     vshape = vector.shape
 
     def get_dim(x):
@@ -195,6 +279,32 @@ def rotate_vector_around_axis(vector, num_degrees, axis, dim=0):
 
 
 def get_rotation_between_3d_vectors(vector1, vector2, dim=-1):
+    """Return the angle and axis of the rotation carrying ``vector1`` to ``vector2``.
+
+    The axis is the normalized ``cross(vector1, vector2)``, matching the
+    handedness of :func:`get_rotation_around_axis`, so rotating ``vector1``
+    by the returned angle about the returned axis points it along ``vector2``.
+    When the vectors are (anti)parallel, i.e. the angle is within 1e-4 degrees
+    of 0 or 180, the cross product is degenerate and an arbitrary but
+    deterministic unit vector orthogonal to both is used instead
+    (:func:`get_orthonormal_vector`).
+
+    Parameters
+    ----------
+    vector1, vector2 : torch.Tensor
+        Vectors of any length with 3 coordinates on ``dim``; leading dims
+        broadcast.
+    dim : int, default -1
+        The coordinate dimension. The fallback axis always works on the last
+        dim, so other values are only reliable when no pair is (anti)parallel.
+
+    Returns
+    -------
+    degrees : torch.Tensor
+        The angle in **degrees**, in ``[0, 180]``, with ``dim`` kept as size 1.
+    axis : torch.Tensor
+        Unit rotation axis.
+    """
     # cross(v1, v2) unnegated: the axis that carries v1 to v2 under the
     # right-handed rotation get_rotation_around_axis builds. It was negated
     # while that rotation ran the other way.
@@ -217,6 +327,26 @@ def get_rotation_between_3d_vectors(vector1, vector2, dim=-1):
 
 
 def normalize(x, dim=-1, p=2, memory=None):
+    """Scale ``x`` to unit ``p``-norm along ``dim``.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        The vectors to normalize.
+    dim : int, default -1
+        The dimension to normalize over.
+    p : float, default 2
+        The norm order.
+    memory : optional
+        Scratch-tensor allocator. When given, ``x`` is normalized **in place**
+        and returned, always with the 2-norm over the last dim (``dim`` and
+        ``p`` are ignored); norms are clamped to at least 1e-8.
+
+    Returns
+    -------
+    torch.Tensor
+        The normalized vectors, same shape as ``x``.
+    """
     if memory is None:
         return F.normalize(x, p=p, dim=dim)
     with memory.temp():
@@ -275,7 +405,11 @@ def get_rotation_between_bases(basis1, basis2):
 
 
 def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
-    """Projects point x to the closest point on a line defined by a starting point and a direction"""
+    """Return the point on a line closest to ``point``.
+
+    The line passes through ``line_start`` with direction ``line_direction``
+    (normalized internally); coordinates lie on ``dim``.
+    """
     line_direction = F.normalize(line_direction, p=2, dim=dim)
     return line_start + line_direction * dot_product(
         point - line_start, line_direction, dim=dim
@@ -283,6 +417,24 @@ def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
 
 
 def project_onto_basis(vector, basis):
+    """Project ``vector`` onto the span of the vectors in ``basis``.
+
+    Computes ``sum(dot(vector, b) * b for b in basis)``, iterating over the
+    first dim of ``basis``. This is the orthogonal projection only when the
+    basis vectors are orthonormal; they are not normalized here.
+
+    Parameters
+    ----------
+    vector : torch.Tensor
+        Vectors with coordinates on the last dim.
+    basis : sequence of torch.Tensor
+        Basis vectors, each broadcastable against ``vector``.
+
+    Returns
+    -------
+    torch.Tensor
+        The projected vectors.
+    """
     return sum([dot_product(vector, b) * b for b in basis])
 
 
@@ -396,6 +548,30 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
 
 
 def map_global_to_local_coords(location, basis, global_coords):
+    """Express world-space points in a Mob's local frame.
+
+    Inverse of :func:`map_local_to_global_coords`: finds ``c`` with
+    ``location + c @ basis == global_coords``. For an orthogonal basis this
+    projects onto each normalized row and divides by the row's length; for
+    a sheared basis it multiplies by the exact inverse
+    (:func:`invert_row_basis`, which yields the identity for a degenerate
+    basis).
+
+    Parameters
+    ----------
+    location : torch.Tensor
+        Frame origin, shape ``(*, 3)``.
+    basis : torch.Tensor
+        Flattened row basis, shape ``(*, 9)``: rows are the frame's x, y and z
+        axes (not necessarily unit length).
+    global_coords : torch.Tensor
+        World-space points, shape ``(*, 3)``.
+
+    Returns
+    -------
+    torch.Tensor
+        Local coordinates, shape ``(*, 3)``.
+    """
     basis = unsquish(basis, -1, 3)
     offset = (global_coords - location).unsqueeze(-2)
     normalized = F.normalize(basis, p=2, dim=-1)
@@ -415,5 +591,24 @@ def map_global_to_local_coords(location, basis, global_coords):
 
 
 def map_local_to_global_coords(location, basis, local_coords):
+    """Express points given in a Mob's local frame in world space.
+
+    Computes ``location + local_coords @ basis``, i.e. each local coordinate
+    scales the corresponding basis row.
+
+    Parameters
+    ----------
+    location : torch.Tensor
+        Frame origin, shape ``(*, 3)``.
+    basis : torch.Tensor
+        Flattened row basis, shape ``(*, 9)``.
+    local_coords : torch.Tensor
+        Local coordinates, shape ``(*, 3)``.
+
+    Returns
+    -------
+    torch.Tensor
+        World-space points, shape ``(*, 3)``.
+    """
     basis = unsquish(basis, -1, 3)
     return dot_product(basis, local_coords.unsqueeze(-1), -2, keepdim=False) + location

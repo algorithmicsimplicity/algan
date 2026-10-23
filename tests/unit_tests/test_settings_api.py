@@ -12,6 +12,7 @@ import dataclasses
 import os
 import subprocess
 import sys
+import warnings
 
 import pytest
 import torch
@@ -26,7 +27,10 @@ from algan import (
     RayTracingSettings,
     VideoSettings,
 )
-from algan.settings._startup import render_device
+from algan.settings._startup import (
+    _warn_if_unsupported_animation_device,
+    render_device,
+)
 
 # In the fast suite: engine modules read ``SETTINGS`` live off section objects
 # they captured at import, so a change to how a section is written or restored
@@ -205,6 +209,24 @@ def test_the_animation_device_answers_with_the_environment_variable_to_set():
     """
     with pytest.raises(AlganConfigurationError, match="ALGAN_ANIMATION_DEVICE"):
         SETTINGS.computing.set(animation_device="cpu")
+
+
+@pytest.mark.parametrize("device", ["cuda", "mps", "meta"])
+def test_an_animation_device_other_than_the_cpu_warns(device):
+    """Only the CPU is supported; anything else is untested and slower.
+
+    Checked through the helper the import runs, since the variable itself is
+    read once at ``import algan``. Building the device object needs no such
+    hardware.
+    """
+    with pytest.warns(AlganWarning, match="ALGAN_ANIMATION_DEVICE=.*unsupported"):
+        _warn_if_unsupported_animation_device(torch.device(device))
+
+
+def test_the_cpu_animation_device_does_not_warn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _warn_if_unsupported_animation_device(torch.device("cpu"))
 
 
 def test_render_on_cpu_points_at_the_field_that_replaced_it():

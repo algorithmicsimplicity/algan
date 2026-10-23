@@ -121,9 +121,9 @@ class MobHierarchyMixin:
             If ``other_mob`` is not an
             :class:`~algan.animatable_base.animatable.Animatable`.
         :class:`.HierarchyError`
-            If ``other_mob`` is this Mob, belongs to another Scene, or is
-            already somewhere below it -- any of which would make the graph a
-            cycle.
+            If ``other_mob`` is this Mob or is already somewhere below it --
+            either of which would make the graph a cycle -- or belongs to
+            another Scene.
         """
         if not isinstance(other_mob, Animatable):
             raise TypeError(
@@ -198,7 +198,10 @@ class MobHierarchyMixin:
         Returns
         -------
         list[:class:`~algan.animatable_base.mob.Mob`]
-            The children at that generation. The Mobs are live, not copies.
+            The children at that generation. The Mobs are live, not copies,
+            but the list is a new one each call: mutating it does not change
+            the hierarchy -- use the ``add_children`` / ``remove_child``
+            methods for that.
 
         See Also
         --------
@@ -209,7 +212,9 @@ class MobHierarchyMixin:
         if not include_components:
             children = [_ for _ in children if _ not in self.components]
         if generation <= 0:
-            return children
+            # A copy, so mutating the result cannot edit the hierarchy behind
+            # the version bump the descendant caches key on.
+            return list(children)
         children = [
             _.get_children(generation - 1, include_components=include_components)
             for _ in children
@@ -227,8 +232,10 @@ class MobHierarchyMixin:
         Returns
         -------
         list[:class:`~algan.animatable_base.mob.Mob`]
-            This Mob (unless excluded) followed by its children, their children,
-            and so on. The Mobs are live, not copies.
+            This Mob (unless excluded) followed by each child's own descendants
+            in turn (depth-first). The Mobs are live, not copies. A Mob reachable
+            along more than one path (it has several parents under this one)
+            appears once, at its first depth-first position.
         """
         cache = getattr(self, "_descendants_cache", None)
         if (
@@ -238,8 +245,13 @@ class MobHierarchyMixin:
         ):
             descendants = cache[1]
         else:
-            descendants = list(
-                traverse(
+            # A Mob shared by several parents under this one is reached once
+            # per path; keep only its first (depth-first) occurrence, so
+            # callers that walk the list do not process it twice.
+            seen = set()
+            descendants = [
+                mob
+                for mob in traverse(
                     [
                         self,
                         [c.get_descendants() for c in self.children]
@@ -247,7 +259,8 @@ class MobHierarchyMixin:
                         else [],
                     ]
                 )
-            )
+                if id(mob) not in seen and not seen.add(id(mob))
+            ]
             object.__setattr__(
                 self, "_descendants_cache", (HIERARCHY_VERSION[0], descendants)
             )
@@ -423,8 +436,8 @@ class MobHierarchyMixin:
 
         Raises
         ------
-        ValueError
-            If ``mob`` is not a child of this Mob.
+        :class:`~algan.errors.AlganConfigurationError`
+            If ``mob`` is not a child of this Mob (a ``ValueError`` subclass).
         """
         if not self._drop_child(mob):
             raise AlganConfigurationError(

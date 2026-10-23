@@ -58,6 +58,20 @@ def texture_u8_provenance(texture):
 
 
 def packed_reorder(x, counts, ids):
+    """Group chunks of a packed tensor by id.
+
+    ``x`` is split along dim 0 into consecutive chunks of sizes ``counts``;
+    chunk ``i`` belongs to ``ids[i]``. Chunks are concatenated grouped by id in
+    ascending id order (keeping their original order within an id); empty
+    chunks are skipped.
+
+    Returns
+    -------
+    reordered : torch.Tensor
+        The regrouped tensor.
+    counts : torch.Tensor
+        Total size along dim 0 of each id's group, in ascending id order.
+    """
     cc = counts.cumsum(0)
     cc = torch.cat((torch.zeros_like(cc[:1]), cc))
     id_to_chunks = defaultdict(list)
@@ -378,6 +392,13 @@ def cast_to_direction(name, x):
 def make_grid(
     height, width=None, min_coord=-1, max_coord=1, min_coord2=None, max_coord2=None
 ):
+    """Return a ``(height, width, 3)`` grid of points in the x = 0 plane.
+
+    Component 0 is zero, component 1 runs linearly from ``min_coord`` to
+    ``max_coord`` down the rows, and component 2 from ``min_coord2`` to
+    ``max_coord2`` across the columns. ``width`` defaults to ``height`` and the
+    second range to the first. Created on the animation device.
+    """
     if width is None:
         width = height
     if min_coord2 is None:
@@ -401,6 +422,11 @@ def make_grid(
 
 
 def unsqueeze_right(x, y, offset: int = 0):
+    """Return ``x`` viewed with size-1 dims added so its rank matches ``y``.
+
+    ``offset`` size-1 dims go on the left and the rest on the right. A
+    non-tensor ``x`` is returned unchanged.
+    """
     if not isinstance(x, torch.Tensor):
         return x
     return x.view(
@@ -409,6 +435,12 @@ def unsqueeze_right(x, y, offset: int = 0):
 
 
 def unsqueeze_left(x, y, offset: int = 0):
+    """Return ``x`` viewed with size-1 dims prepended so its rank matches ``y``.
+
+    With ``offset``, that many of the new dims are placed immediately before
+    ``x``'s own dims and count against the total, so the result has rank
+    ``y.dim()``. A non-tensor ``x`` is returned unchanged.
+    """
     if not isinstance(x, torch.Tensor):
         return x
     return x.view(
@@ -418,6 +450,11 @@ def unsqueeze_left(x, y, offset: int = 0):
 
 
 def broadcast(x, y, ignored_dims: list[int]):
+    """Expand the size-1 dims of ``x`` to the matching sizes of ``y``.
+
+    ``x`` and ``y`` must have the same rank. Dims listed in ``ignored_dims``
+    (non-negative indices) are left as they are. Returns a view.
+    """
     return x.expand(
         [
             y.shape[i] if (x.shape[i] == 1 and i not in ignored_dims) else -1
@@ -427,6 +464,15 @@ def broadcast(x, y, ignored_dims: list[int]):
 
 
 def broadcast_both_left(x, y, ignored_dims: list[int]):
+    """Left-pad ``x`` and ``y`` to a common rank and expand them to a common shape.
+
+    Dims in ``ignored_dims`` (non-negative indices) are not expanded.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        The expanded views ``(x, y)``.
+    """
     x = unsqueeze_left(x, y)
     y = unsqueeze_left(y, x)
     x = broadcast(x, y, ignored_dims=ignored_dims)
@@ -435,6 +481,7 @@ def broadcast_both_left(x, y, ignored_dims: list[int]):
 
 
 def unsqueeze_until_dim(x, dim, insert_dim=0):
+    """Insert size-1 dims at ``insert_dim`` until ``x`` has at least ``dim`` dims."""
     while x.dim() < dim:
         x = x.unsqueeze(insert_dim)
     return x
@@ -509,6 +556,27 @@ def _broadcast_all_reference(xs, ignored_dims=()):
 
 
 def broadcast_gather(src, dim: int, ind, keepdim=True, out=None, **kwargs):
+    """Gather values of ``src`` along ``dim`` at indices ``ind``, with broadcasting.
+
+    Like :func:`torch.gather`, but ``src`` and ``ind`` are first left-padded
+    to a common rank and expanded to a common shape on every dim except
+    ``dim``. A 1-D index along ``dim`` uses :func:`torch.index_select`.
+
+    Parameters
+    ----------
+    src : torch.Tensor
+        Values to gather from.
+    dim : int
+        Dimension to index along.
+    ind : torch.Tensor
+        Integer indices.
+    keepdim : bool, default True
+        If False, ``dim`` is squeezed from the result.
+    out : torch.Tensor or allocator, optional
+        Output tensor, or a scratch-tensor allocator to take one from.
+    **kwargs
+        Passed to :func:`torch.gather`.
+    """
     src_shape = src.shape
     ind_shape = ind.shape
     if src.dim() < ind.dim():
@@ -532,10 +600,12 @@ def broadcast_gather(src, dim: int, ind, keepdim=True, out=None, **kwargs):
 
 
 def offset(x):
+    """Return ``x`` rotated by one along dim 0, so element ``i`` becomes ``x[i + 1]``."""
     return torch.cat((x[1:], x[:1]))
 
 
 def shuffle(x):
+    """Return ``x`` with dim 0 randomly permuted."""
     dim = 0
     perm = torch.randperm(x.shape[dim])
     return x[perm]
@@ -574,10 +644,16 @@ def unsquish(x, dim: int = 0, factor: int | None = None):
 
 
 def interpolate(x, y, a):
+    """Linearly interpolate from ``x`` (at ``a = 0``) to ``y`` (at ``a = 1``)."""
     return x * (1 - a) + (a) * y
 
 
 def broadcast_cross_product(x, y, dim=-1):
+    """Return the cross product of ``x`` and ``y`` along ``dim``, with broadcasting.
+
+    Both are left-padded and expanded to a common shape first; ``dim`` must
+    have size 3.
+    """
     x, y = broadcast_both_left(
         x, y, ignored_dims=[dim]
     )  # [dim if dim >= 0 else len(y.shape) + dim])
@@ -585,10 +661,16 @@ def broadcast_cross_product(x, y, dim=-1):
 
 
 def mean(xs):
+    """Return the mean of the items of ``xs``, or 0 for an empty sequence."""
     return sum(xs) / max(len(xs), 1)
 
 
 def mid_point(x, dim=-1, keepdim=True):
+    """Return the midpoint of the range of ``x`` along ``dim``.
+
+    That is ``(min + max) / 2`` (the centre of the bounding box, not the
+    mean).
+    """
     return (x.amin(dim, keepdim=keepdim) + x.amax(dim, keepdim=keepdim)) * 0.5
 
 
@@ -613,6 +695,25 @@ def _dot_product_low_dim(x, y, out=None):
 
 
 def dot_product(x, y, dim=-1, keepdim=True, out=None):
+    """Return the dot product of ``x`` and ``y`` along ``dim``, with broadcasting.
+
+    Parameters
+    ----------
+    x, y : torch.Tensor
+        Operands; leading dims broadcast.
+    dim : int or sequence of int, default -1
+        Dimension(s) summed over.
+    keepdim : bool, default True
+        Keep the summed dimension(s) with size 1.
+    out : torch.Tensor or allocator, optional
+        Output tensor or scratch-tensor allocator; only used when summing over
+        the last dim.
+
+    Returns
+    -------
+    torch.Tensor
+        The dot products.
+    """
     if dim == -1 or dim == (max(x.dim(), y.dim()) - 1):
         if x.shape[-1] <= 3:
             out = _dot_product_low_dim(x, y, out=out)
@@ -647,6 +748,13 @@ def dot_product(x, y, dim=-1, keepdim=True, out=None):
 
 
 def pack_tensor(x, packing):
+    """Repeat the packed dimension of ``x`` per ``packing``.
+
+    ``packing`` is ``(counts, num_dims)``; the packed dim is
+    ``x.dim() - (num_dims + 1)``. Each entry along it is repeated
+    ``counts[i]`` times. ``x`` is returned unchanged when ``packing`` is None,
+    the dim does not exist, or it has size 1.
+    """
     if packing is None:
         return x
     counts, num_dims = packing
@@ -657,6 +765,12 @@ def pack_tensor(x, packing):
 
 
 def unpack_tensor(x, packing):
+    """Split ``x`` along its packed dimension into chunks of sizes ``counts``.
+
+    Inverse of the layout produced by :func:`pack_tensor`; ``packing`` is
+    ``(counts, num_dims)``. Returns a tuple of tensors, or ``x`` unchanged when
+    ``packing`` is None.
+    """
     if packing is None:
         return x
     counts, num_dims = packing

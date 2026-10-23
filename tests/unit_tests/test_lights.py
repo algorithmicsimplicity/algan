@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -48,12 +50,21 @@ def test_intensity_is_registered_as_animatable():
         # what lets it carry a different value per frame.
         value = light.intensity
         assert isinstance(value, torch.Tensor)
-        assert float(value.reshape(-1)[0]) == pytest.approx(1.0)
+        assert float(value.reshape(-1)[0]) == pytest.approx(math.pi)
+
+
+def test_point_light_defaults_to_the_intensity_that_renders_white():
+    # Irradiance units (see light-units): a white matte surface returns 1/pi
+    # of a light, so PI is the bare PointLight that lights it white -- the
+    # default scene light's intensity too.
+    with Scene():
+        assert float(PointLight().intensity.reshape(-1)[0]) == pytest.approx(math.pi)
+        assert float(HemisphereLight().intensity.reshape(-1)[0]) == pytest.approx(1.0)
 
 
 def test_intensity_assignment_records_an_animation():
     with Scene() as scene:
-        light = PointLight()
+        light = PointLight(intensity=1.0)
         with Seq():
             light.spawn(animate=False)
             start = scene.animation_manager.context.timespan.current_time
@@ -145,7 +156,7 @@ def test_intensity_validator_tolerates_materialized_rows():
 
 def test_animated_intensity_reaches_the_renderer_per_frame():
     with Scene() as scene:
-        light = PointLight(color=WHITE, location=[0, 4, 3])
+        light = PointLight(color=WHITE, location=[0, 4, 3], intensity=1.0)
         with Seq():
             light.spawn(animate=False)
             start = scene.animation_manager.context.timespan.current_time

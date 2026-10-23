@@ -1,0 +1,78 @@
+name: Install apt packages from a .deb cache
+description: >-
+  Installs Ubuntu packages without Recommends, keeping the downloaded .debs in
+  the Actions cache so later runs install them without touching the mirror.
+inputs:
+  packages:
+    description: Space-separated package names
+    required: true
+  cache-name:
+    description: >-
+      Names this package set in the cache key. Two sets must not share a name,
+      and neither name may be a prefix of the other, because the restore
+      matches by prefix.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The runners fetch from azure.archive.ubuntu.com, whose throughput
+    # sometimes collapses to tens of KB/s; on those days a TeX install that
+    # normally takes a minute ran for 20 to 55 minutes (run 39856895525 spent
+    # 18 minutes on OpenJDK alone, a Recommends nothing used). Two defences:
+    #
+    # No Recommends. That is the set the cloud dev sessions already use
+    # (.claude/hooks/session-start.sh), on which the suite passes. It is why
+    # callers name dvisvgm explicitly: it is only a Recommends of the TeX
+    # packages, and Tex/MathTex cannot work without it.
+    #
+    # A .deb cache, keyed by the runner image, since the image decides what is
+    # already installed and so which .debs a transaction downloads. On a hit
+    # the set is installed straight from the cache with dpkg and the mirror is
+    # never contacted, not even for `apt-get update`; if that fails or leaves a
+    # package out (the list grew, say), it falls back to the mirror and saves a
+    # fresh copy.
+    #
+    # dpkg rather than `apt-get install <the .debs>`, because apt treats a .deb
+    # on its command line as one more source for a version its lists already
+    # know, and fetched most of them from the mirror anyway (run 39873363259,
+    # attempt 2: 177 of 186 MB). The cached set is exactly what apt chose for
+    # this image, dependencies included, so dpkg can install it as it stands.
+    - id: key
+      shell: bash
+      run: echo "prefix=apt-v1-${ImageOS}-${ImageVersion}-${{ inputs.cache-name }}-" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache/restore@v6
+      with:
+        path: ~/apt-debs
+        key: ${{ steps.key.outputs.prefix }}${{ github.run_id }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    - id: install
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -r -a pkgs <<< "$PACKAGES"
+        debs="$HOME/apt-debs"
+        if compgen -G "$debs/*.deb" > /dev/null \
+          && sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$debs"/*.deb \
+          && dpkg -s "${pkgs[@]}" > /dev/null 2>&1; then
+          echo "Installed from the cached packages; the mirror was not used."
+          exit 0
+        fi
+        # `-f` below: a dpkg run that failed part-way leaves packages
+        # unconfigured, and apt refuses any other install until they are fixed.
+        echo "No usable cache; installing from the mirror."
+        sudo apt-get update
+        sudo apt-get clean
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -f --no-install-recommends --download-only "${pkgs[@]}"
+        rm -rf "$debs" && mkdir -p "$debs"
+        cp /var/cache/apt/archives/*.deb "$debs"/ 2>/dev/null || true
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -f --no-install-recommends "${pkgs[@]}"
+        echo "fresh=true" >> "$GITHUB_OUTPUT"
+
+    - if: steps.install.outputs.fresh == 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/apt-debs
+        key: ${{ steps.key.outputs.prefix }}${{ github.run_id }}

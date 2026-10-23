@@ -172,14 +172,27 @@ def test_color_texture_round_trips_through_arithmetic():
     texture[..., :4] = 0.8
     texture[..., 4] = 1.0
     surface = Surface(grid_width=3, grid_height=3, color_texture=texture).spawn()
-    resolution = (surface.texture_height, surface.texture_width)
+    resolution = (surface.texture_width, surface.texture_height)
 
     surface.color_texture = surface.color_texture * 0.5
 
     assert torch.allclose(surface.color_texture, texture * 0.5)
     # Same texel count, so the same timeline attribute: the assignment is an
     # interpolated animation, not a history-detaching resize.
-    assert (surface.texture_height, surface.texture_width) == resolution
+    assert (surface.texture_width, surface.texture_height) == resolution
+
+
+def test_color_texture_dimensions_follow_the_w_h_contract():
+    """The first texture axis is ``W`` (along ``u``), the second ``H`` (``v``).
+
+    ``texture_width`` / ``texture_height`` used to be named the other way round
+    from the public ``[W, H, 5]`` shape; a non-square map pins them.
+    """
+    texture = torch.zeros(6, 4, 5)
+    texture[..., 4] = 1.0
+    surface = Surface(grid_width=3, grid_height=3, color_texture=texture)
+
+    assert (surface.texture_width, surface.texture_height) == (6, 4)
 
 
 def test_color_texture_reads_back_as_colours():

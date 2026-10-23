@@ -118,7 +118,7 @@ def main():
     old_threshold = shadow_queue._SORT_MIN_RAYS
     shadow_queue._SORT_MIN_RAYS = 1  # ensure the sorted arm is actually exercised
 
-    def checked_make(memory, sort_sources=None):
+    def checked_make(memory, sort_sources=None, merged=None):
         SETTINGS.raytracing.experimental.shadow_ray_parallel = True
         candidate = real_make(memory, sort_sources)
 

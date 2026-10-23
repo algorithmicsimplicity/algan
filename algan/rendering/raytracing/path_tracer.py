@@ -1222,7 +1222,11 @@ def path_trace_render(
     """
     # Local import: tracer imports this module lazily at dispatch, and these
     # helpers live beside the deterministic orchestration it reuses.
-    from algan.rendering.raytracing.tracer import _arena_values, _ArenaRayCompactor
+    from algan.rendering.raytracing.tracer import (
+        _arena_values,
+        _ArenaRayCompactor,
+        _optix_gather,
+    )
 
     i32 = torch.int32
     f32 = torch.float32
@@ -1460,49 +1464,98 @@ def path_trace_render(
                         # traverse kernel's stores and shade's gathers coalesce.
                         hit_f = memory.get_tensor((kbuf, 4, na), f32)
                         hit_i = memory.get_tensor((kbuf, 2, na), i32)
-                        wavefront_traverse_events(
+
+                        # Called before this iteration ends; the defaults only pin
+                        # this iteration's buffers.
+                        def _software_traverse(
+                            tri_tree=int(has_tri),
+                            active=active,
+                            na=na,
+                            hit_f=hit_f,
+                            hit_i=hit_i,
+                            rs_ro=rs_ro,
+                            rs_rd=rs_rd,
+                            rs_sca=rs_sca,
+                            rs_int=rs_int,
+                            rs_pix=rs_pix,
+                        ):
+                            wavefront_traverse_events(
+                                active,
+                                na,
+                                tri_bvh.kernel_blocks,
+                                tri_bvh.node_miss,
+                                tri_bvh.leaf_prim,
+                                tri_bvh.leaf_tspan,
+                                int(tri_bvh.first_leaf),
+                                merged["tri_pos"],
+                                bez_bvh.kernel_blocks,
+                                bez_bvh.node_miss,
+                                bez_bvh.leaf_prim,
+                                bez_bvh.leaf_tspan,
+                                int(bez_bvh.first_leaf),
+                                merged["circuit_meta"],
+                                merged["edges_2d"],
+                                merged["edge_accel"],
+                                merged["tri_opaque_bvh"].kernel_blocks,
+                                merged["tri_opaque_bvh"].node_miss,
+                                merged["tri_opaque_bvh"].leaf_prim,
+                                merged["tri_opaque_bvh"].leaf_tspan,
+                                int(merged["tri_opaque_bvh"].first_leaf),
+                                merged["bez_opaque_bvh"].kernel_blocks,
+                                merged["bez_opaque_bvh"].node_miss,
+                                merged["bez_opaque_bvh"].leaf_prim,
+                                merged["bez_opaque_bvh"].leaf_tspan,
+                                int(merged["bez_opaque_bvh"].first_leaf),
+                                pixel_world_scale,
+                                float(layer_offset_triangles),
+                                bvh_refit,
+                                tri_tree,
+                                int(has_bez),
+                                opaque_closest,
+                                0,  # opaque_prepass: deterministic-only rollout
+                                int(time_start),
+                                int(width),
+                                int(height),
+                                # ray_offset: rs_pix holds the GLOBAL flat cell
+                                # (pt_generate writes it through the pixel list),
+                                # so there is nothing to add. The kernel decodes
+                                # ``ray_offset + rs_pix[r]`` on the gen_first == 0
+                                # path the path tracer always takes, and reads
+                                # rs_pix for nothing else.
+                                0,
+                                rs_ro,
+                                rs_rd,
+                                rs_sca,
+                                rs_int,
+                                hit_f,
+                                hit_i,
+                                rs_pix,
+                                0,  # gen_first: PT generation is its own kernel
+                                cam_origin,
+                                screen_point,
+                                pixel_basis_x,
+                                pixel_basis_y,
+                                gen_meta,
+                                cam_proj_table,
+                                projected,
+                            )
+
+                        # OptiX (SETTINGS.raytracing.experimental.optix) gathers the
+                        # camera and continuation hits on RT cores, or declines.
+                        if not _optix_gather(
+                            memory,
+                            merged,
                             active,
                             na,
-                            tri_bvh.blocks,
-                            tri_bvh.node_miss,
-                            tri_bvh.leaf_prim,
-                            tri_bvh.leaf_tspan,
-                            int(tri_bvh.first_leaf),
                             merged["tri_pos"],
-                            bez_bvh.blocks,
-                            bez_bvh.node_miss,
-                            bez_bvh.leaf_prim,
-                            bez_bvh.leaf_tspan,
-                            int(bez_bvh.first_leaf),
-                            merged["circuit_meta"],
-                            merged["edges_2d"],
-                            merged["edge_accel"],
-                            merged["tri_opaque_bvh"].blocks,
-                            merged["tri_opaque_bvh"].node_miss,
-                            merged["tri_opaque_bvh"].leaf_prim,
-                            merged["tri_opaque_bvh"].leaf_tspan,
-                            int(merged["tri_opaque_bvh"].first_leaf),
-                            merged["bez_opaque_bvh"].blocks,
-                            merged["bez_opaque_bvh"].node_miss,
-                            merged["bez_opaque_bvh"].leaf_prim,
-                            merged["bez_opaque_bvh"].leaf_tspan,
-                            int(merged["bez_opaque_bvh"].first_leaf),
-                            pixel_world_scale,
-                            float(layer_offset_triangles),
-                            bvh_refit,
-                            int(has_tri),
-                            int(has_bez),
+                            has_tri,
+                            has_bez,
                             opaque_closest,
-                            0,  # opaque_prepass: deterministic-only rollout
-                            int(time_start),
-                            int(width),
-                            int(height),
-                            # ray_offset: rs_pix holds the GLOBAL flat cell
-                            # (pt_generate writes it through the pixel list),
-                            # so there is nothing to add. The kernel decodes
-                            # ``ray_offset + rs_pix[r]`` on the gen_first == 0
-                            # path the path tracer always takes, and reads
-                            # rs_pix for nothing else.
+                            0,
+                            0,
+                            time_start,
+                            width,
+                            height,
                             0,
                             rs_ro,
                             rs_rd,
@@ -1511,19 +1564,14 @@ def path_trace_render(
                             hit_f,
                             hit_i,
                             rs_pix,
-                            0,  # gen_first: PT generation is its own kernel
-                            cam_origin,
-                            screen_point,
-                            pixel_basis_x,
-                            pixel_basis_y,
-                            gen_meta,
-                            cam_proj_table,
-                            projected,
-                        )
+                            float(layer_offset_triangles),
+                            _software_traverse,
+                        ):
+                            _software_traverse()
                         pt_shade(
                             active,
                             na,
-                            tri_bvh.blocks,
+                            tri_bvh.kernel_blocks,
                             tri_bvh.node_miss,
                             tri_bvh.leaf_prim,
                             tri_bvh.leaf_tspan,
@@ -1536,7 +1584,7 @@ def path_trace_render(
                             merged["tri_tex_meta"],
                             merged["textures"],
                             int(merged["num_colored_triangles"]),
-                            bez_bvh.blocks,
+                            bez_bvh.kernel_blocks,
                             bez_bvh.node_miss,
                             bez_bvh.leaf_prim,
                             bez_bvh.leaf_tspan,

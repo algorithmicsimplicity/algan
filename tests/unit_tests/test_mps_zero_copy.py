@@ -91,9 +91,10 @@ def test_a_vector_element_annotation_reports_its_element_shape():
 def test_the_bvh_node_argument_of_a_real_kernel_is_importable():
     """The one that matters, asked of the renderer's own kernel.
 
-    ``NODE_ARG`` is built from ``bvh_arity`` and from whether the block is
-    f16, both of which are settings, so this reads the extent off the same
-    annotation the kernel was declared with rather than restating 4.
+    ``NODE_ARG`` leaves its element type open (the host passes packed words,
+    ``stbvh.kernel_blocks``: int32 on MPS), so it must be importable as a
+    scalar-element ndarray -- read off the annotation the kernel was declared
+    with rather than restated.
     """
     from algan.rendering.raytracing import raster_taichi
     from algan.rendering.raytracing import raytrace_kernels_taichi as rk
@@ -106,7 +107,7 @@ def test_the_bvh_node_argument_of_a_real_kernel_is_importable():
     ]
     assert node_positions, "this kernel no longer takes a NODE_ARG"
     positions = _ndarray_positions(kernel)
-    expected = tuple(rk.NODE_ARG.dtype.get_shape())
+    expected = () if rk.NODE_ARG.dtype is None else tuple(rk.NODE_ARG.dtype.get_shape())
     for index in node_positions:
         assert positions.get(index) == expected
 

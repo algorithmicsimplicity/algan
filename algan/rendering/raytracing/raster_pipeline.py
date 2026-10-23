@@ -3309,6 +3309,9 @@ def shade_sparse_raster_coverage(
         else _aa_dump_arg(covered_idx.device)
     )
     num_slice_sheets = s_end - s_start
+    # Set by the tracer for a splitting batch: the commits this launch makes
+    # go on the grid the batch's pool rays add to (``_det_deposit``).
+    det_sum = 1 if merged.get("det_sum") else 0
     pre_args = (
         num_covered,
         sheet_offsets,
@@ -3426,6 +3429,8 @@ def shade_sparse_raster_coverage(
             term_mode,
             sided_on,
             memo_on,
+            # The event pass commits no pixels, so it never needs the grid.
+            0,
             sheet_memo,
             sheet_accept,
             event_pos,
@@ -3493,7 +3498,7 @@ def shade_sparse_raster_coverage(
                 make_shadow_tracer,
             )
 
-            raster_shadow_trace = make_shadow_tracer(memory)
+            raster_shadow_trace = make_shadow_tracer(memory, merged=merged)
             raster_shadow_trace(
                 num_events,
                 ev_pos,
@@ -3501,7 +3506,7 @@ def shade_sparse_raster_coverage(
                 ev_fnrm,
                 ev_frame,
                 ev_msk,
-                t_bvh.blocks,
+                t_bvh.kernel_blocks,
                 t_bvh.node_miss,
                 t_bvh.leaf_prim,
                 t_bvh.leaf_tspan,
@@ -3513,7 +3518,7 @@ def shade_sparse_raster_coverage(
                 merged["textures"],
                 merged["tri_extra"],
                 int(merged["num_colored_triangles"]),
-                bez_bvh.blocks,
+                bez_bvh.kernel_blocks,
                 bez_bvh.node_miss,
                 bez_bvh.leaf_prim,
                 bez_bvh.leaf_tspan,
@@ -3564,6 +3569,7 @@ def shade_sparse_raster_coverage(
             term_mode,
             sided_on,
             memo_on,
+            det_sum,
             sheet_memo,
             sheet_accept,
             event_pos,
@@ -3593,6 +3599,7 @@ def shade_sparse_raster_coverage(
             # a one-launch shadow-free resolve has nothing to carry, so it
             # compiles the whole thing out and passes the dummy.
             0,
+            det_sum,
             dummy_f12,
             dummy_i,
             dummy_f3,

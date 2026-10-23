@@ -24,7 +24,7 @@ Scene.set_background(DARKER_GRAY)
 # Act 1 -- the typesetting stack, one family per column.
 # --------------------------------------------------------------------------
 with Off():
-    AmbientLight(color=WHITE, intensity=0.55).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.55 * PI).spawn(animate=False)
     DirectionalLight(
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,

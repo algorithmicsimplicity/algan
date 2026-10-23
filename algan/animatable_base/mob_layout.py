@@ -986,6 +986,7 @@ class MobLayoutMixin:
 
     @x.setter
     def x(self, value):
+        """Move the Mob along the x axis to ``value``, leaving the other axes alone."""
         self.set_coord(0, value)
 
     @property
@@ -1000,6 +1001,7 @@ class MobLayoutMixin:
 
     @y.setter
     def y(self, value):
+        """Move the Mob along the y axis to ``value``, leaving the other axes alone."""
         self.set_coord(1, value)
 
     @property
@@ -1017,6 +1019,7 @@ class MobLayoutMixin:
 
     @z.setter
     def z(self, value):
+        """Move the Mob along the z axis to ``value``, leaving the other axes alone."""
         self.set_coord(2, value)
 
     @property
@@ -1025,7 +1028,8 @@ class MobLayoutMixin:
 
         Writing it moves the Mob in the screen plane and leaves z -- its
         distance from the camera -- alone. A value with more than two components
-        may be assigned; the extra components are ignored.
+        may be assigned, the extra components being ignored, or a Mob, whose
+        location supplies the x and y.
 
         Animation
         ---------
@@ -1035,6 +1039,7 @@ class MobLayoutMixin:
 
     @xy.setter
     def xy(self, value):
+        """Move the Mob in the screen plane to ``value``, leaving z alone."""
         from algan.animatable_base.mob import Mob
 
         if isinstance(value, Mob):

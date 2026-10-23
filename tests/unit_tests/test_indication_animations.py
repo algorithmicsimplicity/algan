@@ -150,7 +150,7 @@ def test_circumscribe_registers_its_frame_for_every_fade_combination(scene, kwar
 def test_circumscribe_rejects_a_shape_it_cannot_build(scene):
     with Off():
         square = Square().spawn()
-    with pytest.raises(ValueError, match="Rectangle or Circle"):
+    with pytest.raises(ValueError, match="Rectangle, Square, Circle or None"):
         Circumscribe(square, shape=Group, runtime=0.5)
 
 

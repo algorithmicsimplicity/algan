@@ -188,7 +188,36 @@ _TAICHI_CACHE_DIRECTORY = Path(
     env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / _KERNEL_BACKEND
 ).expanduser()
 
+
+def _warn_if_unsupported_animation_device(device: torch.device) -> None:
+    """Warn when Mob state is placed anywhere but the CPU.
+
+    Authoring and timeline materialization are hundreds of thousands of small
+    tensor operations, not a few large ones, so a GPU adds a kernel launch to
+    each and a device sync wherever a value is read back, and finds nothing
+    large to speed up. Measured warm on an RTX 5080, ``cuda`` made both 2-4x
+    slower (``performance_and_quality.rst`` has the table), and it was found
+    broken for Text, surfaces and morphs. Kept as a warning rather than a
+    rejection: the variable is documented, and a scene of a few huge Mobs is
+    the one shape it could still pay for.
+    """
+    if device.type == "cpu":
+        return
+    warnings.warn(
+        f"ALGAN_ANIMATION_DEVICE={device} is unsupported and slower than the "
+        "default 'cpu'. Only 'cpu' is tested -- Text, surfaces and morphs are "
+        "known to fail elsewhere -- and on a GPU, scene authoring and batch "
+        "preparation measured 2-4x slower, because they are many small "
+        "tensor operations rather than large ones. Unset it; the render "
+        "device (SETTINGS.computing.render_device) is what puts rendering on "
+        "the GPU.",
+        AlganWarning,
+        stacklevel=2,
+    )
+
+
 _ANIMATION_DEVICE = _parse_device("ALGAN_ANIMATION_DEVICE", "cpu")
+_warn_if_unsupported_animation_device(_ANIMATION_DEVICE)
 
 #: What ``SETTINGS.computing.render_device`` starts at. Read once, here; every
 #: later read goes through :func:`render_device` so a runtime change is seen.

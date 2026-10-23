@@ -202,7 +202,7 @@ def test_project_profile_uses_managed_speech_and_suppresses_manual_saves(
     def scene():
         with Speech("exact words", wait_at_end=0):
             pass
-        assert Scene.save_frame("ignored") == []
+        assert Scene.save_frame("ignored").status == "skipped"
         assert Scene.save_video("ignored.mp4").status == "skipped"
 
     def fake_profile(author, settings, **options):
@@ -392,7 +392,7 @@ def test_video_render_skips_scene_save_calls_and_renders_one_managed_video(
     project = Project([scene], **_project_paths(tmp_path))
     results = project.render_video(0)
 
-    assert frame_returns == [[]]
+    assert [result.status for result in frame_returns] == ["skipped"]
     assert len(manual_video_returns) == 1
     assert manual_video_returns[0].status == "skipped"
     assert [path for _, path in rendered_videos] == [

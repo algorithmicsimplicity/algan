@@ -67,7 +67,7 @@ def main():
     original = shadow_queue.make_shadow_tracer
     snapshot = SETTINGS.snapshot()
 
-    def checked_make(memory, sort_sources=None):
+    def checked_make(memory, sort_sources=None, merged=None):
         def check(*call):
             call = list(call)
             pointers = memory.get_pointers()

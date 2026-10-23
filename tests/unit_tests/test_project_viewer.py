@@ -71,7 +71,7 @@ def project_viewer(fresh_scene, tmp_path, fake_frames):
         Square().spawn(animate=False)
         with Speech("First scene.", wait_at_end=0):
             Scene.wait(1)
-        assert Scene.save_frame("ignored") == []
+        assert Scene.save_frame("ignored").status == "skipped"
         assert Scene.save_video("ignored").status == "skipped"
         assert Scene.view() is None
 

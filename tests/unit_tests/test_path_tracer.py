@@ -579,12 +579,13 @@ def test_lambert_furnace_is_lossless_under_a_light_row(tmp_path):
     """The furnace check, with the uniform environment delivered as a light
     ROW instead of as the background.
 
-    An ``AmbientLight`` is a direction-less packed row: constant radiance
-    ``L`` from every direction. Integrated against a white Lambert lobe that
-    is exactly ``e_diff * L`` -- which is what the fill computes since the
-    one-BSDF change (roadmap section 5), in place of the deterministic
-    stage's ``albedo * L * (n . n)``. So a white sphere lit only by an
-    ambient row of radiance 1 must read white: no energy lost, and none
+    An ``AmbientLight`` is a direction-less packed row: its ``color *
+    intensity`` is an irradiance ``E`` arriving evenly from every direction,
+    i.e. a constant radiance ``E / pi``. Integrated against a white Lambert
+    lobe that is exactly ``e_diff * E / pi`` -- which is what the fill
+    computes since the one-BSDF change (roadmap section 5), with the ``1/pi``
+    folded into the row by ``_light_eval``. So a white sphere lit only by an
+    ambient row of intensity ``pi`` must read white: no energy lost, and none
     gained. Tonemapping and the sRGB transfer are off so a byte IS the
     radiance times 255.
 
@@ -596,7 +597,7 @@ def test_lambert_furnace_is_lossless_under_a_light_row(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
-        AmbientLight(color=WHITE, intensity=1.0).spawn(animate=False)
+        AmbientLight(color=WHITE, intensity=np.pi).spawn(animate=False)
         sphere = Sphere(radius=1.0)
         sphere.set_material(MeshLambertMaterial(color=WHITE))
         sphere.spawn(animate=False)
@@ -691,7 +692,9 @@ def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):
     )
 
 
-@pytest.mark.parametrize("light", ["point", "directional", "ambient", "area"])
+@pytest.mark.parametrize(
+    "light", ["point", "directional", "ambient", "hemisphere", "area"]
+)
 def test_a_lit_lambert_surface_reads_the_same_in_both_renderers(tmp_path, light):
     """The deterministic renderer lights in the path tracer's units: a white
     Lambert plane comes out at the same physical value under both, for each
@@ -700,8 +703,8 @@ def test_a_lit_lambert_surface_reads_the_same_in_both_renderers(tmp_path, light)
     A directed row's color is the irradiance it delivers square-on, and the
     surface returns ``1/pi`` of it (``shading_taichi._diffuse_norm``); the
     deterministic stage used to drop that ``1/pi`` and read ``pi`` times
-    brighter. An ambient row's color is a radiance arriving from every
-    direction, so both return ``albedo * L`` for it. The area light is
+    brighter. An ambient row's color is an irradiance too, arriving from
+    every direction, so both return ``albedo * E / pi`` for it. The area light is
     measured against the quadrature reference, since its cells sit off the
     normal. The deterministic renderer's constant ambient fill is zeroed: the
     path tracer has no counterpart to it.
@@ -722,6 +725,11 @@ def test_a_lit_lambert_surface_reads_the_same_in_both_renderers(tmp_path, light)
             ).spawn(animate=False)
         elif light == "ambient":
             AmbientLight(color=WHITE, intensity=0.5).spawn(animate=False)
+        elif light == "hemisphere":
+            # Sky straight along the plane's normal, so it reads the sky alone.
+            HemisphereLight(
+                color=WHITE, ground_color=BLACK, up=OUT, intensity=0.5
+            ).spawn(animate=False)
         else:
             # Off to the side, so the path tracer's panel is not in the shot.
             scene.get_camera().move_to(RIGHT * 10.0 + OUT * 7.0)
@@ -739,8 +747,8 @@ def test_a_lit_lambert_surface_reads_the_same_in_both_renderers(tmp_path, light)
         plane.set_material(MeshLambertMaterial(color=WHITE))
         plane.spawn(animate=False)
 
-    if light == "ambient":
-        reference = 0.5 * 255.0
+    if light in ("ambient", "hemisphere"):
+        reference = 0.5 * 255.0 / np.pi
     elif light == "area":
         # The plane's top face is at z = 0.05 (a 0.1-deep prism at the origin).
         reference = 255.0 * _rect_light_lambert_reference(
@@ -3320,7 +3328,7 @@ def test_authored_sampling_lights_an_area_light_the_same(tmp_path):
             intensity=0.5,
             samples=4,
         ).spawn(animate=False)
-        AmbientLight(color=WHITE, intensity=0.05).spawn(animate=False)
+        AmbientLight(color=WHITE, intensity=0.05 * np.pi).spawn(animate=False)
         floor = Prism(width=7.0, height=7.0, depth=0.1)
         floor.set_material(MeshToonMaterial(color=WHITE * 0.6))
         floor.spawn(animate=False)

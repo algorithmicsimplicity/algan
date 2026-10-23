@@ -159,6 +159,37 @@ class ArenaView(tuple):
         return _ti_impl.subscript(None, self.buf, self.base + flat)
 
 
+class RowView(tuple):
+    """An array read or written at one fixed row, whatever row is asked for.
+
+    ``RowView(arr, r)[i, j]`` is ``arr[r, j]`` (and ``[i]`` is ``arr[r]``), so a
+    ``ti.func`` that takes an array as ``ti.template()`` and indexes every one
+    of them by a single row argument can be handed some arrays at another row:
+    the deferred shadow trace (``raster_taichi``) reads its events at their
+    row in the bounce's event table and writes their visibility at their
+    compacted slot, through one call of the shared fan body. ``r`` may be a
+    Taichi Expr (a loop-local slot) or a literal (``0``, for a one-row table
+    that every event shares).
+
+    A ``tuple`` for the reason :class:`ArenaView` is one, and its subscript an
+    lvalue as that one's is, so stores through it work.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, arr, row):
+        return super().__new__(cls, (arr, row))
+
+    @property
+    def shape(self):
+        return tuple.__getitem__(self, 0).shape
+
+    def __getitem__(self, idx):
+        arr, row = tuple.__getitem__(self, 0), tuple.__getitem__(self, 1)
+        rest = idx[1:] if isinstance(idx, tuple) else ()
+        return _ti_impl.subscript(None, arr, row, *rest)
+
+
 def _whole_storage(sample):
     """A dense view of ``sample``'s entire allocation, in ``sample``'s dtype.
 

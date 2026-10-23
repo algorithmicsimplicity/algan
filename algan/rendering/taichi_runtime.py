@@ -1082,6 +1082,11 @@ def start_program(**overrides):
     """
     _remove_stale_offline_cache_locks(_TAICHI_CACHE_DIRECTORY)
     ti.init(**{**taichi_init_kwargs(), **overrides})
+    # The trace counters' field (a diagnostic, ALGAN_TRACE_COUNTERS) belongs
+    # to one program: replaced here, before this program compiles anything.
+    from algan.rendering.raytracing import trace_counters_taichi
+
+    trace_counters_taichi.on_program_start()
     _forget_compiled_in_settings()
     _install_taichi_compile_logger()
     _register_kernel_cache_flush()
@@ -1134,7 +1139,10 @@ def ensure_taichi_for_render():
     Safe because Algan holds no ``ti.field`` or ``ti.Ndarray`` anywhere -- every
     kernel argument is a torch tensor. Reading a Taichi field created before a
     re-init segfaults the process with no Python exception, so if that ever
-    stops being true, this function stops being safe.
+    stops being true, this function stops being safe. The one exception is the
+    diagnostic trace counters' field (``ALGAN_TRACE_COUNTERS``), which
+    :func:`start_program` replaces with every program it starts, so no older
+    one is ever read.
 
     Returns whether Taichi was re-initialized.
     """

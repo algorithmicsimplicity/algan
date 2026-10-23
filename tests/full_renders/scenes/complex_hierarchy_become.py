@@ -44,7 +44,7 @@ def framed(content, *, buffer=0.2):
 Scene.set_background(DARKER_GRAY)
 
 with Off():
-    AmbientLight(color=WHITE, intensity=0.55).spawn(animate=False)
+    AmbientLight(color=WHITE, intensity=0.55 * PI).spawn(animate=False)
     DirectionalLight(
         location=RIGHT * 4 + UP * 5 + OUT * 4,
         target=ORIGIN,
