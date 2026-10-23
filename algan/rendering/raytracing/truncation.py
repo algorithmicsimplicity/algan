@@ -43,6 +43,10 @@ The ceilings, and what each costs when it binds:
 ``medium_query``
     A containment/extinction query exhausted ``max_surfaces_per_ray``. Its
     result is absorbed rather than pretending unknown geometry was vacuum.
+``medium_tracking``
+    ``PT_VOL_MAX_STEPS`` (4096) null-collision steps through a density grid on
+    one straight segment. The segment is absorbed (fail-closed), so a grid
+    dense enough to bind it renders a little too dark there.
 
 One ceiling is **not** counted here: the deterministic renderer's shadow
 march stops after ``max_surfaces_per_ray`` surfaces too, and treats whatever
@@ -147,6 +151,8 @@ class TruncationCounts:
     medium_stack: int = 0
     #: Containment or extinction queries that exhausted the surface budget.
     medium_query: int = 0
+    #: Density-grid segments that exhausted the tracker's step budget; absorbed.
+    medium_tracking: int = 0
 
     @property
     def total(self) -> int:
@@ -179,6 +185,11 @@ _CEILING_MESSAGES = {
         "{count} medium containment/extinction query(s) exceeded {cap} surfaces "
         "and were absorbed to avoid light leaks. Reduce overlapping geometry "
         "or raise max_surfaces_per_ray before importing Algan."
+    ),
+    "medium_tracking": (
+        "{count} segment(s) through a density grid took more than {cap} "
+        "tracking steps and were absorbed, so the densest regions render "
+        "slightly too dark. Lower the grid's peak density or sigma_s."
     ),
     "surfaces_per_ray": (
         "{count} primary ray(s) hit the {cap}-surface compositing ceiling "

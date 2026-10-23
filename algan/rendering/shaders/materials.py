@@ -73,6 +73,7 @@ import warnings
 from algan.constants.color import BLACK, WHITE, Color
 from algan.errors import AlganConfigurationError, _user_stacklevel
 from algan.rendering.shaders import material_shaders as ms
+from algan.rendering.shaders.density_grid import DensityGrid
 from algan.utils.tensor_utils import cast_to_tensor
 
 __all__ = [
@@ -96,6 +97,7 @@ __all__ = [
     "MeshNormalMaterial",
     "MeshMatcapMaterial",
     "MeshDepthMaterial",
+    "DensityGrid",
 ]
 
 
@@ -816,11 +818,13 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
     Extends :class:`MeshStandardMaterial` with clearcoat, sheen, refraction,
     absorption, and approximate iridescence. ``MeshPhysicalMaterial`` is an
     alias of this class. With path tracing (``samples_per_pixel > 1``), a
-    nonzero ``sigma_s`` adds homogeneous scattering inside a watertight,
-    consistently wound triangle shell. Low coefficients describe fog; high
-    coefficients describe random-walk subsurface scattering. Use transmission
-    to let light enter the interior; ``ior=1, transmission=1, roughness=0``
-    gives an invisible fog boundary rather than a glass interface.
+    nonzero ``sigma_s`` adds scattering inside a watertight, consistently
+    wound triangle shell. Low coefficients describe fog; high coefficients
+    describe random-walk subsurface scattering. Use transmission to let light
+    enter the interior; ``ior=1, transmission=1, roughness=0`` gives an
+    invisible fog boundary rather than a glass interface. The interior is
+    homogeneous unless a :class:`DensityGrid` passed as ``density`` varies it
+    from place to place, for smoke and clouds.
 
     Animation
     ---------
@@ -876,6 +880,13 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         Dimensionless Henyey--Greenstein anisotropy, strictly between -1 and 1.
         Defaults to 0 (isotropic); positive values favor forward scattering,
         negative values backscattering. Used only by the scattering interior.
+    density
+        A :class:`DensityGrid` that scales ``sigma_s`` and the absorption
+        from point to point inside the interior, laid over the box of the Mob
+        the material is set on and moving with it. Defaults to None, a
+        homogeneous interior. Requires path tracing and a closed shell, like
+        ``sigma_s``; with a grid, an absorbing-only interior (no ``sigma_s``)
+        is tracked through the grid too.
     iridescence
         Approximate iridescence strength. Defaults to 0, disabling it.
     iridescence_ior
@@ -889,15 +900,19 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
     ValueError
         If scattering coefficients are negative, non-finite, or not scalar/RGB,
         or if anisotropy is non-finite or outside its open interval.
+    TypeError
+        If ``density`` is neither None nor a :class:`DensityGrid`.
 
     Notes
     -----
-    Scattering is homogeneous, not a density texture. Nested interiors use
-    a fixed four-shell stack with last-entered priority. Overflow is reported
-    and affected paths are absorbed. Increase ``max_bounces`` for dense media:
-    both surface and interior scatters spend that shared budget; invisible
-    index-matched boundaries do not. Density fields and diffusion-profile
-    approximations are not implemented.
+    Nested interiors use a fixed four-shell stack with last-entered priority.
+    Overflow is reported and affected paths are absorbed. Increase
+    ``max_bounces`` for dense media: both surface and interior scatters spend
+    that shared budget; invisible index-matched boundaries do not. A density
+    grid is tracked with null collisions, so its cost grows with its densest
+    regions; a segment that needs more than 4096 steps is absorbed and counted
+    in the render plan's truncations. Diffusion-profile approximations are not
+    implemented.
 
     Examples
     --------
@@ -936,6 +951,7 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         attenuation_distance=math.inf,
         sigma_s: float | tuple[float, float, float] = 0.0,
         g: float = 0.0,
+        density: DensityGrid | None = None,
         iridescence=0.0,
         iridescence_ior=1.3,
         **kwargs,
@@ -964,6 +980,14 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         self.attenuation_color = _to_color5(attenuation_color)
         self.attenuation_distance = attenuation_distance
         self.sigma_s, self.g = _scattering_parameters(sigma_s, g)
+        if density is not None and not isinstance(density, DensityGrid):
+            raise TypeError(
+                f"density must be a DensityGrid or None, got {type(density).__name__}"
+            )
+        # Not a shader parameter: it is geometry-bound, and set_material hands
+        # it to the Mob (``density_grid._bind_density``) rather than to the
+        # shader's animatable attributes.
+        self.density = density
         self.iridescence = iridescence
         self.iridescence_ior = iridescence_ior
 

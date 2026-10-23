@@ -1,9 +1,11 @@
-"""Homogeneous RGB transport and shell-identity tracking for the path tracer.
+"""Medium RGB transport and shell-identity tracking for the path tracer.
 
 No path splits and no per-scene specialization. A medium stack holds at most
 four representative triangle indices; identity comparisons use tri_obj, NOT
 triangle indices or the opacity ceiling's transmission-exempt shell ids.
-Heterogeneous density fields and diffusion-profile SSS are deliberately absent.
+An interior whose triangles name a density grid is tracked through it
+(``pt_volume_taichi``); every other interior is homogeneous and handled here
+in closed form. Diffusion-profile SSS is deliberately absent.
 
 Distance sampling uses the RGB channel-mixture estimator (PBRT, 3e, 15.2):
 choose a channel uniformly, sample its exponential, and divide the spectral
@@ -11,6 +13,12 @@ transmittance by the marginal density, not the selected channel's density.
 The HG convention here uses *travel* directions: positive g is forward.
 """
 
+from algan.rendering.raytracing.pt_volume_taichi import (
+    _pt_medium_volume,
+    _pt_vol_rand,
+    _pt_vol_seed,
+    _pt_vol_track,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _nearest_surface_g,
     _safe_inverse,
@@ -105,6 +113,25 @@ def _pt_medium_coeff(tri_mat: ti.template(), f, prim):
             sigma_s[k] = ti.max(tri_mat[row, prim, _MAT_SIGMA_S + k], 0.0)
         g = tri_mat[row, prim, _MAT_PHASE_G]
     return sigma_a, sigma_s, g
+
+
+@ti.func
+def _pt_medium_tracked(vol_i: ti.template(), tri_mat: ti.template(), f, prim):
+    """1 when the interior ``prim`` names is integrated by the medium walk.
+
+    A scattering interior always is; an absorbing one only when a density grid
+    varies it (``pt_media._prepare_media``'s ``active``, which strips exactly
+    these shells' legacy chord from the shadow march). Everything else --
+    clear or absorbing glass, an empty cavity -- is left to the march.
+    """
+    tracked = 0
+    sa, ss, _g = _pt_medium_coeff(tri_mat, f, prim)
+    if ss.max() > 0.0:
+        tracked = 1
+    elif sa.max() > 0.0:
+        if _pt_medium_volume(vol_i, tri_mat, f, prim) >= 0:
+            tracked = 1
+    return tracked
 
 
 @ti.func
@@ -338,6 +365,9 @@ def _pt_medium_transmittance(
     tri_mat: ti.template(),
     shell: ti.template(),
     offset,
+    vol_i: ti.template(),
+    vol_f: ti.template(),
+    seed: ti.u32,
 ):
     """Straight-connection transport through null interfaces and nested media.
 
@@ -358,6 +388,13 @@ def _pt_medium_transmittance(
     as they always have. Medium tracking is switched on for the whole scene
     by any scattering object, so treating glass any other way here would make
     one glass block's shadow depend on unrelated fog elsewhere.
+
+    A density-grid interior (``vol_i``/``vol_f``, ``pt_volume_taichi``) is
+    tracked when it scatters or absorbs: each piece of the connection inside
+    it is a ratio-tracking estimate, drawn from ``seed`` and the piece's
+    ordinal. Returns ``(transmittance, stack overflow, query cut, tracking
+    overflow)``; the last counts pieces that exhausted ``PT_VOL_MAX_STEPS``
+    and were absorbed.
     """
     media = stack
     result = ti.math.vec3(1.0, 1.0, 1.0)
@@ -367,6 +404,7 @@ def _pt_medium_transmittance(
     count = 0
     overflow = 0
     finished = 0
+    steps_over = 0
     while count < max_surfaces_per_ray:
         found, t, layer, prim, edge = _pt_medium_next(
             refit,
@@ -387,8 +425,19 @@ def _pt_medium_transmittance(
         end = max_t
         if found != 0:
             end = ti.min(t, max_t)
-        sa, ss, _g = _pt_medium_coeff(tri_mat, f, _pt_medium_top(media))
-        if ss.max() > 0.0:
+        top = _pt_medium_top(media)
+        sa, ss, _g = _pt_medium_coeff(tri_mat, f, top)
+        vol = _pt_medium_volume(vol_i, tri_mat, f, top)
+        if vol >= 0:
+            if ((ss.max() > 0.0) or (sa.max() > 0.0)) and (end > t_prev):
+                piece = _pt_vol_seed(seed, count)
+                u0 = ti.math.vec2(_pt_vol_rand(piece, 1), _pt_vol_rand(piece, 0))
+                _c, _t, w_v, over_v = _pt_vol_track(
+                    vol_i, vol_f, vol, f, ro, rd, t_prev, end, sa, ss,
+                    ti.math.vec3(1.0, 1.0, 1.0), 0, piece, u0)
+                result *= w_v
+                steps_over += over_v
+        elif ss.max() > 0.0:
             result *= ti.exp(-(sa + ss) * ti.max(end - t_prev, 0.0))
         if (found == 0) or (t >= max_t):
             finished = 1
@@ -414,12 +463,12 @@ def _pt_medium_transmittance(
                 if following >= 0:
                     nt = tri_mat[f % tri_mat.shape[0], following, 12]
                 if ti.abs(ni / ti.max(nt, 1e-6) - 1.0) >= 1e-4:
-                    _sa0, ss_before, _g0 = _pt_medium_coeff(tri_mat, f, previous)
-                    _sa1, ss_after, _g1 = _pt_medium_coeff(tri_mat, f, following)
-                    if ti.max(ss_before.max(), ss_after.max()) > 0.0:
+                    tracked_before = _pt_medium_tracked(vol_i, tri_mat, f, previous)
+                    tracked_after = _pt_medium_tracked(vol_i, tri_mat, f, following)
+                    if ti.max(tracked_before, tracked_after) > 0:
                         result = ti.math.vec3(0.0, 0.0, 0.0)
                         finished = 1
                         break
     if (overflow != 0) or (finished == 0):
         result = ti.math.vec3(0.0, 0.0, 0.0)
-    return result, overflow, 1 - finished
+    return result, overflow, 1 - finished, steps_over

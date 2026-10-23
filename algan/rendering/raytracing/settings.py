@@ -4118,7 +4118,7 @@ def _build_core_shader_ids():
 
 
 _CORE_SHADER_IDS = None
-# Per-material parameter defaults (canonical 39-slot block; see shading_taichi).
+# Per-material parameter defaults (canonical 40-slot block; see shading_taichi).
 # Slots 12+ are the MeshPhysicalMaterial extension, defaults matching the
 # physical_shader signature (ior 1.5, specular_intensity 1, specular_color
 # white, clearcoat/sheen off, sheen_roughness 1, transmission/iridescence 0).
@@ -4175,11 +4175,15 @@ _MAT_DEFAULTS = [
     0.0,
     0.0,
     0.0,
+    # 39 density_volume: 0.0 is a homogeneous interior, what every medium was
+    # before density grids (shading_taichi._MAT_DENSITY_VOLUME).
+    0.0,
 ]
 # Material-property name -> (start slot, width) in the canonical block.
-# ``one_sided`` (slot 26), ``no_shadow_receive`` (slot 33) and the raw
-# closed-interior flag (slot 38) are deliberately absent: these are declared by the mob's geometry, not by its material, and
-# ``_pack_material`` writes them directly.
+# ``one_sided`` (slot 26), ``no_shadow_receive`` (slot 33), the raw
+# closed-interior flag (slot 38) and the density-volume key (slot 39) are
+# deliberately absent: these are declared by the mob's geometry, not by its
+# material, and ``_pack_material`` writes them directly.
 _MAT_SLOTS = {
     "emissive": (0, 3),
     "emissive_intensity": (3, 1),

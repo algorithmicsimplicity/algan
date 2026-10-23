@@ -62,6 +62,7 @@ from algan.rendering.raytracing.settings import (
     _shader_material_id,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MAT_DENSITY_VOLUME,
     _MAT_MEDIUM_CLOSED,
     _MAT_NO_SHADOW_RECEIVE,
     _MAT_ONE_SIDED,
@@ -701,6 +702,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     # behaviour. ``no_shadow_receive`` is packed into the material block beside
     # ``one_sided``; ``no_shadow_cast`` is consumed on the HOST, where it
     # becomes the BVH leaf word's caster bit (``_rt_frame_casts``).
+    # ``density_volume`` rides here for the same reasons as ``closed_shell``:
+    # the MOB declares it (:meth:`declare_density_volume`), a member that says
+    # nothing takes the 0.0 fill ("homogeneous", as before), and the dice
+    # carries the constant to every diced triangle. It is packed into the
+    # material block beside ``closed_shell``.
     _surface_params = (
         "reflectivity",
         "roughness",
@@ -710,6 +716,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         "closed_shell",
         "no_shadow_cast",
         "no_shadow_receive",
+        "density_volume",
     )
 
     def __init__(
@@ -860,6 +867,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self.declare_one_sided(False)
             self.declare_closed_shell(False)
             self.declare_shadow_flags(True, True)
+            self.declare_density_volume(0)
 
     def declare_one_sided(self, one_sided=True):
         """Declare whether this primitive's hits are shaded from one side only.
@@ -922,6 +930,24 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self.no_shadow_receive = torch.full_like(
             self.colors[:1, ..., :1], 0.0 if receives else 1.0
         )
+        return self
+
+    def declare_density_volume(self, key=0):
+        """Declare which density grid scales this primitive's interior.
+
+        Called by the mob that built the primitive, beside
+        :meth:`declare_closed_shell`, with the key ``set_material`` gave the
+        Mob that owns a :class:`~algan.rendering.shaders.density_grid.DensityGrid`
+        (``density_grid._density_key``); 0 is a homogeneous interior.
+        The key names the grid and the owner's per-frame transform in the path
+        tracer's volume table (``pt_volume.prepare_volumes``), so it is an
+        identity, not a material value: it is not animatable and does not
+        travel through the shader parameters.
+
+        Stored per corner, matching the other ``_surface_params``, so the
+        collection merge and the logical-PN dice carry it with everything else.
+        """
+        self.density_volume = torch.full_like(self.colors[:1, ..., :1], float(key))
         return self
 
     def _derive_material_surface_params(self):
@@ -1167,6 +1193,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         medium_closed = getattr(self, "closed_shell", None)
         if medium_closed is not None:
             pairs.append((_MAT_MEDIUM_CLOSED, per_triangle(medium_closed)))
+        density_volume = getattr(self, "density_volume", None)
+        if density_volume is not None:
+            pairs.append((_MAT_DENSITY_VOLUME, per_triangle(density_volume)))
         Tm = max([1] + [v.shape[0] for _n, v in pairs])
         mat = (
             torch.tensor(_MAT_DEFAULTS, device=device)

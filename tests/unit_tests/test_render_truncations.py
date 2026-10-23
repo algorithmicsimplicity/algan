@@ -131,6 +131,7 @@ def test_a_render_that_truncated_nothing_reports_zero_rather_than_nothing():
         "closed_shell_ring": 0,
         "medium_stack": 0,
         "medium_query": 0,
+        "medium_tracking": 0,
     }
 
 
@@ -143,9 +144,10 @@ def test_total_covers_every_ceiling():
         closed_shell_ring=16,
         medium_stack=32,
         medium_query=64,
+        medium_tracking=128,
     )
 
-    assert counts.total == 127
+    assert counts.total == 255
     assert counts
 
 
