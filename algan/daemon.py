@@ -69,6 +69,17 @@ process and nothing else:
   idle daemon holding 1.6 GB after a 90-frame render now holds ~0.1 GB, at a
   cost of ~0.15 s and no measurable change to the next render.
   ``ALGAN_DAEMON_RELEASE_MEMORY=0`` keeps the memory cached instead.
+* **Kernels the run compiled go to the offline cache** (``_persist_new_kernels``),
+  so a daemon that dies later -- killed, or a CUDA error it cannot recover
+  from -- does not take them with it. A plain script writes them at exit; a
+  daemon has no exit between runs. After a run that compiled nothing this is
+  free; after one that did, the Taichi program is torn down to write them
+  (1.1 s after a cold run that compiled 46 kernels, while the client already
+  has its exit code) and the next run loads its kernels back from the cache.
+  Measured on an RTX 5080, the explainer benchmark at PREVIEW: that run
+  rendered in 3.7-4.1 s against 0.43-0.55 s with its kernels resident, so
+  about +3.5 s, once per run that compiled something.
+  ``ALGAN_FLUSH_KERNEL_CACHE=0`` turns it off, with the exit-time write.
 
 **Edits to algan itself are handled, not merely warned about.** The daemon
 fingerprints every algan source file at startup and re-checks at every run
@@ -303,6 +314,35 @@ def _release_run_memory():
         _say(
             f"released {freed / 2**20:.0f} MiB of GPU memory in "
             f"{time.perf_counter() - started:.2f} s"
+        )
+
+
+def _persist_new_kernels():
+    """Write the kernels the run just compiled to the offline cache.
+
+    A script's kernels reach the cache at its exit
+    (``taichi_runtime.flush_kernel_cache``); a daemon does not exit between
+    runs, so until this everything it compiled was lost whenever it died -- on
+    2026-10-23 a CUDA error took ~21 kernels with one, ~95 s of compiling for
+    the next process. A no-op after a run that compiled nothing; after one that
+    did, the next run reloads its kernels from the cache instead of finding
+    them resident.
+
+    Raises when the write left the runtime unusable (its teardown failed: a
+    CUDA error the context cannot recover from), so the daemon stands down.
+    """
+    from algan.rendering.taichi_runtime import persist_new_kernels, runtime_abandoned
+
+    started = time.perf_counter()
+    if persist_new_kernels():
+        _say(
+            "saved this run's newly compiled kernels to the cache in "
+            f"{time.perf_counter() - started:.2f} s"
+        )
+    if runtime_abandoned():
+        raise RuntimeError(
+            "the Taichi runtime failed to shut down and cannot be used again "
+            "in this process"
         )
 
 
@@ -1382,6 +1422,9 @@ def main(argv=None):
             clean["interrupted"] = True
         try:
             reset_state()
+            # Before the memory release: on a CUDA context an error left
+            # unusable that raises, and this is the write that must not miss.
+            _persist_new_kernels()
             _release_run_memory()
             clean["state"] = True
         except BaseException:  # noqa: BLE001 -- tidying must not kill the daemon

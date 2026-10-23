@@ -20,7 +20,19 @@ behind, so every cold start measured through `profile_scene` was wrong. The
 flush is also registered when the first specialization is built, whatever
 started the program. There is deliberately no mid-process dump: Quadrants'
 `KernelCompilationManager::dump` frees the kernels it writes, so a program that
-launches again afterwards reads freed memory. In particular, Algan disables
+launches again afterwards reads freed memory. A process that renders again
+tears the program down instead: the render daemon calls
+`taichi_runtime.persist_new_kernels()` after every run, which flushes only when
+the program built a kernel the offline cache did not serve (`_UNSAVED_KERNELS`,
+from `CompileResult.cache_hit`), so a daemon that later dies keeps what it
+compiled and a run that compiled nothing pays nothing; the run after one that
+did reloads its kernels (+3.5 s on the PREVIEW explainer on an RTX 5080,
+measured 2026-10-23 against kernels left resident). `Program::finalize`
+synchronizes the device *before* it writes, so on a CUDA context an error left
+unusable `ti.reset()` raises and writes nothing; the flush then calls
+`dump_cache_data_to_disk()` itself and abandons the runtime
+(`runtime_abandoned()`), after which `ensure_taichi_for_render` refuses rather
+than launching freed kernels. In particular, Algan disables
 `advanced_optimization`; historical tonemapping regressions under the enabled
 arm motivate this default. `ALGAN_ADV_OPT=1` is a comparison switch, not evidence
 that every renderer kernel supports that configuration.

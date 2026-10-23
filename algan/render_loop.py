@@ -78,6 +78,7 @@ from algan.utils.memory_utils import (
     get_num_available_bytes,
     is_cuda_oom,
     note_nonarena_peak,
+    raise_if_cuda_context_lost,
     release_torch_memory,
     scene_excluded_from_gc,
 )
@@ -1864,6 +1865,7 @@ class RenderLoopMixin:
                     exc
                 ):
                     raise
+                raise_if_cuda_context_lost(exc)
                 primitive_batch[0]._rt_merged_scene = None
                 primitive_batch[0]._rt_prepared_host_scene = None
                 release_torch_memory(force_gc=False)
@@ -1919,6 +1921,10 @@ class RenderLoopMixin:
                 exc
             ):
                 raise
+            # A CUDA context the error left unusable is not a batch that did
+            # not fit: no smaller window renders, and the release below would
+            # raise the same error over this one.
+            raise_if_cuda_context_lost(exc)
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             release_torch_memory(force_gc=False)
@@ -3862,6 +3868,7 @@ class RenderLoopMixin:
                 exc
             ):
                 raise
+            raise_if_cuda_context_lost(exc)
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             release_torch_memory(force_gc=False)
@@ -4475,6 +4482,7 @@ class RenderLoopMixin:
                             ),
                         ) and not is_cuda_oom(prep_exc):
                             raise
+                        raise_if_cuda_context_lost(prep_exc)
                         duration = batch_end_ind - time_ind
                         if duration <= 1:
                             raise
@@ -4993,6 +5001,7 @@ class RenderLoopMixin:
                                 (InsufficientMemoryException, OutOfRenderMemory),
                             ) and not is_cuda_oom(render_exc):
                                 raise
+                            raise_if_cuda_context_lost(render_exc)
                             # Frames already handed to the caller are final, so
                             # the retry resumes from the first one that is not
                             # rather than re-rendering the window from its
