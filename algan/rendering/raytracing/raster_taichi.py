@@ -2450,7 +2450,7 @@ _AA_SEC_JITTER_HANDWRITTEN = {
 # position mask ``_sec_positions`` returns is an i32 bitfield, one bit per
 # position, so bit 32 would be unreadable; and each distinct count reaches the
 # resolve as its own template value whose ``ti.static(range(sec_aa))`` unrolls
-# at four call sites, so every extra tap is also paid in kernel compile time.
+# at five call sites, so every extra tap is also paid in kernel compile time.
 _AA_SEC_MAX = 32
 
 

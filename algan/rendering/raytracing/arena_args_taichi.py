@@ -105,8 +105,9 @@ _TAG_OF = dict(DTYPE_TAGS)
 _TAG_ORDER = [t for _dt, t in DTYPE_TAGS]
 
 #: Element offsets and shapes travel as int32, so an arena addressed in f32
-#: elements tops out at 8 GB. Well past any arena we allocate, but a silent
-#: wrap here would be wrong pixels rather than a crash.
+#: elements tops out at 8 GB. ``memory_utils._MAX_ARENA_BYTES`` clamps every
+#: arena under that; ``pack`` still checks, because a silent wrap here would be
+#: wrong pixels rather than a crash.
 _INT32_LIMIT = 2**31
 
 
@@ -386,10 +387,13 @@ def pack(spec, tensors):
                 f"{itemsize}-byte element"
             )
         elem_offset = byte_offset // itemsize
-        if elem_offset >= _INT32_LIMIT:
+        if elem_offset + t.numel() > _INT32_LIMIT:
+            # The end, not just the start: a view that straddles the limit
+            # would pass a start check and then wrap ``base + flat`` negative
+            # in the kernel's i32 arithmetic.
             raise ArenaBindingError(
-                f"{name} sits at element {elem_offset}, past what the int32 "
-                "offset table can address"
+                f"{name} sits at elements {elem_offset}..{elem_offset + t.numel()}, "
+                "past what the int32 offset table can address"
             )
         offsets.append(elem_offset)
         shapes.extend(int(d) for d in t.shape)

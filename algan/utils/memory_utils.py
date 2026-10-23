@@ -172,13 +172,28 @@ _MPS_HOST_SHARE = 0.4
 _MPS_MAX_ARENA_BYTES = (1 << 31) - (1 << 20)
 
 
+#: Largest arena the arena-packed kernels can address, on every device.
+#:
+#: Those kernels reach their tables through an int32 element-offset table
+#: (``arena_args_taichi._INT32_LIMIT``), and the views they bind are f32 and
+#: i32, so a byte past ``2**31 * 4`` = 8 GiB cannot be named. Persistent tables
+#: are carved from the *top* of the arena, so an arena over that size puts the
+#: scene there on the first launch and the render dies with
+#: ``ArenaBindingError``. Default sizing gets there on its own: 0.4 of a 24 GB
+#: card's free memory, or 0.16 of a 64 GB host's RAM.
+#:
+#: A megabyte under, so the whole-buffer f32 ndarray a launch receives stays
+#: below ``2**31`` elements too, with room for an allocator that rounds up.
+_MAX_ARENA_BYTES = (1 << 33) - (1 << 20)
+
+
 def _addressable_arena_bytes(device, num_bytes):
     """Clamp an arena size to what one tensor on ``device`` can address.
 
     Separate from :class:`ManualMemory` so it can be tested without the device:
     the limit is a property of the backend, not of a machine that has one.
     """
-    num_bytes = max(0, int(num_bytes))
+    num_bytes = min(max(0, int(num_bytes)), _MAX_ARENA_BYTES)
     if torch.device(device).type == "mps":
         return min(num_bytes, _MPS_MAX_ARENA_BYTES)
     return num_bytes
@@ -280,7 +295,9 @@ def _cached_arena_bytes(free_bytes, segments, index, portion, stream=None):
             return None
         releasable.append(segment)
     free_bytes = int(free_bytes) + sum(int(s["total_size"]) for s in releasable)
-    num_bytes = int(free_bytes * portion)
+    # Clamped as ``ManualMemory`` clamps it, so the arena a large card's last
+    # render left in the cache is the size this one asks for.
+    num_bytes = _addressable_arena_bytes("cuda", free_bytes * portion)
     if num_bytes <= _CUDA_LARGE_SEGMENT_MIN:
         return None
     segment_bytes = (

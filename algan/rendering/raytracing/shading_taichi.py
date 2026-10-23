@@ -344,12 +344,22 @@ def _ggx_distribution(n_dot_h, roughness):
 
 @ti.func
 def _smith_geometry(n_dot_v, n_dot_l, roughness):
-    """Smith geometry term with Schlick-GGX, direct-lighting k remapping."""
-    r = roughness + 1.0
-    k = (r * r) / 8.0
-    gv = n_dot_v / ti.max(n_dot_v * (1.0 - k) + k, 1e-6)
-    gl = n_dot_l / ti.max(n_dot_l * (1.0 - k) + k, 1e-6)
-    return gv * gl
+    """Height-correlated Smith masking-shadowing ``G2`` for GGX, on the same
+    ``alpha = roughness^2`` (and floor) as ``_ggx_distribution``.
+
+    Callers divide by ``4 n.v n.l``, which makes this three.js's
+    ``V_GGX_SmithCorrelated`` (``0.5 / (gv + gl)`` below) exactly, and it is
+    the path tracer's ``1 / (1 + Lambda_v + Lambda_l)`` in closed form. It
+    used to be UE4's separable Schlick-GGX with ``k = (r + 1)^2 / 8``, which
+    agrees head-on but takes far more energy away toward grazing: 3.6x less at
+    roughness 0.3 with view and light both at 80 degrees, so back-lit rims
+    rendered much dimmer than in three.js or the path tracer.
+    """
+    a = ti.max(roughness * roughness, 1e-4)
+    a2 = a * a
+    gv = n_dot_l * ti.sqrt(a2 + (1.0 - a2) * n_dot_v * n_dot_v)
+    gl = n_dot_v * ti.sqrt(a2 + (1.0 - a2) * n_dot_l * n_dot_l)
+    return (2.0 * n_dot_v * n_dot_l) / ti.max(gv + gl, 1e-7)
 
 
 @ti.func

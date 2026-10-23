@@ -474,3 +474,23 @@ def test_pack_revalidates_same_pointer_and_shape_with_different_strides():
         pack(spec, (transposed,))
     assert len(mod._table_cache) == 1
     assert torch.equal(pack(spec, (square,))[-1], first[-1])
+
+
+def test_pack_rejects_a_view_that_ends_past_the_offset_table(monkeypatch):
+    """The end of a view is checked, not only its start.
+
+    A view that starts below the int32 limit and ends above it would wrap
+    ``base + flat`` negative inside the kernel: an out-of-bounds access, not
+    an error. The limit is lowered so the test needs no 8 GiB buffer.
+    """
+    from algan.rendering.raytracing import arena_args_taichi as aa
+
+    monkeypatch.setattr(aa, "_INT32_LIMIT", 16)
+    monkeypatch.setattr(aa, "_table_cache", {})
+    arena = torch.empty(1 << 10, dtype=torch.uint8)
+    fits = arena[32:64].view(torch.float32)  # elements 8..16
+    straddles = arena[32:72].view(torch.float32)  # elements 8..18
+    spec = (("a", "f32", 1),)
+    pack(spec, (fits,))
+    with pytest.raises(ArenaBindingError, match="past what the int32"):
+        pack(spec, (straddles,))

@@ -715,3 +715,27 @@ def test_a_finished_render_leaves_no_closure_cycle_holding_its_arena(tmp_path):
         gc.set_debug(0)
         gc.garbage.clear()
     assert not leaked, "render_chunk survived the render inside a reference cycle"
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda", "mps"])
+def test_no_arena_outgrows_the_int32_offset_table(device):
+    """Every arena fits the arena-packed kernels' int32 element offsets.
+
+    Those kernels bind f32 and i32 views, addressed by an int32 element offset
+    (``arena_args_taichi._INT32_LIMIT``), and persistent tables sit at the top
+    of the arena. An arena past ``2**31 * 4`` bytes put the scene out of reach
+    and every sheet-route render died with ``ArenaBindingError``; default sizing
+    got there on 24 GB cards and 64 GB hosts. The ceiling is the same on every
+    device, so it is tested as arithmetic, without one.
+    """
+    from algan.rendering.raytracing import arena_args_taichi as aa
+    from algan.utils import memory_utils as mu
+
+    # 0.4 of an 80 GB card's free memory, and 0.16 of a 256 GB host.
+    for wanted in (32 << 30, 41 << 30, 1 << 40):
+        size = mu._addressable_arena_bytes(torch.device(device), wanted)
+        assert 0 < size <= wanted
+        # The topmost f32 element is still addressable, and so is the whole
+        # f32 buffer a launch receives.
+        assert size // 4 < aa._INT32_LIMIT
+    assert mu._addressable_arena_bytes(torch.device(device), 1 << 20) == 1 << 20

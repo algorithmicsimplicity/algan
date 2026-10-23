@@ -247,12 +247,15 @@ def ggx_distribution(n_dot_h, roughness):
 
 
 def smith_geometry(n_dot_v, n_dot_l, roughness):
-    """Smith geometry term with Schlick-GGX, direct-lighting k remapping."""
-    r = roughness + 1.0
-    k = (r * r) / 8.0
-    gv = n_dot_v / (n_dot_v * (1.0 - k) + k).clamp_min(1e-6)
-    gl = n_dot_l / (n_dot_l * (1.0 - k) + k).clamp_min(1e-6)
-    return gv * gl
+    """Height-correlated Smith ``G2`` for GGX: the torch twin of
+    ``shading_taichi._smith_geometry`` (see there). Over ``4 n.v n.l`` it is
+    three.js's ``V_GGX_SmithCorrelated``.
+    """
+    a = (roughness * roughness).clamp_min(1e-4)
+    a2 = a * a
+    gv = n_dot_l * (a2 + (1.0 - a2) * n_dot_v * n_dot_v).sqrt()
+    gl = n_dot_v * (a2 + (1.0 - a2) * n_dot_l * n_dot_l).sqrt()
+    return (2.0 * n_dot_v * n_dot_l) / (gv + gl).clamp_min(1e-7)
 
 
 def _d_charlie(n_dot_h, sheen_roughness):

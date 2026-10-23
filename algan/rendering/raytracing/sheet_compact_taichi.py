@@ -509,10 +509,19 @@ def solid_shell_ceiling(
     indexing.
 
     ``acc_t`` is the accumulator width and must match ``excl``/``scratch``'s
-    dtype. MPS-friendly mode passes ``ti.f32``, where the whole exactness
-    argument above lapses -- the cap's round through f32 becomes a no-op and
-    the prefix it differences is an f32 cumsum -- because Metal has no f64
-    (``mps_compat``).
+    dtype. MPS-friendly mode passes ``ti.f32``, because Metal has no f64
+    (``mps_compat``), and there the exactness argument above lapses: the cap's
+    round through f32 is a no-op and nothing can be bitwise anyway. Worse, the
+    global prefix cannot be used at all. It runs over the whole stream, so on
+    a 1080p frame it reaches about 1e6, where the f32 spacing is 0.06-0.125,
+    and differencing two of its entries rounds ``spent`` at that scale. On a
+    synthetic 3.2M-fragment stream (prefix ending at 1.6e6) that put clamped
+    coverage off the f64 arm's by up to 0.24 (p99 0.11), worse the later a
+    pixel sits in the stream. So the f32 arm uses neither ``excl`` nor
+    ``scratch``: it adds each segment's areas up in the same serial walk that
+    spends them, which rounds at the scale of one pixel's coverage (4e-7 off
+    the f64 arm on that stream). The torch arm does the same with a segmented
+    scan (``sheets._segment_exclusive_prefix``).
     """
     for i in range(n):
         ii = ti.cast(o2[i], ti.i32)
@@ -540,6 +549,9 @@ def solid_shell_ceiling(
             # cumsum ran in -- not by the main-order rows the other arrays
             # use.
             base = excl[i]
+            # The f32 arm's spend, accumulated over this segment alone (see
+            # the docstring's last paragraph). Unused at f64.
+            spent = ti.cast(0.0, acc_t)
             j = i
             while j < n:
                 jj = ti.cast(o2[j], ti.i32)
@@ -553,10 +565,17 @@ def solid_shell_ceiling(
                 # byte identity still demands they write the SAME zero.
                 c = ti.cast(cov[jj], acc_t)
                 denom = ti.max(c, ti.cast(1e-12, acc_t))
-                # Store-and-reload: the barrier documented above. Do not
-                # "simplify" it back into register arithmetic.
-                scratch[j] = excl[j] - base
-                scale = ti.max(cap - scratch[j], ti.cast(0.0, acc_t))
+                # Declared outside the static branches: a name first bound
+                # inside one is out of scope after it.
+                scale = ti.cast(0.0, acc_t)
+                if ti.static(acc_t != ti.f32):
+                    # Store-and-reload: the barrier documented above. Do not
+                    # "simplify" it back into register arithmetic.
+                    scratch[j] = excl[j] - base
+                    scale = ti.max(cap - scratch[j], ti.cast(0.0, acc_t))
+                else:
+                    scale = ti.max(cap - spent, ti.cast(0.0, acc_t))
+                    spent += c
                 scale = scale / denom
                 scale = ti.min(scale, ti.cast(1.0, acc_t))
                 cov[jj] = ti.cast(denom * scale, ti.f32)
