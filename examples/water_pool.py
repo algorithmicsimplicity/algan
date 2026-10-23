@@ -121,13 +121,15 @@ FLOOR[..., :3] = torch.where(
 # -- Waves --------------------------------------------------------------------
 
 WAVES = [  # direction (degrees), wavelength, amplitude, steepness
-    (25, 3.4, 0.030, 0.8),
-    (-30, 2.1, 0.019, 0.8),
-    (80, 1.4, 0.012, 0.7),
-    (155, 0.9, 0.007, 0.6),
-    (-115, 0.6, 0.0045, 0.6),
-    (40, 0.37, 0.0025, 0.5),
-    (-70, 0.23, 0.0012, 0.4),
+    (25, 3.4, 0.022, 0.8),
+    (-30, 2.1, 0.012, 0.8),
+    (80, 1.4, 0.0065, 0.7),
+    (155, 0.9, 0.0042, 0.6),
+    (-115, 0.6, 0.0032, 0.6),
+    (-10, 0.47, 0.0024, 0.5),
+    (40, 0.37, 0.0020, 0.5),
+    (115, 0.29, 0.0015, 0.5),
+    (-70, 0.23, 0.0011, 0.4),
 ]
 
 
@@ -231,6 +233,45 @@ def rect(width, height, center, right, up, texture):
     )
 
 
+def coping(length, edge, along, outward, lip, thick, over, texture):
+    """One side of the pool's coping, swept along ``along`` from a bullnose profile.
+
+    The profile runs over the flat top from the deck side, round a half-round
+    nose that overhangs the water by ``over``, and back along the underside.
+    """
+    along = torch.tensor(along, dtype=torch.float32)
+    outward = torch.tensor(outward, dtype=torch.float32)
+    r = thick / 2
+    legs = (lip - r + over, math.pi * r, lip - r + over)
+    total = sum(legs)
+
+    def f(uv):
+        d = uv[..., 1:] * total
+        nose = -over + r  # the nose's centre, across the edge
+        angle = ((d - legs[0]) / r).clamp(0, math.pi)
+        across = torch.where(
+            d < legs[0],
+            lip - d,
+            torch.where(
+                d > legs[0] + legs[1],
+                nose + (d - legs[0] - legs[1]),
+                nose - r * angle.sin(),
+            ),
+        )
+        height = torch.where(
+            d < legs[0],
+            torch.full_like(d, thick),
+            torch.where(
+                d > legs[0] + legs[1], torch.zeros_like(d), r + r * angle.cos()
+            ),
+        )
+        return (uv[..., :1] - 0.5) * length * along + across * outward + height * UP
+
+    return Surface(f, grid_width=2, grid_height=40, color_texture=texture).move(
+        torch.tensor(edge, dtype=torch.float32)
+    )
+
+
 def ladder_rail(z, inner_x, outer_x, bottom, top, radius=0.035):
     """A chrome grab rail: up out of the water, over the coping, and down onto the deck."""
     bend = (outer_x - inner_x) / 2
@@ -316,18 +357,24 @@ with Off():
             ),
         ).spawn()
 
-    # Bullnose coping: a lip of pale stone that overhangs the water all the way round.
-    stone = MeshStandardMaterial(color=Color("#d9d2c3"), roughness=0.7)
-    lip, thick, over = 0.38, 0.07, 0.05
-    for size, at in (
-        ((POOL_W + 2 * lip, thick, lip), (0, thick / 2, -hd - lip / 2 + over)),
-        ((POOL_W + 2 * lip, thick, lip), (0, thick / 2, hd + lip / 2 - over)),
-        ((lip, thick, POOL_D), (-hw - lip / 2 + over, thick / 2, 0)),
-        ((lip, thick, POOL_D), (hw + lip / 2 - over, thick / 2, 0)),
+    # Bullnose coping: pale stone that overhangs the water all the way round.
+    lip, thick, over = 0.4, 0.08, 0.06
+    stone = get_noise(
+        (Color("#c9c0ad"), Color("#e2dbcb"), Color("#d3cbb9")),
+        resolution=(48, 3),
+        octaves=5,
+        seed=11,
+        texture_resolution=(1024, 64),
+    )
+    for length, center, along, outward in (
+        (POOL_W + 2 * lip, (0, 0, -hd), (1, 0, 0), (0, 0, -1)),
+        (POOL_W + 2 * lip, (0, 0, hd), (-1, 0, 0), (0, 0, 1)),
+        (POOL_D, (-hw, 0, 0), (0, 0, 1), (-1, 0, 0)),
+        (POOL_D, (hw, 0, 0), (0, 0, -1), (1, 0, 0)),
     ):
-        Prism(
-            width=size[0], height=size[1], depth=size[2], color=Color("#d9d2c3")
-        ).set_material(stone).move(torch.tensor(at, dtype=torch.float32)).spawn()
+        coping(length, center, along, outward, lip, thick, over, stone).set_material(
+            MeshStandardMaterial(roughness=0.75)
+        ).spawn()
 
     chrome = MeshStandardMaterial(color=Color("#e6e8ea"), metalness=1.0, roughness=0.08)
     for z in (-1.9, -1.1):
