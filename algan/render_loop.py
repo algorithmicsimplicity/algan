@@ -2614,8 +2614,11 @@ class RenderLoopMixin:
         finalization -- background prefill into the render arena followed by
         the standard post-processing chain -- with the ray tracer itself
         skipped, so these frames match what the tracer produces when nothing
-        is visible. With ``aux_sink``, each batch's aux passes (all misses:
-        nothing is there to record) go to it just before the batch is yielded.
+        is visible. It knows only ``background``: a window under an
+        environment map never comes here (``_get_batch_of_primitives`` pads
+        it so the tracer draws the map). With ``aux_sink``, each batch's aux
+        passes (all misses: nothing is there to record) go to it just before
+        the batch is yielded.
         """
         from algan.rendering.post_processing.post_process import (
             post_process_frames,
@@ -2632,8 +2635,9 @@ class RenderLoopMixin:
         aa = max(1, int(self.video_settings.supersampling))
         # Mirror the tracer's anti-aliasing strategy (render_batch_raytraced):
         # default super-sampled buffer averaged down in post-processing;
-        # ALGAN_INPLACE_AA keeps the buffer at output resolution.
-        inplace_aa = env_flag("ALGAN_INPLACE_AA", False)
+        # inplace_aa keeps the buffer at output resolution. The setting, not
+        # the variable that only seeds it, as the tracer reads it.
+        inplace_aa = bool(SETTINGS.raytracing.inplace_aa)
         if inplace_aa:
             width = self.num_pixels_screen_width
             height = self.num_pixels_screen_height
@@ -3488,19 +3492,25 @@ class RenderLoopMixin:
                 else {}
             ),
         )
-        if (
-            not primitive_collections
-            and SETTINGS.raytracing.samples_per_pixel > 1
-            and SETTINGS.raytracing.pt_area_light_quads
-            and any(
-                getattr(light, "light_type", -1) == LIGHT_AREA_SAMPLE
-                for light in render_state["light_objects"]
+        if not primitive_collections and (
+            getattr(self, "environment_map", None) is not None
+            or (
+                SETTINGS.raytracing.samples_per_pixel > 1
+                and SETTINGS.raytracing.pt_area_light_quads
+                and any(
+                    getattr(light, "light_type", -1) == LIGHT_AREA_SAMPLE
+                    for light in render_state["light_objects"]
+                )
             )
         ):
             # The render loop dispatches empty batches straight to the
-            # background writer. Supply a non-rendering collection so a
-            # light-only scene reaches the ordinary merge, which adds the
-            # emitter geometry before building its BVH. No actor is authored.
+            # background writer. Supply a non-rendering collection so the
+            # window reaches the tracer: a light-only scene's ordinary merge
+            # adds the emitter geometry before building its BVH, and an
+            # environment map is a backdrop only the tracer draws (the
+            # background writer knows nothing of it, so a window with no Mob
+            # showed the flat background and the frame flipped to the map at
+            # the first spawn). No actor is authored.
             from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
             from algan.rendering.shaders.pbr_shaders import null_shader
 
@@ -5015,16 +5025,23 @@ class RenderLoopMixin:
                                 )
                             )
                             resume_ind = max(current_time_ind, resume_ind)
+                            resumed = False
                             if produced_output and resume_ind > current_time_ind:
                                 remaining = new_time_ind - resume_ind
                                 current_time_ind = resume_ind
                                 duration = max(1, remaining)
+                                resumed = remaining > 0
                             elif produced_output:
                                 # Nothing survived the batch, so there is no
                                 # prefix to keep and no smaller window that
                                 # this failure justifies.
                                 raise
-                            if duration <= 1:
+                            # Only a window that was itself one frame long is
+                            # out of options. One frame left over from a
+                            # longer window is not: refetched alone, it
+                            # carries one frame of geometry instead of the
+                            # whole window's, which is the term that failed.
+                            if duration <= 1 and not resumed:
                                 raise
                             self._note_render_arena_underestimate()
                             # Not a failure: the model sizes a chunk from

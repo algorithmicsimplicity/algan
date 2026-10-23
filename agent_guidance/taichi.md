@@ -175,7 +175,8 @@ cores (a render already uses every core; three at once on four cores took ~4x
 longer each). **When a
 kernel's signature or a pipeline's choice of kernels changes, regenerate the
 built-in list** with `scripts/generate_kernel_specs.py`;
-`test_every_builtin_spec_still_matches_a_live_kernel` fails until you do. A
+`test_every_builtin_spec_still_matches_a_live_kernel` (in `--fast`) fails until
+you do. A
 stale entry only costs parallelism, never correctness -- but the test checks
 arity, not template values, and those decide whether a first run's pool
 helps at all: the shading megakernels specialize on the light count (rounded

@@ -797,24 +797,12 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
     assert [len(frame) for frame in frames] == rendered_durations
 
 
-def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
-    monkeypatch,
-):
-    """A batch that fails part-way is shrunk from where it got to.
+def _scene_failing_part_way(monkeypatch, *, window, fail_from):
+    """A Scene whose window ``0:window`` emits two-frame chunks, then runs out of arena.
 
-    ``_render_primitive_batch`` yields each chunk as it renders, so a window
-    long enough to split has already emitted frames by the time a later one
-    runs out of arena. The retry used to stand down on exactly that
-    (``if produced_output ... raise``), which left nothing able to shrink the
-    batch: the chunk split inside the tracer shrinks the *trace*, while the
-    merged geometry that did not fit is fixed by the window. Rendering
-    tests/full_renders' materials_and_lighting on CPU reached
-    ``OutOfRenderMemory`` that way, on a window whose scene alone held three
-    quarters of the arena.
-
-    The frames already handed out are final, so the retry resumes at the first
-    frame that is not and halves what remains -- and no frame is rendered
-    twice or dropped.
+    The failure fires at the first chunk starting at or past ``fail_from``, and
+    only in the full first window: any refetched window renders. Returns the
+    Scene and the list of windows it was asked to render.
     """
     monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", "0")
     monkeypatch.setattr(render_loop_module, "_sync_devices", lambda: None)
@@ -866,14 +854,11 @@ def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
             self, _primitives, start_ind, end_ind, *_args, **_kwargs
         ):
             rendered_windows.append((start_ind, end_ind))
-            # Two frames per chunk, and the window 0:8 runs out of arena once
-            # it has emitted four of them -- the shape the full-render scene
-            # failed in.
             chunk = 2
             current = start_ind
             while current < end_ind:
                 new = min(current + chunk, end_ind)
-                if end_ind - start_ind == 8 and current >= 4:
+                if end_ind - start_ind == window and current >= fail_from:
                     raise InsufficientMemoryException
                 yield torch.zeros((new - current, 1, 1, 3), dtype=torch.uint8)
                 self._last_emitted_time_ind = new
@@ -888,6 +873,33 @@ def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
     scene.animation_manager = SimpleNamespace()
     scene.actors = [[]]
     scene.frames_per_second = 1
+    return scene, rendered_windows
+
+
+def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
+    monkeypatch,
+):
+    """A batch that fails part-way is shrunk from where it got to.
+
+    ``_render_primitive_batch`` yields each chunk as it renders, so a window
+    long enough to split has already emitted frames by the time a later one
+    runs out of arena. The retry used to stand down on exactly that
+    (``if produced_output ... raise``), which left nothing able to shrink the
+    batch: the chunk split inside the tracer shrinks the *trace*, while the
+    merged geometry that did not fit is fixed by the window. Rendering
+    tests/full_renders' materials_and_lighting on CPU reached
+    ``OutOfRenderMemory`` that way, on a window whose scene alone held three
+    quarters of the arena.
+
+    The frames already handed out are final, so the retry resumes at the first
+    frame that is not and halves what remains -- and no frame is rendered
+    twice or dropped.
+    """
+    # Two frames per chunk, and the window 0:8 runs out of arena once it has
+    # emitted four of them -- the shape the full-render scene failed in.
+    scene, rendered_windows = _scene_failing_part_way(
+        monkeypatch, window=8, fail_from=4
+    )
 
     frames = list(scene.get_frames(0, 8, post_processes=(), manual_memory=False))
 
@@ -896,6 +908,27 @@ def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
     assert rendered_windows[0] == (0, 8)
     assert rendered_windows[1][0] == 4
     assert sum(len(frame) for frame in frames) == 8
+
+
+def test_render_failure_with_one_frame_left_refetches_that_frame(monkeypatch):
+    """A batch that fails on its last frame retries that frame on its own.
+
+    The resume path sets the window to what is left, and the guard after it
+    (``if duration <= 1: raise``) -- meant for a window that was one frame to
+    begin with -- also fired when exactly one frame was left over from a
+    longer one. A 5-frame window rendered in chunks of 2, 2 and 1 whose last
+    chunk ran out of arena therefore aborted the render with
+    ``InsufficientMemoryException``, although refetching that one frame carries
+    one frame of geometry instead of five, which is what did not fit.
+    """
+    scene, rendered_windows = _scene_failing_part_way(
+        monkeypatch, window=5, fail_from=4
+    )
+
+    frames = list(scene.get_frames(0, 5, post_processes=(), manual_memory=False))
+
+    assert rendered_windows == [(0, 5), (4, 5)]
+    assert sum(len(frame) for frame in frames) == 5
 
 
 def test_sparse_preflight_retries_preserve_selection_without_gap_frames(monkeypatch):

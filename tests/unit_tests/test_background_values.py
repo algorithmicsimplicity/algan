@@ -237,3 +237,27 @@ def test_a_scene_without_a_background_starts_from_style_background():
     with Scene(video_settings=SMOKE_TEST) as scene:
         assert not scene.background_is_set
         torch.testing.assert_close(scene.get_background(), BLUE)
+
+
+def test_a_window_with_nothing_in_it_follows_the_inplace_aa_setting(monkeypatch):
+    """REGRESSION. The background writer read ``ALGAN_INPLACE_AA`` rather than
+    the setting that variable only seeds, so ``inplace_aa=True`` -- which the
+    tracer honours -- still gave a window with no Mob a super-sampled buffer.
+    """
+    from algan import SETTINGS
+    from algan.rendering.post_processing import post_process
+
+    real = post_process.post_process_frames
+    seen = []
+
+    def recording(memory, frames, *args, anti_alias_level=1, **kwargs):
+        seen.append((tuple(frames.shape[1:3]), anti_alias_level))
+        return real(memory, frames, *args, anti_alias_level=anti_alias_level, **kwargs)
+
+    monkeypatch.setattr(post_process, "post_process_frames", recording)
+    SETTINGS.raytracing.experimental.set(inplace_aa=True)
+    settings = SMOKE_TEST.set(resolution=(32, 16), supersampling=2)
+    with Scene(video_settings=settings) as scene:
+        list(scene.get_frames(0, 1, post_processes=()))
+
+    assert seen == [((16, 32), 1)]
