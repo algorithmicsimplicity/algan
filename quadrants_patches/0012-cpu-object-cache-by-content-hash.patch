@@ -1,0 +1,348 @@
+diff --git a/quadrants/compilation_manager/kernel_compilation_manager.cpp b/quadrants/compilation_manager/kernel_compilation_manager.cpp
+index c29cff623..42e70ffcc 100644
+--- a/quadrants/compilation_manager/kernel_compilation_manager.cpp
++++ b/quadrants/compilation_manager/kernel_compilation_manager.cpp
+@@ -4,6 +4,7 @@
+ #include "quadrants/codegen/compiled_kernel_data.h"
+ #include "quadrants/util/offline_cache.h"
+ #include "quadrants/util/environ_config.h"
++#include "quadrants/rhi/arch.h"
+ 
+ namespace quadrants::lang {
+ 
+@@ -285,7 +286,8 @@ CacheData::CacheMode KernelCompilationManager::get_cache_mode(const CompileConfi
+ }
+ 
+ bool KernelCompilationManager::defers_src_parse(const CompileConfig &compile_config) {
+-  return compile_config.arch == Arch::cuda && compile_config.offline_cache_ptx_by_content_hash;
++  return (compile_config.arch == Arch::cuda && compile_config.offline_cache_ptx_by_content_hash) ||
++         (arch_is_cpu(compile_config.arch) && compile_config.offline_cache_cpu_object_by_content_hash);
+ }
+ 
+ }  // namespace quadrants::lang
+diff --git a/quadrants/compilation_manager/kernel_compilation_manager.h b/quadrants/compilation_manager/kernel_compilation_manager.h
+index 3ccbd0aa1..cc0f24c5b 100644
+--- a/quadrants/compilation_manager/kernel_compilation_manager.h
++++ b/quadrants/compilation_manager/kernel_compilation_manager.h
+@@ -132,7 +132,8 @@ class KernelCompilationManager final {
+   static CacheData::CacheMode get_cache_mode(const CompileConfig &compile_config, bool kernel_ir_is_ast);
+ 
+   // Whether a kernel loaded from disk may keep its source text unparsed until first use: only where something can
+-  // serve the launch without it (CUDA, with CompileConfig::offline_cache_ptx_by_content_hash).
++  // serve the launch without it (CUDA, with CompileConfig::offline_cache_ptx_by_content_hash; the CPU archs, with
++  // CompileConfig::offline_cache_cpu_object_by_content_hash).
+   static bool defers_src_parse(const CompileConfig &compile_config);
+ 
+   Config config_;
+diff --git a/quadrants/program/compile_config.h b/quadrants/program/compile_config.h
+index 5bb9f880c..021f23dfd 100644
+--- a/quadrants/program/compile_config.h
++++ b/quadrants/program/compile_config.h
+@@ -112,6 +112,12 @@ struct CompileConfig {
+   // cuModuleLoadDataEx without its IR being parsed, verified, cloned, printed or hashed. In no cache key: it decides
+   // which file serves the PTX, not what the PTX is. OFF by default.
+   bool offline_cache_ptx_by_content_hash{false};
++  // CPU (x64, arm64): keep the machine code the JIT generates for a kernel in an object file named by the kernel's
++  // content hash (above) plus the host's triple, CPU and features, and load that file instead of compiling the module
++  // when it exists. Without it the offline cache holds only LLVM IR, so every process pays the IR parse and the full
++  // LLVM codegen again at each kernel's first launch. A cached kernel's IR is then parsed only on a miss. In no cache
++  // key, for the reason above. Needs offline_cache. OFF by default.
++  bool offline_cache_cpu_object_by_content_hash{false};
+ 
+   int num_compile_threads{4};
+   std::string vk_api_version;
+diff --git a/quadrants/python/export_lang.cpp b/quadrants/python/export_lang.cpp
+index 38b02d3bb..b0e0ccc4d 100644
+--- a/quadrants/python/export_lang.cpp
++++ b/quadrants/python/export_lang.cpp
+@@ -330,6 +330,10 @@ void export_lang(nb::module_ &m) {
+               "CUDA only. Key the PTX cache by the content hash each offline-cache file already stores, and parse a "
+               "cached kernel's LLVM IR only if its PTX is not cached, so loading a cached kernel skips the IR parse, "
+               "print and hash. Off by default.")
++      .def_rw("offline_cache_cpu_object_by_content_hash", &CompileConfig::offline_cache_cpu_object_by_content_hash,
++              "CPU only. Keep each kernel's JIT-generated machine code on disk beside the offline cache, keyed by the "
++              "kernel's content hash and the host CPU, and load it instead of compiling the module again in a later "
++              "process. Off by default.")
+       .def_rw("offline_cache_cleaning_policy", &CompileConfig::offline_cache_cleaning_policy,
+               "Eviction policy for the compiled-kernel offline cache (\"never\", \"version\", \"lru\", or \"fifo\").")
+       .def_rw("offline_cache_max_size_of_files", &CompileConfig::offline_cache_max_size_of_files,
+diff --git a/quadrants/runtime/cpu/jit_cpu.cpp b/quadrants/runtime/cpu/jit_cpu.cpp
+index a3f750205..7befa10b4 100644
+--- a/quadrants/runtime/cpu/jit_cpu.cpp
++++ b/quadrants/runtime/cpu/jit_cpu.cpp
+@@ -1,5 +1,8 @@
+ // A LLVM JIT compiler for CPU archs wrapper
+ 
++#include <atomic>
++#include <filesystem>
++#include <fstream>
+ #include <memory>
+ 
+ #ifdef QD_WITH_LLVM
+@@ -7,6 +10,7 @@
+ #include "llvm/ADT/StringRef.h"
+ #include "llvm/ExecutionEngine/ExecutionEngine.h"
+ #include "llvm/ExecutionEngine/JITSymbol.h"
++#include "llvm/ExecutionEngine/ObjectCache.h"
+ #include "llvm/ExecutionEngine/Orc/Core.h"
+ #include "llvm/ExecutionEngine/Orc/CompileOnDemandLayer.h"
+ #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+@@ -29,6 +33,11 @@
+ #include "llvm/IR/Verifier.h"
+ #include "llvm/IR/LLVMContext.h"
+ #include "llvm/IR/LegacyPassManager.h"
++#include "llvm/Config/llvm-config.h"
++#include "llvm/Object/ObjectFile.h"
++#include "llvm/Support/MemoryBuffer.h"
++#include "llvm/Support/SHA256.h"
++#include "llvm/ADT/StringExtras.h"
+ #include "llvm/Support/DynamicLibrary.h"
+ #include "llvm/Support/raw_ostream.h"
+ #include "llvm/Support/Error.h"
+@@ -49,6 +58,7 @@
+ #include "quadrants/jit/jit_session.h"
+ #include "quadrants/util/file_sequence_writer.h"
+ #include "quadrants/runtime/llvm/llvm_context.h"
++#include "quadrants/util/io.h"
+ 
+ namespace quadrants::lang {
+ 
+@@ -75,6 +85,56 @@ std::pair<JITTargetMachineBuilder, llvm::DataLayout> get_host_target_info() {
+   return std::make_pair(jtmb, data_layout);
+ }
+ 
++// Writes the object file the JIT compiles for a kernel module to the path its module identifier names, when that
++// identifier carries kObjectPathPrefix (JITSessionCPU::add_kernel_module sets it); other modules are left alone. The
++// file is written beside and renamed into place, so a process reading it never sees part of one. Reading is not done
++// here: add_kernel_module looks the file up before it builds the module at all, which is what lets it skip the IR.
++class KernelObjectWriter : public llvm::ObjectCache {
++ public:
++  static constexpr char kObjectPathPrefix[] = "quadrants-cpu-object:";
++
++  void notifyObjectCompiled(const llvm::Module *M, llvm::MemoryBufferRef obj) override {
++    const std::string &id = M->getModuleIdentifier();
++    const std::string prefix = kObjectPathPrefix;
++    if (id.compare(0, prefix.size(), prefix) != 0) {
++      return;
++    }
++    const std::filesystem::path path = id.substr(prefix.size());
++    std::error_code ec;
++    std::filesystem::create_directories(path.parent_path(), ec);
++    const std::filesystem::path tmp =
++        path.string() + fmt::format(".{}.{}.tmp", PID::get_pid(), tmp_counter_.fetch_add(1));
++    {
++      std::ofstream fs(tmp, std::ios::out | std::ios::binary);
++      if (!fs.is_open()) {
++        QD_DEBUG("Cannot write the CPU object cache file {}", tmp.string());
++        return;
++      }
++      fs.write(obj.getBufferStart(), (std::streamsize)obj.getBufferSize());
++      if (!fs) {
++        fs.close();
++        std::filesystem::remove(tmp, ec);
++        return;
++      }
++    }
++    std::filesystem::rename(tmp, path, ec);
++    if (ec) {
++      // Another process put the same object there first and it is open (Windows refuses to replace it then); the key
++      // determines the bytes, so theirs serves.
++      std::filesystem::remove(tmp, ec);
++    } else {
++      QD_DEBUG("Stored the CPU object of a kernel in {}", path.string());
++    }
++  }
++
++  std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module *) override {
++    return nullptr;
++  }
++
++ private:
++  std::atomic<uint64_t> tmp_counter_{0};
++};
++
+ class JITSessionCPU;
+ 
+ class JITModuleCPU : public JITModule {
+@@ -95,6 +155,8 @@ class JITModuleCPU : public JITModule {
+ 
+ class JITSessionCPU : public JITSession {
+  private:
++  // Declared before the layers that hold a pointer to it, so it outlives them.
++  KernelObjectWriter object_writer_;
+   ExecutionSession es_;
+   ObjLayerT object_layer_;
+   IRCompileLayer compile_layer_;
+@@ -104,6 +166,36 @@ class JITSessionCPU : public JITSession {
+   std::vector<llvm::orc::JITDylib *> all_libs_;
+   int module_counter_;
+   SectionMemoryManager *memory_manager_;
++  // What, besides a kernel's content hash, determines the machine code compile_layer_ produces for it: the target the
++  // JIT was built for, and the code that lowers it.
++  std::string object_key_material_;
++  std::string object_cache_dir_;
++
++  // A dylib for one module or object, resolving everything else against the process. Call with mut_ held.
++  JITDylib &new_dylib() {
++    auto dylib_expect = es_.createJITDylib(fmt::format("{}", module_counter_));
++    QD_ASSERT(dylib_expect);
++    auto &dylib = dylib_expect.get();
++    dylib.addGenerator(cantFail(llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(dl_.getGlobalPrefix())));
++    return dylib;
++  }
++
++  // Call with mut_ held.
++  JITModule *register_dylib(JITDylib &dylib) {
++    all_libs_.push_back(&dylib);
++    auto new_module = std::make_unique<JITModuleCPU>(this, &dylib);
++    auto new_module_raw_ptr = new_module.get();
++    modules.push_back(std::move(new_module));
++    module_counter_++;
++    return new_module_raw_ptr;
++  }
++
++  std::string object_path(const std::string &content_key) const {
++    const std::string material = fmt::format("{};content={}", object_key_material_, content_key);
++    return join_path(object_cache_dir_, llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(material)),
++                                                    /*LowerCase=*/true) +
++                                            ".o");
++  }
+ 
+  public:
+   JITSessionCPU(QuadrantsLLVMContext *tlctx,
+@@ -123,11 +215,21 @@ class JITSessionCPU : public JITSession {
+                         return smgr;
+                       }),
+ #endif
+-        compile_layer_(es_, object_layer_, std::make_unique<ConcurrentIRCompiler>(JTMB)),
++        compile_layer_(es_, object_layer_, std::make_unique<ConcurrentIRCompiler>(JTMB, &object_writer_)),
+         dl_(DL),
+         mangle_(es_, this->dl_),
+         module_counter_(0),
+-        memory_manager_(nullptr) {
++        memory_manager_(nullptr),
++        object_key_material_(fmt::format("cpu-object-by-content-hash/{};triple={};cpu={};features={};llvm={};"
++                                         "quadrants={}+{}",
++                                         kObjectKeyRevision,
++                                         JTMB.getTargetTriple().str(),
++                                         JTMB.getCPU(),
++                                         JTMB.getFeatures().getString(),
++                                         LLVM_VERSION_STRING,
++                                         get_version_string(),
++                                         get_commit_hash())),
++        object_cache_dir_(join_path(config.offline_cache_file_path, "cpu_object_cache")) {
+ #if defined(__linux__) && defined(__aarch64__)
+     // On ELF-based targets LLVM's ORC JIT expects the object layer to claim
+     // responsibility for every symbol emitted by the module. Without this the
+@@ -157,22 +259,45 @@ class JITSessionCPU : public JITSession {
+     return dl_;
+   }
+ 
++  // Bumped when what an object file holds for a key changes without anything in object_key_material_ changing.
++  static constexpr int kObjectKeyRevision = 1;
++
+   JITModule *add_module(std::unique_ptr<llvm::Module> M, int max_reg) override {
+     QD_ASSERT(max_reg == 0);  // No need to specify max_reg on CPUs
+     QD_ASSERT(M);
+     std::lock_guard<std::mutex> _(mut_);
+-    auto dylib_expect = es_.createJITDylib(fmt::format("{}", module_counter_));
+-    QD_ASSERT(dylib_expect);
+-    auto &dylib = dylib_expect.get();
+-    dylib.addGenerator(cantFail(llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(dl_.getGlobalPrefix())));
++    auto &dylib = new_dylib();
+     auto *thread_safe_context = this->tlctx_->get_this_thread_thread_safe_context();
+     cantFail(compile_layer_.add(dylib, llvm::orc::ThreadSafeModule(std::move(M), *thread_safe_context)));
+-    all_libs_.push_back(&dylib);
+-    auto new_module = std::make_unique<JITModuleCPU>(this, &dylib);
+-    auto new_module_raw_ptr = new_module.get();
+-    modules.push_back(std::move(new_module));
+-    module_counter_++;
+-    return new_module_raw_ptr;
++    return register_dylib(dylib);
++  }
++
++  // Under offline_cache_cpu_object_by_content_hash: the kernel's object file, if a process -- this one, an earlier
++  // one, a precompile worker -- already compiled it on a host like this one, linked without building the module;
++  // otherwise the module, compiled as add_module does, with KernelObjectWriter storing the object it produces.
++  JITModule *add_kernel_module(const std::string &content_key,
++                               bool module_from_file,
++                               const std::function<std::unique_ptr<llvm::Module>()> &make_module) override {
++    if (!config_.offline_cache_cpu_object_by_content_hash || !config_.offline_cache || content_key.empty()) {
++      return add_module(make_module(), 0);
++    }
++    const std::string path = object_path(content_key);
++    if (auto buffer = llvm::MemoryBuffer::getFile(path, /*IsText=*/false, /*RequiresNullTerminator=*/false)) {
++      // A file that does not parse as an object -- truncated, or not ours -- is a miss, and is overwritten below.
++      if (auto object = llvm::object::ObjectFile::createObjectFile((*buffer)->getMemBufferRef())) {
++        std::lock_guard<std::mutex> _(mut_);
++        auto &dylib = new_dylib();
++        cantFail(object_layer_.add(dylib, std::move(*buffer)));
++        QD_DEBUG("CPU object for content hash {} served from {}", content_key, path);
++        return register_dylib(dylib);
++      } else {
++        QD_DEBUG("Ignoring the unreadable CPU object cache file {}: {}", path, toString(object.takeError()));
++      }
++    }
++    auto module = make_module();
++    QD_ASSERT(module);
++    module->setModuleIdentifier(std::string(KernelObjectWriter::kObjectPathPrefix) + path);
++    return add_module(std::move(module), 0);
+   }
+ 
+   void *lookup(const std::string Name) override {
+diff --git a/quadrants/runtime/cpu/kernel_launcher.cpp b/quadrants/runtime/cpu/kernel_launcher.cpp
+index 7d7fcfde8..25371d375 100644
+--- a/quadrants/runtime/cpu/kernel_launcher.cpp
++++ b/quadrants/runtime/cpu/kernel_launcher.cpp
+@@ -338,8 +338,15 @@ KernelLauncher::Handle KernelLauncher::register_llvm_kernel(const LLVM::Compiled
+     auto &ctx = contexts_[index];
+     auto *executor = get_runtime_executor();
+ 
+-    auto data = compiled.get_internal_data().compiled_data.clone();
+-    auto *jit_module = executor->create_jit_module(std::move(data.module));
++    // Under offline_cache_cpu_object_by_content_hash a kernel whose machine code is cached is loaded without its
++    // module being cloned -- or, for one loaded from the offline cache, parsed at all (LLVM::CompiledKernelData defers
++    // that) -- so everything below reads the task list and parameters, never the module.
++    const std::string content_key =
++        executor->get_config().offline_cache_cpu_object_by_content_hash ? compiled.content_hash() : std::string();
++    auto *jit_module = executor->create_kernel_jit_module(content_key, compiled.loaded_from_file(), [&compiled]() {
++      return compiled.get_internal_data().compiled_data.clone().module;
++    });
++    const auto &tasks = compiled.tasks();
+ 
+     std::vector<TaskFunc> task_funcs;
+     std::vector<int32_t> checkpoint_id_per_task;
+@@ -349,15 +356,15 @@ KernelLauncher::Handle KernelLauncher::register_llvm_kernel(const LLVM::Compiled
+     std::vector<std::vector<int>> arr_writes_per_task;
+     std::vector<std::vector<int>> arr_reads_per_task;
+     std::vector<int> graph_do_while_level_per_task;
+-    task_funcs.reserve(data.tasks.size());
+-    checkpoint_id_per_task.reserve(data.tasks.size());
+-    ad_stacks.reserve(data.tasks.size());
+-    num_threads_per_task.reserve(data.tasks.size());
+-    snode_writes_per_task.reserve(data.tasks.size());
+-    arr_writes_per_task.reserve(data.tasks.size());
+-    arr_reads_per_task.reserve(data.tasks.size());
+-    graph_do_while_level_per_task.reserve(data.tasks.size());
+-    for (auto &task : data.tasks) {
++    task_funcs.reserve(tasks.size());
++    checkpoint_id_per_task.reserve(tasks.size());
++    ad_stacks.reserve(tasks.size());
++    num_threads_per_task.reserve(tasks.size());
++    snode_writes_per_task.reserve(tasks.size());
++    arr_writes_per_task.reserve(tasks.size());
++    arr_reads_per_task.reserve(tasks.size());
++    graph_do_while_level_per_task.reserve(tasks.size());
++    for (const auto &task : tasks) {
+       auto *func_ptr = jit_module->lookup_function(task.name);
+       QD_ASSERT_INFO(func_ptr, "Offloaded datum function {} not found", task.name);
+       task_funcs.push_back((TaskFunc)(func_ptr));
+@@ -378,7 +385,7 @@ KernelLauncher::Handle KernelLauncher::register_llvm_kernel(const LLVM::Compiled
+     }
+ 
+     // Populate ctx
+-    ctx.parameters = &compiled.get_internal_data().args;
++    ctx.parameters = &compiled.args();
+     ctx.task_funcs = std::move(task_funcs);
+     ctx.checkpoint_id_per_task = std::move(checkpoint_id_per_task);
+     ctx.ad_stacks = std::move(ad_stacks);

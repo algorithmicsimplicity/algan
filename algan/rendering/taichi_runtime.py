@@ -52,6 +52,11 @@ whose ``.qdc`` and PTX are both cached is loaded without its LLVM IR being
 parsed, printed or hashed. ``ALGAN_PTX_CACHE_BY_CONTENT_HASH=0`` is the off
 arm; on any other arch, or a wheel without the patch, the keyword is not
 passed (:func:`ptx_cache_by_content_hash_supported`).
+``offline_cache_cpu_object_by_content_hash`` (``0012-cpu-object-cache-by-content-hash.patch``)
+is its CPU counterpart, on by default the same way: the JIT's machine code
+for each kernel is kept on disk, so a fresh process links it instead of
+re-running LLVM's codegen at each kernel's first launch.
+``ALGAN_CPU_OBJECT_CACHE=0`` is the off arm (:func:`cpu_object_cache_supported`).
 """
 
 from __future__ import annotations
@@ -807,14 +812,12 @@ def cpu_prep_kernel_enabled(name):
 _INIT_OVERRIDES = {}
 
 
-def ptx_cache_by_content_hash_supported():
-    """Whether the installed compiler has Quadrants patch 0010's config field.
+def _compile_config_has(field):
+    """Whether the installed compiler's ``CompileConfig`` has ``field``.
 
-    ``offline_cache_ptx_by_content_hash`` keys the CUDA PTX cache by the
-    SHA-256 each ``.qdc`` already stores and defers parsing a cached kernel's
-    IR until a PTX miss needs it (``quadrants_patches/README.md``, 0010). A
-    wheel without the patch would reject the keyword, so it is asked of the
-    config type, which every Quadrants build exposes before ``init``.
+    A wheel without the patch that adds a field would reject the keyword, so
+    it is asked of the config type, which every Quadrants build exposes
+    before ``init``.
     """
     if BACKEND != "quadrants":
         return False
@@ -824,7 +827,33 @@ def ptx_cache_by_content_hash_supported():
         config_type = submodule("_lib.core.quadrants_python").CompileConfig
     except Exception:
         return False
-    return hasattr(config_type, "offline_cache_ptx_by_content_hash")
+    return hasattr(config_type, field)
+
+
+def ptx_cache_by_content_hash_supported():
+    """Whether the installed compiler has Quadrants patch 0010's config field.
+
+    ``offline_cache_ptx_by_content_hash`` keys the CUDA PTX cache by the
+    SHA-256 each ``.qdc`` already stores and defers parsing a cached kernel's
+    IR until a PTX miss needs it (``quadrants_patches/README.md``, 0010).
+    """
+    return _compile_config_has("offline_cache_ptx_by_content_hash")
+
+
+def cpu_object_cache_supported():
+    """Whether the installed compiler has Quadrants patch 0012's config field.
+
+    ``offline_cache_cpu_object_by_content_hash`` keeps the machine code the
+    CPU JIT generates for each kernel on disk, keyed by the content hash its
+    ``.qdc`` stores plus the host CPU, so a later process links it instead of
+    parsing the IR and running LLVM's codegen again at the kernel's first
+    launch (``quadrants_patches/README.md``, 0012).
+    """
+    return _compile_config_has("offline_cache_cpu_object_by_content_hash")
+
+
+def _arch_is_cpu(arch):
+    return arch in (ti.cpu, getattr(ti, "x64", None), getattr(ti, "arm64", None))
 
 
 def taichi_init_kwargs():
@@ -917,6 +946,18 @@ def taichi_init_kwargs():
         and ptx_cache_by_content_hash_supported()
     ):
         kwargs["offline_cache_ptx_by_content_hash"] = True
+    # Quadrants patch 0012: the CPU arch's counterpart. Without it the offline
+    # cache holds only LLVM IR, so every fresh process re-parses each kernel's
+    # IR and runs LLVM's codegen on it at its first launch -- about 1 s for
+    # sheet_resolve_shade_arena alone, 2-3 s a render. On by default where the
+    # wheel has it; ALGAN_CPU_OBJECT_CACHE=0 is the A/B off arm. Out of every
+    # key for the same reason as the PTX switch above.
+    if (
+        _arch_is_cpu(kwargs["arch"])
+        and env_flag("ALGAN_CPU_OBJECT_CACHE", True)
+        and cpu_object_cache_supported()
+    ):
+        kwargs["offline_cache_cpu_object_by_content_hash"] = True
     kwargs.update(_INIT_OVERRIDES)
     if kwargs["arch"] == ti.metal:
         queue = _torch_mps_command_queue()

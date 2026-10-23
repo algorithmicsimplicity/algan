@@ -1289,6 +1289,9 @@ _ENV_NOT_IN_KEY = frozenset(
         # arms must find each other's index entries.
         "ALGAN_PTX_CACHE_BY_CONTENT_HASH",
         "ALGAN_PRECOMPILE_PTX",
+        # Its CPU counterpart (patch 0012): which file serves a kernel's
+        # machine code, never what the code is.
+        "ALGAN_CPU_OBJECT_CACHE",
         # When start-up work happens (rendering/device_warmup.py, the
         # first-run pool), never what a kernel compiles to.
         "ALGAN_STARTUP_WARMUP",

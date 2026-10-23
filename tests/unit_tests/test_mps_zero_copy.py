@@ -266,3 +266,46 @@ def test_the_separate_queue_launch_still_drains_after_a_failed_launch(monkeypatc
     else:  # pragma: no cover - the launch must raise
         raise AssertionError("expected the launch to raise")
     assert calls == ["wait torch", "wait taichi"]
+
+
+def test_launch_arguments_are_the_arguments_the_wrapper_binds(monkeypatch):
+    """What a precompile worker materializes with, so its keys match a render's.
+
+    Off an MPS render the call is unchanged. On one, every importable argument
+    at an ndarray position is imported, exactly as the installed wrapper does
+    it -- checked here with the import itself stubbed, since a real one needs
+    an Apple GPU.
+    """
+    from types import SimpleNamespace
+
+    from algan.rendering import taichi_runtime
+
+    kernel = _kernel_of(_scalar_args)
+    args = (3, torch.zeros(4), torch.zeros(4))
+    assert mps_zero_copy.launch_arguments(kernel, args) == args
+
+    monkeypatch.setattr(mps_zero_copy, "_INSTALLED", True)
+    monkeypatch.setattr(taichi_runtime, "_ARCH_READY_FOR", SimpleNamespace(type="cpu"))
+    assert mps_zero_copy.launch_arguments(kernel, args) == args
+
+    monkeypatch.setattr(taichi_runtime, "_ARCH_READY_FOR", SimpleNamespace(type="mps"))
+    monkeypatch.setattr(
+        mps_zero_copy,
+        "import_tensor",
+        lambda tensor, element_shape=(): ("imported", element_shape),
+    )
+    bound = mps_zero_copy.launch_arguments(kernel, args)
+    assert bound == (3, ("imported", ()), ("imported", ()))
+
+    monkeypatch.setattr(
+        mps_zero_copy, "import_tensor", lambda tensor, element_shape=(): None
+    )
+    assert mps_zero_copy.launch_arguments(kernel, args) == args
+
+
+def test_torch_dtype_names_invert_the_import_table():
+    assert mps_zero_copy.torch_dtype_name(ti.f32) == "float32"
+    assert mps_zero_copy.torch_dtype_name(ti.f16) == "float16"
+    assert mps_zero_copy.torch_dtype_name(ti.u8) == "uint8"
+    assert mps_zero_copy.torch_dtype_name(ti.f64) is None
+    assert mps_zero_copy.torch_dtype_name(None) is None

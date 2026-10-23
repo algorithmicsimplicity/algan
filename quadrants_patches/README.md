@@ -1,6 +1,6 @@
 # The Quadrants patches Algan carries
 
-Eleven patches against **Quadrants v1.3.3** (`00423caa9`, dated 2026-09-25 — the pinned upstream base, not a claim
+Twelve patches against **Quadrants v1.3.3** (`00423caa9`, dated 2026-09-25 — the pinned upstream base, not a claim
 about the latest upstream release),
 applied **in numeric order** onto a pristine checkout of that tag:
 
@@ -38,6 +38,7 @@ touching a patch.
 | `0009-python-3.14.patch` | **Python 3.14.** Lifts `requires-python` to `<3.15` and drops the four reads of `ast.Str`, which 3.14 removed from the standard library — without that, a kernel with a docstring or an `assert` message fails to compile. Upstream v1.3.0 through v1.3.3 (and upstream `main` as of 2026-09-28) stop at 3.13. See "0009" below. | none |
 | `0010-cuda-ptx-cache-by-content-hash.patch` | **Fresh-process start-up on CUDA.** Under a new `offline_cache_ptx_by_content_hash` config field, the PTX cache is keyed by the SHA-256 every `.qdc` already stores over its metadata and IR, and a cached kernel's IR is parsed only when its PTX is not cached. A kernel whose `.qdc` and PTX are both on disk reaches `cuModuleLoadDataEx` without its IR being parsed, verified, cloned, printed or hashed. Off by default; Algan turns it on. See "0010" below. | none |
 | `0011-prepare-kernel-without-launch.patch` | **PTX from the precompile workers.** `Program.prepare_kernel(compiled_kernel_data)` does a first launch's work without the launch (on CUDA: the PTX, and the driver's JIT of it); `dump_cache_data_to_disk` now writes the PTX cache as well; a PTX lookup by content hash finds a file another process wrote after this one started. See "0011" below. | none |
+| `0012-cpu-object-cache-by-content-hash.patch` | **Fresh-process start-up on the CPU arch.** Under a new `offline_cache_cpu_object_by_content_hash` config field, the machine code the CPU JIT generates for a kernel is written to `<offline cache>/cpu_object_cache/`, keyed by 0010's content hash plus the host triple, CPU name and features, and a later process links that object instead of parsing the IR and running LLVM's codegen at the kernel's first launch. With 0011's `prepare_kernel`, a CPU precompile worker now leaves launch-ready code behind too. Off by default; Algan turns it on. See "0012" below. | none |
 
 0005-0007 are CUDA codegen and were written in one sitting, after 0004 and
 **against a tree that did not have 0003 applied** (their `codegen_cuda.cpp` and
@@ -1366,6 +1367,71 @@ warns against:
 `uv sync` puts the published wheel back. Publishing follows `PYPI.md`'s two
 stages, and 0010-0011 went out that way as `1.3.3.post2` (`PYPI.md`,
 "1.3.3.post2").
+
+## 0012 — the CPU JIT's machine code kept on disk
+
+**What it fixes.** `renderer-review` finding compile_infra #3: on the CPU arch
+the offline cache holds only LLVM IR (the `.qdc` text), and there is no
+object-code tier, so every fresh process parses each kernel's IR and runs
+LLVM's whole codegen on it at the kernel's first `launch_kernel` -- about 1 s
+for `sheet_resolve_shade_arena` alone and 2-3 s a render, every non-daemon
+`algan` invocation. A precompile worker could not help either: it never
+launches, and nothing it JIT-ed would outlive it.
+
+**What it does.** `JITSessionCPU::add_kernel_module` -- the hook 0010 added
+for CUDA's PTX cache -- under `offline_cache_cpu_object_by_content_hash`:
+
+* The object's file name is a SHA-256 over the kernel's content hash (0010's,
+  which determines the module completely), the JIT's target triple, host CPU
+  name and feature string, the LLVM version and the Quadrants version and
+  commit, plus a revision constant. Nothing else feeds the IR-to-object step.
+* If `<offline_cache_file_path>/cpu_object_cache/<key>.o` exists and parses as
+  an object file, it is added to a fresh dylib with `ObjectLayer::add` --
+  without building, cloning or parsing the module. A file that does not parse
+  (truncated, foreign) is a miss and is overwritten.
+* Otherwise the module is compiled as before, with its identifier set to the
+  target path; the `ConcurrentIRCompiler` is given an `llvm::ObjectCache`
+  whose `notifyObjectCompiled` writes the object beside its path and renames
+  it into place, so a reader never sees part of a file. It is written the
+  moment it exists (no exit-time dump), so a worker that is killed or exits
+  with `os._exit` still leaves it.
+* `KernelCompilationManager::defers_src_parse` now also defers the IR parse on
+  the CPU archs under the flag (as 0010 does on CUDA), and the CPU launcher's
+  `register_llvm_kernel` reads the task list and parameters off
+  `CompiledKernelData` instead of a clone, so a hit never parses the IR.
+* With 0011, `Program.prepare_kernel` on a CPU kernel registers it, which
+  compiles and stores the object: Algan's CPU precompile workers call it.
+
+Like 0010's field it is in no cache key (its `offline_cache` prefix). The
+directory is not size-bounded by the offline cache's cleaner;
+`algan.clear_cached_kernels()` (or `clear_cache(include_kernels=True)`)
+removes it with the rest of the kernel cache.
+
+**Verified** (2026-10-23):
+
+* All twelve apply strictly in order onto a pristine `v1.3.3`; the changed
+  files compile; `quadrants_build.yaml` built macOS, Windows and Linux wheels
+  with them (run 39906249562).
+* Linux x86-64, a local CUDA-off build of the twelve, on 4 vCPUs:
+  `tests/unit_tests/test_quadrants_cpu_object_cache.py` (a second process
+  links the first one's objects without rewriting them and computes the same
+  answer; a truncated object is recompiled) and
+  `benchmarks/_precompile_handoff_check.py`: precompile workers stored all 30
+  kernels' objects, the render that followed wrote none and hit the index for
+  all 30, and a warm fresh process's first frame took 8.3 s with the cache
+  against 10.4 s with `ALGAN_CPU_OBJECT_CACHE=0`.
+* macOS arm64 (the `ObjectLinkingLayer` path), GitHub's Mac runner, `mac-cpu`
+  arm with that run's macOS wheel (`run_on_mac.yaml` run 39919688666): the
+  same test file passes (10 tests), workers stored all 30 objects, the render
+  that followed wrote none, and a warm fresh process's first frame took 2.1 s
+  against 3.2 s with the cache off.
+
+**Not published yet.** `1.3.3.post2` carries 0001-0011; 0012 needs the next
+revision (`PYPI.md`). Until then Algan finds no
+`offline_cache_cpu_object_by_content_hash` field and passes nothing.
+
+**Not verified:** Windows (COFF) at run time -- it builds, and the COFF
+responsibility flags are set on the same layer either way.
 
 ## Upstreaming
 
