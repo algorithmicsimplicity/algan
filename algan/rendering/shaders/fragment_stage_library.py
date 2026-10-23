@@ -148,12 +148,25 @@ def _stage_glass_ball(
         n = -n
     fres = ti.math.clamp(1.0 - n.dot(v), 0.0, 1.0)
 
+    # Screen right and up, built from the view direction and world up (stages
+    # get no camera basis), so the highlights follow an orbiting camera
+    # instead of sticking to world x/y. For the default camera looking down
+    # -z they are exactly world x and y. A view straight along world up falls
+    # back to world -z as the reference.
+    ref = ti.math.vec3(0.0, 1.0, 0.0)
+    if ti.abs(v[1]) > 0.999:
+        ref = ti.math.vec3(0.0, 0.0, -1.0)
+    right = ref.cross(v).normalized()
+    up = v.cross(right)
+    nx = n.dot(right)
+    ny = n.dot(up)
+
     # Edge anisotropy: real studio lighting makes the top and bottom of a ball
     # brighter than its sides. Weight by |sin(azimuth)|, normalised so the mean
     # over azimuth stays 1 (mean |sin| = 2/pi) -- turning it up therefore
     # redistributes the edge rather than brightening the whole ball.
-    planar = ti.sqrt(n[0] * n[0] + n[1] * n[1])
-    azimuth = ti.abs(n[1]) / ti.max(planar, 1e-3)
+    planar = ti.sqrt(nx * nx + ny * ny)
+    azimuth = ti.abs(ny) / ti.max(planar, 1e-3)
     edge_w = (1.0 - anisotropy * 0.6366198) + anisotropy * azimuth
 
     acc = in_rgb
@@ -163,12 +176,13 @@ def _stage_glass_ball(
         ti.exp(-(((fres - ring_center) / ti.max(ring_width, 1e-3)) ** 2)) * edge_w
     )
 
-    # On a sphere the shading normal's x/y components *are* the screen offset in
-    # units of the radius, so the highlights are placed in those coordinates.
+    # On a sphere the shading normal's screen right/up components *are* the
+    # screen offset in units of the radius, so the highlights are placed in
+    # those coordinates.
     ca = ti.cos(key_angle)
     sa = ti.sin(key_angle)
-    dx = n[0] - key_x
-    dy = n[1] - key_y
+    dx = nx - key_x
+    dy = ny - key_y
     along = dx * sa + dy * (-ca)
     across = dx * ca + dy * sa
     acc += key * (
@@ -179,8 +193,8 @@ def _stage_glass_ball(
         )
     )
 
-    ex = n[0] - fill_x
-    ey = n[1] - fill_y
+    ex = nx - fill_x
+    ey = ny - fill_y
     acc += key * (
         fill_gain * ti.exp(-(ex * ex + ey * ey) / ti.max(fill_size * fill_size, 1e-6))
     )

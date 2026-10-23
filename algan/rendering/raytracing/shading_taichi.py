@@ -871,7 +871,9 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
             d = (lp - pos).norm()
             decay = light_col[tl, li, 4]
             if decay > 0.0:
-                lc = lc / ti.pow(ti.max(d, 1e-4), decay)
+                # three.js r155+'s floor: a light touching a surface boosts
+                # it at most 100x instead of exploding to inf.
+                lc = lc / ti.max(ti.pow(d, decay), 0.01)
             rng = light_col[tl, li, 5]
             if rng > 0.0:
                 q = ti.math.clamp(d / rng, 0.0, 1.0)
@@ -1313,13 +1315,26 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     amb = ti.static(_ambient_strength())
     refl = (rgb * (1.0 - metalness) + f0 * metalness) * (amb * env)
     wsum = amb * env
+    # What the clearcoat lets through to everything under it, Three.js's
+    # ``1 - clearcoat * Fcc(n.v)`` and the path tracer's ``_PL_ATT``: the
+    # coat reflects that share, so the base must not reflect it too. The
+    # coat lobe itself and the emission are not attenuated (see
+    # ``_pt_physical_layer``). Exactly 1 at ``clearcoat == 0``.
+    cc = ti.math.clamp(clearcoat, 0.0, 1.0)
+    n_dot_v = ti.max(n.dot(view_dir), 1e-4)
+    cc_att = 1.0 - cc * (0.04 + 0.96 * ti.pow(1.0 - ti.min(n_dot_v, 1.0), 5.0))
+    coat = ti.math.vec3(0.0, 0.0, 0.0)
+    # Every material that leaves sheen alone skips the fibre lobe outright
+    # (its terms are exactly zero there), as ``cc > 0`` skips the coat's.
+    sheen_c = sheen_color * sheen
+    sheen_max = ti.max(sheen_c[0], ti.max(sheen_c[1], sheen_c[2]))
+    sheen_r = ti.math.clamp(sheen_roughness, 1e-4, 1.0)
     for li in range(num_lights):
         ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                             pos, n)
         v = _light_vis(shadows, vis, li)
         half = (ld + view_dir).normalized()
         n_dot_l = ti.max(n.dot(ld), 0.0)
-        n_dot_v = ti.max(n.dot(view_dir), 1e-4)
         n_dot_h = ti.max(n.dot(half), 0.0)
         v_dot_h = ti.max(view_dir.dot(half), 0.0)
         fresnel = f0 + (one - f0) * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
@@ -1336,29 +1351,31 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         # exactly as ``WebGLMaterials`` does. At ``sheen == 0`` the color is
         # zero, so the compensation is exactly 1.0 and the lobe exactly 0 --
         # every material that leaves sheen alone renders bit-for-bit as before.
-        sheen_c = sheen_color * sheen
-        sheen_max = ti.max(sheen_c[0], ti.max(sheen_c[1], sheen_c[2]))
-        sheen_r = ti.math.clamp(sheen_roughness, 1e-4, 1.0)
-        sheen_comp = 1.0 - sheen_max * ti.max(
-            _ibl_sheen_brdf(n_dot_v, sheen_r),
-            _ibl_sheen_brdf(n_dot_l, sheen_r))
+        sheen_comp = 1.0
+        if sheen_max > 0.0:
+            sheen_comp = 1.0 - sheen_max * ti.max(
+                _ibl_sheen_brdf(n_dot_v, sheen_r),
+                _ibl_sheen_brdf(n_dot_l, sheen_r))
         kd = _diffuse_norm(spec_w)
         direct = (k_d * rgb * lc * (n_dot_l * kd)
                   + spec * lc * (n_dot_l * spec_w)) * sheen_comp
-        # Clearcoat: a thin dielectric GGX lobe (fixed F0 = 0.04) on top.
-        # Not scaled by the sheen compensation, matching Three.js, which
-        # accumulates the coat before the sheen block touches the irradiance.
-        cc_ndf = _ggx_distribution(n_dot_h, clearcoat_roughness)
-        cc_geom = _smith_geometry(n_dot_v, n_dot_l, clearcoat_roughness)
-        cc_fresnel = 0.04 + 0.96 * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
-        cc_spec = clearcoat * (cc_ndf * cc_geom * cc_fresnel) \
-            / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
-        direct += lc * (cc_spec * n_dot_l * spec_w)
         # The fibre lobe itself. Gated by ``spec_w`` like every other lobe
         # here: an ambient-like light arrives along the normal by convention
         # (see _light_eval) and must not manufacture a directional rim.
-        sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
-        direct += sheen_c * lc * (sheen_brdf * n_dot_l * spec_w)
+        if sheen_max > 0.0:
+            sheen_brdf = _d_charlie(n_dot_h, sheen_r) \
+                * _v_neubelt(n_dot_v, n_dot_l)
+            direct += sheen_c * lc * (sheen_brdf * n_dot_l * spec_w)
+        # Clearcoat: a thin dielectric GGX lobe (fixed F0 = 0.04) on top.
+        # Not scaled by the sheen compensation, matching Three.js, which
+        # accumulates the coat before the sheen block touches the irradiance.
+        if cc > 0.0:
+            cc_ndf = _ggx_distribution(n_dot_h, clearcoat_roughness)
+            cc_geom = _smith_geometry(n_dot_v, n_dot_l, clearcoat_roughness)
+            cc_fresnel = 0.04 + 0.96 * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
+            cc_spec = cc * (cc_ndf * cc_geom * cc_fresnel) \
+                / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
+            coat += lc * (cc_spec * n_dot_l * spec_w) * v
         # Scalar energy budget, reduced as in _stage_default (see
         # _vis_max_component).
         wsum += n_dot_l * kd * _vis_max_component(v) \
@@ -1374,7 +1391,8 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         # light grazing from behind the surface still lit it, and it scaled
         # with the number of lights.
         refl += direct * v
-    acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
+    acc = (refl * cc_att + coat) * _energy_scale(wsum) \
+        + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 

@@ -13,10 +13,13 @@ Resolution order:
    Written atomically (temp file + rename) so a killed download never
    poisons the cache.
 
-Every failure returns ``None`` after one WARNING for the render job --
-denoising turns itself off, the render still finishes. An offline machine
-pays one connection timeout on its first path-traced render and nothing
-after (the failure is remembered for the process).
+Every failure returns ``None`` after one WARNING -- denoising turns itself
+off, the render still finishes. A bad override or a hash mismatch is
+remembered for the process: neither fixes itself. A failed download is not:
+a network blip on a warm daemon's first render must not leave every later
+render noisy, so a later render job tries again once
+``_DOWNLOAD_RETRY_SECONDS`` have passed. An offline machine therefore pays
+one connection timeout per path-traced render at most every ten minutes.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -34,18 +38,25 @@ logger = get_logger("raytracing")
 
 FILE_NAME = "rt_hdr_alb_nrm.tza"
 #: The Git-LFS media endpoint -- ``raw.githubusercontent.com`` returns the
-#: 132-byte LFS pointer for this repository, not the archive.
+#: 132-byte LFS pointer for this repository, not the archive. Pinned to an
+#: oidn-weights commit rather than ``master``: an upstream re-upload would
+#: otherwise fail the hash check below on every fresh install.
+WEIGHTS_COMMIT = "28883d1769d5930e13cf7f1676dd852bd81ed9e7"
 WEIGHTS_URL = (
-    "https://media.githubusercontent.com/media/RenderKit/oidn-weights/master/"
-    + FILE_NAME
+    "https://media.githubusercontent.com/media/RenderKit/oidn-weights/"
+    f"{WEIGHTS_COMMIT}/{FILE_NAME}"
 )
 #: sha256 of the official archive (also the oid in its LFS pointer).
 WEIGHTS_SHA256 = "e586ef2ff48d7fbb7611986405220ed8fc5c13ca79bfc40be4dc742fbf959e1a"
 _DOWNLOAD_TIMEOUT_SECONDS = 30
+#: How long a failed download is remembered before a render tries again.
+_DOWNLOAD_RETRY_SECONDS = 600.0
 
-#: Process-level memo: None = not tried, "" = tried and failed (stay off),
-#: otherwise the resolved path.
+#: Process-level memo: None = not tried, "" = tried and failed for good
+#: (stay off), otherwise the resolved path.
 _resolved: str | None = None
+#: ``time.monotonic()`` of the last failed download, or None.
+_download_failed_at: float | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -62,7 +73,10 @@ def _cache_path() -> Path:
     return Path(SETTINGS.paths.cache_directory) / "oidn" / FILE_NAME
 
 
-def _download(target: Path) -> bool:
+def _download(target: Path) -> bool | None:
+    """Fetch the weights into ``target``: True on success, False when the
+    file itself is wrong (stay off), None when the fetch failed (try later).
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         with urllib.request.urlopen(
@@ -75,7 +89,7 @@ def _download(target: Path) -> bool:
             f"without denoising. Retry with network access, or point "
             f"ALGAN_DENOISE_WEIGHTS at a local {FILE_NAME}."
         )
-        return False
+        return None
     if hashlib.sha256(data).hexdigest() != WEIGHTS_SHA256:
         logger.warning(
             "The downloaded denoiser weights do not match the pinned sha256; "
@@ -98,11 +112,17 @@ def _download(target: Path) -> bool:
 
 def weights_path() -> str | None:
     """The ``.tza`` file to load, or ``None`` (already warned) if none can
-    be had. The answer is remembered for the process either way.
+    be had. The answer is remembered for the process, except a failed
+    download, which is retried after ``_DOWNLOAD_RETRY_SECONDS``.
     """
-    global _resolved
+    global _resolved, _download_failed_at
     if _resolved is not None:
         return _resolved or None
+    if (
+        _download_failed_at is not None
+        and time.monotonic() - _download_failed_at < _DOWNLOAD_RETRY_SECONDS
+    ):
+        return None
 
     override = str(rt_settings.denoise_weights or "").strip()
     if override:
@@ -123,14 +143,20 @@ def weights_path() -> str | None:
             return _resolved
     except OSError:
         pass
-    if _download(cache):
+    fetched = _download(cache)
+    if fetched:
         _resolved = str(cache)
+        _download_failed_at = None
         return _resolved
-    _resolved = ""
+    if fetched is None:
+        _download_failed_at = time.monotonic()
+    else:
+        _resolved = ""
     return None
 
 
 def _reset_for_tests() -> None:
     """Forget the memoized answer (tests exercise the failure paths)."""
-    global _resolved
+    global _resolved, _download_failed_at
     _resolved = None
+    _download_failed_at = None

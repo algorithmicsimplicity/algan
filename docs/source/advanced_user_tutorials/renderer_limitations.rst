@@ -287,9 +287,8 @@ Six further consequences of the split, not covered there:
     its own ``clearcoat_roughness`` -- takes what it reflects from the layers
     under it, ``1 - clearcoat * F(n.v)``, and it reflects the environment and
     the rest of the scene like any other lobe. The deterministic renderer
-    adds its coat on top of an unattenuated base and lights it with direct
-    light only, so a coated surface is a few percent brighter there and its
-    coat shows no surroundings. The coat does not dim the surface's own
+    takes the same share from the base but lights its coat with direct
+    light only, so its coat shows no surroundings. The coat does not dim the surface's own
     emission here (Three.js's does). The sheen is Three.js's
     Charlie-distribution lobe with its albedo scaling of the base; as in
     Three.js's direct lighting it is not energy-conserving at grazing angles
@@ -336,7 +335,8 @@ Six further consequences of the split, not covered there:
   Image Denoise RT filter re-implemented in torch, guided by albedo and
   normal information the render accumulates alongside the image. The weights
   (about 2 MB) are fetched once into the cache directory on first use; a
-  machine that cannot fetch them renders without denoising after one warning.
+  machine that cannot fetch them renders without denoising after one warning,
+  and a later render tries the download again once ten minutes have passed.
   Flat 2-D content composites deterministically inside the path tracer (zero
   variance), so vector graphics and text stay exact with or without it.
 * Path-traced output is *stochastic*. Two renders of the same scene converge
@@ -964,9 +964,11 @@ Other anti-aliasing notes
 * ``supersampling`` is **ignored** on the analytic path, which
   always renders at output resolution. It applies only on the supersampled
   fallback.
-* FXAA is available (``video_settings.fxaa``). It runs on linear HDR values
-  before tonemapping, where its luma-based edge detection is not the one it was
-  designed around.
+* FXAA is available (``video_settings.fxaa``). It filters the linear HDR
+  frame before tonemapping, but finds edges on a perceptual luma (the linear
+  luma clamped to 1 and square-rooted), the space its thresholds were
+  designed around. The tonemap is not applied first, so a highlight above
+  white reads as white to the edge test.
 * A filled shape's drawn region is given a minimum half-width of 0.3 output
   pixels so that hairlines, thin glyph stems and degenerate zero-area fills
   survive at all

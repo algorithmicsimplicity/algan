@@ -1893,7 +1893,9 @@ def _pt_nee_light_row(light_pos: ti.template(), light_col: ti.template(),
             # with the sampled point's own distance.
             decay = light_col[tl, li, 4]
             if decay > 0.0:
-                lc = lc / ti.pow(ti.max(d, 1e-4), decay)
+                # three.js r155+'s floor: a light touching a surface boosts
+                # it at most 100x instead of exploding to inf.
+                lc = lc / ti.max(ti.pow(d, decay), 0.01)
             rng = light_col[tl, li, 5]
             if rng > 0.0:
                 q = ti.math.clamp(d / rng, 0.0, 1.0)
@@ -3880,6 +3882,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             if ti.max(thru[0],
                                       ti.max(thru[1],
                                              thru[2])) * eta_scale < min_weight:
+                                # Retired as absorbed: ``rd`` still points
+                                # through the surface, so an escape would
+                                # show what lies behind it.
+                                absorbed = True
                                 done = True
                                 break
                             # A new geometric segment needs a fresh shell
@@ -4252,6 +4258,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         done = True
                         break
                     if ti.max(thru[0], ti.max(thru[1], thru[2])) * eta_scale < min_weight:
+                        # Retired as absorbed: ``rd`` is still the incoming
+                        # direction, so an escape would sample the env (or
+                        # background) behind the surface.
+                        absorbed = True
                         done = True
                         break
                     if smooth_cross == 1:

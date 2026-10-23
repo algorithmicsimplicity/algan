@@ -545,11 +545,12 @@ def _light_tree_geometry(
         one_sided = np.zeros(int(tri_ids.numel()), dtype=bool)
         if int(tri_mat.shape[2]) > _MAT_ONE_SIDED:
             one_sided = tri_mat[0, tri_ids, _MAT_ONE_SIDED].detach().cpu().numpy() > 0.5
-        # A two-sided emitter's normals span a hemisphere, which is what
-        # theta_o = pi/2 (with theta_e = pi/2) says; a one-sided one has the
-        # single geometric normal it is packed with.
+        # A two-sided emitter emits about both +n and -n, and the only cone
+        # around +n that holds -n is theta_o = pi (theta_o = pi/2 starves a
+        # receiver behind it of NEE samples); a one-sided one has the single
+        # geometric normal it is packed with.
         to = np.broadcast_to(
-            np.where(one_sided, 0.0, _HALF_PI), (rows, one_sided.shape[0])
+            np.where(one_sided, 0.0, np.pi), (rows, one_sided.shape[0])
         )
         te = np.full((rows, one_sided.shape[0]), _HALF_PI)
         # Inverse square, always: this is the area-measure pdf's Jacobian,
