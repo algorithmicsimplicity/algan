@@ -35,7 +35,8 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     (Dupuy & Benyoub 2023) with a broad compensation lobe; smooth glass
     is delta. A MeshPhysicalMaterial's clearcoat (VNDF-sampled GGX) and
     sheen (cosine-sampled Charlie) are two more lobes of the same pick,
-    layered over the base as Three.js layers them (``_PL_CC``). Transmitted
+    layered over the base as Three.js layers them (``_PL_CC``). The coat
+    also attenuates the emission under it, at both MIS ends. Transmitted
     radiance includes the relative index-squared factor, with eta-aware
     roulette and the shared nested-IOR stack and Beer-Lambert absorption.
     Homogeneous interiors sample RGB-mixture free flights, HG phase directions,
@@ -1391,16 +1392,25 @@ def _pt_sample_glass(glass_energy: ti.template(), rd, n, rough, eta, f0,
 # The coat and the sheen are lobes of their own in the continuation's pick,
 # each with its own selection weight; a material with neither gets
 # ``_pt_layer_none()``, whose scales are exactly 1 and weights exactly 0, so
-# it evaluates and samples bit for bit as before. Emission is NOT
-# attenuated by the coat (Three.js does): the emitter tables read the
-# emissive slot raw, and attenuating one MIS end only would bias it.
+# it evaluates and samples bit for bit as before.
+#
+# Emission sits UNDER the coat, so it leaves through it attenuated like the
+# base: ``L_e * (1 - cc F_c(n.v))`` toward the viewer. Three.js scales
+# ``totalEmissiveRadiance`` with the rest of ``outgoingLight``, and glTF's
+# ``fresnel_coat`` mixes emission and base alike. Both MIS ends apply it: a
+# path that hits the emitter reads this crossing's ``_PL_ATT``, and next-event
+# estimation rebuilds the same factor at its sampled point
+# (``_pt_emitter_coat_att``). Attenuating only one end would bias the result.
+# The emitter tables still choose emitters by the raw emissive power. That
+# power is an upper bound on what leaves through the coat, and any positive
+# selection weight is unbiased when both ends read the same table.
 _PL_CC = 0  # clearcoat weight, [0, 1]
 _PL_CC_ROUGH = 1  # clearcoat roughness, [0, 1]
 _PL_SHEEN_R = 2  # sheen roughness, [1e-4, 1] (as _stage_physical clamps it)
 _PL_SHEEN_C = 3  # 3 slots: sheen_color * sheen (WebGLMaterials premultiplies)
 _PL_SHEEN_MAX = 6  # max3 of the above
 _PL_SHEEN_EV = 7  # E(n.v): Three.js's IBLSheenBRDF fit of the sheen albedo
-_PL_ATT = 8  # 1 - cc * F_c(n.v): what the coat lets through to the base
+_PL_ATT = 8  # 1 - cc * F_c(n.v): what the coat passes of base and emission
 _PL_W_COAT = 9  # selection weights: the lobes' energies from
 _PL_W_SHEEN = 10  # _pt_lit_lobes, times alpha once the caller scales them
 _PL_WIDTH = 11
@@ -1454,6 +1464,41 @@ def _pt_physical_layer(params: ti.template(), tm, prim, n_dot_v):
             layer[_PL_SHEEN_EV] = e_v
             layer[_PL_W_SHEEN] = sheen_max * e_v
     return layer
+
+
+@ti.func
+def _pt_emitter_coat_att(tri_mat: ti.template(), tri_mat_id: ti.template(),
+                         tri_norm: ti.template(), tri_pos: ti.template(),
+                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
+                         textures: ti.template(), num_colored_triangles,
+                         f, prim, w0, w1, w2, face_n, wi):
+    """The share of emissive triangle ``prim``'s emission that its clearcoat
+    lets out toward ``-wi``, at barycentrics ``(w0, w1, w2)``. This is the
+    next-event end of the ``_PL_ATT`` that a hit on the emitter reads.
+
+    A hit takes ``_PL_ATT`` from ``|shade_n . rd|``, and ``shade_n`` is
+    ``_tri_normal_g`` passed through ``_prep_normal``. ``_sided_shading_normal``
+    may also flip it toward the viewer, which cannot change the magnitude.
+    This function rebuilds that normal at the sampled point and takes the same
+    ``1 - cc * F_c`` of it, so both ends of the MIS pair weight one integrand.
+    One difference remains for a normal-mapped emitter: a hit filters the map
+    over its ray cone, while this end reads the finest level. The result is
+    exactly 1 for any triangle that is not a coated MeshPhysicalMaterial,
+    without reading its normals.
+    """
+    att = 1.0
+    tm = f % tri_mat.shape[0]
+    if (tri_mat.shape[2] > 23) \
+            and (tri_mat_id[f % tri_mat_id.shape[0], prim] == _MID_PHYSICAL):
+        cc = ti.math.clamp(tri_mat[tm, prim, 17], 0.0, 1.0)
+        if cc > 0.0:
+            n_s = _tri_normal_g(
+                0, f, prim, w0, w1, w2, tri_norm, tri_pos, tri_uvs,
+                tri_tex_meta, textures, num_colored_triangles)
+            n_s = _prep_normal(n_s, face_n, tri_mat[tm, prim, 10], -wi)
+            att = 1.0 - cc * _pt_coat_fresnel(
+                ti.max(ti.abs(n_s.dot(wi)), 1e-4))
+    return att
 
 
 @ti.func
@@ -3106,10 +3151,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # continuation below ends up offering.
                     stoch = 1
                     tm = f % tri_mat.shape[0]
+                    # Scaled by what a clearcoat lets out of the emission
+                    # under it toward the ray (``_PL_ATT``, exactly 1 without
+                    # a coat). Next-event estimation applies the same factor
+                    # through ``_pt_emitter_coat_att``.
                     emissive = ti.math.vec3(tri_mat[tm, prim, 0],
                                             tri_mat[tm, prim, 1],
                                             tri_mat[tm, prim, 2]) \
-                        * tri_mat[tm, prim, 3]
+                        * (tri_mat[tm, prim, 3] * layer_l[_PL_ATT])
                     # Synthetic panels emit from their front face only. An
                     # authored diffuse vertex already evaluated their rows:
                     # suppress that immediate emission, while still absorbing
@@ -3312,11 +3361,23 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 cos_l = 0.0
                                         c_l = ti.abs(cos_l)
                                         if c_l > 1e-6:
+                                            # What the emitter's clearcoat
+                                            # lets out toward this vertex:
+                                            # the factor a hit on it reads
+                                            # as ``_PL_ATT``.
                                             le = ti.math.vec3(
                                                 tri_mat[tm_e, ref, 0],
                                                 tri_mat[tm_e, ref, 1],
                                                 tri_mat[tm_e, ref, 2]) \
-                                                * tri_mat[tm_e, ref, 3]
+                                                * (tri_mat[tm_e, ref, 3]
+                                                   * _pt_emitter_coat_att(
+                                                       tri_mat, tri_mat_id,
+                                                       tri_norm, tri_pos,
+                                                       tri_uvs, tri_tex_meta,
+                                                       textures,
+                                                       num_colored_triangles,
+                                                       f, ref, ew0, ew1, ew2,
+                                                       ne, wi))
                                             _ec, e_alpha = _tri_color_g(
                                                 0, f, ref, ew0, ew1, ew2,
                                                 tri_colors, tri_colors,
