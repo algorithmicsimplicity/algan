@@ -21,8 +21,7 @@ nothing about that test.
 
 The CI group starts from the hand-curated fast suite (the tests marked
 ``fast``; see tests/README.md), chosen for exactly this purpose by reading the
-code rather than by measuring it, plus the guards in ``ALWAYS_CI`` and every
-test cheaper than ``--cheap-seconds``; the pre-PR group starts from the whole
+code rather than by measuring it, plus the guards in ``ALWAYS_CI``; the pre-PR group starts from the whole
 CI group. The greedy pass then adds whatever buys the most new
 coverage per second.
 """
@@ -39,13 +38,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GROUPS = ROOT / "tests" / "groups"
 
-# Seconds of test time (summed setup + call + teardown, measured on a GitHub
-# ubuntu-latest runner with -n 1 under coverage) each group may spend. The CI
-# budget plus collection and start-up comes to about two minutes on a runner,
-# where the run is not under coverage; the pre-PR budget leaves room under the
-# ten minutes it promises for collection and a development machine slower
-# than a runner.
-DEFAULT_BUDGETS = {"ci": 80.0, "pre-pr": 420.0}
+# Seconds each group may spend, counted as a test's measured setup + call +
+# teardown (a GitHub ubuntu-latest runner, -n 1, under coverage) plus
+# PER_TEST_OVERHEAD. The overhead is what a runner actually charged per test
+# beyond its reported duration when the first lists, which ignored it, ran:
+# 5700 tests reporting 80 s took 4 minutes. With it, the CI budget plus
+# collection comes to about two minutes on a runner, and the pre-PR budget to
+# about nine, under the ten it promises.
+PER_TEST_OVERHEAD = 0.02
+DEFAULT_BUDGETS = {"ci": 90.0, "pre-pr": 480.0}
 
 # Guards that read the source rather than run it -- kernel specs, launch
 # arities, compiled-in settings, curation tables -- cover almost nothing, so
@@ -76,9 +77,9 @@ HEADER = """\
 # scripts/select_test_groups.py -- regenerate rather than hand-edit, except to
 # drop a test that no longer exists. See tests/README.md, "Test groups".
 #
-# {count} tests, {seconds:.0f} s of measured test time (-n 1 on an ubuntu-latest
-# runner, under coverage), covering {lines} of the {total} lines of algan/ the
-# whole measured run covers ({share:.0%}).
+# {count} tests, {seconds:.0f} s of estimated runner time (measured duration
+# plus per-test overhead, -n 1 on ubuntu-latest), covering {lines} of the
+# {total} lines of algan/ the whole measured run covers ({share:.0%}).
 """
 
 
@@ -189,10 +190,10 @@ def main() -> None:
         "--pre-pr-budget", type=float, default=DEFAULT_BUDGETS["pre-pr"]
     )
     parser.add_argument(
-        "--cheap-seconds",
+        "--per-test-overhead",
         type=float,
-        default=0.01,
-        help="Tests at or under this many seconds join the CI group regardless of coverage",
+        default=PER_TEST_OVERHEAD,
+        help="Seconds each test costs on top of its reported duration",
     )
     args = parser.parse_args()
 
@@ -200,15 +201,12 @@ def main() -> None:
     # missing from the report is one of the cheapest there are.
     collected = collect()
     measured = read_durations(args.durations)
-    durations = {t: measured.get(t, 0.005) for t in collected}
+    durations = {t: measured.get(t, 0.005) + args.per_test_overhead for t in collected}
     coverage = read_coverage(args.coverage)
     candidates = set(durations)
     total = set().union(*coverage.values())
-    # Cheap tests go in whatever they cover: at a few milliseconds each, the
-    # odd regression they catch is worth more than the second they cost.
-    cheap = sorted(t for t, s in durations.items() if s <= args.cheap_seconds)
     guards = sorted(t for t in durations if t.startswith(ALWAYS_CI))
-    seed = sorted(collect("--fast")) + guards + cheap
+    seed = sorted(collect("--fast")) + guards
 
     ci, ci_cov, ci_spent = greedy(seed, candidates, durations, coverage, args.ci_budget)
     pre, pre_cov, pre_spent = greedy(
