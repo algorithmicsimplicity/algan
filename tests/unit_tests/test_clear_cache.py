@@ -92,6 +92,12 @@ def test_the_inductor_cache_lives_in_the_cache_directory(tmp_path):
         "print(cache_dir())\n"
     )
     out = subprocess.run(
-        [sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True
+        [sys.executable, "-c", probe],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    assert out.stdout.strip().splitlines()[-1] == str(tmp_path / "cache" / "torchinductor")
+    assert out.stdout.strip().splitlines()[-1] == str(
+        tmp_path / "cache" / "torchinductor"
+    )
