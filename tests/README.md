@@ -218,11 +218,13 @@ newly covered per second until each budget is spent.
 
 | Group | Command | Who runs it | Size |
 | --- | --- | --- | --- |
-| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~5700 tests, ~80 s of test time on a runner, 82% of the lines the whole suite covers |
-| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~6400 tests, ~7 minutes on a runner, effectively 100% of those lines |
+| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~1100 tests, about two minutes on a runner, 86% of the lines the whole suite covers |
+| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~2400 tests, about nine minutes, effectively 100% of those lines |
 
-The CI group always contains the fast suite, every test that takes 10 ms or
-less, and a short named list of guards (`ALWAYS_CI` in the script) that read
+Each test is charged its measured duration plus a fixed per-test overhead
+(`PER_TEST_OVERHEAD`, what a runner actually spends per test beyond the
+reported time), so a thousand trivial tests are not mistaken for free. The CI
+group always contains the fast suite and a short named list of guards (`ALWAYS_CI` in the script) that read
 the source rather than run it, such as
 `test_every_builtin_spec_still_matches_a_live_kernel`: they cover almost no
 lines, so the greedy pass would never choose them, yet they are what trips on
