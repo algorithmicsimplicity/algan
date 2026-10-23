@@ -29,7 +29,7 @@ them stops the kernel compiling.
 import pytest
 import torch
 
-from algan.rendering.raytracing.glass_energy import glass_energy_table
+from algan.rendering.raytracing.ggx_albedo import pt_energy_tables
 from algan.rendering.raytracing.path_tracer_taichi import (
     _pt_layer_none,
     _pt_lit_f_pdf,
@@ -87,7 +87,7 @@ def _probe(cases):
     rays = torch.tensor([c[0] for c in cases], dtype=torch.float32)
     lights = torch.tensor([c[1] for c in cases], dtype=torch.float32)
     out = torch.zeros((len(cases), 2), dtype=torch.float32)
-    _diffuse_probe(torch.from_numpy(glass_energy_table()), rays, lights, out)
+    _diffuse_probe(torch.from_numpy(pt_energy_tables()), rays, lights, out)
     return out
 
 

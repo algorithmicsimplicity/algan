@@ -941,6 +941,13 @@ Schlick-GGX `k = (r+1)^2/8` and Blinn-Phong, so those lobes still differ in
 shape. The default scene light went to intensity `pi` so default scenes keep
 their look; the repo's own scenes scaled their directed lights by `pi`.
 
+**The GGX masking term followed (2026-10-23).** `_smith_geometry` is now the
+height-correlated Smith `G2` (three.js's `V_GGX_SmithCorrelated`, the exact
+`G2` this renderer evaluates through `_pt_smith_lambda`), not Schlick-GGX:
+the remap took up to 3.6x more energy at grazing angles, so back-lit rims
+were far dimmer in the deterministic renderer. What still differs in the GGX
+lobe is the path tracer's multiple-scattering compensation, and Phong's shape.
+
 The rest of this section is the reasoning, kept.
 
 **What was inconsistent.** A lit vertex answered "how much light comes back

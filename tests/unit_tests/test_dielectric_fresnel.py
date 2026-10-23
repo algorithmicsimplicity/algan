@@ -28,7 +28,7 @@ import math
 import pytest
 import torch
 
-from algan.rendering.raytracing.glass_energy import glass_energy_table
+from algan.rendering.raytracing.ggx_albedo import pt_energy_tables
 from algan.rendering.raytracing.path_tracer_taichi import (
     _pt_fresnel,
     _pt_layer_none,
@@ -152,7 +152,7 @@ def test_path_tracer_internal_fresnel_and_pdf(angle):
     init_taichi()
     out = torch.zeros((2, 3))
     _pt_probe(
-        torch.from_numpy(glass_energy_table()), math.cos(math.radians(angle)), IOR, out
+        torch.from_numpy(pt_energy_tables()), math.cos(math.radians(angle)), IOR, out
     )
     assert float(out[0, 0]) == pytest.approx(
         exact_fresnel(angle, inside=True), abs=SCHLICK_TOLERANCE
@@ -170,18 +170,23 @@ def test_path_tracer_nested_interface_changes_the_critical_angle():
     out = torch.zeros((2, 3))
     # At 50 degrees glass -> air is TIR, glass -> water is not.
     cos_i = math.cos(math.radians(50))
-    _pt_probe(torch.from_numpy(glass_energy_table()), cos_i, IOR, out)
+    _pt_probe(torch.from_numpy(pt_energy_tables()), cos_i, IOR, out)
     assert out[0, 0] == 1
-    _pt_probe(torch.from_numpy(glass_energy_table()), cos_i, IOR / 1.33, out)
+    _pt_probe(torch.from_numpy(pt_energy_tables()), cos_i, IOR / 1.33, out)
     assert 0 < out[0, 0] < 0.2
 
 
 @ti.kernel
-def _pt_lobe_probe(params: ti.types.ndarray(), eta: ti.f32, out: ti.types.ndarray()):
+def _pt_lobe_probe(
+    energy: ti.types.ndarray(),
+    params: ti.types.ndarray(),
+    eta: ti.f32,
+    out: ti.types.ndarray(),
+):
     one = ti.math.vec3(1.0, 1.0, 1.0)
     n = ti.math.vec3(0.0, 0.0, 1.0)
     _diff, _spec, trans, f0, _rough, _layer = _pt_lit_lobes(
-        _MID_PHYSICAL, params, 0, 0, one, 0.0, 0.001, 1.5, 1.0, n, n, eta
+        energy, _MID_PHYSICAL, params, 0, 0, one, 0.0, 0.001, 1.5, 1.0, n, n, eta
     )
     out[0] = f0[0]
     out[1] = trans[0]
@@ -196,7 +201,7 @@ def test_path_tracer_lobes_use_the_enclosing_medium_at_normal_incidence(eta):
     params[0, 0, 12] = 1.5
     params[0, 0, 13:17] = 1.0
     out = torch.zeros(2)
-    _pt_lobe_probe(params, eta, out)
+    _pt_lobe_probe(torch.from_numpy(pt_energy_tables()), params, eta, out)
     expected = ((eta - 1) / (eta + 1)) ** 2
     assert float(out[0]) == pytest.approx(expected, abs=1e-6)
     assert float(out[1]) == pytest.approx(1 - expected, abs=1e-6)

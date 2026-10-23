@@ -396,6 +396,14 @@ and naming the stage is what lets you put a recoloring stage before the light:
 
     mob.set_fragment_shader([cosine_color, STAGE_STANDARD, fresnel_rim])
 
+A built-in stage's colours -- ``emissive``, ``specular``, and the physical
+stage's ``specular_color`` and ``sheen_color`` -- mean what they mean on the
+matching material, wherever the stage sits in a pipeline: they are authored
+like any other Algan colour and converted to linear light for rendering, so
+``mob.emissive = (0.5, 0.5, 0.5)`` glows the same grey through
+``set_fragment_shader([standard_shader, fresnel_rim])`` as through
+``set_material(MeshStandardMaterial(emissive=...))``.
+
 Shipped Stage Looks
 -------------------
 
@@ -430,6 +438,14 @@ Stage parameters are plain numbers and tuples of the width the stage declares --
 ``rim_color`` is a width-3 RGB triple. A five-channel Algan color constant such
 as ``TEAL_A`` can be assigned to it too: the parameter takes the color's RGB and
 leaves its glow and opacity behind.
+
+Unlike a built-in stage's colours, the colour parameters of these looks, and of
+any stage you write, are **linear**: the stage receives them exactly as set,
+with no conversion from the display-referred values a Mob's ``color`` uses. A
+``rim_color`` of ``(0.5, 0.5, 0.5)`` adds half of white's light, which displays
+as about 74% grey rather than 50%. To use a colour as it is authored elsewhere
+in Algan, convert it first: ``srgb_to_linear(torch.tensor(rgb))``, from
+``algan.utils.color_space``.
 
 A rim light is an authoring control rather than a BSDF term, which is why it
 lives here and not on

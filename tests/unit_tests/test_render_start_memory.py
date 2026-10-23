@@ -341,3 +341,16 @@ def test_a_real_cuda_arena_is_reused_at_the_ordinary_size(optimizations):
         if reused and size == ordinary:
             return
     pytest.fail(f"arena (size, ordinary size, reused) per attempt: {seen}")
+
+
+def test_a_cached_arena_on_a_large_card_is_the_clamped_size():
+    """The cache path clamps as ``ManualMemory`` does.
+
+    Otherwise a 48 GB card's arena, taken from the cache, would skip the
+    8 GiB addressing clamp and crash the first arena-packed launch.
+    """
+    free = 40 << 30
+    clamped = memory_utils._MAX_ARENA_BYTES
+    rounded = -(-clamped // (2 * MIB)) * (2 * MIB)
+    segments = [_segment(rounded)]
+    assert memory_utils._cached_arena_bytes(free, segments, 0, 0.4) == clamped

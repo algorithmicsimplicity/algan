@@ -535,6 +535,39 @@ def _key_depth_order(key, depth):
     return _lexsort(key, depth)
 
 
+def _segment_exclusive_prefix(values, seg, first):
+    """Each row's exclusive prefix sum of ``values`` within its own segment.
+
+    ``seg`` is each row's segment ordinal and ``first`` each segment's first
+    row; a segment's rows are consecutive. It is the shell ceiling's spend in
+    float32 (MPS-friendly mode). Differencing two rows of one whole-stream
+    ``cumsum`` is exact enough only in float64: in float32 that prefix
+    reaches about 1e6 on a 1080p frame, and its spacing there (0.06-0.125) is
+    the error every fragment's spend inherits. This is a doubling
+    (Hillis-Steele) scan instead, log2 of the longest segment passes, each
+    adding the partial sum ``d`` rows back while that row is still in the
+    segment. A partial sum never leaves its segment, so it rounds at the
+    scale of one pixel's coverage. It costs one sync, for the longest segment.
+    """
+    n = int(values.numel())
+    out = torch.zeros_like(values)
+    if n < 2:
+        return out
+    pos = torch.arange(n, dtype=torch.int64, device=values.device).sub_(
+        first.index_select(0, seg)
+    )
+    zero = torch.zeros((), dtype=values.dtype, device=values.device)
+    # Exclusive: each row starts from its in-segment predecessor's value, and
+    # an inclusive scan of that shifted stream is the exclusive scan.
+    out[1:] = torch.where(pos[1:] > 0, values[:-1], zero)
+    longest = int(pos.max().item()) + 1
+    d = 1
+    while d < longest:
+        out[d:] += torch.where(pos[d:] >= d, out[:-d], zero)
+        d *= 2
+    return out
+
+
 def _sheet_walk_order(pix, position):
     """Restore fragment walk order within an already pixel-grouped sheet table."""
     if _local_sheet_sort(pix):
@@ -2532,8 +2565,15 @@ def compact_sheets(
         # negative areas in it.
         cov64 = cov_o.to(accumulate_dtype(), copy=True)
         c2 = cov64.index_select(0, o2)
-        csum = torch.cumsum(c2, 0)
-        excl_global = csum.sub_(c2)
+        # Only at float64. In float32 (MPS-friendly mode) a whole-stream
+        # prefix reaches ~1e6 on a 1080p frame and differencing two of its
+        # entries loses a pixel's coverage to rounding, so both arms spend
+        # segment by segment there instead (``solid_shell_ceiling``'s
+        # docstring, ``_segment_exclusive_prefix``).
+        excl_global = None
+        if c2.dtype != torch.float32:
+            csum = torch.cumsum(c2, 0)
+            excl_global = csum.sub_(c2)
         if rt_settings.sheet_shell_ceiling_kernel and n:
             from algan.rendering.raytracing.sheet_compact_taichi import (
                 solid_shell_ceiling,
@@ -2541,12 +2581,13 @@ def compact_sheets(
 
             # ``cov64`` doubles as the kernel's reassociation-barrier scratch
             # (see the kernel docstring); the torch arm needed it only to
-            # build ``excl`` either way.
+            # build ``excl`` either way. The float32 variant uses neither, so
+            # ``c2`` stands in for the prefix it does not use.
             solid_shell_ceiling(
                 key.contiguous(),
                 kernel_index(o2.contiguous()),
                 shell_back.contiguous().view(torch.uint8),
-                excl_global,
+                c2 if excl_global is None else excl_global,
                 cov64,
                 n,
                 cov_o,
@@ -2571,9 +2612,12 @@ def compact_sheets(
             # torch arm uses, and deterministic for the same reason).
             first = torch.zeros(nseg, dtype=torch.int64, device=device)
             first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
-            spent = excl_global - excl_global.index_select(0, first).index_select(
-                0, seg
-            )
+            if excl_global is not None:
+                spent = excl_global - excl_global.index_select(0, first).index_select(
+                    0, seg
+                )
+            else:
+                spent = _segment_exclusive_prefix(c2, seg, first)
             del excl_global, first, seg_start
             # The segment's cap: its surface's two shells' own footprint areas,
             # accumulated float64 and rounded through float32 -- §6.6.4, because a

@@ -679,16 +679,30 @@ def _batch_glossy_mode(merged):
     mode = int(rt_settings.glossy_reflection_mode())
     if mode == 0 or not rt_settings.glossy_batch_gate:
         return mode
-    if (
+    if _batch_can_spawn_continuations(merged):
+        return mode
+    return 0
+
+
+def _batch_can_spawn_continuations(merged):
+    """Can anything in this batch send a primary's continuation ray anywhere?
+
+    True for reflective, refractive or reflective-transparent geometry, and for
+    a user pipeline (which may carry a custom scatter). With all of them absent
+    every sheet's reflectance is exactly zero and the refraction template is
+    off, so no branch that spawns or re-aims a ray can run. Read by
+    ``_batch_glossy_mode`` and by the sheet resolve's launch
+    (``raster_pipeline``), which compiles its continuation fans out of a batch
+    this says False for.
+    """
+    return bool(
         merged.get("tri_has_reflective")
         or merged.get("bez_has_reflective")
         or merged.get("tex_has_reflective")
         or merged.get("has_refl_transparent")
         or merged.get("has_refractive")
         or _scene_has_user_pipeline(merged)
-    ):
-        return mode
-    return 0
+    )
 
 
 def _secondary_split_needed(merged, analytic_raster=False):

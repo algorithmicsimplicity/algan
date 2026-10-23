@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 import torch
 
-from algan.rendering.raytracing.glass_energy import glass_energy_table
+from algan.rendering.raytracing.ggx_albedo import pt_energy_tables
 from algan.rendering.raytracing.path_tracer_taichi import (
     _PL_W_COAT,
     _PL_W_SHEEN,
@@ -76,7 +76,19 @@ def _evaluate(
         wi = ti.math.vec3(dirs[i, 0], dirs[i, 1], dirs[i, 2])
         alb = ti.math.vec3(albedo, albedo, albedo)
         e_diff, e_spec, e_trans, f0, rough_eff, layer = _pt_lit_lobes(
-            _MID_PHYSICAL, params, 0, 0, alb, 0.0, rough, 1.5, 0.0, n, rd, 0.0
+            glass_energy,
+            _MID_PHYSICAL,
+            params,
+            0,
+            0,
+            alb,
+            0.0,
+            rough,
+            1.5,
+            0.0,
+            n,
+            rd,
+            0.0,
         )
         w_diff = ti.max(e_diff[0], ti.max(e_diff[1], e_diff[2]))
         w_spec = ti.max(e_spec[0], ti.max(e_spec[1], e_spec[2]))
@@ -111,6 +123,7 @@ def _evaluate(
 
 @ti.kernel
 def _lobe_weights(
+    energy: ti.types.ndarray(),
     params: ti.types.ndarray(),
     albedo: ti.f32,
     rough: ti.f32,
@@ -124,7 +137,7 @@ def _lobe_weights(
     rd = ti.math.vec3(ti.sin(angle), 0.0, -ti.cos(angle))
     alb = ti.math.vec3(albedo, albedo, albedo)
     e_diff, e_spec, _t, _f0, _r, layer = _pt_lit_lobes(
-        _MID_PHYSICAL, params, 0, 0, alb, 0.0, rough, 1.5, 0.0, n, rd, 0.0
+        energy, _MID_PHYSICAL, params, 0, 0, alb, 0.0, rough, 1.5, 0.0, n, rd, 0.0
     )
     out[0] = ti.max(e_diff[0], ti.max(e_diff[1], e_diff[2]))
     out[1] = ti.max(e_spec[0], ti.max(e_spec[1], e_spec[2]))
@@ -134,6 +147,7 @@ def _lobe_weights(
 
 @ti.kernel
 def _sample(
+    energy: ti.types.ndarray(),
     params: ti.types.ndarray(),
     angle: ti.f32,
     coat: ti.i32,
@@ -148,7 +162,7 @@ def _sample(
         rd = ti.math.vec3(ti.sin(angle), 0.0, -ti.cos(angle))
         one = ti.math.vec3(1.0, 1.0, 1.0)
         _d, _s, _t, _f0, _r, layer = _pt_lit_lobes(
-            _MID_PHYSICAL, params, 0, 0, one, 0.0, 0.5, 1.5, 0.0, n, rd, 0.0
+            energy, _MID_PHYSICAL, params, 0, 0, one, 0.0, 0.5, 1.5, 0.0, n, rd, 0.0
         )
         _wi, weight, ok = _pt_sample_layer(
             layer, n, rd, ti.math.vec2(u[i, 0], u[i, 1]), coat
@@ -179,7 +193,7 @@ def _integrals(params, albedo=1.0, rough=0.5, angle_deg=30.0):
     dirs, weights = _quadrature()
     out = torch.zeros((len(dirs), 6))
     _evaluate(
-        torch.from_numpy(glass_energy_table()),
+        torch.from_numpy(pt_energy_tables()),
         params,
         albedo,
         rough,
@@ -194,7 +208,14 @@ def _draws(params, angle_deg, coat, count=65536):
     init_taichi()
     u = torch.rand((count, 2), generator=torch.Generator().manual_seed(4211))
     out = torch.zeros((count, 2))
-    _sample(params, math.radians(angle_deg), coat, u, out)
+    _sample(
+        torch.from_numpy(pt_energy_tables()),
+        params,
+        math.radians(angle_deg),
+        coat,
+        u,
+        out,
+    )
     return out.double().numpy()
 
 
@@ -302,7 +323,9 @@ def test_mixture_pdf_carries_every_lobe_at_its_selection_probability(angle):
     )
     init_taichi()
     w = torch.zeros(4)
-    _lobe_weights(params, 1.0, 0.5, math.radians(angle), w)
+    _lobe_weights(
+        torch.from_numpy(pt_energy_tables()), params, 1.0, 0.5, math.radians(angle), w
+    )
     w_diff, w_spec, w_coat, w_sheen = (float(x) for x in w)
     assert w_coat > 0
     assert w_sheen > 0

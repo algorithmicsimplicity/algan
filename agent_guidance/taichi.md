@@ -175,13 +175,18 @@ cores (a render already uses every core; three at once on four cores took ~4x
 longer each). **When a
 kernel's signature or a pipeline's choice of kernels changes, regenerate the
 built-in list** with `scripts/generate_kernel_specs.py`;
-`test_every_builtin_spec_still_matches_a_live_kernel` fails until you do. A
+`test_every_builtin_spec_still_matches_a_live_kernel` (in `--fast`) fails until
+you do. A
 stale entry only costs parallelism, never correctness -- but the test checks
 arity, not template values, and those decide whether a first run's pool
 helps at all: the shading megakernels specialize on the light count (rounded
 to a power of two), and a list holding only the lit 3-D scene's four slots
 left a cold default-rig `explainer` render compiling both megakernels itself
 after the pool had done everything else. Hence the `3d-default-light` variant.
+(The sheet resolve now takes the light bucket only in its shadowed shading
+pass, mode 2: its shadow-free and event-pass launches read no visibility and
+pass one slot, so the two variants share their resolve and differ in
+`wavefront_shade`.)
 The list is generated on the CPU and matched the CUDA render's specs apart
 from that (and three small CUDA-only kernels). With it, a cold first
 `explainer` PREVIEW render on an RTX 5080 took 43 s against 73-77 s with no

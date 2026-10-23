@@ -3504,7 +3504,7 @@ def _warn_secondary_clamped(requested):
         f"{_secondary_tap_ceiling()} and was clamped to it: the "
         f"continuation-position mask is a 32-bit field, one bit per tap, and "
         f"every extra distinct count is paid again in kernel compile time "
-        f"because the resolve unrolls ti.static(range(sec_aa)) at four call "
+        f"because the resolve unrolls ti.static(range(sec_aa)) at five call "
         f"sites."
     )
 
@@ -4203,6 +4203,18 @@ _MAT_SLOTS = {
     "sigma_s": (34, 3),
     "g": (37, 1),
 }
+
+#: Color-valued entries of the built-in material parameter block, by name in
+#: ``_MAT_SLOTS`` (resolved rather than hard-coded so a renumbered slot map
+#: carries this with it). Authored like every other color, and consumed by
+#: arithmetic that runs in linear light: emissive is light the surface adds to
+#: the frame, and the two specular tints and the sheen tint multiply lobes the
+#: shading stages compute. Everything else in the block is a scalar coefficient
+#: -- roughness, metalness, an IOR, an absorption coefficient -- and decoding
+#: one would corrupt it. ``scene_builder`` decodes these slots, and
+#: ``fragment_shaders`` marks the same names on the built-in stages so they are
+#: decoded inside a composed fragment pipeline too.
+_MAT_COLOR_SLOT_NAMES = ("emissive", "specular", "specular_color", "sheen_color")
 
 
 def _core_shader_ids():
