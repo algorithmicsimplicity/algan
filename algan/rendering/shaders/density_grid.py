@@ -69,7 +69,7 @@ def _parse_bounds(bounds):
     if bounds is None:
         return None
     try:
-        t = torch.as_tensor(bounds, dtype=torch.float64).detach().cpu()
+        t = torch.as_tensor(bounds).detach().cpu().to(torch.float64)
     except (TypeError, ValueError) as error:
         raise ValueError(
             f"bounds must be two corners, ((x0, y0, z0), (x1, y1, z1)): {error}"
@@ -318,7 +318,7 @@ class DensityGrid:
             If ``points`` does not end in 3 coordinates, ``frequency`` is not
             positive and finite, or ``octaves`` is below 1.
         """
-        p = torch.as_tensor(points, dtype=torch.float64).detach().cpu()
+        p = torch.as_tensor(points).detach().cpu().to(torch.float64)
         if p.dim() == 0 or p.shape[-1] != 3:
             raise ValueError(f"points must have shape (..., 3), got {tuple(p.shape)}")
         frequency = float(frequency)
@@ -411,8 +411,8 @@ def _frame(mob):
     The basis rows are the Mob's right, up and forward axes, scaled, so a
     point with local coordinates ``l`` sits at ``location + l @ basis``.
     """
-    location = mob.location.detach().reshape(-1, 3)[-1].to("cpu", torch.float64)
-    basis = mob.basis.detach().reshape(-1, 9)[-1].to("cpu", torch.float64)
+    location = mob.location.detach().reshape(-1, 3)[-1].cpu().to(torch.float64)
+    basis = mob.basis.detach().reshape(-1, 9)[-1].cpu().to(torch.float64)
     return location, basis.reshape(3, 3)
 
 
@@ -426,9 +426,7 @@ def _local_points(mob, location, basis):
 
     def collect(node):
         if not node.exclude_from_boundary:
-            points.append(
-                node.location.detach().reshape(-1, 3).to("cpu", torch.float64)
-            )
+            points.append(node.location.detach().reshape(-1, 3).cpu().to(torch.float64))
         for child in node.children:
             collect(child)
 
@@ -527,7 +525,7 @@ def _bind_density(grid, owner):
         upper = local.amax(0)
         # A flat Mob has no extent along some axis; give the box a sliver so
         # the map stays finite (its interior is empty anyway).
-        pad = torch.clamp((upper - lower).max() * 1e-6, min=1e-9)
+        pad = max(float((upper - lower).max()) * 1e-6, 1e-9)
         lower = lower - pad
         upper = upper + pad
     scale = 1.0 / (upper - lower)
@@ -601,8 +599,8 @@ def _density_volume_snapshot(scene, window_start_time, window_end_time, num_fram
     entries = []
     xforms = []
     for binding, owner in owners:
-        location = owner.location.detach().to("cpu", torch.float64)
-        basis = owner.basis.detach().to("cpu", torch.float64)
+        location = owner.location.detach().cpu().to(torch.float64)
+        basis = owner.basis.detach().cpu().to(torch.float64)
         if location.shape[-2] != 1:
             raise AlganConfigurationError(
                 f"{owner._describe()} packs {location.shape[-2]} Mobs into one "
