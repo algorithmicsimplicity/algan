@@ -9,6 +9,8 @@ find what you need in them, you will need to make it yourself!
   its arguments, and what it looks like on screen.
 * :doc:`built_in_animations` -- ready-made animation helpers for drawing
   attention, moving along paths, and transforming diagrams.
+* :doc:`example_scenes` -- complete, path-traced example scripts and the
+  videos they render.
 
 .. toctree::
    :caption: Table of Contents
@@ -16,3 +18,4 @@ find what you need in them, you will need to make it yourself!
 
    mob_gallery
    built_in_animations
+   example_scenes

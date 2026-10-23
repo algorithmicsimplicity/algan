@@ -294,8 +294,12 @@ Six further consequences of the split, not covered there:
     under it, ``1 - clearcoat * F(n.v)``, and it reflects the environment and
     the rest of the scene like any other lobe. The deterministic renderer
     takes the same share from the base but lights its coat with direct
-    light only, so its coat shows no surroundings. The coat does not dim the surface's own
-    emission here (Three.js's does). The sheen is Three.js's
+    light only, so its coat shows no surroundings. The coat also dims the
+    surface's own emission by the same ``1 - clearcoat * F(n.v)``, as
+    Three.js's does: slightly head on and strongly toward the silhouette.
+    That applies to the emitter as it is seen and to the light it casts on
+    the scene. The deterministic renderer does not dim it, so a coated
+    emitter is slightly brighter there. The sheen is Three.js's
     Charlie-distribution lobe with its albedo scaling of the base; as in
     Three.js's direct lighting it is not energy-conserving at grazing angles
     with a low ``sheen_roughness`` -- the albedo fit the scaling uses falls

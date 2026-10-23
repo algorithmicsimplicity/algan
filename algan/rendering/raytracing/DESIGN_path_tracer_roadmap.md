@@ -2106,13 +2106,41 @@ outright, one silently inert):
   roughness, the sheen is Charlie x Neubelt. One `_PL_*` vector carries them
   from `_pt_lit_lobes` to `_pt_lit_f_pdf` (both MIS ends) and to the
   continuation, which picks them after the base lobes, so a material without
-  them evaluates and draws exactly as before. Not reproduced: the coat's
-  attenuation of emission (one MIS end reads the emissive slot raw), and
-  energy conservation of a low-roughness sheen at grazing angles, which
-  Three.js's direct lighting does not have either. Covered by
+  them evaluates and draws exactly as before. Not reproduced: energy
+  conservation of a low-roughness sheen at grazing angles, which Three.js's
+  direct lighting does not have either. Covered by
   `tests/unit_tests/test_pt_clearcoat_sheen.py` (each lobe's sampler against
   its evaluator, the mixture pdf, energy) and two renders in
   `test_path_tracer.py`.
+
+* **The clearcoat did not attenuate emission — FIXED.** Emission sits under
+  the coat. Three.js scales `totalEmissiveRadiance` with the rest of
+  `outgoingLight` by `1 - clearcoat * Fcc`, and glTF's `fresnel_coat` treats
+  emission like the base. The path tracer read the emissive slot raw, so a
+  coated emitter came out too bright by the coat's Fresnel: by 4% of its
+  emission head on, by 16% at 70 degrees from the normal, and by nearly all
+  of it at a silhouette, where a full coat lets almost nothing out. That
+  excess reached both the emitter as seen and the light it cast. Attenuating
+  only one MIS end would have biased the estimate, so both ends now apply the
+  same factor. A hit on the emitter scales its emission by its crossing's
+  `_PL_ATT`. Next-event estimation calls `_pt_emitter_coat_att`, which
+  rebuilds the emitter's shading normal at the sampled barycentrics
+  (`_tri_normal_g`, then `_prep_normal`, as `pt_shade` builds it at a hit)
+  and takes the same `1 - cc * F_c(|n . wi|)`. The one remaining difference
+  is a normal map's mip level: a hit filters over its ray cone, while the
+  sampled point reads the finest level. The emitter tables still select by
+  raw emissive power, which is an upper bound on what leaves through the
+  coat. Any positive selection weight is unbiased when both ends read the
+  same table, so the tables did not change. An emitter that is not a coated
+  MeshPhysicalMaterial gets a factor of exactly 1 at both ends. The
+  deterministic renderer still adds emission unattenuated
+  (`_stage_physical`). Covered by
+  `test_both_mis_ends_read_one_coat_factor_on_the_emission` (the two ends
+  agree on flat, curved, flat-blended and normal-mapped triangles),
+  `test_a_clearcoat_dims_the_emission_a_camera_sees` (the hit end, exactly),
+  and `test_a_coated_emitter_lights_a_floor_through_its_coat` (next-event
+  estimation alone and MIS-combined, against a quadrature of the coated
+  box's emission).
 
 **The standing rule this section implies:** when the deterministic renderer
 gains a feature, the question is not "does the path tracer match it" (§5 says

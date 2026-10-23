@@ -5,9 +5,10 @@ name `algan-quadrants`. The installed Python package is still named
 `quadrants`, so Algan continues to use `import quadrants` and
 `algan.taichi_compat` does not change.
 
-The repository consumes `algan-quadrants==1.3.3.post2`, the patch set rebased
-onto upstream Quadrants v1.3.3 plus 0010-0011, the PTX-cache patches (see
-"1.3.3.post1" and "1.3.3.post2" at the end). It is twenty
+The repository consumes `algan-quadrants==1.3.3.post3`, the patch set rebased
+onto upstream Quadrants v1.3.3 plus 0010-0011, the PTX-cache patches, and 0012,
+the CPU object cache (see "1.3.3.post1", "1.3.3.post2" and "1.3.3.post3" at
+the end). It is twenty
 wheels, cp310-cp314 on four platforms, like `1.3.0.post3` before it, the first
 revision with cp314 wheels (see "Python 3.14" below); the recorded post2
 publication on 2026-09-06 contained sixteen; post1 contained twelve. Check actual PyPI availability before changing the consumer pin or
@@ -42,7 +43,7 @@ what it counts as complete is `resolve_wheel_matrix.py`'s platform table rather
 than a list of names in the YAML — so a platform (or Python) added there is
 required here without this document or that gate being edited. Each platform builds the
 ordinary `quadrants` wheel with `SETUPTOOLS_SCM_PRETEND_VERSION` set from
-the workflow's `ALGAN_QUADRANTS_VERSION` (currently `1.3.3.post2`), so
+the workflow's `ALGAN_QUADRANTS_VERSION` (currently `1.3.3.post3`), so
 Quadrants' Python metadata and its native build see the same version. After all
 twenty wheels succeed, the publish job rewrites only the distribution metadata
 from `quadrants` to `algan-quadrants`, validates the complete matrix, and
@@ -296,8 +297,19 @@ the macOS and Linux builds were checked at run time (README, "0012"), and
 `quadrants_build.yaml` run 39906249562 built macOS, Windows and Linux wheels
 with all twelve patches.
 
-**Stage 1** (this change): `ALGAN_QUADRANTS_VERSION` and `DOWNSTREAM_VERSION`
-move to `1.3.3.post3`; `pyproject.toml` and `uv.lock` stay on the published
-post2. **Stage 2**, after the publish run from `master`: bump `pyproject.toml`,
-then `uv lock --upgrade-package algan-quadrants --refresh-package
-algan-quadrants` with uv 0.7.9.
+**Performed** (2026-10-23), by the two-stage procedure: the build-side bump
+went in with PR #223, and
+[run 39935642419](https://github.com/algorithmicsimplicity/algan/actions/runs/39935642419)
+published all twenty wheels from `master` (merge `fcbd6a2f`).
+`uv lock --upgrade-package algan-quadrants --refresh-package algan-quadrants`,
+run with uv 0.7.9 against PyPI, changed one `(name, version)` pair:
+`algan-quadrants` 1.3.3.post2 became 1.3.3.post3. `uv lock --locked` passes
+with uv 0.4.25 and 0.7.9.
+
+The published Linux x86-64 wheel (cp313) was checked on CPU:
+`test_quadrants_cpu_object_cache.py` passes (10 tests, the cross-process
+one included), and `benchmarks/_precompile_handoff_check.py` gives what the
+local build gave: workers prepared all 30 kernels, the render after them wrote
+no objects and hit the index for all 30, and a warm fresh process's first
+frame took 7.9 s with the cache against 10.0 s with
+`ALGAN_CPU_OBJECT_CACHE=0`.

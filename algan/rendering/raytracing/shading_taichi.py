@@ -1329,8 +1329,10 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     # What the clearcoat lets through to everything under it, Three.js's
     # ``1 - clearcoat * Fcc(n.v)`` and the path tracer's ``_PL_ATT``: the
     # coat reflects that share, so the base must not reflect it too. The
-    # coat lobe itself and the emission are not attenuated (see
-    # ``_pt_physical_layer``). Exactly 1 at ``clearcoat == 0``.
+    # coat lobe itself is not attenuated. The emission is not attenuated
+    # here either, although Three.js and the path tracer
+    # (``_pt_emitter_coat_att``) attenuate it, so a coated emitter reads
+    # slightly brighter in this renderer. Exactly 1 at ``clearcoat == 0``.
     cc = ti.math.clamp(clearcoat, 0.0, 1.0)
     n_dot_v = ti.max(n.dot(view_dir), 1e-4)
     cc_att = 1.0 - cc * (0.04 + 0.96 * ti.pow(1.0 - ti.min(n_dot_v, 1.0), 5.0))
