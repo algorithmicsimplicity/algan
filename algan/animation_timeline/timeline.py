@@ -189,7 +189,7 @@ def _opt_disabled(name):
     gridcross,gridsoup,audiomix,audioprobe,staticbg,margindecay,strokesheets,
     strokepixels,solobands,packedfragsort,binfragsort,fusedbinkeys,hostbackoff,
     writerrepeats,writerview,unrecordedset,rendergc,arenareuse,tilesync,loopsync,
-    bgupload,exactfills,glossfuse,adaptivepool disables individual
+    bgupload,exactfills,glossfuse,adaptivepool,acceldedup disables individual
     optimizations (read once, first use). Two more, optixshadow and
     optixgather, keep one half of the OptiX side path
     (SETTINGS.raytracing.experimental.optix) on the software walk.
