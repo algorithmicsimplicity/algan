@@ -81,7 +81,7 @@ what changed in each patch.
 produce. All eleven apply strictly in order onto a pristine `v1.3.3`, **55
 files, +1127/−72**, and the result is byte-identical to the tree they were
 written in. Both have been built and verified on an RTX 5080: see "0010-0011 —
-what is verified". Neither is published yet.
+what is verified". They were first published in `1.3.3.post2` (`PYPI.md`).
 
 Numeric order is the convention rather than a constraint, and it is worth being
 precise about which, because several patches share a file:
@@ -1049,10 +1049,11 @@ every patch here: v1.3.1 to v1.3.3 touches none of the patched files.
 | the former 0010 (the Windows `/O2` fix) | Deleted: it was a backport of upstream PR #921, which v1.3.1 contains. Its number went to `0010-cuda-ptx-cache-by-content-hash.patch` on 2026-10-22; the patch digests in `quadrants_wheels/manifest.json` carry the file name, so a record from before then is not ambiguous. |
 
 The build follows: `quadrants_build.yaml`'s `QUADRANTS_REF` and the gate
-scripts' default ref are `v1.3.3`, and the release version is `1.3.3.post1`
-(`ALGAN_QUADRANTS_VERSION`, `scripts/rebrand_quadrants_wheel.py`). It was
-published from `master` on 2026-10-21 and is what `pyproject.toml` and
-`uv.lock` consume (`PYPI.md`, "1.3.3.post1").
+scripts' default ref are `v1.3.3`. The rebase was released as `1.3.3.post1`,
+published from `master` on 2026-10-21 (`PYPI.md`, "1.3.3.post1"); the current
+release version is `1.3.3.post2` (`ALGAN_QUADRANTS_VERSION`,
+`scripts/rebrand_quadrants_wheel.py`), which adds 0010-0011 and is what
+`pyproject.toml` and `uv.lock` consume (`PYPI.md`, "1.3.3.post2").
 
 **Built and checked (2026-10-21).** Run `39571753107` built all four platforms
 for cp311 and cp313 with every leg green, the aarch64 glibc 2.34 smoke included
@@ -1362,10 +1363,9 @@ warns against:
     uv pip uninstall --python .venv\Scripts\python.exe algan-quadrants
     .venv\Scripts\python.exe scripts\build_quadrants_wheels.py --run-id <id> --install
 
-`uv sync` puts the published wheel back. Publishing is `PYPI.md`'s two stages:
-`ALGAN_QUADRANTS_VERSION` and `DOWNSTREAM_VERSION` to `1.3.3.post2`, the
-complete matrix with `publish` on from `master`, then `pyproject.toml` and
-`uv.lock`.
+`uv sync` puts the published wheel back. Publishing follows `PYPI.md`'s two
+stages, and 0010-0011 went out that way as `1.3.3.post2` (`PYPI.md`,
+"1.3.3.post2").
 
 ## Upstreaming
 

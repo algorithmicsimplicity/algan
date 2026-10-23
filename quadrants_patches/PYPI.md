@@ -5,8 +5,9 @@ name `algan-quadrants`. The installed Python package is still named
 `quadrants`, so Algan continues to use `import quadrants` and
 `algan.taichi_compat` does not change.
 
-The repository consumes `algan-quadrants==1.3.3.post1`, the patch set rebased
-onto upstream Quadrants v1.3.3 (see "1.3.3.post1" at the end). It is twenty
+The repository consumes `algan-quadrants==1.3.3.post2`, the patch set rebased
+onto upstream Quadrants v1.3.3 plus 0010-0011, the PTX-cache patches (see
+"1.3.3.post1" and "1.3.3.post2" at the end). It is twenty
 wheels, cp310-cp314 on four platforms, like `1.3.0.post3` before it, the first
 revision with cp314 wheels (see "Python 3.14" below); the recorded post2
 publication on 2026-09-06 contained sixteen; post1 contained twelve. Check actual PyPI availability before changing the consumer pin or
@@ -41,7 +42,7 @@ what it counts as complete is `resolve_wheel_matrix.py`'s platform table rather
 than a list of names in the YAML — so a platform (or Python) added there is
 required here without this document or that gate being edited. Each platform builds the
 ordinary `quadrants` wheel with `SETUPTOOLS_SCM_PRETEND_VERSION` set from
-the workflow's `ALGAN_QUADRANTS_VERSION` (currently `1.3.3.post1`), so
+the workflow's `ALGAN_QUADRANTS_VERSION` (currently `1.3.3.post2`), so
 Quadrants' Python metadata and its native build see the same version. After all
 twenty wheels succeed, the publish job rewrites only the distribution metadata
 from `quadrants` to `algan-quadrants`, validates the complete matrix, and
@@ -256,3 +257,31 @@ The published wheel was checked on the RTX 5080 (Windows, cp313):
 `verify_cuda_patches.py` and `verify_invariant_load.py` pass,
 `benchmarks/_taichi_source_key_check.py` passes, and the fast scene renders
 identically to 1.3.0.post3 on the same checkout.
+
+## 1.3.3.post2: the PTX-cache patches 0010-0011
+
+The v1.3.3 patch set plus `0010-cuda-ptx-cache-by-content-hash` and
+`0011-prepare-kernel-without-launch` (`quadrants_patches/README.md`, "0010"
+and "0011"). Both are off or inert unless called, and Algan turns them on
+through feature detection, so the upgrade changes nothing for a wheel without
+them. Before publication a Windows test wheel was verified and A/B-tested on
+the RTX 5080 (README, "0010-0011 — what is verified"), and trial run
+[39893744757](https://github.com/algorithmicsimplicity/algan/actions/runs/39893744757)
+built the full twenty-wheel matrix from the PR branch with `publish` off.
+
+**Performed** (2026-10-23), by the two-stage procedure: the build-side bump
+went in with PR #203, and
+[run 39902724249](https://github.com/algorithmicsimplicity/algan/actions/runs/39902724249)
+published all twenty wheels from `master` (merge `1dbdb94d`).
+`uv lock --upgrade-package algan-quadrants --refresh-package algan-quadrants`,
+run with uv 0.7.9 against PyPI, changed one `(name, version)` pair:
+`algan-quadrants` 1.3.3.post1 became 1.3.3.post2. `uv lock --locked` passes
+with uv 0.4.25 (the `install-uv` pin) and 0.7.9. Do not regenerate the lock
+with a much newer uv: 0.13.4 rewrites the file to lock revision 5 and moves
+unrelated markers.
+
+The published wheel was checked on the RTX 5080 (Windows, cp313):
+`verify_ptx_cache.py run`, `verify_cuda_patches.py` and
+`verify_invariant_load.py` pass, `benchmarks/_taichi_source_key_check.py`
+passes, and the fast scene renders identically to 1.3.3.post1 on the same
+checkout.
