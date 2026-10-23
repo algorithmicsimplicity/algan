@@ -301,7 +301,7 @@ _PAIR_BSDF_DIR = 1
 # throughput the background shows through, the camera-segment alpha
 # transparency, and whether this path ever took a STOCHASTIC decision (see
 # ``pt_reduce``).
-PT_ACC_WIDTH = 10
+PT_ACC_WIDTH = 14
 _PT_ACC_LEFTOVER = 4
 _PT_ACC_ALPHA = 8
 #: 1.0 once the path has made any random choice beyond the sub-pixel jitter:
@@ -328,6 +328,21 @@ _PT_ACC_ALPHA = 8
 #: yet", so the host requires this to be zero as well (see
 #: ``path_tracer._pt_active_pixels``).
 _PT_ACC_STOCH = 9
+#: The emitter-MIS origin, for a path whose last scatter vertex is behind a
+#: smooth transmission (glass, a tinted pane). Next-event estimation at that
+#: vertex reached the emitters *through* the transmissive surface (the shadow
+#: query tints rather than blocks it), so the BSDF continuation that crosses
+#: the surface and finds an emitter has to be MIS-weighted against that NEE,
+#: not counted at weight 1 -- weight 1 counted the same light twice, and a
+#: white furnace under an index-matched slab came out 16% over unity. The
+#: crossing therefore keeps ``prev_pdf``, and the solid-angle pdf NEE would
+#: have had for an emissive triangle is measured from the scatter vertex
+#: recorded here (columns 10-12, a world point), not from the crossing's exit
+#: point. Column 13 is 1.0 while that is in force: set by the first smooth
+#: transmission after a scatter, cleared by the next scatter. Zeroed with the
+#: rest of the row before ``pt_generate``, so a camera segment starts clear.
+_PT_ACC_MIS_ORIGIN = 10
+_PT_ACC_MIS_CARRY = 13
 
 # Device-side truncation tallies, read back by the host once per wave and fed
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
@@ -346,13 +361,16 @@ _INV_PI = 0.3183098861837907
 # power-heuristic MIS weight applied when a BSDF-sampled path finds an
 # emitter (an emissive triangle, or the environment map at escape).
 #   == -1 camera segment -- the path has never scattered; emission weight 1.
-#   == 0  the last scatter was a delta lobe (refraction, a tinted pane) or a
-#         vertex that runs no surface NEE (authored appearance, a circuit):
-#         emission weight 1 -- next-event estimation never covered it.
+#   == 0  the last scatter was a delta reflection (a mirror, glass's smooth
+#         reflection) or a vertex that runs no surface NEE (authored
+#         appearance, a circuit): emission weight 1 -- next-event estimation
+#         never covered it.
 #   > 0   the lobe-mixture pdf of the sampled direction at a lit vertex that
 #         ran the NEE block: emission there is MIS-weighted against it.
 # Pass-through crossings keep the value (the ray, and with it the pdf at its
-# origin vertex, continues unchanged).
+# origin vertex, continues unchanged). So do smooth transmissions (refraction,
+# a tinted pane): NEE's shadow ray passes them tinted, so it covered what lies
+# beyond them -- see ``_PT_ACC_MIS_CARRY``.
 # -2 marks an authored diffuse continuation whose direct term already
 # includes area-light rows. Pass-throughs preserve it; another scatter replaces it.
 _SCA_PREV_PDF = 5
@@ -2351,6 +2369,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             base_dist = rs_sca[r, 4]
             prev_pdf = rs_sca[r, _SCA_PREV_PDF]
             eta_scale = rs_sca[r, _SCA_ETA_SCALE]
+            mis_carry = ti.cast(pt_acc[r, _PT_ACC_MIS_CARRY] > 0.5, ti.i32)
+            mis_org = ti.math.vec3(pt_acc[r, _PT_ACC_MIS_ORIGIN],
+                                   pt_acc[r, _PT_ACC_MIS_ORIGIN + 1],
+                                   pt_acc[r, _PT_ACC_MIS_ORIGIN + 2])
             bounces_left = rs_int[r, 0]
             processed = rs_int[r, 1]
             acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
@@ -2817,7 +2839,18 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if (prev_pdf > 0.0) and (tri_emit_prob[prim] > 0.0) \
                             and (fn_len > 1e-12):
                         covered = 1
-                        cos_l = (-rd).dot(fnrm)
+                        # Behind a smooth transmission, NEE connected the
+                        # scatter vertex to this point straight through the
+                        # surface: measure from there (``_PT_ACC_MIS_CARRY``).
+                        ne_org = ro
+                        ne_dist2 = t_hit * t_hit
+                        ne_dir = rd
+                        if mis_carry == 1:
+                            ne_org = mis_org
+                            ne_vec = hit_p - mis_org
+                            ne_dist2 = ne_vec.dot(ne_vec)
+                            ne_dir = ne_vec / ti.max(ti.sqrt(ne_dist2), 1e-12)
+                        cos_l = (-ne_dir).dot(fnrm)
                         if tri_mat[tm, prim, _MAT_ONE_SIDED] > 0.5:
                             if cos_l <= 1e-6:
                                 covered = 0
@@ -2829,9 +2862,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             # PREVIOUS vertex. Flat CDF: a table lookup.
                             # Light tree: a query, because selection is a
                             # function of the shading point -- walked up
-                            # from the triangle's leaf at ``ro``, which is
-                            # the previous scatter origin (rs_ro is not
-                            # touched by a pass-through crossing).
+                            # from the triangle's leaf at the previous
+                            # scatter origin: ``ro`` (rs_ro is not touched by
+                            # a pass-through crossing), or the recorded
+                            # origin behind a smooth transmission.
                             p_ne = tri_emit_prob[prim]
                             if tree_on:
                                 p_ne = 0.0
@@ -2839,8 +2873,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 if ent_m >= 0:
                                     p_ne = tree_mix * _pt_lt_pmf(
                                         lt_node_f, lt_node_i, lt_r,
-                                        lt_entry_leaf[lt_r, ent_m], ro)
-                            pdf_ne = p_ne * (t_hit * t_hit) \
+                                        lt_entry_leaf[lt_r, ent_m], ne_org)
+                            pdf_ne = p_ne * ne_dist2 \
                                 / ti.max(area_e * c_l, 1e-12) \
                                 * ti.cast(n_ls, ti.f32)
                             w_emit = prev_pdf * prev_pdf \
@@ -3404,6 +3438,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         absorbed = True
                         done = True
                         break
+                    mis_carry = 0
                     ro = hit_p
                     rd = new_rd_m
                     base_dist += t_hit
@@ -3562,6 +3597,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             # A new geometric segment needs a fresh shell
                             # pairing, including custom reflection/refraction.
                             ring = ti.Vector([-1, -1, -1, -1])
+                            mis_carry = 0
                             ro = c_ro
                             rd = c_rd
                             base_dist += t_hit
@@ -3674,6 +3710,11 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     new_rd = rd
                     new_ro = hit_p
                     ok = 1
+                    # A smooth transmission keeps the last scatter's MIS
+                    # state (``_PT_ACC_MIS_CARRY``); every other pick
+                    # replaces it.
+                    smooth_cross = 0
+                    prev_kept = prev_pdf
                     if pick < w_pass + w_diff:
                         # A diffuse pick is non-delta: the AOV prefix ends at
                         # this crossing (whose albedo/normal it just added).
@@ -3728,6 +3769,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         prev_pdf = 0.0
                         if delta_g == 1:
                             tint_g *= alpha * w_sum / ti.max(wg, 1e-12)
+                            if crossed == 1:
+                                # NEE from the last scatter vertex already
+                                # reached past this surface (its shadow ray
+                                # passes transmissive blockers, tinted), so
+                                # what the crossing finds is MIS-covered by
+                                # it. Only the smooth reflection is not.
+                                prev_pdf = prev_kept
+                                smooth_cross = 1
                         else:
                             aov_open = 0
                             fc_g, prev_pdf = _pt_lit_f_pdf(
@@ -3819,9 +3868,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             thru[1] * tint[1],
                                             thru[2] * tint[2],
                                             thru[3] * gmean)
-                        # Refraction / a tinted pane is a delta lobe: what
-                        # it finds next is not MIS-covered by any NEE.
-                        prev_pdf = 0.0
+                        # Refraction / a tinted pane is a delta lobe, but
+                        # NEE from the last scatter vertex passed this
+                        # surface too (tinted): keep that vertex's pdf, as
+                        # the smooth-glass crossing above does.
+                        prev_pdf = prev_kept
+                        smooth_cross = 1
                     if (media_offset > 0) and medium_boundary and (ok == 1):
                         if rd.dot(fnrm) * new_rd.dot(fnrm) > 0.0:
                             media, overflow_m = _pt_medium_cross(
@@ -3854,6 +3906,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if ti.max(thru[0], ti.max(thru[1], thru[2])) * eta_scale < min_weight:
                         done = True
                         break
+                    if smooth_cross == 1:
+                        if mis_carry == 0:
+                            # ``ro`` is still the last scatter vertex: the
+                            # first crossing behind it records it.
+                            mis_org = ro
+                            mis_carry = 1
+                    else:
+                        mis_carry = 0
                     ring = ti.Vector([-1, -1, -1, -1])
                     ro = new_ro
                     rd = new_rd
@@ -3882,6 +3942,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             for k in ti.static(range(4)):
                 pt_thru[r, k] = thru[k]
                 pt_acc[r, k] += acc[k]
+            pt_acc[r, _PT_ACC_MIS_CARRY] = ti.cast(mis_carry, ti.f32)
+            for k in ti.static(range(3)):
+                pt_acc[r, _PT_ACC_MIS_ORIGIN + k] = mis_org[k]
             rs_sca[r, 0] = t_alpha
             rs_sca[r, 1] = t_prev
             rs_sca[r, 2] = layer_prev
