@@ -1680,6 +1680,41 @@ class RenderLoopMixin:
             return midpoint
         return max(low, hint)
 
+    def _optix_structures_fit(self, merged, num_frames):
+        """Whether this window's OptiX acceleration structures fit beside the
+        arena (``SETTINGS.raytracing.experimental.optix``).
+
+        They live outside it, one per frame when anything per frame changes,
+        so the window decides their size; a window whose structures would
+        exceed the batch budget (``optix.gas.batch_budget``) is shrunk here
+        rather than rendered with the software walk. A one-frame window always
+        passes: there is nothing smaller to try, and the build declines on its
+        own.
+        """
+        from algan.rendering.raytracing import settings as rt_module
+
+        if not rt_module.optix or num_frames <= 1:
+            return True
+        device = self.memory.data.device
+        if device.type != "cuda":
+            return True
+        from algan.rendering.raytracing.optix import gas
+
+        need = gas.preflight_bytes(merged, merged.get("num_triangles", 0))
+        if need == 0:
+            return True
+        budget = gas.batch_budget(device)
+        if need <= budget:
+            return True
+        logger.debug(
+            "Arena preflight: OptiX structures for %s frames need ~%.1f MB, past "
+            "the %.1f MB budget beside the arena; shrinking the frame window.",
+            num_frames,
+            need / 1e6,
+            budget / 1e6,
+        )
+        return False
+
     def _prepared_batch_fits_render_arena(
         self,
         primitive_batch,
@@ -2013,6 +2048,10 @@ class RenderLoopMixin:
         self._note_batch_cost(
             "arena", num_frames, scene_bytes, bytes_remaining - margin - forward_bytes
         )
+        if require_estimates_fit and not self._optix_structures_fit(
+            merged_host, num_frames
+        ):
+            return False
         fits = need_bytes <= bytes_remaining - margin
         if not (fits or require_estimates_fit):
             # Single-frame batch: the modelled frame cost is the only thing

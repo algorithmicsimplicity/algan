@@ -202,8 +202,9 @@ and allocator readback ride on the compaction count reads
 ~1,400 of ~5,800 syncs and cut host time blocked in syncs from 11 s to 2 s,
 but wall time moved only ~1%: the bounce drain is GPU-bound (the host now
 waits at the compaction count instead, mostly for `raster_shadow_trace`).
-The syncs that remain (compaction counts, event `nonzero`s, sparse-discovery
-sizes) size the next launch and need a device-side count to go away.
+The syncs that remain (compaction counts, sparse-discovery sizes) size the
+next launch and need a device-side count to go away; the drain's shadow-event
+`nonzero` can be replaced by one (below), which measured no faster.
 When attributing host blocking from a Kineto trace, count blocking
 `cudaMemcpyAsync` (pageable D2H/H2D) as well as `*Synchronize`; torch's
 sync-debug warnings are delivered after the operation returns, so they count
@@ -254,6 +255,93 @@ composite and the clear; `DESIGN_glossy_prefilter.md` has why its reset is
 exact. `tests/unit_tests/test_tile_state_fills.py` holds the state fills on
 both routes by rendering with every tile's state poisoned, and
 `test_glossy_fused_finish.py` holds the glossy kernels the same way.
+
+### The bounce drain's shadow events, and tiles planned from what they used (October 22)
+
+**Shadow events on the device** (`tracer._device_wavefront_shadows`; opt-in:
+`SETTINGS.raytracing.experimental.wf_device_shadow_glue`,
+`ALGAN_WF_DEVICE_SHADOW_GLUE=1`). The sheet route's drain
+used to read back each bounce's accepted shadow events (`ev_accept.nonzero()`,
+a stream drain) to size the trace, after filling a dense all-lit
+`[rows, 3 * vis_lights]` table (192 B a row at the graphics workload's 16
+slots) and before a Morton argsort and a dozen count-sized gathers, fills and
+an `index_copy`. Now the count never leaves the device:
+`shadow_event_bins` counts the accepted rows per bin -- the window's frames
+times an octree cell of the scene box, at most `2 ** 18` bins and never more
+than the rows -- `torch.cumsum` turns the counts into bin ends, and
+`shadow_event_scatter` gives each accepted row a slot in its bin and maps
+every row to its slot or -1. `raster_taichi.deferred_shadow_trace` runs
+`_shadow_fan_cell` (the body `raster_shadow_trace` runs) over every row times
+the traced lights, with the count read on the device; it reads an event at its
+row and writes its visibility at its slot (`arena_args_taichi.RowView`). The
+shade reads through the map (`deferred_shadows == 2`: `rs_vis` is flat, the
+map's i32 words in f32 storage, then the compact table); a row with no event
+keeps the all-lit start of `vis`. Each event's fan, payload and acceptance are
+the old ones, so the image is unchanged; only the order the trace takes events
+in moved, from a full Morton sort to the bin. One readback per bounce remains:
+the compaction count, which sizes the next bounce and ends the loop.
+The parallel shadow queue (`shadow_ray_parallel`), Metal, and a bounce whose
+rows would overflow the kernels' i32 ranges keep the host glue. The table is
+sized for every row (the count is not on the host), 152 B a row at 12 traced
+lights against the old 192, and only the accepted rows' part is touched: 13%
+of rows at the graphics workload's first bounce. The slots past the count keep
+whatever the arena held -- often an earlier bounce's `-1` map words, NaN as
+floats -- which no map entry points at; a check that compares the whole table
+compares that (`test_device_shadow_glue.py` poisons it and checks both lane
+schedules below the count only). It is off by default on measurement: on the
+RTX 5080, graphics UHD 0.5 s warm, it was neutral alone (13.65 and 13.50 s
+against 13.90 and 13.68) and cost about 0.35 s beside the adaptive tile pool
+(12.22 and 12.17 against 11.85 and 11.86). That drain is GPU-bound, so the
+readback it removes was off the critical path, while the row-sized trace
+launch, the binned order and the mapped reads cost GPU time; which of them,
+nobody has profiled. Byte-identical either way.
+
+**Tiles from observed demand** (`tracer._TileDemand`;
+`ALGAN_OPT_DISABLE=adaptivepool`). `_split_pool_ratio` sizes a splitting
+tile's pool before anything is traced -- 8 slots a primary for glass under
+four secondary samples -- and the tile's primaries, so the tile count, scale
+with it; the graphics workload's tiles want about 2.2. And a tile sized to the
+arena's last free byte has no room for its own resolve and drain scratch, so
+its first attempt ran out of memory after a whole resolve and was retried at
+half size, in every chunk. The record keeps, per render job (on the arena) and
+per pool estimate, the most slots per primary a planned-size tile attempt
+asked for (`rs_alloc[ALLOC_NEXT]`, read with the drain's last compaction
+count; `_plans_like`: at least half what the arena allows, since a chunk's
+small last tile over the glass asks several times the average) and the most
+scratch per slot any used (`_TileScratchPeak`: the arena's `max_pointer`
+re-baselined at the tile's state and handed back as the larger of the two
+marks, so the chunk model reads what it always read). An attempt that runs out
+of arena records its free bytes over its pool as a lower bound. Each later
+chunk plans its tiles once from the record: a pool ratio of 1.25 times the
+slots, at least 2 and never above the estimate (a ratio raised to the densest
+tile would shrink every other tile; that tile is the overflow retry's, as it
+always was), and the scratch rate charged to every pool slot. Per slot, not
+per primary: the drain's scratch follows its active rays, so a tile over the
+glass used 0.5 to 2.9 KB of scratch per primary on a CPU test scene but 0.22
+to 0.29 KB per slot it asked for, and the pool already carries the slots'
+headroom. The first chunk plans from the estimate, as before; the overflow
+retry still makes a short pool exact and the halving still makes a short
+reserve safe. Only tiles of at least 65536 primaries read as scratch rates
+(below that the fixed part dominates). On one CPU thread, graphics at 384x216
+over 6 frames in a 160 MB arena took 47 tile attempts and 2 memory retries
+instead of 53 and 7; a glass-heavy 160x120 scene in 20 MB took 28 and 6 (and
+one overflow retry) instead of 36 and 12; both byte-identical. On the RTX
+5080, graphics UHD 0.5 s warm went from 13.72 s to 11.85 s (-13.6%): 9-10
+chunks instead of 32, 151-167 tile attempts instead of 186 and 2 memory
+retries instead of 34, no overflow retries. PREVIEW, explainer UHD and nn
+moved within noise, and all nine deterministic scenes stayed byte-identical.
+
+Tiles partition pixels, but two things tie a splitting pixel's last bits to
+its tile's size, so A/B both switches on non-splitting fixtures
+(`max_bounces=0`) or on one CPU thread with `wf_ray_sort` off:
+the drain sorts a bounce only from `wf_ray_sort_min` active rays, and a sorted
+bounce takes a pixel's own rays in another order (the float sums and the
+glossy claim follow it; on a GPU they race anyway). And a changed tile plan
+changes a chunk's arena peak, which the chunk model sizes the next window
+from, and windows move moving content (above); `e2e_scene.py` prints the
+sheet route's chunk, attempt and retry counts per run so an A/B can see it.
+`tests/unit_tests/test_device_shadow_glue.py` and `test_adaptive_tile_pool.py`
+hold both, byte for byte, on one CPU thread.
 
 ### Split pixels are byte-reproducible; keep them that way
 

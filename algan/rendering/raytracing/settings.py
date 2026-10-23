@@ -699,6 +699,19 @@ def set_wf_shadow_event_sort(enabled):
     wf_shadow_event_sort = bool(enabled)
 
 
+# Build, order and size the deferred shadow events on the device
+# (tracer._device_wavefront_shadows): no count read back per bounce, no dense
+# all-lit table, events binned by octree cell instead of Morton-sorted, a trace
+# sized by the row count and a shade that reads visibility through a row ->
+# slot map. Byte-identical either way. OFF by default, on measurement: on an
+# RTX 5080 (graphics UHD 0.5 s, warm) it was neutral alone (13.65/13.50 s
+# against 13.90/13.68) and cost ~0.35 s beside the adaptive tile pool (12.22/
+# 12.17 against 11.85/11.86) -- the drain there is GPU-bound, so the sync it
+# removes was not on the critical path, and its row-sized trace launch, binned
+# order and mapped reads cost GPU time. ALGAN_WF_DEVICE_SHADOW_GLUE=1 opts in.
+wf_device_shadow_glue = env_flag("ALGAN_WF_DEVICE_SHADOW_GLUE", False)
+
+
 # Compile-time material-pipeline gating. The per-hit material dispatch
 # (``shading_taichi._run_frag_pipeline``) is inlined into the shade kernels
 # with every built-in stage reachable -- including ``_stage_physical``'s
@@ -1618,6 +1631,20 @@ frame_local_video_batches = env_flag("ALGAN_FRAME_LOCAL_VIDEO_BATCHES", False)
 # Host dispatch gates: changing these never invalidates compiled settings.
 shadow_ray_parallel = env_flag("ALGAN_SHADOW_RAY_PARALLEL", False)
 shadow_secondary_sort = env_flag("ALGAN_SHADOW_SECONDARY_SORT", True)
+
+# Hardware ray tracing (NVIDIA OptiX on RT cores) for the deterministic
+# renderer's triangle shadow rays and its reflection/refraction gather. A side
+# path between Quadrants kernels (``algan/rendering/raytracing/optix``): the
+# driver's own OptiX runtime through ctypes, programs compiled with torch's
+# NVRTC, one triangle GAS per batch frame. Anything it cannot do -- no CUDA, no
+# RT cores, no driver support, Bezier circuits in the batch -- keeps the
+# software walk, so turning it on never fails a render.
+#
+# OFF by default: the RT cores' watertight triangle test is not Algan's
+# float32 ``_tri_hit`` bit for bit, so turning it on moves shadow-edge and
+# reflection pixels at the last-bit level and needs its own baselines. Read
+# live at every shadow dispatch (host-side only; no kernel folds it in).
+optix = env_flag("ALGAN_OPTIX", False)
 
 
 def set_shadow_ray_budget(rays):

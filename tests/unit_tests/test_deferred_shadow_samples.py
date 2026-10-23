@@ -76,8 +76,8 @@ def test_zero_footprint_visibility_matches_every_original_sample(
                 saw_attenuation.append(bool(((expected > 0) & (expected < 1)).any()))
                 checks.append(adaptive)
 
-    def checked_make(memory, sort_sources=None):
-        launch = original_make(memory, sort_sources)
+    def checked_make(memory, sort_sources=None, merged=None):
+        launch = original_make(memory, sort_sources, merged=merged)
 
         def trace(*inputs):
             checked(*inputs)

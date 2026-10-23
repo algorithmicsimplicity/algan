@@ -43,6 +43,7 @@ PN origin.
 from algan.environment import env_int
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
+    RowView,
     arena_packed,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -3639,6 +3640,155 @@ def raster_shadow_trace(*args):
     `arena_args_taichi`.
     """
     return _raster_shadow_trace_launch(*args)
+
+
+@ti.kernel
+def deferred_shadow_trace_arena(
+        num_rows: int,
+        event_count: ti.types.ndarray(), event_list: ti.types.ndarray(),
+        event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
+        event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
+        event_msk: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_first_leaf: int,
+        num_colored_triangles: ti.i32,
+        b_nodes: NODE_ARG, b_first_leaf: int,
+        num_lights: int, traced_lights: int, layer_offset_triangles: ti.f32,
+        refit: ti.template(),
+        has_tri: ti.template(), has_bez: ti.template(),
+        event_dp: ti.types.ndarray(), event_toff: ti.types.ndarray(),
+        sec_aa: ti.template(),
+        shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template(),
+        event_src_prim: ti.types.ndarray(),
+        eps_self: ti.f32, eps_near: ti.f32,
+        shadow_identity: ti.template(),
+        shadow_term: ti.template(),
+        adaptive_taps: ti.template(),
+        secondary: ti.i32,
+        light_major: ti.template(),
+        projected: ti.template(),
+        arena_f32: ti.types.ndarray(),
+        arena_i32: ti.types.ndarray(),
+        aoff: ti.types.ndarray(),
+        ashp: ti.types.ndarray()):
+    """``raster_shadow_trace`` for the bounce drain's events, sized on the device.
+
+    The bounce drain (``tracer._drain_sparse_secondary``) used to read back how
+    many of ``wavefront_shadow_events``' rows it accepted -- a ``nonzero`` that
+    drained the stream every bounce -- and gather each payload array down to
+    them. Here nothing is read back: ``event_list[:event_count[0]]`` holds the
+    accepted rows (``wavefront_kernels_taichi.shadow_event_scatter``), the
+    launch covers ``num_rows`` -- every row the events kernel wrote, an upper
+    bound on the count -- and a cell past the count does nothing.
+
+    Every cell is ``_shadow_fan_cell``, the body ``raster_shadow_trace`` runs,
+    called with the event's ROW so the payload is read where the events kernel
+    wrote it, and with ``shadow_vis`` seen at the event's compacted SLOT
+    (:class:`RowView`), where the shade kernel's map points. ``event_dp`` and
+    ``event_src_prim`` are one-row tables every event shares, as the zero
+    footprint and the ``-1`` source the drain's events have always carried
+    were. The fan, its arithmetic and its acceptance are the ones the old
+    launch ran, so every cell's visibility is the same.
+
+    ``traced_lights`` is ``min(num_lights, vis_lights)``: the shade reads no
+    light past its payload's slots, so none is traced. ``num_lights`` is the
+    batch's own count, which the fan body is given as before.
+    """
+    # Arena-bound parameters (arena_args_taichi): each name is
+    # rebound to a window into its dtype's buffer, at the offset
+    # the host wrote into aoff. Order is _DEFERRED_SHADOW_TRACE_ARENA's.
+    t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
+    t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
+    t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
+    tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
+    tri_colors = ti.static(ArenaView(
+        arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8], ashp[9])))
+    tri_uvs = ti.static(ArenaView(arena_f32, aoff[5], (ashp[10], ashp[11], ashp[12])))
+    tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[6], (ashp[13], ashp[14])))
+    textures = ti.static(ArenaView(arena_f32, aoff[7], (ashp[15], ashp[16], ashp[17])))
+    tri_extra = ti.static(ArenaView(arena_f32, aoff[8], (ashp[18], ashp[19], ashp[20])))
+    b_node_miss = ti.static(ArenaView(arena_i32, aoff[9], (ashp[21],)))
+    b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[10], (ashp[22],)))
+    b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[11], (ashp[23],)))
+    circuit_meta = ti.static(ArenaView(
+        arena_f32, aoff[12], (ashp[24], ashp[25], ashp[26])))
+    circuit_colors = ti.static(ArenaView(
+        arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29], ashp[30])))
+    circuit_border_colors = ti.static(ArenaView(
+        arena_f32, aoff[14], (ashp[31], ashp[32], ashp[33], ashp[34])))
+    edges_2d = ti.static(ArenaView(arena_f32, aoff[15], (ashp[35], ashp[36], ashp[37])))
+    edge_accel = ti.static(ArenaView(arena_i32, aoff[16], (ashp[38],)))
+    light_pos = ti.static(ArenaView(
+        arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41])))
+    light_col = ti.static(ArenaView(
+        arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44])))
+    pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[45],)))
+    tri_obj = ti.static(ArenaView(arena_i32, aoff[20], (ashp[46], ashp[47])))
+    cam_proj_table = ti.static(ArenaView(arena_f32, aoff[21], (ashp[48], ashp[49])))
+    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
+    shared_dp = ti.static(RowView(event_dp, 0))
+    shared_src = ti.static(RowView(event_src_prim, 0))
+    # One (event, light) cell per iteration, laid out as raster_shadow_trace
+    # lays them out over its exact count; a cell past the device count is
+    # idle. Read per cell rather than once above the loop: the loop is the
+    # kernel's parallel task, and the count is a value on the device.
+    for idx in range(num_rows * traced_lights):
+        e = idx // traced_lights
+        li = idx - e * traced_lights
+        if ti.static(light_major):
+            li = idx // num_rows
+            e = idx - li * num_rows
+        if e < event_count[0]:
+            row = event_list[e]
+            vis_at_slot = ti.static(RowView(shadow_vis, e))
+            _shadow_fan_cell(
+                row, li,
+                event_pos, event_snrm, event_fnrm, event_frame,
+                event_msk, t_nodes, t_node_miss, t_leaf_prim,
+                t_leaf_tspan, t_first_leaf, tri_pos, tri_colors,
+                tri_uvs, tri_tex_meta, textures, tri_extra,
+                num_colored_triangles, b_nodes, b_node_miss, b_leaf_prim,
+                b_leaf_tspan, b_first_leaf, circuit_meta, circuit_colors,
+                circuit_border_colors, edges_2d, edge_accel, light_pos,
+                light_col, num_lights, pixel_world_scale, cam_proj,
+                layer_offset_triangles, refit, has_tri, has_bez, shared_dp,
+                event_toff, sec_aa, vis_at_slot, shadow_anyhit,
+                tri_obj, shared_src, eps_self, eps_near,
+                shadow_identity, shadow_term, adaptive_taps, secondary,
+                False, event_pos, event_msk, 0, 0, 0)
+
+
+#: ``raster_shadow_trace``'s arena layout, which this kernel binds the same
+#: arrays through. Its own name, because ``test_arena_args`` holds each
+#: converted kernel's prologue to the spec its wrapper packs from.
+_DEFERRED_SHADOW_TRACE_ARENA = _RASTER_SHADOW_TRACE_ARENA
+
+#: The argument list ``tracer._device_wavefront_shadows`` passes.
+_DEFERRED_SHADOW_TRACE_PARAMS = (
+    "num_rows", "event_count", "event_list", "event_pos", "event_snrm",
+    "event_fnrm", "event_frame", "event_msk", "t_nodes", "t_node_miss",
+    "t_leaf_prim", "t_leaf_tspan", "t_first_leaf", "tri_pos", "tri_colors",
+    "tri_uvs", "tri_tex_meta", "textures", "tri_extra", "num_colored_triangles",
+    "b_nodes", "b_node_miss", "b_leaf_prim", "b_leaf_tspan", "b_first_leaf",
+    "circuit_meta", "circuit_colors", "circuit_border_colors", "edges_2d",
+    "edge_accel", "light_pos", "light_col", "num_lights", "traced_lights",
+    "pixel_world_scale", "layer_offset_triangles", "refit", "has_tri", "has_bez",
+    "event_dp", "event_toff", "sec_aa", "shadow_vis", "shadow_anyhit", "tri_obj",
+    "event_src_prim", "eps_self", "eps_near", "shadow_identity",
+    "shadow_term", "adaptive_taps", "secondary", "light_major", "cam_proj_table",
+    "projected",
+)
+
+_deferred_shadow_trace_launch = arena_packed(
+    __name__, "deferred_shadow_trace_arena",
+    _DEFERRED_SHADOW_TRACE_PARAMS, _DEFERRED_SHADOW_TRACE_ARENA)
+
+
+def deferred_shadow_trace(*args):
+    """Pack the arena-bound arguments, then launch ``deferred_shadow_trace_arena``.
+
+    Same convention as :func:`raster_shadow_trace`; see `arena_args_taichi`.
+    """
+    return _deferred_shadow_trace_launch(*args)
 
 
 
