@@ -885,6 +885,11 @@ class Mob(
         # nothing on the working path and only words the error on the failing
         # one. Manim's own compatibility Mobs override this to delegate to
         # their backing object, which is why the hint lives on the base class.
+        # A ``set_<attr>``/``get_<attr>`` not yet built lands here first
+        # (Animatable._generated_accessor).
+        accessor = self._generated_accessor(name)
+        if accessor is not None:
+            return accessor
         hint = _MANIM_METHOD_HINTS.get(name)
         if hint is None:
             raise AttributeError(f"{self._describe()} has no attribute {name!r}")
@@ -3034,10 +3039,15 @@ class Mob(
         if len(self) == 0:
             raise TypeError("Mob object is not iterable")
         # Every packed level works out its member offsets once, here on the
-        # source, for each of its views to share.
-        for part in self.get_descendants():
+        # source, for each of its views to share. A plain walk of the levels
+        # the view restricts (_set_data_sub_inds): each view bumps the
+        # hierarchy version, so get_descendants() would rebuild every time.
+        levels = [self]
+        while levels:
+            part = levels.pop()
             if part.parent_batch_sizes is not None:
                 part._member_offsets()
+            levels.extend(part.children)
         # Clone the mob without cloning its data, but recursively for children structure
         cloned_mob = self.clone(
             add_to_scene=False, clone_data=False, recursive=True, spawn=False

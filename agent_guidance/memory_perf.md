@@ -571,9 +571,17 @@ explainer PREVIEW 0.58 vs 0.66 s, graphics PREVIEW 1.78 vs 1.88 s (pinned:
   `Text` went from 445/604/872 µs to about 225 µs at every size; authoring the
   backprop video's scene 6 (`Project.validate`, 28,693 views) went from 64 to
   50 s, the views' share from 24.5 to 13 s, with the recorded timeline
-  unchanged byte for byte. About 4.6 s of what is left is cyclic GC that the
-  views' allocations trigger (twelve full collections of the heap), most of it
-  from each cloned Mob's per-attribute `set_*`/`get_*` closures.
+  unchanged byte for byte.
+- **Lazy `set_<attr>`/`get_<attr>` accessors.** Every Animatable used to
+  install a closure pair per animatable attribute at construction and on
+  every clone. That was 124 of the 157 GC-tracked objects a glyph view kept
+  alive, and the churn set off cyclic GC over the whole heap. They are now
+  built on first use (`Animatable._generated_accessor`, through `__getattr__`),
+  and a view keeps 41. Scene 6 under equal load, master → both changes:
+  `validate` 46–53 → 40 s, views 16–19 → 7.2 s, GC 5.2–5.6 → 3.1 s, full
+  collections 12 → 8. The recorded timeline is unchanged byte for byte. An
+  accessor whose name the class defines (`Mob.set_location`) is still built
+  at construction, so it shadows the class method as it always has.
 
 All of these memos reproduce the uncached state bit for bit
 (`tests/unit_tests/test_authoring_memos.py`). The daemon keeps them warm

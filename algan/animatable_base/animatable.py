@@ -1143,15 +1143,41 @@ class Animatable:
         )
 
     def _generate_animatable_attr_set_get_methods(self, attrs=None):
-        """Internal: install ``set_<attr>`` / ``get_<attr>`` helpers on this object.
+        """Internal: give this object ``set_<attr>`` / ``get_<attr>`` helpers.
 
         Gives every animatable attribute a matching pair of accessors, so a
         registered ``roughness`` attribute also answers to ``mob.set_roughness(...)``
         and ``mob.get_roughness()``. Called during construction; you do not call
         this yourself. ``attrs`` limits it to those attributes; ``None``, the
         default, means all of them.
+
+        Each accessor is built the first time it is looked up
+        (:meth:`_generated_accessor`), not here: a closure pair per attribute
+        was most of the objects every Mob and every view of a packed Mob
+        allocated, and most are never called. An accessor whose name the class
+        itself defines is built now, so that it shadows the class's attribute
+        exactly as an eagerly installed one always has.
         """
-        for attr in self.animatable_attrs if attrs is None else attrs:
+        attrs = tuple(self.animatable_attrs if attrs is None else attrs)
+        self.__dict__["_accessor_attrs"] = attrs
+        cls = type(self)
+        for attr in attrs:
+            for name in (f"set_{attr}", f"get_{attr}"):
+                if hasattr(cls, name):
+                    self._generated_accessor(name)
+
+    def _generated_accessor(self, name):
+        """Build ``set_<attr>`` / ``get_<attr>`` if this object holds it, else None.
+
+        The accessor is kept in the instance ``__dict__``, so it is built once
+        and later lookups find it there like any attribute.
+        """
+        kind, _, attr = name.partition("_")
+        if kind not in ("set", "get") or attr not in self.__dict__.get(
+            "_accessor_attrs", ()
+        ):
+            return None
+        if kind == "set":
 
             def setattr_general(value, attr=attr, self=self, recursive=True, **kwargs):
                 if kwargs:
@@ -1170,10 +1196,40 @@ class Animatable:
                     self.set_non_recursive(**{attr: value})
                 return self
 
-            super().__setattr__(f"set_{attr}", setattr_general)
-            super().__setattr__(
-                f"get_{attr}", lambda attr=attr: self.__getattribute__(attr)
+            accessor = setattr_general
+        else:
+            accessor = lambda attr=attr: self.__getattribute__(attr)  # noqa: E731
+        self.__dict__[name] = accessor
+        return accessor
+
+    def _held_accessor_attrs(self) -> tuple[str, ...]:
+        """The animatable attributes this object holds accessors for, built or not."""
+        held = self.__dict__.get("_accessor_attrs", ())
+        attrs = tuple(
+            attr
+            for attr in self.animatable_attrs
+            if attr in held or f"set_{attr}" in self.__dict__
+        )
+        return held if attrs == held else attrs
+
+    def __getattr__(self, name):
+        # Reached only once normal lookup has failed, which is how an accessor
+        # not yet built is found (_generate_animatable_attr_set_get_methods).
+        accessor = self._generated_accessor(name)
+        if accessor is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}",
+                name=name,
+                obj=self,
             )
+        return accessor
+
+    def __dir__(self):
+        # Accessors not yet built answer all the same, so list them.
+        names = set(super().__dir__())
+        for attr in self.__dict__.get("_accessor_attrs", ()):
+            names.update((f"set_{attr}", f"get_{attr}"))
+        return sorted(names)
 
     def _try_add_to_timeline(self, key, value):
         timeline = self.scene.timeline_manager
@@ -1776,6 +1832,8 @@ class Animatable:
                 "_animation_manager",
                 # Set above from the clone policy, not inherited from the source.
                 "_added_to_scene",
+                # Set below from the accessors the source holds.
+                "_accessor_attrs",
                 # Version-checked caches; clones rebuild their own lazily.
                 "_attr_inds_cache",
                 "_descendants_cache",
@@ -1834,9 +1892,7 @@ class Animatable:
         # construction has none, so its class's own ``set_<attr>`` stays visible
         # -- DecimalNumber's ``value`` setter calls ``set_value``, and a
         # generated one shadowing it recursed until the stack ran out.
-        clone._generate_animatable_attr_set_get_methods(
-            [attr for attr in self.animatable_attrs if f"set_{attr}" in self.__dict__]
-        )
+        clone._generate_animatable_attr_set_get_methods(self._held_accessor_attrs())
         if clone_data:
             for attr in self.animatable_attrs:
                 setattr(clone, attr, getattr(self, attr, None))
