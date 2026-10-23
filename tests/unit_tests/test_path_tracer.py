@@ -624,30 +624,55 @@ def test_lambert_furnace_is_lossless_under_a_light_row(tmp_path):
 
 
 def test_ggx_furnace_keeps_energy_with_compensation(tmp_path):
-    """White furnace, specular: a white metallic sphere (roughness 0.5) under
-    a white background must stay near-white -- VNDF sampling with the Turquin
-    compensation recovers the multiple-scattering energy single-scatter GGX
-    loses (uncompensated, rough metal renders visibly dark).
+    """White furnace, specular: a white metal sphere in a uniform environment
+    reflects exactly what arrives, at every roughness -- VNDF sampling with
+    the Turquin compensation recovers the multiple-scattering energy
+    single-scatter GGX loses, and creates none.
+
+    The environment is half-bright so a gain is visible instead of clipping
+    at 255. With ``E1`` taken from Karis's split-sum fit, which describes a
+    darker lobe than the exact-Smith one the path tracer samples, the
+    compensation over-corrected: this sphere read 1.15x, 1.25x and 0.73x the
+    furnace at roughness 0.25, 0.5 and 1.
     """
 
-    def build(scene):
-        scene.set_background(WHITE)
-        Scene.clear_lights()
-        sphere = Sphere(radius=1.0)
-        sphere.set_material(
-            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.5)
-        )
-        sphere.spawn(animate=False)
+    def build_at(roughness):
+        def build(scene):
+            scene.set_background(BLACK)
+            Scene.clear_lights()
+            scene.set_environment_map(torch.full((4, 8, 3), 0.5), ambient=False)
+            sphere = Sphere(radius=1.0)
+            sphere.set_material(
+                MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=roughness)
+            )
+            sphere.spawn(animate=False)
 
-    img = _render_scene(tmp_path, "furnace_ggx.png", build, 64).float()
-    h, w = img.shape[0], img.shape[1]
-    # The sphere covers the frame centre; sample its disc.
-    disc = img[h // 2 - 8 : h // 2 + 8, w // 2 - 8 : w // 2 + 8]
-    mean = float(disc.mean())
-    assert mean > 0.93 * 255, (
-        f"GGX furnace lost energy: sphere disc mean {mean:.1f}/255"
-    )
-    assert mean <= 256, f"GGX furnace GAINED energy: {mean:.1f}/255"
+        return build
+
+    for roughness in (0.25, 0.5, 1.0):
+        img = _render_scene_exp(
+            tmp_path,
+            f"furnace_ggx_{roughness}.png",
+            build_at(roughness),
+            32,
+            video=SMOKE_TEST.set(resolution=(32, 32)),
+            max_bounces=4,
+            linear_color_space=False,
+            tonemapping=False,
+            dither=False,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_firefly_clamp": 0,
+                "pt_error_target": 0,
+            },
+        ).float()
+        sky = float(img[1, 1, :3].mean())
+        assert sky == pytest.approx(255 * 0.5, abs=1.0), "the furnace is mis-set"
+        ratio = _center_patch_mean(img, half=2) / sky
+        assert ratio == pytest.approx(1.0, abs=0.03), (
+            f"GGX furnace at roughness {roughness}: the metal reflects "
+            f"{ratio:.3f}x what arrives"
+        )
 
 
 def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):

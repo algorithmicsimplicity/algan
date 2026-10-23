@@ -721,7 +721,7 @@ def _build_nee_tables(
     tri_emit_prob [N], env_cdf [H, W + 1], tri_emit_entry
     [N], lt_node_f [rows, nodes, 14], lt_node_i [rows, nodes, 3],
     lt_entry_leaf [rows, E_finite], lt_frame [frames], nee_inf_cdf [E_inf],
-    nee_inf_ref [E_inf], pt_glass_energy [37026, 2])`` plus the two host-side
+    nee_inf_ref [E_inf], pt_glass_energy [GLASS_ENERGY_SHAPE[0] + 33 * 33, 2])`` plus the two host-side
     numbers the launch needs, ``(auth_mode, authored_slots)`` -- every
     selection probability the kernels divide by or MIS against comes from
     these, so both ends of each MIS pair see identical numbers. The ``A``
@@ -743,7 +743,8 @@ def _build_nee_tables(
     authored surface at all.
 
     ``pt_glass_energy`` is the immutable coupled dielectric compensation
-    lookup, copied into the arena once per render. ``_NM_QUAD_BASE`` identifies
+    lookup with the opaque GGX albedo table appended (``ggx_albedo``), copied
+    into the arena once per render. ``_NM_QUAD_BASE`` identifies
     the camera-visible physical area-light panels; their cell rows are
     withdrawn from the physical NEE table so they are not counted twice.
     """
@@ -1029,10 +1030,12 @@ def _build_nee_tables(
         meta[_NM_AUTHORED_SAMPLES] = float(auth_samples)
         meta[_NM_AUTHORED_COUNT] = float(num_authored)
 
-    from algan.rendering.raytracing.glass_energy import glass_energy_table
+    from algan.rendering.raytracing.ggx_albedo import pt_energy_tables
 
+    # The glass energy table with the opaque GGX albedo table appended: one
+    # buffer, one kernel parameter (``ggx_albedo``).
     with memory.scope("pt_glass_energy"):
-        glass_energy = _arena_copy(memory, torch.from_numpy(glass_energy_table()))
+        glass_energy = _arena_copy(memory, torch.from_numpy(pt_energy_tables()))
 
     # The light tree over the SAMPLED entries only: the ambient rows on
     # nee_ref's tail are the deterministic fill and were never selected.
