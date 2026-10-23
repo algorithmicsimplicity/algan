@@ -318,7 +318,7 @@ def test_same_side_neighbours_are_rejected():
 # traversal arguments are inert placeholders here; renders cover the rest).
 # ---------------------------------------------------------------------------
 
-_MAT_WIDTH = 40
+_MAT_WIDTH = 41
 
 
 @ti.kernel

@@ -190,7 +190,12 @@ row links to the section that explains it.
      - **Refused**
      - Yes
      - `Homogeneous volumes and subsurface scattering`_
-   * - Heterogeneous volumes, ambient occlusion, displacement
+   * - Heterogeneous volumes (density grids: smoke, clouds)
+     - **Refused**
+     - **Refused**
+     - Yes
+     - `Density grids`_
+   * - Ambient occlusion, displacement
      - **No**
      - **No**
      - **No**
@@ -206,11 +211,12 @@ Bezier circuits -- see :ref:`limits-lit`. "Falls back" means the batch is routed
 off the analytic path onto the supersampled one. "Refused" means the renderer
 cannot draw the feature at all, so rather than render a wrong frame Algan
 raises :class:`~algan.errors.UnsupportedFeatureError` naming it (the
-``unsupported_feature_policy`` setting can downgrade that to a warning). Two
-features are refused by the deterministic renderer: depth of field, here, and
+``unsupported_feature_policy`` setting can downgrade that to a warning). Three
+features are refused by the deterministic renderer: depth of field, here,
 homogeneous scattering media, described in
-`Homogeneous volumes and subsurface scattering`_. Everything else in this table
-that a renderer cannot honour is listed here rather than dropped silently.
+`Homogeneous volumes and subsurface scattering`_, and density grids, described
+in `Density grids`_. Everything else in this table that a renderer cannot
+honour is listed here rather than dropped silently.
 
 "Yes, as a delta lobe" is how the path tracer takes a **custom ray scatter**.
 Your function picks the direction; the path continues along the branch it
@@ -293,8 +299,12 @@ Six further consequences of the split, not covered there:
     under it, ``1 - clearcoat * F(n.v)``, and it reflects the environment and
     the rest of the scene like any other lobe. The deterministic renderer
     takes the same share from the base but lights its coat with direct
-    light only, so its coat shows no surroundings. The coat does not dim the surface's own
-    emission here (Three.js's does). The sheen is Three.js's
+    light only, so its coat shows no surroundings. The coat also dims the
+    surface's own emission by the same ``1 - clearcoat * F(n.v)``, as
+    Three.js's does: slightly head on and strongly toward the silhouette.
+    That applies to the emitter as it is seen and to the light it casts on
+    the scene. The deterministic renderer does not dim it, so a coated
+    emitter is slightly brighter there. The sheen is Three.js's
     Charlie-distribution lobe with its albedo scaling of the base; as in
     Three.js's direct lighting it is not energy-conserving at grazing angles
     with a low ``sheen_roughness`` -- the albedo fit the scaling uses falls
@@ -1293,6 +1303,10 @@ Hard limits
      - 64
      - That light sample contributes nothing through the glass. **Warns**
        (:ref:`limits-truncation`).
+   * - Tracking steps through a density grid along one straight segment
+     - 4096
+     - The segment is absorbed, so the densest regions render slightly too
+       dark. **Warns** (:ref:`limits-truncation`); see `Density grids`_.
    * - Frames in one render batch
      - 32767
      - Raises. Not reachable in practice -- memory bounds the batch far below
@@ -1404,8 +1418,9 @@ There is no screen-space blur or diffusion-profile approximation.
 Both require consistently wound, watertight triangle geometry declared
 ``closed_shell=True``. Built-in closed solids already declare this; open
 meshes and flat circuits do not enclose a medium. Density is uniform inside
-each shell, including when its shape or scattering parameters animate. A
-camera may start inside the medium. Surface-shadow switches do not disable
+each shell, including when its shape or scattering parameters animate, unless
+a density grid varies it (`Density grids`_). A camera may start inside the
+medium. Surface-shadow switches do not disable
 extinction through a scattering medium. Denoising uses scatter-albedo and
 zero-normal guides at medium vertices.
 
@@ -1437,7 +1452,7 @@ Important limits:
   the same straight, tinted shadow it does in a scene without any medium, and
   honours ``shadows`` and ``casts_shadows`` the same way. Glass sitting
   *inside* fog is the exception, because its boundary is then the boundary of
-  a scattering region. Heterogeneous density fields and accelerated
+  a scattering region. Accelerated
   diffusion profiles remain future work.
 
 A nonzero scattering coefficient on the deterministic renderer is reported
@@ -1445,6 +1460,62 @@ as unsupported, with instructions to set ``samples_per_pixel > 1``. Its
 existing glass absorption remains unchanged. In scattering-enabled path
 traces, absorption along camera and bounced paths uses the medium stack and
 is not applied again at the exit surface.
+
+
+Density grids
+=============
+
+A :class:`~algan.rendering.shaders.density_grid.DensityGrid` passed to
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial` as
+``density=`` makes the interior vary from place to place -- smoke, clouds,
+fog that thins out at its edges:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.set(samples_per_pixel=128, max_bounces=32)
+    puff = DensityGrid.from_function(
+        lambda p: (1 - p.norm(dim=-1)).clamp(min=0) * DensityGrid.noise(p) * 4
+    )
+    cloud = Sphere(radius=1.5)
+    cloud.set_material(MeshPhysicalMaterial(
+        color=WHITE, transmission=1, ior=1, roughness=0,
+        sigma_s=4, density=puff,
+    ))
+    cloud.spawn()
+
+The grid scales both ``sigma_s`` and the absorption, so the color and ``g``
+stay the material's and only the thickness varies: 1 is the material's own
+coefficients, 2 twice as thick, 0 empty. Its samples fill a box in the frame
+of the Mob the material is set on -- by default that Mob's bounding box when
+``set_material`` runs -- interpolated linearly between samples and zero
+outside the box. The box moves, turns and scales with the Mob, so an animated
+cloud carries its density along, and a clone carries its own. Everything in
+`Homogeneous volumes and subsurface scattering`_ still applies: the shell
+must be closed, only the path tracer renders it, and the deterministic
+renderer refuses it.
+
+What to expect:
+
+* **Cost follows density.** The tracker takes more steps through dense
+  regions, and a dense grid needs more ``max_bounces`` for its multiple
+  scattering. One straight segment may take at most 4096 tracking steps; a
+  grid dense enough to need more is absorbed there, counted in
+  ``RenderResult.render_plan.truncations.medium_tracking`` and warned about.
+  Lower the grid's peak or ``sigma_s`` if it happens.
+* **A grid only shows inside its shell.** A box larger than the Mob costs
+  nothing; a box smaller than the Mob leaves the rest of the interior empty.
+* **An absorbing-only grid** (no ``sigma_s``, only ``attenuation_color``) is
+  integrated through the grid too, for camera rays and for shadows, and stops
+  straight shadow connections at a refracting boundary just as a scattering
+  interior does.
+* **Static samples.** The grid itself cannot animate; only its Mob's motion,
+  rotation and scale move it, and ``mob.sigma_s`` scales all of it at once.
+  There is no import from simulation formats such as OpenVDB, and no
+  emission, so fire is out of reach.
+* **One Mob per grid.** A :func:`~algan.utils.mob_utils.batch_mobs` pack of
+  several Mobs cannot own a grid, since the grid follows one Mob's frame; the
+  render refuses it. The Mob the material was set on must be spawned when its
+  parts are.
 
 
 Auxiliary passes
@@ -1503,9 +1574,11 @@ Neither renderer does any of these, at any setting:
   through more than two refracting surfaces. Smooth refraction is covered,
   opt-in, by the path tracer's shadow caustics (`Limits and approximations`_).
 * **Ambient occlusion**, in any form -- no SSAO pass, no AO map.
-* **Heterogeneous volumes**: spatial density fields or simulated smoke.
-  Homogeneous fog and random-walk subsurface scattering are supported by the
-  path tracer, as described in `Homogeneous volumes and subsurface scattering`_.
+* **Simulated or animated volumes**: a density grid's samples are static, and
+  there is no OpenVDB import or volumetric emission. Static density grids,
+  homogeneous fog and random-walk subsurface scattering are supported by the
+  path tracer, as described in `Density grids`_ and
+  `Homogeneous volumes and subsurface scattering`_.
 * **Displacement mapping** or height-map tessellation. Geometry comes from the
   mob; a texture never moves a vertex.
 * **Wireframe rendering.**

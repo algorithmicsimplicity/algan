@@ -1052,6 +1052,10 @@ _HOST_ONLY = {
     "rendering/logical_pn.py",
     # One import-time scalar: the PU-encoding normalisation constant.
     "rendering/denoise/denoise.py",
+    # A density grid's authoring (noise, majorant) and its owner's frame
+    # algebra: every tensor is moved to the CPU before it is widened, and the
+    # kernel receives float32 tables (``pt_volume.prepare_volumes``).
+    "rendering/shaders/density_grid.py",
 }
 
 

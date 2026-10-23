@@ -10,6 +10,7 @@ Rendering
    ~rendering.camera
    ~rendering.lights
    ~rendering.shaders.materials
+   ~rendering.shaders.density_grid
    ~rendering.shaders.material_shaders
    ~rendering.shaders.pbr_shaders
    ~rendering.shaders.fragment_shaders

@@ -4143,7 +4143,7 @@ def _build_core_shader_ids():
 
 
 _CORE_SHADER_IDS = None
-# Per-material parameter defaults (canonical 40-slot block; see shading_taichi).
+# Per-material parameter defaults (canonical 41-slot block; see shading_taichi).
 # Slots 12+ are the MeshPhysicalMaterial extension, defaults matching the
 # physical_shader signature (ior 1.5, specular_intensity 1, specular_color
 # white, clearcoat/sheen off, sheen_roughness 1, transmission/iridescence 0).
@@ -4200,14 +4200,18 @@ _MAT_DEFAULTS = [
     0.0,
     0.0,
     0.0,
-    # 39 no_caustic_cast: 0.0 is "this geometry bends light into caustics
+    # 39 density_volume: 0.0 is a homogeneous interior, what every medium was
+    # before density grids (shading_taichi._MAT_DENSITY_VOLUME).
+    0.0,
+    # 40 no_caustic_cast: 0.0 is "this geometry bends light into caustics
     # where its material refracts", the default of Mob.casts_caustics
     # (shading_taichi._MAT_NO_CAUSTIC_CAST).
     0.0,
 ]
 # Material-property name -> (start slot, width) in the canonical block.
 # ``one_sided`` (slot 26), ``no_shadow_receive`` (slot 33), the raw
-# closed-interior flag (slot 38) and ``no_caustic_cast`` (slot 39) are
+# closed-interior flag (slot 38), the density-volume key (slot 39) and
+# ``no_caustic_cast`` (slot 40) are
 # deliberately absent: these are declared by the mob's geometry, not by its
 # material, and ``_pack_material`` writes them directly.
 _MAT_SLOTS = {

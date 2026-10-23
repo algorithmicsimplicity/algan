@@ -779,6 +779,203 @@ def test_clearcoat_furnace_does_not_gain_energy(tmp_path):
         assert c > 0.9 * furnace, f"coat roughness {rough}: centre {c:.2f} lost energy"
 
 
+def _coat_transmission(cos_v, clearcoat=1.0):
+    """What a clearcoat lets out of the emission under it toward a direction
+    of cosine ``cos_v``: ``1 - clearcoat * F_c``, with Three.js's coat
+    Fresnel (Schlick, F0 0.04 and F90 1).
+    """
+    return 1.0 - clearcoat * (0.04 + 0.96 * (1.0 - cos_v) ** 5)
+
+
+def _coated_emitter(clearcoat, radiance):
+    """A MeshPhysicalMaterial that only emits (its base is black)."""
+    return MeshPhysicalMaterial(
+        color=BLACK,
+        emissive=WHITE,
+        emissive_intensity=radiance,
+        clearcoat=clearcoat,
+    )
+
+
+@pytest.mark.parametrize("view_deg", [0.0, 70.0])
+def test_a_clearcoat_dims_the_emission_a_camera_sees(tmp_path, view_deg):
+    """Emission sits under a MeshPhysicalMaterial's clearcoat, so the coat
+    lets out ``1 - clearcoat * F_c(n.v)`` of it (Three.js scales
+    ``totalEmissiveRadiance`` with the base, and glTF's ``fresnel_coat``
+    treats emission and base alike). The path tracer used to read the
+    emissive slot raw, so a coated emitter came out too bright by the coat's
+    Fresnel: by 4% of its emission head on, by 16% at 70 degrees, and by
+    nearly all of it at a silhouette, where a full coat lets almost nothing
+    out.
+
+    A camera ray that lands on the emitter reads the hit end of that factor
+    at MIS weight 1. With nothing else in the scene the pixel is the
+    emission alone, so this is an exact check of the hit end, to the byte.
+    The next-event end is
+    ``test_a_coated_emitter_lights_a_floor_through_its_coat``.
+    """
+    # 204 linear bytes uncoated: a whole number, so rounding moves neither
+    # reading by more than half a byte.
+    radiance = 0.8
+    theta = np.radians(view_deg)
+
+    def build_with(clearcoat):
+        def build(scene):
+            scene.set_background(BLACK)
+            Scene.clear_lights()
+            camera = scene.get_camera()
+            camera.move_to((RIGHT * np.sin(theta) + OUT * np.cos(theta)) * 10.0)
+            camera.look_at(ORIGIN)
+            camera.set_fov(10)
+            slab = Prism(width=8.0, height=4.0, depth=0.02)
+            slab.set_material(_coated_emitter(clearcoat, radiance))
+            slab.spawn(animate=False)
+
+        return build
+
+    def render(name, clearcoat):
+        img = _render_scene_exp(
+            tmp_path,
+            name,
+            build_with(clearcoat),
+            4,
+            dither=False,
+            **_LINEAR_BYTES,
+        )
+        return _center_patch_mean(img, half=4)
+
+    bare = render(f"coat_emission_bare_{view_deg:.0f}.png", 0.0)
+    coated = render(f"coat_emission_coated_{view_deg:.0f}.png", 1.0)
+    assert bare == pytest.approx(255.0 * radiance, abs=1.0), (
+        f"the uncoated emitter reads {bare:.1f}, not its emission"
+    )
+    expected = 255.0 * radiance * _coat_transmission(np.cos(theta))
+    assert coated == pytest.approx(expected, abs=1.0), (
+        f"at {view_deg:.0f} degrees the coated emitter reads {coated:.1f}; "
+        f"through its coat it should read {expected:.1f} (uncoated {bare:.1f})"
+    )
+
+
+def _box_emitter_irradiance(receiver, center, size, radiance, clearcoat, n=64):
+    """Midpoint quadrature of the irradiance at an upward-facing ``receiver``
+    from an axis-aligned box whose every face emits ``radiance`` from its
+    outer side (a built-in solid is one-sided), through a coat of weight
+    ``clearcoat`` on each face.
+
+    The box is convex and the receiver outside it, so every face the
+    receiver sees is unoccluded.
+    """
+    rx = torch.tensor(receiver, dtype=torch.float64)
+    c = torch.tensor(center, dtype=torch.float64)
+    half = torch.tensor(size, dtype=torch.float64) / 2
+    grid = (torch.arange(n, dtype=torch.float64) + 0.5) / n * 2.0 - 1.0
+    uu, vv = torch.meshgrid(grid, grid, indexing="ij")
+    total = 0.0
+    for axis in range(3):
+        a, b = (k for k in range(3) if k != axis)
+        for sign in (-1.0, 1.0):
+            p = c.expand(n, n, 3).clone()
+            p[..., axis] += sign * half[axis]
+            p[..., a] += uu * half[a]
+            p[..., b] += vv * half[b]
+            d = p - rx
+            dist = d.norm(dim=-1)
+            cos_e = -sign * d[..., axis] / dist
+            cos_r = d[..., 2] / dist
+            seen = (cos_e > 0) & (cos_r > 0)
+            att = _coat_transmission(cos_e.clamp(0.0, 1.0), clearcoat)
+            area = float(4.0 * half[a] * half[b]) / (n * n)
+            total += (
+                float((radiance * att * cos_e * cos_r / dist**2 * seen).sum()) * area
+            )
+    return total
+
+
+@pytest.mark.parametrize("max_bounces", [0, 1])
+def test_a_coated_emitter_lights_a_floor_through_its_coat(tmp_path, max_bounces):
+    """What a coated emitter lets out is also what it lights the scene
+    with, so next-event estimation must attenuate it like a hit does.
+
+    A thin emissive box hangs off to one side of a white Lambert floor,
+    so the floor point under the camera sees the box's underside at about
+    76 degrees from that face's normal. There the coat lets out only 72% of
+    the emission. The floor's brightness is checked against a quadrature of
+    the box's emission through the coat. With ``max_bounces`` 0 the floor
+    is lit by next-event estimation alone, so this checks that end by
+    itself. With 1, BSDF rays that hit the box are MIS-weighted against it
+    and must leave the answer where it was. For an emitter this small they
+    carry little of the weight, so the hit end is checked by
+    ``test_a_clearcoat_dims_the_emission_a_camera_sees`` and the two ends
+    against each other by
+    ``test_pt_clearcoat_sheen.test_both_mis_ends_read_one_coat_factor_on_the_emission``.
+    Neither depth reaches a second bounce, where the coat would reflect the
+    lit floor back onto it.
+    """
+    radiance = 330.0
+    box_at = (4.0, 0.0, 1.1)
+    box_size = (1.0, 1.0, 0.01)
+    # The floor's top face: an 0.2-deep prism centred on the origin.
+    receiver = (0.0, 0.0, 0.1)
+
+    def build_with(clearcoat):
+        def build(scene):
+            scene.set_background(BLACK)
+            Scene.clear_lights()
+            camera = scene.get_camera()
+            camera.move_to(DOWN * 10.0 + OUT * 7.1)
+            camera.look_at(OUT * 0.1)
+            camera.set_fov(10)
+            floor = Prism(width=8.0, height=8.0, depth=0.2)
+            floor.set_material(MeshLambertMaterial(color=WHITE))
+            floor.spawn(animate=False)
+            box = Prism(width=box_size[0], height=box_size[1], depth=box_size[2])
+            box.set_material(_coated_emitter(clearcoat, radiance))
+            box.move(RIGHT * box_at[0] + OUT * box_at[2])
+            box.spawn(animate=False)
+
+        return build
+
+    def render(name, clearcoat):
+        img = _render_scene_exp(
+            tmp_path,
+            name,
+            build_with(clearcoat),
+            64,
+            max_bounces=max_bounces,
+            linear_color_space=False,
+            tonemapping=False,
+            dither=False,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_error_target": 0,
+                # The BSDF-sampled hits on a radiance-330 emitter are exactly
+                # what the clamp is for; clamping them would bias this end.
+                "pt_firefly_clamp": 0,
+            },
+        )
+        return _center_patch_mean(img, half=4)
+
+    def reference(clearcoat):
+        e = _box_emitter_irradiance(receiver, box_at, box_size, radiance, clearcoat)
+        return 255.0 * e / np.pi
+
+    bare = render(f"coat_lit_floor_bare_{max_bounces}.png", 0.0)
+    coated = render(f"coat_lit_floor_coated_{max_bounces}.png", 1.0)
+    bare_ref = reference(0.0)
+    expected = reference(1.0) / bare_ref
+    assert bare_ref > 50.0, "test scene poorly scaled"
+    assert bare == pytest.approx(bare_ref, rel=0.06), (
+        f"the uncoated emitter lights the floor to {bare:.1f}, against a "
+        f"reference of {bare_ref:.1f}; the scene is not what the test assumes"
+    )
+    assert expected < 0.8, "the floor does not see the coat at a grazing angle"
+    assert coated / bare == pytest.approx(expected, abs=0.02), (
+        f"max_bounces {max_bounces}: through its coat the emitter lights the "
+        f"floor to {coated / bare:.3f} of the uncoated value; the reference "
+        f"is {expected:.3f}"
+    )
+
+
 def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):
     """A Lambert plane under one point light, against the closed-form
     physical answer rather than against the deterministic renderer.

@@ -1614,10 +1614,20 @@ def _build_render_plan(
     # Homogeneous interiors require stochastic transport, so the deterministic
     # route must name the unsupported feature rather than silently dropping it.
     unsupported = []
-    if bool(merged.get("has_scattering_media")):
+    density_media = bool(merged.get("has_density_media"))
+    if bool(
+        merged.get(
+            "has_homogeneous_media",
+            bool(merged.get("has_scattering_media")) and not density_media,
+        )
+    ):
         requested.append("homogeneous scattering media / random-walk SSS")
         if samples_requested <= 1:
             unsupported.append("homogeneous scattering media / random-walk SSS")
+    if density_media:
+        requested.append("heterogeneous media (density grids)")
+        if samples_requested <= 1:
+            unsupported.append("heterogeneous media (density grids)")
     if scene_environment_map is not None:
         requested.append("environment maps")
     if bool(merged.get("has_refractive")):
@@ -2553,6 +2563,7 @@ def render_batch_raytraced(
                         out=out,
                         accum=accum,
                         accum_odd=accum_odd,
+                        density_volumes=kwargs.get("density_volumes"),
                     )
                 finalize_samples(
                     samples_eff,

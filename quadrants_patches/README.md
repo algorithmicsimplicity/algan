@@ -1052,9 +1052,10 @@ every patch here: v1.3.1 to v1.3.3 touches none of the patched files.
 The build follows: `quadrants_build.yaml`'s `QUADRANTS_REF` and the gate
 scripts' default ref are `v1.3.3`. The rebase was released as `1.3.3.post1`,
 published from `master` on 2026-10-21 (`PYPI.md`, "1.3.3.post1"); the current
-release version is `1.3.3.post2` (`ALGAN_QUADRANTS_VERSION`,
-`scripts/rebrand_quadrants_wheel.py`), which adds 0010-0011 and is what
-`pyproject.toml` and `uv.lock` consume (`PYPI.md`, "1.3.3.post2").
+release version is `1.3.3.post3` (`ALGAN_QUADRANTS_VERSION`,
+`scripts/rebrand_quadrants_wheel.py`), which adds 0010-0012 and is what
+`pyproject.toml` and `uv.lock` consume (`PYPI.md`, "1.3.3.post2" and
+"1.3.3.post3").
 
 **Built and checked (2026-10-21).** Run `39571753107` built all four platforms
 for cp311 and cp313 with every leg green, the aarch64 glibc 2.34 smoke included
@@ -1426,8 +1427,8 @@ removes it with the rest of the kernel cache.
   that followed wrote none, and a warm fresh process's first frame took 2.1 s
   against 3.2 s with the cache off.
 
-**Not published yet.** `1.3.3.post2` carries 0001-0011; 0012 goes out as
-`1.3.3.post3` (`PYPI.md`, "1.3.3.post3"). Until then Algan finds no
+**Published** in `1.3.3.post3` (`PYPI.md`, "1.3.3.post3"); `1.3.3.post2`
+carries 0001-0011 only. On a wheel without 0012 Algan finds no
 `offline_cache_cpu_object_by_content_hash` field and passes nothing.
 
 **Not verified:** Windows (COFF) at run time -- it builds, and the COFF

@@ -55,6 +55,10 @@ The ceilings, and what each costs when it binds:
     renders slightly too dark where walks converge slowly; an area light's or
     the environment's still arrives through the BSDF path that makes the same
     journey, which the coverage test then keeps at full weight.
+``medium_tracking``
+    ``PT_VOL_MAX_STEPS`` (4096) null-collision steps through a density grid on
+    one straight segment. The segment is absorbed (fail-closed), so a grid
+    dense enough to bind it renders a little too dark there.
 
 One ceiling is **not** counted here: the deterministic renderer's shadow
 march stops after ``max_surfaces_per_ray`` surfaces too, and treats whatever
@@ -165,6 +169,8 @@ class TruncationCounts:
     #: Caustic manifold walks that ran out of Newton steps; their light was
     #: dropped (a delta light's; an area light's still arrives by BSDF paths).
     caustic_solver: int = 0
+    #: Density-grid segments that exhausted the tracker's step budget; absorbed.
+    medium_tracking: int = 0
 
     @property
     def total(self) -> int:
@@ -211,6 +217,11 @@ _CEILING_MESSAGES = {
         "so those caustics render slightly too dark (an area light's or the "
         "environment's still arrives through bounced paths, only noisier). "
         "Smoother caster meshes converge faster."
+    ),
+    "medium_tracking": (
+        "{count} segment(s) through a density grid took more than {cap} "
+        "tracking steps and were absorbed, so the densest regions render "
+        "slightly too dark. Lower the grid's peak density or sigma_s."
     ),
     "surfaces_per_ray": (
         "{count} primary ray(s) hit the {cap}-surface compositing ceiling "

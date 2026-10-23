@@ -35,7 +35,8 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     (Dupuy & Benyoub 2023) with a broad compensation lobe; smooth glass
     is delta. A MeshPhysicalMaterial's clearcoat (VNDF-sampled GGX) and
     sheen (cosine-sampled Charlie) are two more lobes of the same pick,
-    layered over the base as Three.js layers them (``_PL_CC``). Transmitted
+    layered over the base as Three.js layers them (``_PL_CC``). The coat
+    also attenuates the emission under it, at both MIS ends. Transmitted
     radiance includes the relative index-squared factor, with eta-aware
     roulette and the shared nested-IOR stack and Beer-Lambert absorption.
     Homogeneous interiors sample RGB-mixture free flights, HG phase directions,
@@ -167,7 +168,11 @@ pair                           use
 2 + 6b + 1                     bounce ``b``: BSDF direction (2D)
 2 + 6b + 2, 3                  bounce ``b``: reserved (legacy light slots)
 2 + 6b + 4                     medium free flight: x RGB channel, y distance;
-                               seed salted by straight-subsegment ordinal
+                               seed salted by straight-subsegment ordinal. In
+                               a density grid: the FIRST tentative collision's
+                               x event, y distance; every later one is a hash
+                               of that salted seed and the sample index
+                               (``pt_volume_taichi``)
 2 + 6b + 5                     medium HG continuation direction (2D)
 2 + 6B + (2L+1)c + 2s + 0      crossing ``c``, NEE sample ``s``: x entry
                                select (an authored crossing's sampling arm:
@@ -182,6 +187,11 @@ pair                           use
 The lobe select used to draw white noise from the hash RNG, on the argument
 that a crossing has no fixed dimension index; indexing on ``processed``, the
 trick next-event estimation already used, gives it one (roadmap section 7).
+
+A shadow connection through a density grid has no fixed number of draws at
+all, so its ratio tracking is hash-only: seeded from ``path_seed``, the
+connection's own NEE pair (or, on the authored summing arm, its crossing and
+light row) and the sample index -- still a pure function of path identity.
 """
 
 from algan.rendering.raytracing.arena_args_taichi import (
@@ -257,6 +267,12 @@ from algan.rendering.raytracing.pt_media_taichi import (
     _pt_medium_sample,
     _pt_medium_top,
     _pt_medium_transmittance,
+)
+from algan.rendering.raytracing.pt_volume_taichi import (
+    PT_STAT_VOLUME_STEPS,
+    _pt_medium_volume,
+    _pt_vol_seed,
+    _pt_vol_track,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
@@ -403,9 +419,10 @@ _PT_ACC_SCATTERED = 14
 
 # Device-side truncation tallies, read back by the host once per wave and fed
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
-# Columns 2-3 are the media module's and 4-5 the caustic module's
-# (``PT_STAT_MEDIA_*``, ``PT_STAT_CAUSTIC_*``).
-PT_STATS_WIDTH = 6
+# Columns 2-3 are the media module's, 4 the density-grid tracker's and 5-6
+# the caustic module's (``PT_STAT_MEDIA_*``, ``PT_STAT_VOLUME_STEPS``,
+# ``PT_STAT_CAUSTIC_*``).
+PT_STATS_WIDTH = 7
 PT_STAT_TRUNC_SURFACES = 0
 PT_STAT_SHELL_RING = 1
 
@@ -1430,16 +1447,25 @@ def _pt_sample_glass(glass_energy: ti.template(), rd, n, rough, eta, f0,
 # The coat and the sheen are lobes of their own in the continuation's pick,
 # each with its own selection weight; a material with neither gets
 # ``_pt_layer_none()``, whose scales are exactly 1 and weights exactly 0, so
-# it evaluates and samples bit for bit as before. Emission is NOT
-# attenuated by the coat (Three.js does): the emitter tables read the
-# emissive slot raw, and attenuating one MIS end only would bias it.
+# it evaluates and samples bit for bit as before.
+#
+# Emission sits UNDER the coat, so it leaves through it attenuated like the
+# base: ``L_e * (1 - cc F_c(n.v))`` toward the viewer. Three.js scales
+# ``totalEmissiveRadiance`` with the rest of ``outgoingLight``, and glTF's
+# ``fresnel_coat`` mixes emission and base alike. Both MIS ends apply it: a
+# path that hits the emitter reads this crossing's ``_PL_ATT``, and next-event
+# estimation rebuilds the same factor at its sampled point
+# (``_pt_emitter_coat_att``). Attenuating only one end would bias the result.
+# The emitter tables still choose emitters by the raw emissive power. That
+# power is an upper bound on what leaves through the coat, and any positive
+# selection weight is unbiased when both ends read the same table.
 _PL_CC = 0  # clearcoat weight, [0, 1]
 _PL_CC_ROUGH = 1  # clearcoat roughness, [0, 1]
 _PL_SHEEN_R = 2  # sheen roughness, [1e-4, 1] (as _stage_physical clamps it)
 _PL_SHEEN_C = 3  # 3 slots: sheen_color * sheen (WebGLMaterials premultiplies)
 _PL_SHEEN_MAX = 6  # max3 of the above
 _PL_SHEEN_EV = 7  # E(n.v): Three.js's IBLSheenBRDF fit of the sheen albedo
-_PL_ATT = 8  # 1 - cc * F_c(n.v): what the coat lets through to the base
+_PL_ATT = 8  # 1 - cc * F_c(n.v): what the coat passes of base and emission
 _PL_W_COAT = 9  # selection weights: the lobes' energies from
 _PL_W_SHEEN = 10  # _pt_lit_lobes, times alpha once the caller scales them
 _PL_WIDTH = 11
@@ -1493,6 +1519,41 @@ def _pt_physical_layer(params: ti.template(), tm, prim, n_dot_v):
             layer[_PL_SHEEN_EV] = e_v
             layer[_PL_W_SHEEN] = sheen_max * e_v
     return layer
+
+
+@ti.func
+def _pt_emitter_coat_att(tri_mat: ti.template(), tri_mat_id: ti.template(),
+                         tri_norm: ti.template(), tri_pos: ti.template(),
+                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
+                         textures: ti.template(), num_colored_triangles,
+                         f, prim, w0, w1, w2, face_n, wi):
+    """The share of emissive triangle ``prim``'s emission that its clearcoat
+    lets out toward ``-wi``, at barycentrics ``(w0, w1, w2)``. This is the
+    next-event end of the ``_PL_ATT`` that a hit on the emitter reads.
+
+    A hit takes ``_PL_ATT`` from ``|shade_n . rd|``, and ``shade_n`` is
+    ``_tri_normal_g`` passed through ``_prep_normal``. ``_sided_shading_normal``
+    may also flip it toward the viewer, which cannot change the magnitude.
+    This function rebuilds that normal at the sampled point and takes the same
+    ``1 - cc * F_c`` of it, so both ends of the MIS pair weight one integrand.
+    One difference remains for a normal-mapped emitter: a hit filters the map
+    over its ray cone, while this end reads the finest level. The result is
+    exactly 1 for any triangle that is not a coated MeshPhysicalMaterial,
+    without reading its normals.
+    """
+    att = 1.0
+    tm = f % tri_mat.shape[0]
+    if (tri_mat.shape[2] > 23) \
+            and (tri_mat_id[f % tri_mat_id.shape[0], prim] == _MID_PHYSICAL):
+        cc = ti.math.clamp(tri_mat[tm, prim, 17], 0.0, 1.0)
+        if cc > 0.0:
+            n_s = _tri_normal_g(
+                0, f, prim, w0, w1, w2, tri_norm, tri_pos, tri_uvs,
+                tri_tex_meta, textures, num_colored_triangles)
+            n_s = _prep_normal(n_s, face_n, tri_mat[tm, prim, 10], -wi)
+            att = 1.0 - cc * _pt_coat_fresnel(
+                ti.max(ti.abs(n_s.dot(wi)), 1e-4))
+    return att
 
 
 @ti.func
@@ -2859,6 +2920,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     nee_inf_ref = ti.static(ArenaView(arena_i32, aoff[36], (ashp[76],)))
     pt_glass_energy = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[38], (ashp[79], ashp[80])))
+    pt_vol_i = ti.static(ArenaView(arena_i32, aoff[39], (ashp[81],)))
+    pt_vol_f = ti.static(ArenaView(arena_f32, aoff[40], (ashp[82],)))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     # Quadrants patch 0005's per-kernel register cap, off unless
@@ -3039,7 +3102,32 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     medium_albedo = sigma_s_m / ti.max(sigma_t_m, 1e-30)
                     seg_m = t_hit - t_prev
                     weight_m = ti.exp(-sigma_t_m * seg_m)
-                    if (bounces_left > 0) and (sigma_s_m.max() > 0.0):
+                    vol_m = _pt_medium_volume(pt_vol_i, tri_mat, f, medium_prim)
+                    if vol_m >= 0:
+                        # A density grid (pt_volume_taichi): spectral tracking
+                        # when the flight may scatter, ratio tracking when it
+                        # may not. Its first tentative collision takes the
+                        # flight's Sobol pair, as the homogeneous flight
+                        # below does; later ones hash the flight's seed.
+                        flight_seed = _pt_hash_combine(
+                            path_seed, ti.u32(0xA511E9B3) + ti.cast(media_segments, ti.u32))
+                        pair_m = PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * (max_b - bounces_left) + 4
+                        u_m = pt_sample_2d_seeded(flight_seed, pair_m, s_index)
+                        scatter_m = 0
+                        if (bounces_left > 0) and (sigma_s_m.max() > 0.0):
+                            scatter_m = 1
+                        hit_m, t_m, weight_m, steps_m = _pt_vol_track(
+                            pt_vol_i, pt_vol_f, vol_m, f, ro, rd, t_prev, t_hit,
+                            sigma_a_m, sigma_s_m,
+                            ti.math.vec3(thru[0], thru[1], thru[2]), scatter_m,
+                            _pt_vol_seed(flight_seed, s_index), u_m)
+                        ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], steps_m)
+                        media_segments += 1
+                        stoch = 1
+                        if hit_m != 0:
+                            medium_vertex = True
+                            t_hit = t_m
+                    elif (bounces_left > 0) and (sigma_s_m.max() > 0.0):
                         # Fresh domain per straight subsegment, not per launch:
                         # unrelated transparent layers may subdivide a flight.
                         # The 2D Sobol prefix remains pure under batch splitting.
@@ -3282,10 +3370,11 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # speckle across every lit surface and mirror. A triangle hit
                 # is rebuilt from its barycentrics, a circuit's put back on
                 # its plane (_tri_surface_point, _bezier_plane_point). A
-                # medium vertex (htype 3) stays where the free flight put it:
-                # its ``prim`` is the medium's triangle, and read as a circuit
-                # index it projected the scatter point onto an unrelated plane
-                # (another circuit's, or arena data past ``circuit_meta``).
+                # medium vertex (htype 3) is on no surface and stays where it
+                # was sampled: its ``prim`` is the shell triangle it entered
+                # through, and read as a circuit it projected the vertex onto
+                # an unrelated plane -- each entry facet's fog printed with
+                # its own brightness.
                 hit_p = ro + t_hit * rd
                 if htype == 1:
                     hit_p = _tri_surface_point(f, prim, w0, a, b, tri_pos)
@@ -3400,10 +3489,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # continuation below ends up offering.
                     stoch = 1
                     tm = f % tri_mat.shape[0]
+                    # Scaled by what a clearcoat lets out of the emission
+                    # under it toward the ray (``_PL_ATT``, exactly 1 without
+                    # a coat). Next-event estimation applies the same factor
+                    # through ``_pt_emitter_coat_att``.
                     emissive = ti.math.vec3(tri_mat[tm, prim, 0],
                                             tri_mat[tm, prim, 1],
                                             tri_mat[tm, prim, 2]) \
-                        * tri_mat[tm, prim, 3]
+                        * (tri_mat[tm, prim, 3] * layer_l[_PL_ATT])
                     # Synthetic panels emit from their front face only. An
                     # authored diffuse vertex already evaluated their rows:
                     # suppress that immediate emission, while still absorbing
@@ -3726,11 +3819,23 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 cos_l = 0.0
                                         c_l = ti.abs(cos_l)
                                         if c_l > 1e-6:
+                                            # What the emitter's clearcoat
+                                            # lets out toward this vertex:
+                                            # the factor a hit on it reads
+                                            # as ``_PL_ATT``.
                                             le = ti.math.vec3(
                                                 tri_mat[tm_e, ref, 0],
                                                 tri_mat[tm_e, ref, 1],
                                                 tri_mat[tm_e, ref, 2]) \
-                                                * tri_mat[tm_e, ref, 3]
+                                                * (tri_mat[tm_e, ref, 3]
+                                                   * _pt_emitter_coat_att(
+                                                       tri_mat, tri_mat_id,
+                                                       tri_norm, tri_pos,
+                                                       tri_uvs, tri_tex_meta,
+                                                       textures,
+                                                       num_colored_triangles,
+                                                       f, ref, ew0, ew1, ew2,
+                                                       ne, wi))
                                             _ec, e_alpha = _tri_color_g(
                                                 0, f, ref, ew0, ew1, ew2,
                                                 tri_colors, tri_colors,
@@ -3995,13 +4100,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 rd.dot(fnrm) < 0.0)
                                     m_dist = _pt_shadow_tmax(m_origin, wi_vis,
                                         ldist - (m_origin - hit_p).dot(wi_vis))
-                                    m_vis, m_over2, m_cut = _pt_medium_transmittance(
+                                    # A density grid on the way is ratio-tracked
+                                    # from this light sample's own stream.
+                                    m_seed = _pt_vol_seed(_pt_vol_seed(
+                                        path_seed ^ ti.u32(0x3C6EF372), pair_sel), s_index)
+                                    m_vis, m_over2, m_cut, m_steps = _pt_medium_transmittance(
                                         refit, m_origin, wi_vis, f, m_dist, m_stack,
                                         layer_offset_triangles,
                                         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset,
+                                        pt_vol_i, pt_vol_f, m_seed)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], m_over + m_over2)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], m_cut)
+                                    ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], m_steps)
                                     if m_over != 0:
                                         m_vis = ti.math.vec3(0.0, 0.0, 0.0)
                                     vis3 *= m_vis
@@ -4109,15 +4220,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     wi_m, distance_m, valid_m = _pt_light_sample_point(
                                         light_pos, light_col, f, li, hit_p, u_pt[0], u_pt[1])
                                     if valid_m == 1:
-                                        vis_m, over_m, cut_m = _pt_medium_transmittance(
+                                        seed_m = _pt_vol_seed(_pt_vol_seed(
+                                            path_seed ^ ti.u32(0x3C6EF372), pair_sel), s_index)
+                                        vis_m, over_m, cut_m, steps_m = _pt_medium_transmittance(
                                             refit, sorigin_a, wi_m, f,
                                             _pt_shadow_tmax(sorigin_a, wi_m,
                                                 distance_m - (sorigin_a - hit_p).dot(wi_m)),
                                             media, layer_offset_triangles,
                                             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                                            t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                            t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset,
+                                            pt_vol_i, pt_vol_f, seed_m)
                                         ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], over_m)
                                         ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], cut_m)
+                                        ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], steps_m)
                                         base_m = light_vis_index(s, 0)
                                         for channel_m in ti.static(range(3)):
                                             vis[base_m + channel_m] *= vis_m[channel_m]
@@ -4186,15 +4301,20 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 wi_m, distance_m, valid_m = _pt_light_sample_point(
                                     light_pos, light_col, f, li_m, hit_p, u1_m, u2_m)
                                 if valid_m == 1:
-                                    vis_m, over_m, cut_m = _pt_medium_transmittance(
+                                    seed_m = _pt_vol_seed(_pt_vol_seed(
+                                        path_seed ^ ti.u32(0x7A3D1F55),
+                                        processed * 64 + li_m), s_index)
+                                    vis_m, over_m, cut_m, steps_m = _pt_medium_transmittance(
                                         refit, sorigin_m, wi_m, f,
                                         _pt_shadow_tmax(sorigin_m, wi_m,
                                             distance_m - (sorigin_m - hit_p).dot(wi_m)),
                                         media, layer_offset_triangles,
                                         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset,
+                                        pt_vol_i, pt_vol_f, seed_m)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], over_m)
                                     ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], cut_m)
+                                    ti.atomic_add(pt_stats[PT_STAT_VOLUME_STEPS], steps_m)
                                     base_m = light_vis_index(li_m, 0)
                                     for channel_m in ti.static(range(3)):
                                         vis[base_m + channel_m] *= vis_m[channel_m]
@@ -5131,6 +5251,8 @@ _PT_SHADE_ARENA = (
     ("nee_inf_ref", "i32", 1),
     ("pt_glass_energy", "f32", 2),
     ("cam_proj_table", "f32", 2),
+    ("pt_vol_i", "i32", 1),
+    ("pt_vol_f", "f32", 1),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -5153,7 +5275,8 @@ _PT_SHADE_PARAMS = (
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
     "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov", "pt_cau",
     "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
-    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy", "cam_proj_table", "projected",
+    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy", "cam_proj_table",
+    "pt_vol_i", "pt_vol_f", "projected",
 )
 
 _pt_shade_launch = arena_packed(

@@ -1,10 +1,12 @@
-"""Scene preparation for homogeneous path-traced interiors (no kernel variants)."""
+"""Scene preparation for path-traced interiors (no kernel variants)."""
 
 from __future__ import annotations
 
 import torch
 
 from algan.rendering.raytracing.shading_taichi import (
+    _MAT_ATTENUATION_SIGMA,
+    _MAT_DENSITY_VOLUME,
     _MAT_MEDIUM_CLOSED,
     _MAT_PHASE_G,
     _MAT_SIGMA_S,
@@ -28,7 +30,16 @@ def _prepare_media(memory, merged, opacity_shells):
         return opacity_shells, extra, 0
     physical = merged["tri_mat_id"] == _MID_PHYSICAL
     scattering = mat[..., _MAT_SIGMA_S : _MAT_SIGMA_S + 3]
-    physical, positive = torch.broadcast_tensors(physical, (scattering > 0).any(dim=-1))
+    positive = (scattering > 0).any(dim=-1)
+    if mat.shape[-1] > _MAT_DENSITY_VOLUME:
+        # A density grid's interior is tracked through the grid even when it
+        # only absorbs: the chord a non-scattering shell keeps below is a
+        # homogeneous Beer-Lambert factor, which a varying density is not.
+        absorbing = (
+            mat[..., _MAT_ATTENUATION_SIGMA : _MAT_ATTENUATION_SIGMA + 3] > 0
+        ).any(dim=-1)
+        positive = positive | ((mat[..., _MAT_DENSITY_VOLUME] > 0.5) & absorbing)
+    physical, positive = torch.broadcast_tensors(physical, positive)
     scattering = scattering.expand(*physical.shape, 3)
     active = physical & positive
     if not bool(torch.isfinite(scattering[physical]).all()):
@@ -43,8 +54,9 @@ def _prepare_media(memory, merged, opacity_shells):
     closed = physical & (mat[..., _MAT_MEDIUM_CLOSED] > 0.5)
     if bool((active & ~closed).any()):
         raise ValueError(
-            "Scattering media require a watertight triangle surface declared "
-            "closed_shell=True; use a closed Sphere/Prism or declare a closed mesh."
+            "Scattering media and density grids require a watertight triangle "
+            "surface declared closed_shell=True; use a closed Sphere/Prism or "
+            "declare a closed mesh."
         )
     identities = torch.where(closed, merged["tri_obj"].to(torch.int32), -1)
     n = identities.shape[1]
@@ -53,12 +65,12 @@ def _prepare_media(memory, merged, opacity_shells):
         (opacity_shells.expand(rows, n), identities.expand(rows, n)), dim=1
     ).contiguous()
     # The legacy shadow marcher treats absorption as paired surface chords.
-    # Inside a SCATTERING interior the medium walk integrates exact
-    # partial/nested chords instead, so remove those coefficients in a
-    # PT-private copy. Non-scattering shells (glass, cavities) keep their
-    # chord: the walk leaves them to the marcher so they shadow exactly as in
-    # a scene without media (``_pt_medium_transmittance``). Never mutate the
-    # shared merge: deterministic rendering and retries can reuse it.
+    # Inside a TRACKED interior (scattering, or a density grid) the medium
+    # walk integrates exact partial/nested chords instead, so remove those
+    # coefficients in a PT-private copy. Other shells (glass, cavities) keep
+    # their chord: the walk leaves them to the marcher so they shadow exactly
+    # as in a scene without media (``_pt_medium_transmittance``). Never mutate
+    # the shared merge: deterministic rendering and retries can reuse it.
     rows_extra = max(extra.shape[0], active.shape[0])
     shadow_extra = extra.expand(rows_extra, -1, -1).clone()
     shadow_extra[..., 12:15] = torch.where(

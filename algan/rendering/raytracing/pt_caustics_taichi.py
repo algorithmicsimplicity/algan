@@ -122,8 +122,8 @@ MNEE_COVER_TOLERANCE = 1e-3
 #: ``pt_stats`` columns this module's failures are tallied in (see
 #: ``truncation.py``): straight segments with more caster crossings than a
 #: chain may hold, and solves that ran out of iterations still walking.
-PT_STAT_CAUSTIC_CHAIN = 4
-PT_STAT_CAUSTIC_SOLVER = 5
+PT_STAT_CAUSTIC_CHAIN = 5
+PT_STAT_CAUSTIC_SOLVER = 6
 
 # The coverage test's per-path record (``pt_cau``, ``PT_CAU_WIDTH`` f32
 # columns per path slot; a one-row dummy in a kernel compiled without

@@ -56,6 +56,7 @@ from algan.rendering.logical_pn import (
     mean_patch_edge_length,
     normalize_pixel_tolerance,
 )
+from algan.rendering.shaders.density_grid import _density_key
 from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.file_utils import get_image
@@ -3941,6 +3942,8 @@ class Surface(Mob):
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
         primitive.declare_shadow_flags(*self._resolved_shadow_flags())
         primitive.declare_caustic_flag(self._resolved_caustic_flag())
+        # The density grid ``set_material`` bound, by key (0: homogeneous).
+        primitive.declare_density_volume(_density_key(self))
         return primitive
 
     def coord_function(self, uv: torch.Tensor):

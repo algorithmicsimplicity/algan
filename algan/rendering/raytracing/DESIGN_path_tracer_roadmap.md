@@ -136,8 +136,9 @@ be as fast as it can be, is:
    make it pay is a per-dimension tile, which that section scopes.
 7. §1 and §4 are not fallback work at all (each section says why) and sit
    behind everything above. §4's homogeneous v1 has since **LANDED**
-   (2026-09-09), and §1's MNEE shadow caustics, opt-in (2026-10-23); both
-   sections' explicitly deferred extensions remain.
+   (2026-09-09), its density grids (2026-10-23), and §1's MNEE shadow
+   caustics, opt-in (2026-10-23); both sections' explicitly deferred
+   extensions remain.
 
 
 ## The contract every one of these must land under
@@ -906,7 +907,7 @@ on the `translucency_and_order` suite scene (2-D content must pass through
 the temporal filter unchanged).
 
 
-## 4. Volumes and subsurface scattering — homogeneous v1 LANDED
+## 4. Volumes and subsurface scattering — homogeneous v1 and density grids LANDED
 
 **LANDED 2026-09-09:** homogeneous participating media and shell-scoped
 random-walk subsurface scattering. This is a new capability rather than
@@ -1025,10 +1026,110 @@ surface shadows both on and off. A dense conservative cube checks the uniform
 radiation field that is the lossless diffusion limit, below saturation so
 energy gains cannot hide.
 
-**Explicitly deferred:** heterogeneous density fields, ratio/delta tracking,
-and Burley normalized-diffusion/profile sampling. The first needs a scene
-field representation and null-collision loops; the last is an optimization
-for thick-media walk cost, not a substitute for the implemented random walk.
+**Explicitly deferred (v1):** heterogeneous density fields, ratio/delta
+tracking, and Burley normalized-diffusion/profile sampling. The first two
+landed as density grids (below); Burley remains an optimization for
+thick-media walk cost, not a substitute for the implemented random walk.
+
+### Density grids (heterogeneous media) — LANDED 2026-10-23
+
+`MeshPhysicalMaterial(density=DensityGrid(...))` scales the interior's
+`sigma_a` and `sigma_s` by a scalar field, so albedo and phase stay the
+material's and only extinction varies. The field is an `(nx, ny, nz)` grid,
+sampled trilinearly at cell centres, clamped to the edge samples inside its
+box and zero outside it (`algan.rendering.shaders.density_grid`).
+
+*Scene representation.* The box lives in the frame of the Mob `set_material`
+was called on (its bounding box at that moment, or explicit `bounds`), so the
+field moves, turns and scales with it. `set_material` leaves one
+`_DensityBinding` (grid, owner-local→box affine, positive key, weak owner) on
+every Mob of the subtree; the geometry Mobs write the key into material slot
+39 (`_MAT_DENSITY_VOLUME`, declared like slots 26/33/38, so the collection
+merge and logical-PN dice carry it and 0.0 keeps the padding rule). A clone
+gets its own key (`__deepcopy__` via the clone memo); a part cloned without
+its owner re-anchors the box in the clone root's frame; a view shares its
+source's binding. The per-frame transform is NOT in `tri_mat` -- that would
+make every grid owner's material per-frame. The render loop snapshots each
+live owner's materialized location/basis beside the camera
+(`_materialize_render_state` → `density_volumes`, sliced with the other
+per-frame rows), and `pt_volume.prepare_volumes` packs `vol_i` (header
+`[V, T]`, then `key, n, offset, m` per grid) and `vol_f` (the `[T, V, 12]`
+world→box rows, then each grid's samples and majorant). A triangle naming a
+key the snapshot lacks (owner not spawned) is refused, never rendered
+homogeneous; a `batch_mobs` pack owning a grid is refused (one key, many
+frames).
+
+*Transport* (`pt_volume_taichi._pt_vol_track`). Null collisions over a
+piecewise-constant majorant: a coarse grid (`ceil(n/4)` cells per axis, each
+the max of the samples its interpolant can blend, widened by one sample so
+rounding at a cell wall cannot under-bound) walked by a 3-D DDA, with the
+exponential process restarted at each wall (memoryless, so exact). A free
+flight that may scatter uses spectral tracking with history-aware
+probabilities (Kutz et al. 2017): `P_s ∝ Σ σ_s(x)|thru·w|`, `P_n ∝ Σ
+σ_n(x)|thru·w|`, weights `σ_s/(μ̄ P_s)` and `σ_n/(μ̄ P_n)`; absorption is not
+a sampled event (there is no emission), so its mass is simply absent from
+both weights. The scatter vertex's weight already carries `σ_s`, matching
+the homogeneous `_pt_medium_sample` convention. A flight that may not scatter
+(`bounces_left == 0`, or an absorbing-only grid) and every shadow connection
+use ratio tracking with Russian roulette below 0.05 (survive 0.25).
+
+*Which shells are tracked.* Scattering shells as before, plus a grid shell
+that only absorbs: its legacy chord is homogeneous Beer–Lambert, which a
+varying density is not, so `_prepare_media` strips it and
+`_pt_medium_tracked` integrates it, refracting-boundary stop rule included.
+`scene_builder` sets `has_density_media` / `has_homogeneous_media`, and the
+render plan names "heterogeneous media (density grids)" (unsupported on the
+deterministic route).
+
+### Contracts and diagnostics (density grids)
+
+* No template gate: two arena arguments (`pt_vol_i`, `pt_vol_f`); a batch
+  without grids passes the empty table `[0, 1]`, so every lookup misses and
+  the homogeneous code runs unchanged. `pt_shade_arena` compile time grew
+  from ~53 s to ~57 s on the CPU backend.
+* Sampler: the first tentative collision of a free flight takes pair
+  `2 + 6b + 4` (x event, y distance), so thin media keep its
+  stratification; later draws hash the flight's salted seed, the sample index
+  and the draw ordinal. Shadow connections hash `path_seed`, their own NEE
+  pair (or crossing/light row on the authored summing arm) and the sample
+  index. All pure functions of path identity.
+* One tracked segment takes at most `PT_VOL_MAX_STEPS` (4096) loop steps
+  (cell crossings plus tentative collisions); exhausting it is fail-closed
+  (weight 0) and counted in `pt_stats[4]` →
+  `RenderPlan.truncations.medium_tracking`. `PT_STATS_WIDTH` is 7 (columns
+  5-6 are the caustic tallies, §1).
+* The kernel finds a key by a linear scan of `vol_i`, so cost grows with the
+  number of live grids in a batch; fine for a handful of clouds.
+
+`tests/unit_tests/test_pt_volumes.py` checks the kernel's interpolant against
+torch's `grid_sample`, that the majorant bounds it everywhere (cell walls
+included), ratio and spectral tracking against closed-form optical depths per
+RGB channel (flat and ramp), the collision distribution along a ramp, box
+clipping, per-frame transforms, the step-budget truncation, the Mob frame
+algebra and clone/key semantics, and in the full renderer the slab
+single-scatter closed form for a flat (= homogeneous) and a ramped profile,
+absorbing-only extinction of the environment, a half-filled cube's fog
+turning with its Mob, and a turned clone carrying its own field.
+
+*Found on the way: scatter vertices were moved off their sample point.*
+Since the distant-camera fix (8048952, 2026-10-14) the walk rebuilt `hit_p`
+from the surface for a triangle (`htype == 1`) and in an `else` for a
+circuit, and that `else` also caught the medium vertex (`htype == 3`). Its
+`prim` is the shell triangle the path entered through, so
+`_bezier_plane_point` read that index as a circuit's and projected the
+vertex onto an unrelated plane (or, past the circuit table, whatever the
+arena held there). Every medium -- homogeneous ones too -- printed its shell's
+tessellation: each entry facet's fog at its own brightness, dark facets near
+black at `max_bounces=2`. The slab tests missed it because a cube's few
+triangle indices happened to read harmless rows. Now only `htype == 0`
+projects. `test_pt_media.py::test_a_scatter_point_stays_where_it_was_sampled`
+puts sixteen circles in the scene so the slab's indices read real circuit
+planes three units outside the medium: 0.004 against the closed form's 0.069
+before, within 0.004 after.
+
+**Still deferred:** emission (fire), time-varying grids (the samples are
+static; only the frame moves), VDB/file import, decomposition tracking and
+better majorants for very sparse grids, and Burley diffusion.
 
 
 ## 5. One material, two direct-lighting responses — LANDED
@@ -2154,13 +2255,41 @@ outright, one silently inert):
   roughness, the sheen is Charlie x Neubelt. One `_PL_*` vector carries them
   from `_pt_lit_lobes` to `_pt_lit_f_pdf` (both MIS ends) and to the
   continuation, which picks them after the base lobes, so a material without
-  them evaluates and draws exactly as before. Not reproduced: the coat's
-  attenuation of emission (one MIS end reads the emissive slot raw), and
-  energy conservation of a low-roughness sheen at grazing angles, which
-  Three.js's direct lighting does not have either. Covered by
+  them evaluates and draws exactly as before. Not reproduced: energy
+  conservation of a low-roughness sheen at grazing angles, which Three.js's
+  direct lighting does not have either. Covered by
   `tests/unit_tests/test_pt_clearcoat_sheen.py` (each lobe's sampler against
   its evaluator, the mixture pdf, energy) and two renders in
   `test_path_tracer.py`.
+
+* **The clearcoat did not attenuate emission — FIXED.** Emission sits under
+  the coat. Three.js scales `totalEmissiveRadiance` with the rest of
+  `outgoingLight` by `1 - clearcoat * Fcc`, and glTF's `fresnel_coat` treats
+  emission like the base. The path tracer read the emissive slot raw, so a
+  coated emitter came out too bright by the coat's Fresnel: by 4% of its
+  emission head on, by 16% at 70 degrees from the normal, and by nearly all
+  of it at a silhouette, where a full coat lets almost nothing out. That
+  excess reached both the emitter as seen and the light it cast. Attenuating
+  only one MIS end would have biased the estimate, so both ends now apply the
+  same factor. A hit on the emitter scales its emission by its crossing's
+  `_PL_ATT`. Next-event estimation calls `_pt_emitter_coat_att`, which
+  rebuilds the emitter's shading normal at the sampled barycentrics
+  (`_tri_normal_g`, then `_prep_normal`, as `pt_shade` builds it at a hit)
+  and takes the same `1 - cc * F_c(|n . wi|)`. The one remaining difference
+  is a normal map's mip level: a hit filters over its ray cone, while the
+  sampled point reads the finest level. The emitter tables still select by
+  raw emissive power, which is an upper bound on what leaves through the
+  coat. Any positive selection weight is unbiased when both ends read the
+  same table, so the tables did not change. An emitter that is not a coated
+  MeshPhysicalMaterial gets a factor of exactly 1 at both ends. The
+  deterministic renderer still adds emission unattenuated
+  (`_stage_physical`). Covered by
+  `test_both_mis_ends_read_one_coat_factor_on_the_emission` (the two ends
+  agree on flat, curved, flat-blended and normal-mapped triangles),
+  `test_a_clearcoat_dims_the_emission_a_camera_sees` (the hit end, exactly),
+  and `test_a_coated_emitter_lights_a_floor_through_its_coat` (next-event
+  estimation alone and MIS-combined, against a quadrature of the coated
+  box's emission).
 
 **The standing rule this section implies:** when the deterministic renderer
 gains a feature, the question is not "does the path tracer match it" (§5 says

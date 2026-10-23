@@ -304,3 +304,5 @@ See Also
   and what happens at the end of the bounce budget.
 - :doc:`performance_and_quality` -- the settings on this page, and what each
   costs.
+- :doc:`../galleries/example_scenes` -- a path-traced swimming pool: refracting
+  water over tiles, with caustics.

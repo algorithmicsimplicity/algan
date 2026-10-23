@@ -423,12 +423,23 @@ class MobMaterialsMixin:
             # tensor, as before. A plain number casts to the same tensor
             # inside the write and is validated without building one.
             opacity = None
+        # A density grid is laid over THIS Mob's box and follows its frame, so
+        # it is bound here, once, and every Mob below carries the same binding:
+        # the geometry Mobs write its key into their triangles, and a material
+        # without a grid clears any earlier one. See ``density_grid``.
+        density = getattr(material, "density", None)
+        binding = None
+        if density is not None:
+            from algan.rendering.shaders.density_grid import _bind_density
+
+            binding = _bind_density(density, self)
         for d in reversed(self.get_descendants()):
             d.set_non_recursive(**params)
             if color5 is not None:
                 d.color = color5
             d.opacity = cast_to_tensor(material.opacity) if opacity is None else opacity
             d.material = material
+            d._density_binding = binding
 
         material.emit_warnings(self._forward_material_textures(material))
         self._warn_lighting_beyond_vertex_bake(material)
