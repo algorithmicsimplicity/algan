@@ -44,6 +44,14 @@ The ceilings, and what each costs when it binds:
     A containment/extinction query exhausted ``max_surfaces_per_ray``. Its
     result is absorbed rather than pretending unknown geometry was vacuum.
 
+One ceiling is **not** counted here: the deterministic renderer's shadow
+march stops after ``max_surfaces_per_ray`` surfaces too, and treats whatever
+lies beyond them as clear, so a shadow ray through more than 256 translucent
+surfaces under-occludes its light. Counting it unconditionally would add a
+counter argument to both megakernels' shadow calls; it binds only for
+extreme translucent stacks, so it stays the one exception, counted only by
+the ``ALGAN_TRACE_COUNTERS`` diagnostic (``shadow_march_capped``).
+
 Reporting.  Truncation is a correctness event, not a budgeting one, so the
 first occurrence of each ceiling in a render is a ``WARNING`` -- unlike the
 wavefront's pool retries and batch splits, which are the memory model working
