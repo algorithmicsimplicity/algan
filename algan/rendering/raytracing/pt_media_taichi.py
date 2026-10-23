@@ -13,17 +13,17 @@ transmittance by the marginal density, not the selected channel's density.
 The HG convention here uses *travel* directions: positive g is forward.
 """
 
-from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    _nearest_surface_g,
-    _safe_inverse,
-    depth_tie_epsilon,
-    max_surfaces_per_ray,
-)
 from algan.rendering.raytracing.pt_volume_taichi import (
     _pt_medium_volume,
     _pt_vol_rand,
     _pt_vol_seed,
     _pt_vol_track,
+)
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    _nearest_surface_g,
+    _safe_inverse,
+    depth_tie_epsilon,
+    max_surfaces_per_ray,
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_ATTENUATION_SIGMA,
