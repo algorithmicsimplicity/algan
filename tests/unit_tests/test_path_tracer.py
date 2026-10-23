@@ -3564,6 +3564,143 @@ def test_internal_glass_reflection_keeps_furnace_energy(tmp_path):
     )
 
 
+SMALL_SETTINGS = SMOKE_TEST.set(resolution=(32, 32))
+
+
+def _floor_under_glass(ior):
+    """A white Lambert floor under a lossless smooth glass slab.
+
+    The environment is a uniform 0.25: a white furnace, so the floor must read
+    0.25 whatever the slab does.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        scene.set_environment_map(torch.full((4, 8, 3), 0.25), ambient=False)
+        floor = Prism(width=40.0, height=40.0, depth=0.2)
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        glass = Prism(width=40.0, height=40.0, depth=0.5)
+        glass.move_to(OUT * 1.0)
+        glass.set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1, roughness=0.0, ior=ior)
+        )
+        glass.spawn(animate=False)
+
+    return build
+
+
+def _furnace_opts(env_nee, bounces):
+    return {
+        "video": SMALL_SETTINGS,
+        "max_bounces": bounces,
+        "shadows": True,
+        "linear_color_space": False,
+        "tonemapping": False,
+        "experimental": {
+            "post_process_tonemap": False,
+            "pt_firefly_clamp": 0,
+            "pt_error_target": 0,
+            "pt_env_nee": env_nee,
+            "pt_rr_start_bounce": 32,
+        },
+    }
+
+
+def test_light_through_glass_onto_a_floor_is_counted_once(tmp_path):
+    """Light reaching a diffuse floor through smooth glass is one estimate,
+    not two.
+
+    NEE from the floor reaches the environment straight through the glass
+    (the shadow query tints transmissive blockers instead of blocking them),
+    and the BSDF continuation that refracts through the same glass reaches it
+    as well. That continuation used to take MIS weight 1, as if no NEE
+    covered it, so the light was counted ``(w_nee + 1)`` times: this furnace
+    read 74 of 64 under an index-matched slab, which should be invisible, and
+    the two documented-unbiased ``pt_env_nee`` settings disagreed by 17%.
+    """
+    furnace = 255 * 0.25
+
+    matched = _render_scene_exp(
+        tmp_path,
+        "glass_matched.png",
+        _floor_under_glass(1.0),
+        64,
+        **_furnace_opts(True, 8),
+    )
+    assert _center_patch_mean(matched, half=4) == pytest.approx(furnace, abs=2.5), (
+        "an index-matched slab changed the furnace floor"
+    )
+
+    # Real glass: the transparent-shadow NEE tints by normal-incidence
+    # Fresnel, which is not exact, so the two strategies agree only to within
+    # that approximation -- not the 10 counts the double count put between them.
+    on = _render_scene_exp(
+        tmp_path,
+        "glass_nee_on.png",
+        _floor_under_glass(1.5),
+        64,
+        **_furnace_opts(True, 16),
+    )
+    off = _render_scene_exp(
+        tmp_path,
+        "glass_nee_off.png",
+        _floor_under_glass(1.5),
+        64,
+        **_furnace_opts(False, 16),
+    )
+    lit_on = _center_patch_mean(on, half=4)
+    lit_off = _center_patch_mean(off, half=4)
+    assert lit_off == pytest.approx(furnace, abs=2.5), lit_off
+    assert lit_on <= furnace * 1.06, f"glass furnace gained energy: {lit_on:.1f}"
+    assert lit_on == pytest.approx(lit_off, abs=4.0), (lit_on, lit_off)
+
+
+def test_an_emitter_behind_an_index_matched_pane_lights_as_without_it(tmp_path):
+    """The emissive-triangle arm of the same double count, which also needs
+    the NEE pdf measured from the floor rather than from the pane's exit
+    point: an index-matched, lossless pane between a floor and an emissive
+    quad changes nothing. It used to brighten the floor 1.7x.
+    """
+
+    def build(pane):
+        def inner(scene):
+            scene.set_background(BLACK)
+            Scene.clear_lights()
+            floor = Prism(width=8.0, height=8.0, depth=0.2)
+            floor.set_material(MeshLambertMaterial(color=WHITE))
+            floor.spawn(animate=False)
+            quad = Prism(width=2.5, height=2.5, depth=0.02)
+            quad.set_material(
+                MeshLambertMaterial(color=BLACK, emissive=WHITE, emissive_intensity=0.6)
+            )
+            quad.move(OUT * 2.0)
+            quad.spawn(animate=False)
+            if pane:
+                glass = Prism(width=6.0, height=6.0, depth=0.2)
+                glass.move_to(OUT * 1.0)
+                glass.set_material(
+                    MeshPhysicalMaterial(
+                        color=WHITE, transmission=1, roughness=0.0, ior=1.0
+                    )
+                )
+                glass.spawn(animate=False)
+            camera = scene.get_camera()
+            camera.move_to(OUT * 0.6 + RIGHT * 3.5)
+            camera.look_at(ORIGIN)
+
+        return inner
+
+    opts = _furnace_opts(True, 4)
+    bare = _render_scene_exp(tmp_path, "quad_bare.png", build(False), 128, **opts)
+    paned = _render_scene_exp(tmp_path, "quad_pane.png", build(True), 128, **opts)
+    a = _center_patch_mean(bare, half=3)
+    b = _center_patch_mean(paned, half=3)
+    assert a > 30, "the quad must light the floor"
+    assert b == pytest.approx(a, abs=2.0), (a, b)
+
+
 def test_rough_glass_blurs_transmission_but_index_matched_glass_does_not(tmp_path):
     """A striped environment resolves through smooth glass and blurs through rough glass."""
 
