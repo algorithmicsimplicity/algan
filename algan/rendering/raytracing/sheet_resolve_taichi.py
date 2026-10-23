@@ -282,10 +282,6 @@ def sheet_resolve_shade_arena(
     env_intensity = layer_offsets[4]
     far_clip = layer_offsets[5]
     max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
-    # Quadrants patch 0005's per-kernel register cap, off unless
-    # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
-    if ti.static(megakernel_register_cap()):
-        ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
     # Taps the five continuation fans below unroll (``for s in
     # ti.static(range(fan_taps))``). Each tap inlines a jittered surface
     # sample, a normal fetch and a pool spawn, so at ``sec_aa`` 4 the fans are
@@ -300,6 +296,10 @@ def sheet_resolve_shade_arena(
     # passes ``sec_aa`` 1 to the shading launches of a batch with nothing a
     # fan could reflect or refract through; raster_pipeline.)
     fan_taps = ti.static(sec_aa if mode != 1 else 0)
+    # Quadrants patch 0005's per-kernel register cap, off unless
+    # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
+    if ti.static(megakernel_register_cap()):
+        ti.loop_config(max_reg=ti.static(megakernel_register_cap()))
     for t in range(num_covered):
         r = t
         pixel = covered_idx[t]

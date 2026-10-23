@@ -31,6 +31,7 @@ import torch
 from algan.rendering.raytracing.ggx_albedo import pt_energy_tables
 from algan.rendering.raytracing.path_tracer_taichi import (
     _pt_fresnel,
+    _pt_layer_none,
     _pt_lit_f_pdf,
     _pt_lit_lobes,
 )
@@ -138,6 +139,7 @@ def _pt_probe(
         0.0,
         one,
         1.0,
+        _pt_layer_none(),
     )
     out[1, 0] = fc[0]
     out[1, 1] = pdf
@@ -183,7 +185,7 @@ def _pt_lobe_probe(
 ):
     one = ti.math.vec3(1.0, 1.0, 1.0)
     n = ti.math.vec3(0.0, 0.0, 1.0)
-    _diff, _spec, trans, f0, _rough = _pt_lit_lobes(
+    _diff, _spec, trans, f0, _rough, _layer = _pt_lit_lobes(
         energy, _MID_PHYSICAL, params, 0, 0, one, 0.0, 0.001, 1.5, 1.0, n, n, eta
     )
     out[0] = f0[0]
