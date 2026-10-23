@@ -672,3 +672,45 @@ Not done: the bezier count/write and resolve kernels are now most of a stroke
 frame; the resolve launch costs ~15 ms of host time even on the fast-launch
 path (inside the C++ launch); `ALGAN_PREFETCH_GPU_PREP=1` crashes at HD in
 `scene_builder._iter_primitive_source_tensors` (`shader_param_names` None).
+
+## Bezier edge tables built once for static circuits (October 23)
+
+`build_bezier_edge_acceleration` (`rendering/raytracing/bezier_acceleration.py`)
+gave every (frame, circuit) group its own scanline and spatial bins, built from
+about twenty T*E-sized int64 temporaries. `_dedup_time_group` collapses
+`edges_2d` only when the whole batch is constant, so one moving circuit kept a
+batch T frames wide. On the backprop video's network scenes 99.8% of circuits
+were static, yet one 139-frame batch of scene 4 (E = 135,785) took 17 s and
+peaked at 11.6 GB: the card paged (WDDM), the build was 67% of scene 4's render
+through the arena preflight that runs it, and its raw `CUDA error: out of
+memory` (not a probe failure the preflight catches) crashed scene 5.
+
+A circuit whose edges are bitwise the same in every frame (`_static_circuits`,
+compared through an integer view, so `-0.0` against `0.0` is a change) now has
+its bins built once, and its header at every later frame is a copy of its
+frame-0 header. The kernels reach edges only through a group's header offsets
+and then read `edges_2d[f]` themselves, so the same bits give the same bins.
+Construction runs in chunks of at most `_CHUNK_PAIRS` (4 M) (frame, edge) pairs,
+so a batch whose circuits do move (the network growing: 277 frames, 30 M pairs,
+12.9 s paging) builds in 0.2 s. `ALGAN_OPT_DISABLE=acceldedup` builds every
+group in one chunk: the previous buffer, word for word.
+`tests/unit_tests/test_bezier_acceleration_dedup.py` holds both arms to a frozen
+copy of the old builder, decoding the shared bins the way the kernels address
+them; 64 real builds from scenes 4, 5, 6, 15, 23 and 29 passed the same check.
+
+Measured on the RTX 5080, the whole backprop video at PREVIEW, warm, fresh
+processes, master and branch alternated twice: render 174.6 / 170.9 s ->
+126.4 / 127.5 s, whole video 305 / 308 s -> 249 / 264 s. Scene 4's render
+27-32 s -> 8.6 s, scene 5's 24-25 s -> 6 s, scene 23's 11.3 s -> 3.7 s.
+
+Pixels: with the windows pinned (`max_animation_batch_size=16`) scenes 0, 4, 5,
+6, 23 and 29 are byte-identical to master. Unpinned, the smaller merge peak
+lets the preflight choose other windows, which moves animated frames of scenes
+4, 5, 6 and 15 by up to 60 levels -- as far as master's own output moves when
+only `available_memory_override` changes (8 GiB). Scene 15's windows differ even
+under the cap, because some of its batches are memory-bound below 16 frames;
+the disable arm moves the same scenes, its merge peak differing too (it
+gathers the pairs instead of viewing them). One small cost seen: scene 21
+renders ~1 s slower in every A/B, all of it in `bloom fft conv` (0.27 -> 1.08 s)
+and `memory reclaim` on identical frames -- allocator state after the build,
+not the build, which got faster; not chased.
