@@ -39,8 +39,9 @@ length, and a ``[.., 3]`` chain measured up to 30x slower than with
 automatic dynamic shapes, which mark only the axis that actually moved.
 
 What ``'auto'`` (the default) resolves to is :func:`torch_compile_support`:
-on wherever ``torch.compile`` runs, off on Windows and on a Python that Dynamo
-does not support. Setting the field to ``True`` skips that check and tries
+on wherever ``torch.compile`` runs, off on Windows, on a Python that Dynamo
+does not support, and for an MPS render device (Inductor's Metal backend is a
+prototype; see :func:`_auto_declines_this_device`). Setting the field to ``True`` skips that check and tries
 anyway, falling back per function as above; ``False`` is off everywhere.
 ``ALGAN_TORCH_COMPILE`` overrides the field, which is how an A/B script flips
 arms between two renders in one process.

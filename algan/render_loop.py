@@ -655,46 +655,41 @@ def _slice_render_state(render_state, start, end, total_frames):
             return value[start:end]
         return value
 
-    return {
-        **(
-            {"frame_indices": render_state["frame_indices"][start:end]}
-            if "frame_indices" in render_state
-            else {}
-        ),
-        "ray_origin": sliced(render_state["ray_origin"]),
-        "screen_point": sliced(render_state["screen_point"]),
-        "screen_basis": sliced(render_state["screen_basis"]),
-        # Optional: snapshots of cameras without a lens (test doubles) omit it,
-        # and a key missing here would silently drop the lens from every
-        # prefix retry and overlapped-prep window.
-        **(
-            {"camera_lens": sliced(render_state["camera_lens"])}
-            if "camera_lens" in render_state
-            else {}
-        ),
-        # Optional the same way, and as silent if dropped: a retried window
-        # would render an orthographic camera as a pinhole.
-        **(
-            {"camera_projection": sliced(render_state["camera_projection"])}
-            if "camera_projection" in render_state
-            else {}
-        ),
-        "lights": [
-            (sliced(origin), sliced(color), sliced(aux))
-            for origin, color, aux in render_state["lights"]
-        ],
-        # The kept light objects stay aligned with ``lights``. A light that
-        # overlaps the fetched window but not this prefix keeps its (all-zero)
-        # rows -- zero rows are inert everywhere, so the prefix renders the
-        # same as a fresh fetch of it would.
-        "light_objects": render_state.get("light_objects"),
-        "light_active": [
-            sliced(active)
-            for active in render_state.get(
-                "light_active", [None] * len(render_state["lights"])
-            )
-        ],
-    }
+    # Every key passes through, and only the per-frame ones are sliced: a
+    # whitelist silently dropped each key it did not name from every prefix
+    # retry and overlapped-prep window (the lens and the projection were both
+    # lost that way once -- a retried window rendered an orthographic camera
+    # as a pinhole -- and ``lone_still`` still was).
+    out = dict(render_state)
+    if "frame_indices" in render_state:
+        out["frame_indices"] = render_state["frame_indices"][start:end]
+    # The camera rows; the lens and projection are optional (snapshots of
+    # cameras without a lens, such as test doubles, omit them).
+    for key in (
+        "ray_origin",
+        "screen_point",
+        "screen_basis",
+        "camera_lens",
+        "camera_projection",
+    ):
+        if key in render_state:
+            out[key] = sliced(render_state[key])
+    out["lights"] = [
+        (sliced(origin), sliced(color), sliced(aux))
+        for origin, color, aux in render_state["lights"]
+    ]
+    # The kept light objects stay aligned with ``lights``. A light that
+    # overlaps the fetched window but not this prefix keeps its (all-zero)
+    # rows -- zero rows are inert everywhere, so the prefix renders the same
+    # as a fresh fetch of it would.
+    out["light_objects"] = render_state.get("light_objects")
+    out["light_active"] = [
+        sliced(active)
+        for active in render_state.get(
+            "light_active", [None] * len(render_state["lights"])
+        )
+    ]
+    return out
 
 
 def _frame_window_bounds(start, end, frame_indices=None):
@@ -1699,7 +1694,15 @@ class RenderLoopMixin:
         device = self.memory.data.device
         if device.type != "cuda":
             return True
-        from algan.rendering.raytracing.optix import gas
+        # The path tracer has no OptiX arm, and a device whose runtime did not
+        # come up (old driver, no RT cores) builds nothing: neither may pay a
+        # shorter window for structures that are never built.
+        if int(SETTINGS.raytracing.samples_per_pixel) > 1:
+            return True
+        from algan.rendering.raytracing.optix import gas, runtime_for
+
+        if runtime_for(device) is None:
+            return True
 
         need = gas.preflight_bytes(merged, merged.get("num_triangles", 0))
         if need == 0:
@@ -4168,14 +4171,21 @@ class RenderLoopMixin:
         ensure_taichi_for_render()
         original_background = self.background_frame
         original_memory = self.memory
-        # A render job is the scope of the truncation instrument: its counters
-        # start at zero here and each ceiling gets one warning per job, so a
-        # second save_video reports its own render rather than inheriting the
-        # first one's totals and its already-spent warnings.
-        reset_truncations()
-        # So is the float32 rounding warning's, with one difference: a
-        # camera-view pass copies the Scene's attributes, finds this job's
-        # record already open and adds to it, so the render warns once in all.
+        # A camera-view pass is a get_frames on a copy of this Scene's
+        # attributes, made inside the job: it finds the job already open (the
+        # marker names the Scene that opened it) and adds to it rather than
+        # starting one of its own.
+        owns_job = "_render_job_owner" not in self.__dict__
+        if owns_job:
+            # A render job is the scope of the truncation instrument: its
+            # counters start at zero here and each ceiling gets one warning per
+            # job, so a second save_video reports its own render rather than
+            # inheriting the first one's totals and its already-spent warnings.
+            # A camera-view pass does not reset them, or the job's plan would
+            # report only its last window and every window would warn again.
+            reset_truncations()
+        # So is the float32 rounding warning's: a camera-view pass finds this
+        # job's record already open and adds to it, so the render warns once.
         owns_rounding_job = getattr(self, "_float32_rounding_job", None) is None
         completed = False
         with torch.no_grad(), render_job_holding_the_arch():
@@ -4190,6 +4200,8 @@ class RenderLoopMixin:
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
             try:
+                if owns_job:
+                    self.__dict__["_render_job_owner"] = id(self)
                 if owns_rounding_job:
                     self._float32_rounding_job = Float32RoundingJob()
                 from algan.rendering.camera_views import (
@@ -4239,6 +4251,8 @@ class RenderLoopMixin:
                 self.__dict__.pop("_chunk_background_cache", None)
                 self.__dict__.pop("_frame_local_batches", None)
                 self.__dict__.pop("_still_batches", None)
+                if owns_job:
+                    self.__dict__.pop("_render_job_owner", None)
                 # Release the arena before the arch scope considers a deferred
                 # compiler reset. WDDM charges GPU allocations against host
                 # commit too; its freed storage must be reclaimable before the
@@ -4380,12 +4394,15 @@ class RenderLoopMixin:
         # per-batch render timings below; a new job restarts its batch count.
         _rt_settings = SETTINGS.raytracing
 
-        _rt_settings._begin_render_job()
-        # A denoiser that ran out of memory loading in the last job loads again;
-        # until a render has loaded one, there is nothing to forget.
-        denoise_module = sys.modules.get("algan.rendering.denoise.denoise")
-        if denoise_module is not None:
-            denoise_module._begin_render_job()
+        # Once per job, not per camera-view pass (whose marker names the
+        # Scene it was copied from): the forecast would restart every window.
+        if self.__dict__.get("_render_job_owner", id(self)) == id(self):
+            _rt_settings._begin_render_job()
+            # A denoiser that ran out of memory loading in the last job loads
+            # again; until a render has loaded one, there is nothing to forget.
+            denoise_module = sys.modules.get("algan.rendering.denoise.denoise")
+            if denoise_module is not None:
+                denoise_module._begin_render_job()
 
         with self._batch_prep_context():
             current_time_ind = start_time_ind

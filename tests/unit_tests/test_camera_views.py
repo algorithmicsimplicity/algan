@@ -253,3 +253,27 @@ def test_capture_geometry_uses_its_resolution_and_eye():
         assert scene.camera is not view.camera
     torch.testing.assert_close(shape.get_render_primitives().stroke_width, original)
     assert not hasattr(scene, "_geometry_view")
+
+
+def test_camera_view_passes_share_one_truncation_job(monkeypatch):
+    """A render with a live CameraView is one render job: its capture and main
+    passes add to one set of truncation counters instead of each resetting
+    them, so the plan reports the whole render and each ceiling warns once.
+    The passes used to reset per window, leaving only the last window's
+    counts on ``last_render_plan`` and re-arming every warning.
+    """
+    from algan import render_loop
+    from algan.rendering import camera_views
+
+    resets = []
+    monkeypatch.setattr(render_loop, "reset_truncations", lambda: resets.append(True))
+    scene = _scene()
+    with Off():
+        target = Square(size=1, color=algan.RED).spawn()
+        CameraView(resolution=(24, 16), height=2).focus_on(target, 0.3).move_to(
+            algan.RIGHT * 3 + algan.OUT
+        ).spawn()
+    monkeypatch.setattr(camera_views, "_window_size", lambda views: 2)
+    _frames(scene, (0, 3, 8))
+    assert len(resets) == 1
+    assert "_render_job_owner" not in scene.__dict__

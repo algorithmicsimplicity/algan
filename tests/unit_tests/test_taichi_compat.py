@@ -123,3 +123,28 @@ def test_each_backend_gets_its_own_kernel_cache_directory(monkeypatch):
 
     monkeypatch.delenv("TI_OFFLINE_CACHE_FILE_PATH", raising=False)
     assert _startup._TAICHI_CACHE_DIRECTORY.name == BACKEND
+
+
+def test_the_backend_wheel_and_its_post_release_are_named(monkeypatch):
+    """A ``.postN`` of the compiler wheel changes Algan's patch series while
+    the import package's version stays put, so the banner and the kernel
+    source key name the distribution and its full version.
+    """
+    from importlib import metadata
+
+    from algan import taichi_compat
+
+    monkeypatch.setattr(taichi_compat, "BACKEND", "quadrants")
+    taichi_compat.backend_distribution.cache_clear()
+    real = metadata.version
+
+    def fake(name):
+        if name == "algan-quadrants":
+            return "9.9.9.post7"
+        return real(name)
+
+    monkeypatch.setattr(metadata, "version", fake)
+    try:
+        assert taichi_compat.backend_distribution() == "algan-quadrants 9.9.9.post7"
+    finally:
+        taichi_compat.backend_distribution.cache_clear()

@@ -1,4 +1,4 @@
-"""Single entry point for initializing the Taichi CUDA runtime.
+"""Single entry point for initializing the Taichi runtime, on every arch.
 
 The rasterizer, the fragment blender and the ray tracer each need Taichi up
 before they define their kernels, and they may be imported in any order.
@@ -13,8 +13,11 @@ cannot silently regress):
 * ``arch`` -- the *concrete* backend for the render device (:func:`_taichi_arch`)
   with ``enable_fallback=False``, so a backend that cannot come up raises
   instead of quietly rendering on the CPU.
-* ``fast_math`` / ``advanced_optimization`` / ``offline_cache`` -- on by
-  default in Taichi 1.7.4; pinned here.
+* ``fast_math`` / ``offline_cache`` -- on by default in Taichi 1.7.4; pinned
+  here.
+* ``advanced_optimization`` -- **off**, unlike Taichi's default: it raised
+  register pressure on the big megakernels. ``ALGAN_ADV_OPT=1`` turns it back
+  on for an A/B.
 * ``offline_cache_file_path`` -- Algan's dedicated kernel cache,
   ``_TAICHI_CACHE_DIRECTORY``, which already honours the standard
   ``TI_OFFLINE_CACHE_FILE_PATH`` env var. Before ``init``, a lock file the

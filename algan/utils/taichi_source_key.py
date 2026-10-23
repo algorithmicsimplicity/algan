@@ -1581,7 +1581,7 @@ def compute_key(kernel, args):
     Returns ``(key, None)`` or ``(None, reason)`` when the key is poisoned.
     Pure: it neither touches the compiler nor stores anything.
     """
-    from algan.taichi_compat import BACKEND, submodule
+    from algan.taichi_compat import BACKEND, backend_distribution, submodule
 
     global _MEMO_ACTIVE
     started = time.perf_counter()
@@ -1606,6 +1606,10 @@ def compute_key(kernel, args):
         out.append(
             f"compiler:{BACKEND}:{getattr(compiler, '__version_str__', compiler.__version__)}"
         )
+        # The banner names the upstream release only; the wheel's ``.postN``
+        # is what moves when Algan's patch series (frontend and codegen
+        # changes among them) does.
+        out.append(f"distribution:{backend_distribution()}")
         out.append(f"schema:{fast_caching._CACHE_VALUE_SCHEMA_VERSION}")
         out.append(f"autodiff:{kernel.autodiff_mode}")
         # Decorator flags the transformer branches on (`@qd.kernel(graph=,
