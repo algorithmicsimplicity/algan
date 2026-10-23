@@ -1081,3 +1081,77 @@ def test_a_process_that_used_the_cache_does_not_see_later_artifacts(tmp_path):
     # tonemap_to_u8: the worker compiled and indexed it, and still a miss.
     assert touched["hits"] == 0
     assert touched["misses"] == 2
+
+
+# --- what an MPS render binds ---------------------------------------------------
+
+
+def test_an_imported_ndarray_is_recorded_as_the_tensor_it_imports():
+    """An MPS render's arguments reach the recorder as compiler ndarrays.
+
+    The zero-copy wrapper imports every arena tensor before the call reaches
+    ``timed_materialize``, and a spec that refused them left every arena
+    kernel out of the manifest on a Mac. Described as the tensor would have
+    been, the spec is the one a CPU or CUDA render records, so a worker's
+    placeholders build the same specialization everywhere.
+    """
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    kernel = _tonemap()
+    tensors = _tonemap_args()
+    imported = (
+        ti.ndarray(ti.f32, shape=tuple(tensors[0].shape)),
+        ti.ndarray(ti.u8, shape=tuple(tensors[1].shape)),
+        *tensors[2:],
+    )
+    assert kp.encode_spec(kernel, imported) == kp.encode_spec(kernel, tensors)
+    vector = ti.Vector.ndarray(4, ti.f16, shape=(3, 5))
+    assert kp._encode_compiler_ndarray(vector) == ["A", "float16", 3, [4]]
+    assert kp._encode_compiler_ndarray(ti.ndarray(ti.f64, shape=(2,))) is None
+    assert kp._encode_compiler_ndarray(object()) is None
+
+
+def test_a_worker_binds_its_placeholders_the_way_a_launch_would(monkeypatch):
+    """``compile_spec`` hands its placeholders through ``launch_arguments``.
+
+    On MPS that is what imports them, so the worker's source key describes the
+    imported ndarrays the render's does; off MPS it is the identity.
+    """
+    from algan.rendering import mps_zero_copy
+
+    seen = []
+
+    def recording(kernel, args):
+        seen.append((kernel, args))
+        return tuple(args)
+
+    monkeypatch.setattr(mps_zero_copy, "launch_arguments", recording)
+    kernel = _tonemap()
+    spec = kp.encode_spec(kernel, _tonemap_args())
+    kp.compile_spec(spec)
+    assert len(seen) == 1
+    assert seen[0][0] is kernel
+    assert kp.encode_spec(kernel, seen[0][1]) == spec
+
+
+@pytest.mark.parametrize(
+    ("arch", "flag", "outlives"),
+    [
+        ("cuda", None, True),
+        ("cpu", True, True),
+        ("x64", True, True),
+        ("cpu", False, False),
+        ("cpu", None, False),
+        ("metal", True, False),
+    ],
+)
+def test_a_worker_prepares_only_where_the_result_reaches_the_disk(arch, flag, outlives):
+    """CUDA's PTX, and the CPU's machine code under Quadrants patch 0012.
+
+    Without 0012's object cache a CPU worker's JIT would die with the worker.
+    """
+    cfg = types.SimpleNamespace(arch=getattr(ti, arch))
+    if flag is not None:
+        cfg.offline_cache_cpu_object_by_content_hash = flag
+    assert kp._prepared_artifact_outlives_worker(cfg, ti) is outlives

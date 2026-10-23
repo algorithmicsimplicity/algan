@@ -502,6 +502,12 @@ fully cached kernel without re-reading its compiler IR, which shortens the
 start of every new process; ``ALGAN_PTX_CACHE_BY_CONTENT_HASH=0`` turns that
 off.
 
+On the CPU, with a compiler build that supports it, each kernel's machine code
+is kept in the kernel cache too, so a new process loads it instead of
+generating it again at each kernel's first launch (a few seconds per process),
+and the background workers generate it ahead of the render.
+``ALGAN_CPU_OBJECT_CACHE=0`` turns that off.
+
 None of this changes what a render draws. A kernel is only ever used when it
 matches exactly what the render asked for; anything a worker compiled that the
 render does not need is simply never used.

@@ -275,8 +275,15 @@ def encode_spec(kernel, args):
     ``["T", value]`` for a template, ``["A", dtype, rank, element_shape]`` for
     an array (a torch tensor; only its type reaches the IR) and ``["S", type]``
     for a scalar (its value is a runtime input, not part of the specialization). ``None`` when anything is not portable -- the kernel is not a
-    module-level ``algan`` kernel, an argument is not a torch tensor, a template
-    value has no encoding.
+    module-level ``algan`` kernel, an argument is neither a torch tensor nor
+    a compiler ndarray, a template value has no encoding.
+
+    A compiler ndarray is what an MPS render binds where it was handed a
+    torch tensor (``mps_zero_copy``'s wrapper imports it before the call
+    reaches here), so it is described as that tensor would have been: its
+    torch dtype, and the outer and element dimensions together as the rank.
+    Spec and worker then agree across the import -- :func:`compile_spec`
+    imports the placeholders the same way.
     """
     function = kernel.func
     try:
@@ -294,7 +301,11 @@ def encode_spec(kernel, args):
                 encoded.append(["T", _encode(value)])
             elif isinstance(annotation, ndarray_type):
                 if not isinstance(value, torch.Tensor):
-                    return None
+                    array = _encode_compiler_ndarray(value)
+                    if array is None:
+                        return None
+                    encoded.append(array)
+                    continue
                 element_ndim = (
                     annotation.dtype.ndim
                     if isinstance(annotation.dtype, matrix_type)
@@ -327,6 +338,23 @@ def encode_spec(kernel, args):
     except Exception:  # noqa: BLE001 -- recording must never fail a render
         return None
     return {"kernel": f"{module}:{qualname}", "args": encoded}
+
+
+def _encode_compiler_ndarray(value):
+    """``["A", ...]`` for a compiler ndarray, as for the tensor it imports.
+
+    ``None`` for anything else, or an element type torch has no name for.
+    """
+    from algan.rendering.mps_zero_copy import torch_dtype_name
+    from algan.taichi_compat import submodule
+
+    if not isinstance(value, submodule("lang._ndarray").Ndarray):
+        return None
+    dtype = torch_dtype_name(getattr(value, "dtype", None))
+    if dtype is None:
+        return None
+    element_shape = [int(d) for d in (getattr(value, "element_shape", ()) or ())]
+    return ["A", dtype, len(value.shape) + len(element_shape), element_shape]
 
 
 def _digest(value, length=32):
@@ -866,21 +894,35 @@ def prepare_for_launch(prog, compiled_kernel_data):
     and the driver's JIT of it into its compute cache (``CUDA_CACHE_PATH``,
     which the render shares): Quadrants patch 0011's ``Program.prepare_kernel``.
     It holds no cache lock; the PTX reaches the disk with the next
-    ``dump_cache_data_to_disk``. Returns the seconds it took, or ``None`` where
-    it is not done: off the CUDA arch (the CPU arch keeps no machine code across
-    processes, so a worker would JIT for nothing), on a wheel without the entry
-    point, or under ``ALGAN_PRECOMPILE_PTX=0``.
+    ``dump_cache_data_to_disk``. On the CPU arch it is the JIT's machine code,
+    which Quadrants patch 0012 writes to its object cache as soon as it exists.
+    Returns the seconds it took, or ``None`` where it is not done: on the CPU
+    arch without 0012's object cache (nothing would outlive the worker), on any
+    other arch, on a wheel without the entry point, or under
+    ``ALGAN_PRECOMPILE_PTX=0``.
     """
     from algan.taichi_compat import submodule, ti
 
     if not env_flag("ALGAN_PRECOMPILE_PTX", True):
         return None
     prepare = getattr(prog, "prepare_kernel", None)
-    if prepare is None or submodule("lang.impl").current_cfg().arch != ti.cuda:
+    if prepare is None or not _prepared_artifact_outlives_worker(
+        submodule("lang.impl").current_cfg(), ti
+    ):
         return None
     started = time.perf_counter()
     prepare(compiled_kernel_data)
     return time.perf_counter() - started
+
+
+def _prepared_artifact_outlives_worker(cfg, ti):
+    """Whether ``prepare_kernel`` leaves something on disk for the render."""
+    if cfg.arch == ti.cuda:
+        return True
+    cpu_archs = (ti.cpu, getattr(ti, "x64", None), getattr(ti, "arm64", None))
+    return cfg.arch in cpu_archs and bool(
+        getattr(cfg, "offline_cache_cpu_object_by_content_hash", False)
+    )
 
 
 #: The ``CompiledKernelData`` handles this worker compiled and then dumped, by
@@ -935,8 +977,13 @@ def compile_spec(spec, on_started=None, before_writing=None):
 
     impl = submodule("lang.impl")
     src_hasher = submodule("lang._fast_caching.src_hasher")
+    from algan.rendering.mps_zero_copy import launch_arguments
+
     kernel = resolve_kernel(spec)
-    args = placeholder_args(spec, render_device())
+    # Bound as a launch would bind them. On MPS that imports the placeholders;
+    # without it every key a worker indexed described a torch tensor where the
+    # render's describes an imported ndarray, so none was ever looked up.
+    args = launch_arguments(kernel, placeholder_args(spec, render_device()))
     if on_started is not None:
         fast_key, _ = sk.compute_key(kernel, args)
         on_started(fast_key)

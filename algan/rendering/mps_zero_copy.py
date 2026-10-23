@@ -333,6 +333,28 @@ def _taichi_dtype(torch_dtype):
     }.get(torch_dtype)
 
 
+def torch_dtype_name(taichi_dtype):
+    """The torch dtype's name (``"float32"``) for a Taichi element type, or None.
+
+    The inverse of :func:`_taichi_dtype`, for describing an imported ndarray
+    in the terms a torch tensor would have been described in.
+    """
+    import torch
+
+    for torch_dtype in (
+        torch.float32,
+        torch.float16,
+        torch.int32,
+        torch.int64,
+        torch.int16,
+        torch.int8,
+        torch.uint8,
+    ):
+        if _taichi_dtype(torch_dtype) == taichi_dtype:
+            return str(torch_dtype).removeprefix("torch.")
+    return None
+
+
 def import_tensor(tensor, element_shape=()):
     """An ndarray over ``tensor``'s own MTLBuffer, or None if it cannot be one.
 
@@ -595,6 +617,54 @@ def report():
     return "\n".join(lines)
 
 
+def _import_arguments(kernel, args, on_declined=None):
+    """``(args with each importable ndarray argument imported, how many)``.
+
+    ``(None, 0)`` when nothing was imported. ``on_declined(kernel, index,
+    tensor, element_shape)`` is told about each ndarray argument left alone.
+    """
+    positions = _ndarray_positions(kernel)
+    converted = None
+    count = 0
+    for index, argument in enumerate(args):
+        element_shape = positions.get(index)
+        if element_shape is None:
+            continue
+        array = import_tensor(argument, element_shape)
+        if array is None:
+            if on_declined is not None:
+                on_declined(kernel, index, argument, element_shape)
+            continue
+        if converted is None:
+            converted = list(args)
+        converted[index] = array
+        count += 1
+    return converted, count
+
+
+def launch_arguments(kernel, args):
+    """The arguments a call of ``kernel`` with ``args`` actually binds.
+
+    What the installed wrapper hands the original ``Kernel.__call__``: on an
+    MPS render with zero-copy installed, every importable torch tensor at an
+    ndarray position becomes an ``ExternalMetalNdarray``; anywhere else,
+    ``args`` unchanged. A precompile worker materializes kernels through
+    ``ensure_compiled`` rather than through ``__call__``, and has to bind what
+    the render will bind, or the source key it indexes its work under (which
+    describes an imported ndarray differently from a torch tensor) is one the
+    render never looks up.
+    """
+    if not _INSTALLED:
+        return tuple(args)
+    from algan.rendering import taichi_runtime
+
+    ready_for = taichi_runtime._ARCH_READY_FOR
+    if ready_for is None or ready_for.type != "mps":
+        return tuple(args)
+    converted, _ = _import_arguments(kernel, args)
+    return tuple(args) if converted is None else tuple(converted)
+
+
 def install_zero_copy_launch():
     """Convert torch MPS tensors to imported ndarrays in front of every launch.
 
@@ -630,21 +700,7 @@ def install_zero_copy_launch():
             STATS["passthrough_launches"] += 1
             return previous_call(self, *args, **kwargs)
 
-        positions = _ndarray_positions(self)
-        converted = None
-        count = 0
-        for index, argument in enumerate(args):
-            element_shape = positions.get(index)
-            if element_shape is None:
-                continue
-            array = import_tensor(argument, element_shape)
-            if array is None:
-                _note_left_on_the_bus(self, index, argument, element_shape)
-                continue
-            if converted is None:
-                converted = list(args)
-            converted[index] = array
-            count += 1
+        converted, count = _import_arguments(self, args, _note_left_on_the_bus)
         if converted is None:
             STATS["passthrough_launches"] += 1
             return previous_call(self, *args, **kwargs)
