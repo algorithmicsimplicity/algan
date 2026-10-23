@@ -15,6 +15,9 @@ on:
   # Only takes effect once this file is on the default branch: GitHub reads
   # workflow_dispatch from there, not from the ref being dispatched.
   workflow_dispatch:
+  # Weekly, beside the full test run in test.yaml.
+  schedule:
+    - cron: "23 4 * * 1"
 
 # Cancel superseded runs on the same PR.
 concurrency:
@@ -24,8 +27,17 @@ concurrency:
 jobs:
   build:
     name: Sphinx Build
-    # Not on a draft pull request; see `on.pull_request`.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Not part of the CI group: the build runs weekly, by hand, and on a pull
+    # request labelled `full-ci` (and release.yaml builds the docs it
+    # publishes). On every other push and pull request the job is SKIPPED
+    # rather than not triggered, and that is deliberate: "Sphinx Build" is a
+    # required check, a skipped job satisfies one, and a workflow that never
+    # starts leaves it pending and blocks the merge. Once the check is no
+    # longer required, the push and pull_request triggers can go.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request' && !github.event.pull_request.draft
+          && contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
