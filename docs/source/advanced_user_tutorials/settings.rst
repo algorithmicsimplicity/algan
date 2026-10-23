@@ -320,9 +320,9 @@ Three things to know:
 * **The first render of a process is slower, every later one faster.** Each
   compiled function is built on its first call -- seconds apiece on a CPU --
   and that cost lands on the first frames of the first render. PyTorch caches
-  what it builds on disk (``TORCHINDUCTOR_CACHE_DIR``, by default in the
-  system's temporary directory), so a later process only re-traces each
-  function. On a 4-core CPU, a fresh process took 59 s to its first 3-D video
+  what it builds on disk (``TORCHINDUCTOR_CACHE_DIR``, which Algan points
+  at ``torchinductor`` in its cache directory unless you set it), so a later
+  process only re-traces each function. On a 4-core CPU, a fresh process took 59 s to its first 3-D video
   with that cache empty, 26 s with it warm, and 20 s with
   ``torch_compile=False``. A script that renders once and exits may not recoup
   it; a session that renders repeatedly, the interactive viewer, and any

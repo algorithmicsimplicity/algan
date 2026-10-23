@@ -72,3 +72,32 @@ def test_clearing_a_cache_that_was_never_written_does_nothing(tmp_path, monkeypa
 
 def test_both_are_public_names():
     assert {"clear_cache", "clear_cached_kernels"} <= set(algan.__all__)
+
+
+def test_the_inductor_cache_lives_in_the_cache_directory(tmp_path):
+    """torch.compile's cache follows ``ALGAN_CACHE_DIR``, not torch's ``/tmp`` default.
+
+    So ``clear_cache()`` empties it and cache isolation covers it. A fresh
+    interpreter, since the variable is set once, when ``_startup`` imports.
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "TORCHINDUCTOR_CACHE_DIR"}
+    env["ALGAN_CACHE_DIR"] = str(tmp_path / "cache")
+    probe = (
+        "import algan.settings._startup\n"
+        "from torch._inductor.runtime.cache_dir_utils import cache_dir\n"
+        "print(cache_dir())\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.strip().splitlines()[-1] == str(
+        tmp_path / "cache" / "torchinductor"
+    )

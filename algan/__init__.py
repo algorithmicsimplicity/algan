@@ -265,7 +265,9 @@ def clear_cache(include_kernels=False):
     """Delete Algan's content caches (tessellations, manim Tex/Text, audio).
 
     The CUDA driver's JIT cache (``cache/cuda``, see ``settings/_startup.py``)
-    goes with them; it is seconds to rebuild.
+    and torch.compile's Inductor cache (``cache/torchinductor``) go with them;
+    the first is seconds to rebuild, the second costs the next process a cold
+    ``torch.compile``.
 
     The Taichi offline kernel cache lives inside the cache directory too
     (the environment-selected Taichi cache directory) but is spared by default:
