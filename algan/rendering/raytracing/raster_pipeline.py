@@ -3302,6 +3302,18 @@ def shade_sparse_raster_coverage(
     torch.sub(coverage["sheet_offsets"][c0 : c1 + 1], s_start, out=sheet_offsets)
     (rs_ro, rs_rd, rs_acc, rs_sca, rs_int, *_stubs) = state
     sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
+    # The tap count the SHADING launches (modes 0 and 2) unroll their
+    # continuation fans at. Every fan sits behind a reflector, glass or a pane,
+    # so in a batch with none of them no fan can run, and compiling ``sec_aa``
+    # taps there buys nothing but the unrolled bodies -- most of the kernel's
+    # compile time (the built-in 2-D variant: ~45 s against ~17 s on a 4-vCPU
+    # CPU). The event pass (mode 1) keeps the live count, because its
+    # ``event_dp`` footprint -- sized below, read by raster_shadow_trace --
+    # depends on it; it compiles its fans out by itself (the kernel's
+    # ``fan_taps``).
+    from algan.rendering.raytracing.tracer import _batch_can_spawn_continuations
+
+    shade_taps = sec_aa if _batch_can_spawn_continuations(merged) else 1
     dump_req = _aa_dump_request()
     sdump = (
         _aa_dump_buffer(dump_req, covered_idx.device)
@@ -3312,7 +3324,7 @@ def shade_sparse_raster_coverage(
     # Set by the tracer for a splitting batch: the commits this launch makes
     # go on the grid the batch's pool rays add to (``_det_deposit``).
     det_sum = 1 if merged.get("det_sum") else 0
-    pre_args = (
+    pre_head = (
         num_covered,
         sheet_offsets,
         coverage["sheet_key"][s_start:s_end],
@@ -3349,7 +3361,9 @@ def shade_sparse_raster_coverage(
         int(ior_stack_flag),
         int(skip_unlit_normal),
         1 if int(merged.get("num_circuits", 0)) > 0 else 0,
-        sec_aa,
+    )
+    # ``sec_aa`` goes between the two halves, per launch (see ``shade_taps``).
+    pre_tail = (
         float(rt_settings.analytic_aa_secondary_min_energy),
         # The batch's mode (tracer._batch_glossy_mode), which sized the
         # accumulator rows this launch writes; the live mode where no batch
@@ -3424,7 +3438,9 @@ def shade_sparse_raster_coverage(
         )
         sheet_memo = _arena_tensor(memory, (S if memo_on else 1, 12), torch.float32)
         sheet_resolve_shade(
-            *pre_args,
+            *pre_head,
+            sec_aa,
+            *pre_tail,
             1,
             term_mode,
             sided_on,
@@ -3564,7 +3580,9 @@ def shade_sparse_raster_coverage(
                 projected,
             )
         sheet_resolve_shade(
-            *pre_args,
+            *pre_head,
+            shade_taps,
+            *pre_tail,
             2,
             term_mode,
             sided_on,
@@ -3591,7 +3609,9 @@ def shade_sparse_raster_coverage(
         # literal 0; only the mode 1 / mode 2 launches above take a meaningful
         # gate.
         sheet_resolve_shade(
-            *pre_args,
+            *pre_head,
+            shade_taps,
+            *pre_tail,
             0,
             0,
             0,
