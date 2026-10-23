@@ -136,8 +136,9 @@ be as fast as it can be, is:
    make it pay is a per-dimension tile, which that section scopes.
 7. §1 and §4 are not fallback work at all (each section says why) and sit
    behind everything above. §4's homogeneous v1 has since **LANDED**
-   (2026-09-09), and its density grids (2026-10-23); §1 and the rest of §4's
-   deferred extensions remain.
+   (2026-09-09), its density grids (2026-10-23), and §1's MNEE shadow
+   caustics, opt-in (2026-10-23); both sections' explicitly deferred
+   extensions remain.
 
 
 ## The contract every one of these must land under
@@ -465,60 +466,204 @@ until a profile says register pressure is what limits occupancy; splitting
 it is §8's shadow-ray queue, and §8 says why that waits.
 
 
-## 1. Caustics
+## 1. Caustics — MNEE shadow caustics LANDED, opt-in (2026-10-23)
 
-**Not fallback work.** Neither renderer produces caustics, so their absence
-never leaves a scene with no renderer (the §9 test). This section is the
-plan for a *new* capability and sits behind everything in §0, §2, §5, §6
-and §9. When it lands it lands behind a switch that defaults off: MNEE adds
-an iteration loop with a visibility ray per step inside the NEE block, on
-the renderer whose cost per vertex is the thing being defended.
+**Not fallback work.** Neither renderer produced caustics, so their absence
+never left a scene with no renderer (the §9 test), and this section sat behind
+everything in §0, §2, §5, §6 and §9. It landed behind a switch that defaults
+off, `experimental.pt_caustics` (`ALGAN_PT_CAUSTICS`): MNEE adds an iteration
+loop inside the NEE block, on the renderer whose cost per vertex is the thing
+being defended. The switch is a static kernel flag, so `pt_shade` compiled
+with it off is the kernel it was.
 
-**Why absent.** A caustic is an `L (S)+ D` connection: light reaching a
-diffuse vertex *through* specular bending. Unidirectional NEE cannot make that
-connection — the shadow ray is a straight line, and ours deliberately passes
-through glass tinted-but-unbent (the transparent-shadow convention, documented
-in the limitations page). BSDF sampling finds the path only by luck: with
-probability exactly zero for delta lights (a zero-area emitter cannot be hit
-by a sampled ray — that is *why* delta lights are NEE-only), and with tiny
-probability for emissive triangles and env maps — which arrives as fireflies
-that `pt_firefly_clamp` then suppresses, since it clamps exactly the
-rare-but-bright indirect contributions. So today: no caustics from delta
-lights at all, and biased-away caustics from area emitters.
+**Why NEE alone cannot.** A caustic is an `L (S)+ D` connection: light
+reaching a diffuse vertex *through* specular bending. Unidirectional NEE
+cannot make that connection — the shadow ray is a straight line, and ours
+deliberately passes through glass tinted-but-unbent (the transparent-shadow
+convention, documented in the limitations page). BSDF sampling finds the path
+only by luck: with probability exactly zero for delta lights (a zero-area
+emitter cannot be hit by a sampled ray — that is *why* delta lights are
+NEE-only), and with tiny probability for emissive triangles and env maps —
+which arrives as fireflies that `pt_firefly_clamp` then suppresses, since it
+clamps exactly the rare-but-bright indirect contributions. So with
+`pt_caustics` off: no caustics from delta lights at all, and biased-away
+caustics from area emitters.
 
-**What it would take**, in ascending order of scope:
+**The options**, in ascending order of scope:
 
 * **Manifold next-event estimation (MNEE)** — Hanika et al. 2015; what
-  Blender ships as "shadow caustics". Per NEE connection whose straight path
-  crosses tagged transmissive geometry, Newton-iterate the refraction point on
-  the specular manifold until the bent chain connects vertex → glass → light.
-  This is the minimal production-grade addition and the recommended target:
-  it is *deterministic given the path* (no new randomness, so it costs the
-  sampler nothing), it lands inside `pt_shade`'s existing NEE loop, and its
-  contributions arrive as direct light — outside the firefly clamp, so they
-  are not biased away. Needs: smooth normals + derivatives on the caster
-  (`tri_norm` exists), a bounded iteration loop with a fail-closed fallback
-  (contribute nothing, count it — the `truncation.py` pattern), one extra
-  visibility ray per iteration, and a caster declaration (a mob-level flag in
-  the `declare_shadow_flags` family; tag closed transmissive shells by
-  default). Scope: shadow caustics through one refractive interface pair;
-  reflective and multi-interface caustics stay out and the docs keep saying
-  so.
+  Blender ships as "shadow caustics". **Chosen, and what landed.** Per NEE
+  connection whose straight path crosses caster geometry, Newton-iterate the
+  refraction points on the specular manifold until the bent chain connects
+  vertex → glass → light. It is *deterministic given the path* (no new
+  randomness, so it costs the sampler nothing), it lands inside `pt_shade`'s
+  existing NEE loop, and its contributions arrive as direct light — outside
+  the firefly clamp, so they are not biased away.
 * **Photon mapping / SPPM.** A light-tracing pass depositing photons in a
   deterministic spatial hash, gathered at diffuse vertices. Handles every
   caustic class, but it is a second transport pipeline: emitter sampling from
   the light side, photon storage in the arena, radius/bias control, and a new
   kernel family. The memory model and the batch-window structure both grow
-  real complexity.
+  real complexity. Not taken.
 * **BDPT / VCM.** Correct and general, and the worst fit: path identity (the
   purity the sampler contract rests on) becomes genuinely hard to preserve
   across connection strategies, and the wavefront state layout would need a
   light-subpath mirror. Not proposed.
 
-**Verification when it lands:** a point light over a glass sphere on a white
-floor — brute-force reference by rendering the same scene with the light
-replaced by a tiny bright emissive sphere at very high spp and no clamp;
-MNEE at low spp must land on the reference's focused spot within tolerance.
+**What landed.**
+
+* *The walk* (`pt_caustics_taichi.py`). The constraint is the generalized
+  half vector (Walter et al. 2007; Jakob & Marschner 2012), projected on a
+  frame perpendicular to the interpolated shading normal, whose derivatives
+  give the walk its curvature — which is why a caster needs smooth normals.
+  Chains hold one interface (a water surface, a subsurface solid's boundary)
+  or one interface pair (into and out of a glass solid): `MNEE_MAX_VERTICES =
+  2`, a block-tridiagonal 2×2 solve. The straight segment's caster crossings
+  seed it (`_pt_mnee_probe`). Damped Newton with backtracking after Cycles'
+  `mnee_newton_solver`, plus a sum-of-squares decrease test (the half vector
+  saturates far from a solution, and an unchecked step from a wide-angle seed
+  flies off the caster); at most `MNEE_MAX_ITERATIONS = 64` steps. A moved
+  vertex stays on its caster by its barycentrics, or by a projection ray onto
+  the same caster when it leaves its triangle. The chain's light uses the
+  generalized geometry term (`_pt_mnee_geometry`, the transfer matrix's
+  determinant) in place of the inverse square, capped at
+  `MNEE_MAX_CONCENTRATION = 1e4` times the unobstructed light at the same
+  path length. Every leg then takes the ordinary shadow query, so whatever is
+  not a caster still blocks and tints, plus Beer-Lambert absorption inside
+  and medium transmittance with media on.
+* *Every light kind.* Point and spot lights read their falloff, range fade
+  and cone at the chain's unfolded length; directional lights and the
+  environment fix the last leg's direction instead of its end point;
+  emissive triangles and area-light quads use the sampled point. The straight
+  connection keeps only the casters' uncovered fraction, since the covered
+  light now arrives bent.
+* *Receivers* are lit, shadow-receiving vertices that do not refract
+  themselves, *including medium vertices*: with `pt_caustics` on, a point,
+  spot or directional light reaches a subsurface interior through its smooth
+  boundary, which §4 records as impossible with it off.
+* *The firefly clamp.* A chain received by a path that has not scattered yet
+  (a camera ray, or one that passed only mirrors and smooth glass) is direct
+  light and skips `pt_firefly_clamp`: a caustic is a concentrated image of
+  its emitter, and the clamp would cap every focus at its value. After a
+  scatter it is indirect light and is clamped like any other.
+* *Fail-closed, counted* (`truncation.py`). A walk still walking after 64
+  steps contributes nothing (`caustic_solver`). A straight segment crossing
+  more than two caster interfaces (`caustic_chain`) keeps the old tinted
+  straight connection rather than contributing nothing, as the plan had it:
+  dropping that light darkens more than leaving it unfocused does.
+
+**The caster declaration, broadened.** The plan was to tag closed
+transmissive shells by default. What shipped makes every smooth (`roughness <
+0.01`) refracting lit triangle a caster unless its Mob or an ancestor sets
+`casts_caustics = False` — a mob-level flag in the `declare_shadow_flags`
+family (`declare_caustic_flag`), carried as a section of `tri_shell`
+(`nee_meta[22]`, `_pt_caster_id`). Closed shells alone would exclude the
+commonest casters, an open water surface and a lens sheet, and closedness is
+not what the walk needs; smooth normals and refraction are. A Mob that casts
+no shadow casts no caustic: the walks skip its triangles as the shadow query
+does, so the caster section leaves them out too, and the BSDF paths through
+it keep the weight they have with caustics off. Rough glass is not a caster
+(its transmission is a GGX lobe, not a manifold constraint) and keeps its
+straight, tinted shadow.
+
+**Divergences from Cycles, and why.**
+
+* *Area lights and the environment are shared by MIS, not culled.* A BSDF
+  path that scatters at a receiver and then only crosses casters to reach an
+  emitter carries the same light a chain delivers. Cycles drops every such
+  path. That loses all the light the walk cannot find — a solution outside
+  the straight seed's basin, a light end whose straight segment misses the
+  caster — and darkened the floor under a glass ball resting on it by 36%
+  under a uniform sky. Here `pt_shade` holds such a path's emitter back in
+  its `pt_cau` record, beside its receiver and its caster crossings
+  (`_PT_CAU_COUNT`), and `pt_caustic_cover`, launched after every `pt_shade` of
+  a batch, re-runs the walk from that receiver to that light end
+  (`_pt_mnee_covered`). Where the walk converges to this very path, the two
+  strategies share it by the power heuristic (`_pt_caustic_mis`); elsewhere
+  the path keeps all of it. Dropping only the covered paths (no MIS)
+  conserved energy but kept the chain's fireflies where the glass magnifies
+  the light: the sky frame's brightest pixel was 18× the reference, against
+  1.26× with MIS. Two rules keep it unbiased: the coverage test makes
+  exactly the caustic block's decisions (horizon test, probe, seed, solver,
+  tolerance, and the chain's admissibility, `_pt_mnee_admissible`, which
+  both call), and the BSDF path's density is zero when it has fewer bounces
+  left than the journey takes.
+* *A precision floor.* From a receiver a hundredth of a unit under its
+  caster (a scatter point just under a subsurface solid's face) the first
+  leg is a difference of f32 coordinates as large as the facet, and its
+  direction is uncertain by more than `MNEE_THRESHOLD`: no walk could
+  converge, and the least attenuated light was lost. The convergence test
+  and the coverage tolerance rise to the chain's own noise floor
+  (`MNEE_ROUNDING`, `_pt_mnee_chain`'s `c_floor`) instead; where legs are
+  long it is far below both and changes nothing.
+
+**A fix found on the way.** A medium vertex's scatter point was put back on
+a circuit's plane (`_bezier_plane_point`), its medium triangle read as a
+circuit index: another circuit's plane, or whatever the arena holds past
+`circuit_meta`, depending on the scene. It now stays where the free flight put
+it, with caustics on or off.
+
+**Verification (2026-10-23, CPU, 128×96).** Against a renderer-free
+reference (a stratified Fresnel photon tree through the exact sphere, binned
+into each pixel's floor footprint), direct lighting only, at 16 spp:
+
+* Point light over a glass ball on a white floor: caustic region 1.011,
+  shadow 1.006, lit floor 0.999, power through the ball 0.984. The single
+  focus pixel reads 0.62: the reference's focus is the exact sphere's
+  singularity, which the tessellated ball spreads over its facets.
+* Directional light: caustic region 0.983, shadow 0.997, lit floor 1.000;
+  focus pixel 1.32.
+* A uniform sky over the ball resting on the floor, against a 256-spp BSDF
+  reference with no clamp: frame mean equal to the reference to four
+  digits, radial ratios 0.998–0.999 near the contact point, and the 99.9th
+  percentile pixel no brighter than with caustics off.
+* A panel light (an emissive quad) over the ball: 0.97–1.01 radially
+  against a high-spp BSDF-only reference.
+* Flat water under a directional light renders identically with caustics on
+  and off; a wavy surface is about 4% darker than a BSDF-path reference,
+  all of it in the brightest folds, where a light end has more than one
+  solution and the walk finds one.
+
+The suite pins the rest. `test_pt_caustics.py` checks vertex-normal
+derivatives and constraint blocks against finite differences, flat
+interfaces and a slab against closed forms, total internal reflection, a
+receiver just under its interface, and the caster section's merge;
+`test_pt_caustics_render.py` checks that a glass slab leaves an environment
+and an emitter furnace unchanged, that a resting ball leaves the sky furnace
+unchanged, a point light through a plate against paraxial optics (the 1.146×
+brightening, within 2%), and a point light inside a subsurface block against
+analytic single scattering (within 2%; sweeps over index, density and light
+distance landed within 0.1–0.7%).
+
+**What it does not do, and what would extend it.**
+
+* One solution per light sample: the walk finds the one in the straight
+  seed's basin. Where a light end has several (a wavy surface's folds, the
+  bright ring around a resting ball) the others arrive only through BSDF
+  paths, which an area light has and a delta light does not. Specular
+  manifold sampling (Zeltner et al. 2020: random seeds and an unbiased
+  estimate of the solution count) is the extension.
+* Refraction only. Reflective caustics (a ring's cardioid, a curved mirror's
+  focus) need the reflective constraint and a seed the straight segment
+  does not give.
+* At most one interface pair per chain; a glass of water (four interfaces)
+  falls back to the straight tint, counted.
+* Each interface separates its material from index 1, as in Cycles: nested
+  dielectrics are not modelled along a chain.
+* Glass that is not a caster (opted out, or rough) is passed straight and
+  tinted on a chain's legs, as by any shadow ray. The BSDF path bends there
+  instead, and also spends a bounce the caustic count does not see: within
+  a bounce or two of `max_bounces` the chain then takes `1 - w` less than its
+  share for a journey the BSDF path can no longer finish.
+* One emitter per `pt_shade` launch is held for the coverage test. A second
+  one the same path reaches through casters (past a semi-transparent
+  emitter it held) is weighted as with caustics off, against a straight
+  light sample that the casters now block: a small loss in that corner.
+* A chain dropped because a leg's medium walk was truncated
+  (`PT_STAT_MEDIA_*`, already reported) is not repeated by the coverage
+  test, which does not keep the path's medium stack at its receiver.
+* Rough glass shadows straight, and the deterministic renderer has no
+  caustics at all.
 
 
 ## 2. Adaptive sampling
@@ -820,8 +965,9 @@ or `casts_shadows` disabled. A connection stops at an index-changing
 interface into or out of a scattering interior: it requires an actual
 Fresnel/BSDF continuation, and pretending it is a straight transparent
 shadow double-counts paths when the specular event resets MIS state, and
-adds energy in a dense medium. Delta-light refractive caustics still require
-the future caustic work.
+adds energy in a dense medium. With `pt_caustics` on, §1's manifold walk
+makes that connection through a smooth boundary instead, bent and
+Fresnel-weighted, for every kind of light.
 
 **Non-scattering shells are the shadow march's (2026-10-01).** Medium
 tracking is switched on for the whole scene by any scattering object, and it
@@ -838,9 +984,10 @@ boundary then borders a scattering region.
 `test_glass_casts_the_same_shadow_with_or_without_unrelated_media` (clear and
 absorbing, shadows on and off) and
 `test_a_scattering_interior_still_stops_straight_shadow_connections` pin both
-sides. One consequence is unchanged and documented: a point, spot or
-directional light never reaches a subsurface interior, since only NEE can
-reach a delta light.
+sides. One consequence is unchanged and documented: with `pt_caustics` off
+a point, spot or directional light never reaches a subsurface interior, since
+only NEE can reach a delta light. §1's chains reach it through a smooth
+boundary, with the medium vertex as their receiver.
 
 ### Contracts and diagnostics
 
@@ -851,7 +998,8 @@ reach a delta light.
 * No new scene-specific kernel template gate or arena argument. Runtime
   `nee_meta[21]` enables the second shell-table half; scenes with zero
   scattering retain their old scene arrays and transport. The header grows
-  to 22 words and the optional blue-noise tile follows it.
+  to 22 words (23 since §1's `nee_meta[22]`, the caster section's offset)
+  and the optional blue-noise tile follows it.
 * Sampler pair `2 + 6b + 4` chooses the RGB channel and flight distance;
   a documented hash salt plus straight-subsegment ordinal makes draws fresh
   across transparent subdivisions without depending on batch boundaries.
@@ -948,7 +1096,8 @@ deterministic route).
 * One tracked segment takes at most `PT_VOL_MAX_STEPS` (4096) loop steps
   (cell crossings plus tentative collisions); exhausting it is fail-closed
   (weight 0) and counted in `pt_stats[4]` →
-  `RenderPlan.truncations.medium_tracking`. `PT_STATS_WIDTH` is 5.
+  `RenderPlan.truncations.medium_tracking`. `PT_STATS_WIDTH` is 7 (columns
+  5-6 are the caustic tallies, §1).
 * The kernel finds a key by a linear scan of `vol_i`, so cost grows with the
   number of live grids in a batch; fine for a handful of clouds.
 
@@ -2381,7 +2530,8 @@ Tracked here so they are one search away, in rough order of effort:
   derivation and validation are in `DESIGN_rough_glass_energy.md`. Custom scatter and
   thin Bezier panes retain their authored delta behavior. Transparent shadow
   rays still travel straight through additional interfaces; this is not a
-  caustic estimator.
+  caustic estimator (§1's opt-in shadow caustics bend them through smooth
+  casters only).
 
   Tests integrate each hemisphere's PDF independently and compare sampled
   outcome frequencies; check power bounds, radiance reciprocity, Snell/TIR,

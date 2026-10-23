@@ -132,6 +132,8 @@ def test_a_render_that_truncated_nothing_reports_zero_rather_than_nothing():
         "medium_stack": 0,
         "medium_query": 0,
         "medium_tracking": 0,
+        "caustic_chain": 0,
+        "caustic_solver": 0,
     }
 
 
@@ -145,9 +147,11 @@ def test_total_covers_every_ceiling():
         medium_stack=32,
         medium_query=64,
         medium_tracking=128,
+        caustic_chain=256,
+        caustic_solver=512,
     )
 
-    assert counts.total == 255
+    assert counts.total == 1023
     assert counts
 
 

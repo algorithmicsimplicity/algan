@@ -57,6 +57,8 @@ single-stage pipeline)::
     39 density_volume (the key of the density grid that scales the interior's
     coefficients, declared by the GEOMETRY's Mob; 0.0 is a homogeneous
     interior -- see ``_MAT_DENSITY_VOLUME``)
+    40 no_caustic_cast (declared by the GEOMETRY like slot 26 -- see
+    ``_MAT_NO_CAUSTIC_CAST``)
 
 Shared geometry/transport slots must treat zero padding as the pre-existing
 behavior. Pipeline-specific slots may have nonzero defaults when their reads
@@ -78,7 +80,7 @@ from algan.rendering.raytracing.color_space_taichi import (
 from algan.taichi_compat import ti
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 40
+MAT_W = 41
 _MAT_SIGMA_S = 34  # RGB scattering coefficient, inverse scene units
 _MAT_PHASE_G = 37  # Henyey-Greenstein anisotropy
 _MAT_MEDIUM_CLOSED = 38  # raw geometric declaration, NOT the opacity ceiling
@@ -90,6 +92,13 @@ _MAT_MEDIUM_CLOSED = 38  # raw geometric declaration, NOT the opacity ceiling
 # (``pt_volume_taichi._pt_medium_volume``). 0.0 is "homogeneous", what every
 # interior was before density grids, which is what the padding rule requires.
 _MAT_DENSITY_VOLUME = 39
+# Slot 40: 1.0 when the primitive's mob declared that it bends no light into
+# caustics (``Mob.casts_caustics`` False). Declared by the MOB, like slot 33,
+# and spelled negatively for the padding rule below: 0.0 is the default, a
+# caster wherever the material refracts. Consumed on the HOST, by the path
+# tracer's caster table (``path_tracer._build_caster_table``); no kernel reads
+# it.
+_MAT_NO_CAUSTIC_CAST = 40
 
 # Slot 26 of that block: 1.0 when the primitive's geometry declares an outside,
 # so a back-facing hit is shaded with its own normal instead of the viewer's

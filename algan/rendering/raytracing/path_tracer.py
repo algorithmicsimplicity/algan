@@ -86,6 +86,7 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_AUTHORED_COUNT,
     _NM_AUTHORED_SAMPLES,
     _NM_BLUE_NOISE,
+    _NM_CAUSTIC,
     _NM_COUNT,
     _NM_ENV_CDF_H,
     _NM_ENV_CDF_W,
@@ -109,9 +110,17 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     PT_STAT_SHELL_RING,
     PT_STAT_TRUNC_SURFACES,
     PT_STATS_WIDTH,
+    pt_caustic_cover,
     pt_generate,
     pt_reduce,
     pt_shade,
+)
+from algan.rendering.raytracing.pt_caustics_taichi import (
+    MNEE_MAX_ITERATIONS,
+    MNEE_MAX_VERTICES,
+    PT_CAU_WIDTH,
+    PT_STAT_CAUSTIC_CHAIN,
+    PT_STAT_CAUSTIC_SOLVER,
 )
 from algan.rendering.raytracing.pt_media_taichi import (
     PT_MEDIA_SLOTS,
@@ -366,13 +375,15 @@ def _pt_active_pixels(
     return pix_list[grown[local]]
 
 
-def _pt_slots_budget(memory):
+def _pt_slots_budget(memory, extra_slot_bytes=0):
     """How many path slots one tile may hold, from the arena's free bytes.
 
     The same sizing policy as the deterministic wavefront's
     ``_auto_primary_per_tile`` (fewer, bigger tiles amortize launch cost;
-    never overrun the arena), with the PT's own per-slot footprint. The
-    result only affects how work is grouped, not what any path computes.
+    never overrun the arena), with the PT's own per-slot footprint plus
+    ``extra_slot_bytes`` of state only some batches carry (the caustic
+    coverage record). The result only affects how work is grouped, not what
+    any path computes.
     """
     if not rt_settings.wavefront_tile_auto or not getattr(memory, "managed", False):
         return max(1, int(rt_settings.wavefront_tile_rays))
@@ -380,7 +391,7 @@ def _pt_slots_budget(memory):
     alignment = (-memory.current_pointer) % torch.float32.itemsize
     safety = min(1.0, max(0.0, float(rt_settings.wavefront_tile_safety)))
     usable = int(free * safety) - alignment - _PT_FIXED_BYTES
-    budget = max(0, usable) // _PT_BYTES_PER_SLOT
+    budget = max(0, usable) // (_PT_BYTES_PER_SLOT + int(extra_slot_bytes))
     hi = max(1, int(rt_settings.wavefront_tile_max))
     lo = min(hi, max(1, int(rt_settings.wavefront_tile_min)))
     if budget < lo:
@@ -388,7 +399,7 @@ def _pt_slots_budget(memory):
     return min(budget, hi)
 
 
-def _pt_tile_shape(memory, num_pixels, samples):
+def _pt_tile_shape(memory, num_pixels, samples, extra_slot_bytes=0):
     """Choose (tile pixels, wave samples) for the slot budget.
 
     Prefer covering every pixel in one tile and spending the leftover slots
@@ -396,7 +407,7 @@ def _pt_tile_shape(memory, num_pixels, samples):
     low resolutions); when the budget cannot hold all pixels, tile the pixels
     at one sample per wave. ``pt_wave_samples`` pins the wave size instead.
     """
-    budget = _pt_slots_budget(memory)
+    budget = _pt_slots_budget(memory, extra_slot_bytes)
     wave_pref = int(rt_settings.pt_wave_samples)
     if wave_pref > 0:
         wave = max(1, min(int(samples), wave_pref))
@@ -1371,6 +1382,17 @@ def path_trace_render(
     tri_shell = _build_shell_table(memory, merged)
     tri_shell, pt_tri_extra, media_offset = _prepare_media(memory, merged, tri_shell)
     nee_meta[_NM_MEDIA] = float(media_offset)
+    # MNEE caustics (``pt_caustics``) connect next-event rays through glass,
+    # so they need the shadow query that tells them where the glass is.
+    # Without a caster the kernel compiles without them.
+    caustics = 0
+    caster_offset = 0
+    if int(shadows) and int(has_tri):
+        from algan.rendering.raytracing.pt_caustics import _prepare_casters
+
+        tri_shell, caster_offset = _prepare_casters(memory, merged, tri_shell)
+        nee_meta[_NM_CAUSTIC] = float(caster_offset)
+        caustics = 1 if caster_offset > 0 else 0
     from algan.rendering.raytracing.pt_volume import prepare_volumes
 
     pt_vol_i, pt_vol_f = prepare_volumes(
@@ -1390,7 +1412,9 @@ def path_trace_render(
         aov_normal_flat = aovs[1].view(-1, 3)
         aov_bgw_flat = aovs[2].view(-1, 3)
 
-    tile_pixels, wave_samples = _pt_tile_shape(memory, n, samples)
+    tile_pixels, wave_samples = _pt_tile_shape(
+        memory, n, samples, PT_CAU_WIDTH * 4 if caustics else 0
+    )
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
     # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0,
     # prev_pdf=-1 (camera segment; _SCA_PREV_PDF), eta_scale=1] plus the zeroed
@@ -1441,7 +1465,18 @@ def path_trace_render(
                 pt_aov = memory.get_tensor(
                     (pool if aovs is not None else 1, PT_AOV_WIDTH), f32
                 )
-                pt_stats = memory.get_tensor((PT_STATS_WIDTH,), i32)
+                # The caustic coverage test's per-path record
+                # (pt_caustics_taichi.PT_CAU_WIDTH, budgeted through
+                # _pt_tile_shape's extra slot bytes) and the caustic tallies
+                # (the stats' last two columns): a kernel compiled without
+                # caustics reads neither, so it gets a one-cell stand-in and
+                # the tallies it had before, inside _PT_FIXED_BYTES.
+                pt_cau = memory.get_tensor(
+                    (pool, PT_CAU_WIDTH) if caustics else (1, 1), f32
+                )
+                pt_stats = memory.get_tensor(
+                    (PT_STATS_WIDTH if caustics else PT_STAT_CAUSTIC_CHAIN,), i32
+                )
             compactor = _ArenaRayCompactor(memory, pool, i32)
             pt_stats.zero_()
 
@@ -1472,6 +1507,8 @@ def path_trace_render(
                 pt_acc[:slots].zero_()
                 if aovs is not None:
                     pt_aov[:slots].zero_()
+                if caustics:
+                    pt_cau[:slots].zero_()
                 pt_generate(
                     int(slots),
                     int(active_pixels),
@@ -1663,6 +1700,7 @@ def path_trace_render(
                             # ``ambient + sampled`` when it samples.
                             shadow_vis_slots(authored_slots),
                             int(auth_sampled),
+                            caustics,
                             frag_pipelines,
                             frag_scatters,
                             ALL_PIDS,
@@ -1692,6 +1730,7 @@ def path_trace_render(
                             env_cdf,
                             tri_shell,
                             pt_aov,
+                            pt_cau,
                             tri_emit_entry,
                             lt_node_f,
                             lt_node_i,
@@ -1705,6 +1744,35 @@ def path_trace_render(
                             pt_vol_f,
                             projected,
                         )
+                        if caustics:
+                            # The BSDF paths pt_shade held back for the
+                            # caustic coverage test, before the compaction
+                            # drops the ones that finished.
+                            pt_caustic_cover(
+                                active,
+                                na,
+                                tri_bvh.kernel_blocks,
+                                tri_bvh.node_miss,
+                                tri_bvh.leaf_prim,
+                                tri_bvh.leaf_tspan,
+                                int(tri_bvh.first_leaf),
+                                merged["tri_pos"],
+                                merged["tri_norm"],
+                                pt_tri_extra,
+                                merged["tri_colors"],
+                                merged["tri_uvs"],
+                                merged["tri_tex_meta"],
+                                merged["textures"],
+                                int(merged["num_colored_triangles"]),
+                                merged["circuit_meta"],
+                                merged["tri_mat"],
+                                tri_shell,
+                                int(caster_offset),
+                                float(layer_offset_triangles),
+                                bvh_refit,
+                                pt_acc,
+                                pt_cau,
+                            )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1
                 if aovs is not None:
@@ -1774,6 +1842,18 @@ def path_trace_render(
             ring_over = int(pt_stats[PT_STAT_SHELL_RING].item())
             if ring_over:
                 record_truncation("closed_shell_ring", ring_over, cap=_SHELL_RING_SLOTS)
+            if caustics:
+                chain_over, solver_capped = pt_stats[
+                    PT_STAT_CAUSTIC_CHAIN : PT_STAT_CAUSTIC_SOLVER + 1
+                ].tolist()
+                if chain_over:
+                    record_truncation(
+                        "caustic_chain", int(chain_over), cap=MNEE_MAX_VERTICES
+                    )
+                if solver_capped:
+                    record_truncation(
+                        "caustic_solver", int(solver_capped), cap=MNEE_MAX_ITERATIONS
+                    )
             tracking_over = int(pt_stats[PT_STAT_VOLUME_STEPS].item())
             if tracking_over:
                 record_truncation(

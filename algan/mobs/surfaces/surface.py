@@ -3941,6 +3941,7 @@ class Surface(Mob):
         primitive.declare_one_sided(not self.two_sided)
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
         primitive.declare_shadow_flags(*self._resolved_shadow_flags())
+        primitive.declare_caustic_flag(self._resolved_caustic_flag())
         # The density grid ``set_material`` bound, by key (0: homogeneous).
         primitive.declare_density_volume(_density_key(self))
         return primitive

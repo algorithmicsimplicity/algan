@@ -64,6 +64,7 @@ from algan.rendering.raytracing.settings import (
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_DENSITY_VOLUME,
     _MAT_MEDIUM_CLOSED,
+    _MAT_NO_CAUSTIC_CAST,
     _MAT_NO_SHADOW_RECEIVE,
     _MAT_ONE_SIDED,
     MAT_W,
@@ -702,6 +703,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     # behaviour. ``no_shadow_receive`` is packed into the material block beside
     # ``one_sided``; ``no_shadow_cast`` is consumed on the HOST, where it
     # becomes the BVH leaf word's caster bit (``_rt_frame_casts``).
+    # ``no_caustic_cast`` is the last of the family (:meth:`declare_caustic_flag`):
+    # negative for the same 0.0-fill reason, packed into the material block
+    # beside ``no_shadow_receive`` and read from there on the host, by the
+    # path tracer's caster table.
     # ``density_volume`` rides here for the same reasons as ``closed_shell``:
     # the MOB declares it (:meth:`declare_density_volume`), a member that says
     # nothing takes the 0.0 fill ("homogeneous", as before), and the dice
@@ -716,6 +721,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         "closed_shell",
         "no_shadow_cast",
         "no_shadow_receive",
+        "no_caustic_cast",
         "density_volume",
     )
 
@@ -867,6 +873,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self.declare_one_sided(False)
             self.declare_closed_shell(False)
             self.declare_shadow_flags(True, True)
+            self.declare_caustic_flag(True)
             self.declare_density_volume(0)
 
     def declare_one_sided(self, one_sided=True):
@@ -929,6 +936,27 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         )
         self.no_shadow_receive = torch.full_like(
             self.colors[:1, ..., :1], 0.0 if receives else 1.0
+        )
+        return self
+
+    def declare_caustic_flag(self, casts=True):
+        """Declare whether this primitive bends light into caustics.
+
+        Called by the mob that built the primitive, beside
+        :meth:`declare_shadow_flags`, from
+        :attr:`~algan.animatable_base.mob.Mob.casts_caustics`. Where it is
+        True (the default) a triangle whose material refracts smoothly is a
+        caster for the path tracer's shadow caustics
+        (``SETTINGS.raytracing.experimental.pt_caustics``); False keeps it a
+        plain transmissive surface that shadow rays pass tinted, as before
+        caustics existed.
+
+        Stored NEGATED and per corner, for the 0.0-fill reason
+        :meth:`declare_shadow_flags` gives, and packed into the material
+        block (``_MAT_NO_CAUSTIC_CAST``).
+        """
+        self.no_caustic_cast = torch.full_like(
+            self.colors[:1, ..., :1], 0.0 if casts else 1.0
         )
         return self
 
@@ -1193,6 +1221,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         medium_closed = getattr(self, "closed_shell", None)
         if medium_closed is not None:
             pairs.append((_MAT_MEDIUM_CLOSED, per_triangle(medium_closed)))
+        no_caustic_cast = getattr(self, "no_caustic_cast", None)
+        if no_caustic_cast is not None:
+            pairs.append((_MAT_NO_CAUSTIC_CAST, per_triangle(no_caustic_cast)))
         density_volume = getattr(self, "density_volume", None)
         if density_volume is not None:
             pairs.append((_MAT_DENSITY_VOLUME, per_triangle(density_volume)))

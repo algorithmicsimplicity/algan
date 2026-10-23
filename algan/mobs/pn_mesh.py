@@ -103,6 +103,7 @@ class PNMesh(Mob):
         # endpoints honour the flag (``_MORPH_ADOPTED_ATTRS``), and the seam was
         # strictly interior to the transition.
         primitive.declare_shadow_flags(*self._resolved_shadow_flags())
+        primitive.declare_caustic_flag(self._resolved_caustic_flag())
         return primitive
 
     def _get_memory_used_per_timestep(self):
