@@ -17,7 +17,9 @@ opportunity to miss the decode:
   map instead of per-vertex rows, so an ordinary cube in an ordinary colour never
   touches ``tri_colors`` at all;
 * the colour slots of the material parameter block -- ``emissive``, ``specular``,
-  ``specular_color``, ``sheen_color``.
+  ``specular_color``, ``sheen_color`` -- including those of a built-in stage
+  inside a composed fragment pipeline (``set_fragment_shader``), where the
+  same slots sit at the stage's offset in the pipeline's own block.
 
 The first two tests here are the end-to-end statement of the invariant, rendered:
 a surface that neither reflects nor is lit must come back off the frame buffer
@@ -37,6 +39,7 @@ import pytest
 import torch
 
 from algan import (
+    BLACK,
     MeshBasicMaterial,
     MeshStandardMaterial,
     Off,
@@ -44,10 +47,15 @@ from algan import (
     Scene,
     SceneManager,
     VideoSettings,
+    cosine_color,
+    fresnel_rim,
+    physical_shader,
+    standard_shader,
 )
 from algan.rendering.raytracing import scene_builder as sb
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.settings import _MAT_SLOTS
+from algan.rendering.shaders.fragment_shaders import build_fragment_pipeline
 
 #: Deliberately three different channels, none of them a fixed point of the
 #: transfer function, so a missing decode cannot hide in a grey.
@@ -55,9 +63,12 @@ _AUTHORED = (0.5, 0.25, 0.75)
 _AUTHORED_BYTES = (128, 64, 191)
 
 
-def _render_centre_pixel(tmp_path, material):
+def _render_centre_pixel(tmp_path, material=None, *, configure=None):
     """The centre pixel of a slab filling the frame, as (R, G, B) bytes, with
     no lights, so only the colour the surface has or emits reaches the frame.
+
+    The slab gets ``material``, or ``configure(slab)`` runs on it before it is
+    spawned.
     """
     SceneManager.instance().reset()
     video = VideoSettings((48, 48), 30, supersampling=1)
@@ -65,7 +76,10 @@ def _render_centre_pixel(tmp_path, material):
         with Off():
             Scene.clear_lights()
             slab = Prism(width=12.0, height=12.0, depth=0.5)
-            slab.set_material(material)
+            if material is not None:
+                slab.set_material(material)
+            if configure is not None:
+                configure(slab)
             slab.move_to(torch.tensor((0.0, 0.0, 0.0)))
             slab.spawn(animate=False)
         out = tmp_path / "probe.png"
@@ -134,6 +148,40 @@ def test_an_emissive_colour_renders_as_itself(tmp_path):
     assert all(abs(a - b) <= 2 for a, b in zip(got, _AUTHORED_BYTES)), got
 
 
+@pytest.mark.skipif(
+    not rt_settings.linear_color_space,
+    reason="the display-referred pipeline neither decodes nor encodes",
+)
+def test_an_emissive_colour_renders_the_same_through_a_composed_pipeline(tmp_path):
+    """The built-in standard stage inside ``set_fragment_shader([...])`` is the
+    stage ``set_material`` runs, so the same emissive must give the same bytes.
+
+    A composed pipeline's block used to be skipped by the decode as a whole
+    ("a custom layout"), so its built-in stage read the authored 0.5 as linear
+    light and the slab came out (186, 136, 223) instead of (128, 64, 191). The
+    rim stage is in the pipeline to make it a real composition, at gain 0.
+    """
+    material = _render_centre_pixel(
+        tmp_path,
+        MeshStandardMaterial(
+            color=(0.0, 0.0, 0.0), roughness=1.0, metalness=0.0, emissive=_AUTHORED
+        ),
+    )
+
+    def composed(slab):
+        slab.set_fragment_shader([standard_shader, fresnel_rim])
+        slab.color = BLACK
+        slab.emissive = _AUTHORED
+        slab.rim_gain = 0.0
+
+    pipeline = _render_centre_pixel(tmp_path, configure=composed)
+    assert all(abs(a - b) <= 2 for a, b in zip(pipeline, _AUTHORED_BYTES)), pipeline
+    assert all(abs(a - b) <= 1 for a, b in zip(pipeline, material)), (
+        pipeline,
+        material,
+    )
+
+
 def test_only_the_colour_slots_of_the_material_block_are_decoded():
     """A scalar coefficient sharing the block must not move.
 
@@ -160,24 +208,79 @@ def test_only_the_colour_slots_of_the_material_block_are_decoded():
 
 
 def test_a_custom_pipeline_block_is_left_alone():
-    """A custom fragment pipeline packs its own layout into the same array, so
-    those slots are not colours and decoding them would corrupt the pipeline's
-    parameters.
+    """A pipeline of custom stages packs its own layout into the same array,
+    so its slots are not colours and decoding them would corrupt the
+    pipeline's parameters -- ``rim_color`` included, which is linear.
     """
     if not rt_settings.linear_color_space:
         pytest.skip("the display-referred pipeline does not decode at all")
+    marker, _specs = build_fragment_pipeline([cosine_color, fresnel_rim])
     width = max(start + w for start, w in _MAT_SLOTS.values())
     mat = torch.full((1, 1, width), 0.5)
     scene = {
         "tri_mat": mat,
-        "tri_mat_id": torch.full(
-            (1, 1), rt_settings._USER_PIPELINE_BASE, dtype=torch.int32
-        ),
+        "tri_mat_id": torch.full((1, 1), marker._frag_pipeline_id, dtype=torch.int32),
     }
 
     sb._decode_merged_colors(scene)
 
     assert torch.allclose(mat, torch.full_like(mat, 0.5))
+
+
+@pytest.mark.parametrize("dense", [False, True], ids=["global_id", "dense_id"])
+def test_a_composed_pipeline_decodes_its_builtin_stages_colours_only(dense):
+    """In ``[cosine_color, physical_shader, fresnel_rim]`` the physical stage's
+    four colours sit two slots in, after the cosine stage's two scalars, and
+    are decoded there; the cosine and rim stages' parameters, and the physical
+    stage's scalars, are not.
+
+    ``dense`` is the id a merged batch carries after
+    ``_densify_frag_pipeline_ids``: the first user pipeline of the batch, with
+    ``frag_pipeline_ids`` mapping it back to the registry. A primitive on a
+    built-in material and one on a custom-only pipeline share the scene, as
+    they do in a real batch, and keep their own rules.
+    """
+    if not rt_settings.linear_color_space:
+        pytest.skip("the display-referred pipeline does not decode at all")
+    base = rt_settings._USER_PIPELINE_BASE
+    composed, _specs = build_fragment_pipeline(
+        [cosine_color, physical_shader, fresnel_rim]
+    )
+    custom, _specs = build_fragment_pipeline([cosine_color, fresnel_rim])
+    pid = composed._frag_pipeline_id
+    other = custom._frag_pipeline_id
+    # One merged block, padded to the widest layout as ``_cat_mat_blocks`` does.
+    width = max(
+        composed._frag_total_width,
+        max(start + w for start, w in _MAT_SLOTS.values()),
+    )
+    mat = torch.full((1, 3, width), 0.5)
+    if dense:
+        # The merge numbers the batch's user ids densely in ascending order.
+        scene = {"frag_pipeline_ids": tuple(sorted((pid, other)))}
+        ids = (base, base + 1) if pid < other else (base + 1, base)
+    else:
+        ids = (pid, other)
+        scene = {}
+    scene["tri_mat"] = mat
+    scene["tri_mat_id"] = torch.tensor([[0, *ids]], dtype=torch.int32)
+
+    sb._decode_merged_colors(scene)
+
+    layout = {name: (slot, w) for name, slot, w, _d in composed._frag_param_layout}
+    decoded = {"emissive", "specular", "specular_color", "sheen_color"}
+    for name, (slot, w) in layout.items():
+        want = 0.21404 if name in decoded else 0.5
+        got = mat[0, 1, slot : slot + w]
+        assert torch.allclose(got, torch.full_like(got, want), atol=1e-4), name
+    assert layout["emissive"][0] == 2
+    assert layout["sheen_color"][0] == 2 + 21
+    # The custom-only pipeline's block is untouched; the built-in material's
+    # canonical colour slots are decoded as they always were.
+    assert torch.allclose(mat[0, 2], torch.full_like(mat[0, 2], 0.5))
+    e_start, _w = _MAT_SLOTS["emissive"]
+    assert float(mat[0, 0, e_start]) == pytest.approx(0.21404, abs=1e-4)
+    assert float(mat[0, 0, _MAT_SLOTS["ior"][0]]) == 0.5
 
 
 def test_the_decode_is_a_no_op_under_the_display_referred_pipeline(monkeypatch):

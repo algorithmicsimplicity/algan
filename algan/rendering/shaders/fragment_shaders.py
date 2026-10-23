@@ -24,6 +24,7 @@ with a cosine wave and then lights the result with Blinn-Phong.
 """
 
 from algan.rendering.raytracing.raytrace_kernels_taichi import min_alpha
+from algan.rendering.raytracing.settings import _MAT_COLOR_SLOT_NAMES
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     _reflect_frame,
@@ -79,7 +80,24 @@ class FragmentStage:
     not: it sees an unweighted sum over the sampled rows. Set the switch to
     ``"off"`` if a stage needs every row, at the deterministic renderer's cost
     model and its 16-shadow cap.
+
+    **Colour parameters are linear.** The renderer works in linear light, and
+    a stage receives its parameters exactly as they were set: nothing decodes
+    a width-3 colour from sRGB the way a Mob's colour or a material's colours
+    are decoded. So ``(0.5, 0.5, 0.5)`` is half of white's light, which
+    displays as about 0.74, not 0.5. That holds for every stage you write and
+    for the looks in :mod:`~algan.rendering.shaders.fragment_stage_library`.
+    The built-in material stages (``STAGE_STANDARD`` and the rest) are the
+    exception: their ``emissive``, ``specular``, ``specular_color`` and
+    ``sheen_color`` are decoded wherever the stage sits in a pipeline, so they
+    mean what they mean on the matching material.
     """
+
+    #: Parameter names the renderer decodes from display-referred sRGB to
+    #: linear light before the stage reads them. Empty for a custom stage
+    #: (see the class docstring); the built-in material stages name their
+    #: material colours (``_MAT_COLOR_SLOT_NAMES``).
+    _decoded_colors = ()
 
     def __init__(self, ti_func, param_specs=(), scatter=None):
         self.ti_func = ti_func
@@ -118,15 +136,27 @@ _PHYSICAL_MAT_SPECS = _BUILTIN_MAT_SPECS + [
     ("iridescence", 1, 0.0),
 ]
 
+
+def _builtin_stage(ti_func, param_specs):
+    """A built-in material stage, whose material colours are decoded exactly
+    as ``set_material`` decodes them (``scene_builder``'s colour boundary), so
+    a stage inside a composed pipeline renders the colour it renders alone.
+    """
+    stage = FragmentStage(ti_func, param_specs)
+    names = {name for name, _w, _d in stage.param_specs}
+    stage._decoded_colors = tuple(n for n in _MAT_COLOR_SLOT_NAMES if n in names)
+    return stage
+
+
 # Built-in material stages (12-slot canonical params; physical 26). ``manim``
 # and ``unlit`` ignore most slots but share the layout so offsets stay uniform
 # in a pipeline.
-STAGE_MANIM = FragmentStage(_stage_manim, _BUILTIN_MAT_SPECS)
-STAGE_UNLIT = FragmentStage(_stage_unlit, _BUILTIN_MAT_SPECS)
-STAGE_LAMBERT = FragmentStage(_stage_lambert, _BUILTIN_MAT_SPECS)
-STAGE_PHONG = FragmentStage(_stage_phong, _BUILTIN_MAT_SPECS)
-STAGE_STANDARD = FragmentStage(_stage_standard, _BUILTIN_MAT_SPECS)
-STAGE_PHYSICAL = FragmentStage(_stage_physical, _PHYSICAL_MAT_SPECS)
+STAGE_MANIM = _builtin_stage(_stage_manim, _BUILTIN_MAT_SPECS)
+STAGE_UNLIT = _builtin_stage(_stage_unlit, _BUILTIN_MAT_SPECS)
+STAGE_LAMBERT = _builtin_stage(_stage_lambert, _BUILTIN_MAT_SPECS)
+STAGE_PHONG = _builtin_stage(_stage_phong, _BUILTIN_MAT_SPECS)
+STAGE_STANDARD = _builtin_stage(_stage_standard, _BUILTIN_MAT_SPECS)
+STAGE_PHYSICAL = _builtin_stage(_stage_physical, _PHYSICAL_MAT_SPECS)
 
 
 def _builtin_shader_to_stage():
@@ -184,9 +214,12 @@ def resolve_stage(shader):
 # key -> (pipeline_id, composed_func); _PIPELINE_LIST[pid - _USER_PIPELINE_BASE].
 # _PIPELINE_SCATTERS parallels _PIPELINE_LIST: the pipeline's custom scatter
 # ``@ti.func`` (the last stage-supplied one), or None for the default scatter.
+# _PIPELINE_COLOR_SLOTS parallels it too: ``((slot, width), ...)`` of the
+# parameters its built-in stages declare as colours (see pipeline_color_slots).
 _PIPELINE_REGISTRY = {}
 _PIPELINE_LIST = []
 _PIPELINE_SCATTERS = []
+_PIPELINE_COLOR_SLOTS = []
 
 
 def register_pipeline(stages):
@@ -207,11 +240,24 @@ def register_pipeline(stages):
     total_width = off
     scatters = [s.scatter for s in stages if getattr(s, "scatter", None)]
     scatter = scatters[-1] if scatters else None
+    color_slots = []
+    for s, base in zip(stages, offsets):
+        decoded = getattr(s, "_decoded_colors", ())
+        slot = base
+        for name, width, _default in s.param_specs:
+            if name in decoded:
+                color_slots.append((slot, width))
+            slot += width
+    color_slots = tuple(color_slots)
 
+    # The colour slots are part of the key: the same func at the same width
+    # wrapped as a custom stage keeps its parameters linear, so it is not the
+    # same pipeline as the built-in stage.
     key = (
         tuple(id(s.ti_func) for s in stages),
         tuple(s.width for s in stages),
         id(scatter) if scatter is not None else None,
+        color_slots,
     )
     if key in _PIPELINE_REGISTRY:
         pid = _PIPELINE_REGISTRY[key][0]
@@ -221,6 +267,7 @@ def register_pipeline(stages):
         _PIPELINE_REGISTRY[key] = (pid, composed)
         _PIPELINE_LIST.append(composed)
         _PIPELINE_SCATTERS.append(scatter)
+        _PIPELINE_COLOR_SLOTS.append(color_slots)
 
     layout = []
     for s, base in zip(stages, offsets):
@@ -229,6 +276,22 @@ def register_pipeline(stages):
             layout.append((name, slot, width, default))
             slot += width
     return pid, total_width, layout
+
+
+def pipeline_color_slots(pid):
+    """``((slot, width), ...)`` of the parameters in pipeline ``pid``'s block
+    that are display-referred colours: the material colours of its built-in
+    stages, at their offsets in the composed block. Empty for a pipeline of
+    custom stages only, and for an id the registry does not hold.
+
+    ``pid`` is a GLOBAL pipeline id (``register_pipeline``'s), not a batch's
+    dense one. ``scene_builder._decode_material_block_colors`` decodes these
+    slots at the render boundary, as it decodes a built-in material's.
+    """
+    i = int(pid) - _USER_PIPELINE_BASE
+    if 0 <= i < len(_PIPELINE_COLOR_SLOTS):
+        return _PIPELINE_COLOR_SLOTS[i]
+    return ()
 
 
 def _select_by_pid(entries, pids):

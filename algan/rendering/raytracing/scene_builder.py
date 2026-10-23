@@ -28,6 +28,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.refit_bvh import build_refit_bvh
 from algan.rendering.raytracing.settings import (
+    _MAT_COLOR_SLOT_NAMES,
     _MAT_SLOTS,
     _USER_PIPELINE_BASE,
     _constant_promotion_active,
@@ -2837,16 +2838,6 @@ def _merge_scene(
 #: neither is decoded.
 _MERGED_COLOR_KEYS = ("tri_colors", "circuit_colors", "circuit_border_colors")
 
-#: Color-valued entries of the built-in material parameter block, by name in
-#: ``_MAT_SLOTS`` (resolved rather than hard-coded so a renumbered slot map
-#: carries this with it). Authored like every other color, and consumed by
-#: arithmetic that runs in linear light: emissive is light the surface adds to
-#: the frame, and the two specular tints and the sheen tint multiply lobes the
-#: shading stages compute. Everything else in the block is a scalar coefficient
-#: -- roughness, metalness, an IOR, an absorption coefficient -- and decoding
-#: one would corrupt it.
-_MAT_COLOR_SLOT_NAMES = ("emissive", "specular", "specular_color", "sheen_color")
-
 
 def _decode_merged_colors(scene, per_frame=False):
     """Decode the batch's authored color into the linear working space.
@@ -2874,9 +2865,10 @@ def _decode_merged_colors(scene, per_frame=False):
       material are uniform is rendered from a 1x1 color map, so most content
       arrives that way rather than through ``tri_colors``;
     * the **color slots of the material parameter block**
-      (``_MAT_COLOR_SLOT_NAMES``), for primitives on a built-in pipeline. A
-      custom fragment pipeline's block is its own layout, so those slots are not
-      colors there and are left alone.
+      (``_MAT_COLOR_SLOT_NAMES``), for primitives on a built-in pipeline, and
+      the same slots of every built-in stage inside a composed fragment
+      pipeline (``set_fragment_shader([standard_shader, fresnel_rim])``). A
+      custom stage's parameters are its own layout, so they are left alone.
     """
     if not rt_settings.linear_color_space:
         return
@@ -2903,29 +2895,77 @@ def _decode_frames(arr, per_frame):
 
 
 def _decode_material_block_colors(scene, per_frame=False):
-    """Decode the color slots of ``tri_mat`` for built-in-pipeline primitives.
+    """Decode the color slots of ``tri_mat``.
 
-    ``tri_mat`` is ``[Tm, N, MAT_W]`` and ``tri_mat_id`` ``[Tm', N]``; a
-    primitive whose pipeline id is at or above ``_USER_PIPELINE_BASE`` carries a
-    custom layout in the same array and is excluded. Nothing happens at all when
-    every material leaves emissive black and the three tints white, which decode
-    to themselves -- so the ordinary scene is untouched by this.
+    ``tri_mat`` is ``[Tm, N, W]`` and ``tri_mat_id`` ``[Tm', N]``. A primitive
+    on a built-in pipeline has the canonical layout, so its
+    ``_MAT_COLOR_SLOT_NAMES`` slots are decoded. A primitive whose pipeline id
+    is at or above ``_USER_PIPELINE_BASE`` carries a composed pipeline's
+    layout: only the slots its built-in stages declare as colors are decoded
+    (:func:`~algan.rendering.shaders.fragment_shaders.pipeline_color_slots`),
+    so ``emissive`` means the same through ``set_fragment_shader`` as through
+    ``set_material``, and a custom stage's parameters are left as set.
+    Nothing happens at all when every material leaves emissive black and the
+    three tints white, which decode to themselves -- so the ordinary scene is
+    untouched by this.
     """
     mat = scene.get("tri_mat")
     mat_id = scene.get("tri_mat_id")
     if mat is None or mat_id is None or mat.numel() == 0:
         return
+    for idx, slots in _material_color_slot_groups(scene, mat_id):
+        for start, width in slots:
+            if start + width > mat.shape[-1]:
+                continue
+            for frame in _decode_frames(mat, per_frame):
+                block = frame[:, idx, start : start + width]
+                frame[:, idx, start : start + width] = srgb_to_linear(block)
+
+
+def _material_color_slot_groups(scene, mat_id):
+    """``[(primitive indices, [(slot, width), ...])]``: which primitives of
+    ``tri_mat`` have color slots, and where.
+
+    One group for every primitive on a built-in pipeline, then one per user
+    pipeline whose built-in stages declare any. A primitive must hold the same
+    id in every frame row to be decoded, as the built-in rule always required.
+    User ids are the batch's dense ids when the merge renumbered them
+    (``_densify_frag_pipeline_ids``: ``scene["frag_pipeline_ids"]`` maps them
+    back to the registry), and global ids otherwise.
+    """
+    groups = []
     builtin = (mat_id < _USER_PIPELINE_BASE).all(0)  # [N]
-    if not bool(builtin.any()):
-        return
-    idx = builtin.nonzero(as_tuple=True)[0]
-    for name in _MAT_COLOR_SLOT_NAMES:
-        start, width = _MAT_SLOTS[name]
-        if start + width > mat.shape[-1]:
+    if bool(builtin.any()):
+        groups.append(
+            (
+                builtin.nonzero(as_tuple=True)[0],
+                [_MAT_SLOTS[name] for name in _MAT_COLOR_SLOT_NAMES],
+            )
+        )
+    present = scene.get("tri_material_ids")
+    if present is None:
+        present = torch.unique(mat_id.detach().cpu()).tolist()
+    user = [int(v) for v in present if int(v) >= _USER_PIPELINE_BASE]
+    if not user:
+        return groups
+    from algan.rendering.shaders.fragment_shaders import pipeline_color_slots
+
+    registry_ids = scene.get("frag_pipeline_ids")
+    for pid in user:
+        if registry_ids is not None:
+            slot = pid - _USER_PIPELINE_BASE
+            if slot >= len(registry_ids):
+                continue
+            pid_global = int(registry_ids[slot])
+        else:
+            pid_global = pid
+        slots = pipeline_color_slots(pid_global)
+        if not slots:
             continue
-        for frame in _decode_frames(mat, per_frame):
-            block = frame[:, idx, start : start + width]
-            frame[:, idx, start : start + width] = srgb_to_linear(block)
+        mine = (mat_id == pid).all(0)
+        if bool(mine.any()):
+            groups.append((mine.nonzero(as_tuple=True)[0], list(slots)))
+    return groups
 
 
 def _soft_fan_sizes(aux, num_rows):

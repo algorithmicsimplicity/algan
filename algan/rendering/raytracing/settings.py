@@ -4204,6 +4204,18 @@ _MAT_SLOTS = {
     "g": (37, 1),
 }
 
+#: Color-valued entries of the built-in material parameter block, by name in
+#: ``_MAT_SLOTS`` (resolved rather than hard-coded so a renumbered slot map
+#: carries this with it). Authored like every other color, and consumed by
+#: arithmetic that runs in linear light: emissive is light the surface adds to
+#: the frame, and the two specular tints and the sheen tint multiply lobes the
+#: shading stages compute. Everything else in the block is a scalar coefficient
+#: -- roughness, metalness, an IOR, an absorption coefficient -- and decoding
+#: one would corrupt it. ``scene_builder`` decodes these slots, and
+#: ``fragment_shaders`` marks the same names on the built-in stages so they are
+#: decoded inside a composed fragment pipeline too.
+_MAT_COLOR_SLOT_NAMES = ("emissive", "specular", "specular_color", "sheen_color")
+
 
 def _core_shader_ids():
     global _CORE_SHADER_IDS

@@ -734,8 +734,8 @@ def _pt_vndf_half_vector(wo_local, alpha, u):
 def _pt_smith_lambda(cos_theta, alpha):
     """Smith's Lambda for isotropic GGX: the exact G1/G2 the VNDF estimator
     wants, and -- since the section-5 change -- what every direct-lighting
-    response in this renderer uses too. The deterministic stages keep their
-    own ``k = (r+1)^2/8`` remap (``_smith_geometry``); nothing here calls it.
+    response in this renderer uses too. The deterministic stages'
+    ``_smith_geometry`` is the same ``G2`` in three.js's closed form.
     """
     c2 = ti.math.clamp(cos_theta * cos_theta, 1e-8, 1.0)
     t2 = (1.0 - c2) / c2
