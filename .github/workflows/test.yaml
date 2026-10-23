@@ -29,6 +29,10 @@ on:
   # this file is on the default branch: GitHub reads workflow_dispatch from
   # there, not from the ref being dispatched.
   workflow_dispatch:
+  # The weekly cold-compile control: a full run that does not restore
+  # compiled kernels (see "Restore compiled kernels"). Mondays, 04:23 UTC.
+  schedule:
+    - cron: "23 4 * * 1"
 
 # One run per pull request: a new push (or the `full-ci` label) cancels the
 # run in flight, whose answer is about a commit nobody is waiting on any more.
@@ -46,9 +50,9 @@ jobs:
   # behind each other for most of a day. So a pull request runs the fast
   # scope by default and the full one only when asked:
   #
-  #   full   push to master/stable, merge queue, manual dispatch, or a pull
-  #          request labelled `full-ci`. The four-arm matrix, exactly as
-  #          before.
+  #   full   push to master/stable, merge queue, manual dispatch, the weekly
+  #          schedule, or a pull request labelled `full-ci`. The four-arm
+  #          matrix, exactly as before.
   #   fast   any other pull request. Linux 3.10 runs the `--fast` suite and
   #          the cheap unit tests (.github/cheap_unit_tests.txt); macOS 3.10
   #          CPU runs the cheap unit tests, which is enough to prove the
@@ -292,13 +296,16 @@ jobs:
       # no host CPU attributes on the kernels, lowered for this runner's CPU
       # as it loads.
       #
-      # Pull requests restore; pushes to master and stable do not. Those runs
-      # stay the cold-compile control -- the one place a stale entry served
-      # under a key that missed a change would still show up -- and they save
-      # what they compiled, so the next pull request starts from it. Within a
-      # pull request, a run restores the newest cache an earlier run of the
-      # same pull request saved, before the base branch's. If an entry is ever
-      # suspected, bump `kernels-v1` in both steps and every arm starts cold.
+      # Every run restores except the weekly scheduled one and a manual
+      # dispatch, which are the cold-compile control: the one place a stale entry served under a key
+      # that missed a change would still show up. Pushes to master and stable
+      # used to be that control, and it cost them 40-odd minutes of compiling
+      # per arm on every merge (60 to 90 minutes of "Run tests" against about
+      # 30 warm). Every run saves what it compiled, so the next one starts
+      # from it. A pull request restores the newest cache an earlier run of
+      # the same pull request saved, before the base branch's. If an entry is
+      # ever suspected, bump `kernels-v1` in both steps and every arm starts
+      # cold, or dispatch a cold run from the Actions tab.
       #
       # Only the compiled kernels are kept. The content caches beside them
       # (LaTeX, SVG, tessellations) are keyed by their inputs and a
@@ -313,7 +320,7 @@ jobs:
       # The cheap scope renders nothing, so it has no kernels to restore or
       # save.
       - name: Restore compiled kernels
-        if: github.event_name == 'pull_request' && matrix.scope != 'cheap'
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && matrix.scope != 'cheap'
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -325,8 +332,8 @@ jobs:
             kernels-v1-${{ runner.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}-
 
       # What the cache held before the tests, so that "Save compiled kernels"
-      # can tell whether this run compiled anything. Empty on a push, which
-      # restores nothing.
+      # can tell whether this run compiled anything. Empty on a cold run,
+      # which restores nothing.
       - name: List the restored kernels
         run: |
           mkdir -p ~/.algan/cache/quadrants
