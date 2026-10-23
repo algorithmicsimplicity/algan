@@ -5,8 +5,8 @@ tensor. The first two are 8-bit sRGB like every other authored color, and the
 linear working space decodes them at the render boundary, so the map's
 backdrop shows the image's own bytes. A float tensor is radiance, used as
 given. These tests render small stills of a ball lit and mirrored by the map
-and compare the ball and the backdrop around it. (A still with nothing in it at
-all skips the tracer and draws the plain background, map or no map.)
+and compare the ball and the backdrop around it -- and stills with nothing in
+them, which must show the same backdrop.
 
 A feature test, so it sits outside the fast suite: it only breaks when
 environment maps themselves change.
@@ -107,6 +107,37 @@ def test_a_float_map_is_radiance_and_is_not_decoded(tmp_path):
     )
     assert _backdrop(as_floats) == [DOUBLE_ENCODED_GREY] * 3
     assert np.array_equal(brighter_than_white, as_floats)
+
+
+def _read(result):
+    return np.asarray(Image.open(result.output_path)).astype(np.int16)
+
+
+def test_a_still_with_nothing_in_it_shows_the_map(tmp_path):
+    """REGRESSION. A frame window with no Mob in it skipped the tracer for the
+    background writer, which knows only ``background``: a still with nothing in
+    it drew the flat background (black here) where the map belongs.
+    """
+    with Scene() as scene:
+        scene.set_environment_map(torch.from_numpy(_grey_bytes()))
+        empty = _read(scene.save_frame(tmp_path / "empty.png", STILL))
+
+    assert _backdrop(empty) == [GREY] * 3
+    assert (empty == GREY).all(), "the whole frame is backdrop"
+
+
+def test_frames_before_the_first_spawn_show_the_backdrop_they_show_after(tmp_path):
+    """REGRESSION. The same skip made a video open on the flat background and
+    flip to the map the moment its first Mob spawned.
+    """
+    with Scene() as scene:
+        scene.set_environment_map(torch.from_numpy(_grey_bytes()))
+        scene.wait(1)
+        Sphere(radius=0.5).spawn()
+        scene.wait(1)
+        before, after = scene.save_frame(tmp_path / "f.png", STILL, at=[0.5, 1.5])
+
+    assert _backdrop(_read(before)) == _backdrop(_read(after)) == [GREY] * 3
 
 
 @pytest.mark.usefixtures("working_space")
