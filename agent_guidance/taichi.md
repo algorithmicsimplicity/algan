@@ -230,6 +230,12 @@ stores and parses the IR only on a PTX miss, so on CUDA a fully cached kernel
 skips all of that. `taichi_init_kwargs` turns it on where the wheel has it;
 `ALGAN_PTX_CACHE_BY_CONTENT_HASH=0` is the off arm, and neither arm moves a
 key (`quadrants_patches/README.md`, 0010).
+The CPU arch had no machine-code tier at all, so every fresh process also
+re-ran LLVM's codegen at each kernel's first launch (2-3 s a render). Patch
+0012 keeps the CPU JIT's object file under the same content hash plus the host
+CPU, links it on a hit without parsing the IR, and lets a CPU precompile
+worker's `prepare_kernel` leave it behind; `ALGAN_CPU_OBJECT_CACHE=0` is its
+off arm (`quadrants_patches/README.md`, 0012).
 
 **Torch's lazy CUDA kernel loading does overlap**, because torch's bindings
 release the GIL inside each op. `rendering/device_warmup.py` calls the ops the
