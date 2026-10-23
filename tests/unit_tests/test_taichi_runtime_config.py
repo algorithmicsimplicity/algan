@@ -439,6 +439,11 @@ print("KERNELS", len(_impl.get_runtime().kernels))
 # either side of a mid-process reset.
 
 
+def _exit_hooks(taichi_runtime):
+    """What one registration puts on ``atexit``, in order (it runs LIFO)."""
+    return [taichi_runtime.flush_kernel_cache, taichi_runtime.write_ptx_at_exit]
+
+
 def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
     """Wired into ``start_program``, and not re-registered on a re-init."""
     import atexit
@@ -457,7 +462,7 @@ def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
     taichi_runtime.start_program()
     taichi_runtime.start_program()
 
-    assert registered == [taichi_runtime.flush_kernel_cache]
+    assert registered == _exit_hooks(taichi_runtime)
 
 
 def test_the_kernel_profiler_starts_through_the_runtime(monkeypatch):
@@ -487,7 +492,7 @@ def test_the_kernel_profiler_starts_through_the_runtime(monkeypatch):
         assert profiling_utils.enable_taichi_kernel_profiler() is True
         assert program().config().kernel_profiler
         assert taichi_runtime._FLUSH_REGISTERED is True
-        assert registered == [taichi_runtime.flush_kernel_cache]
+        assert registered == _exit_hooks(taichi_runtime)
         assert swept == [taichi_runtime._TAICHI_CACHE_DIRECTORY]
     finally:
         taichi_runtime.start_program()
@@ -517,7 +522,7 @@ def test_building_a_specialization_registers_the_flush(monkeypatch):
 
     _salted(torch.zeros(1), time.time_ns() % 1_000_000_007)
 
-    assert registered == [taichi_runtime.flush_kernel_cache]
+    assert registered == _exit_hooks(taichi_runtime)
 
 
 def test_a_render_job_never_dumps_the_live_program(monkeypatch):

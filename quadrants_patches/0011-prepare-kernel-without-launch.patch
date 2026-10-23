@@ -1,0 +1,303 @@
+diff --git a/quadrants/program/kernel_launcher.h b/quadrants/program/kernel_launcher.h
+index 0fe9155eb..e49403846 100644
+--- a/quadrants/program/kernel_launcher.h
++++ b/quadrants/program/kernel_launcher.h
+@@ -11,6 +11,12 @@ class KernelLauncher {
+ 
+   virtual void launch_kernel(const CompiledKernelData &compiled_kernel_data, LaunchContextBuilder &ctx) = 0;
+ 
++  // Everything launch_kernel does before running the kernel, without running it: on the LLVM backends, register it,
++  // which on CUDA generates (or loads from the cache) its PTX and loads that into the driver. A later launch_kernel of
++  // the same data reuses the registration. Backends with nothing to prepare do nothing.
++  virtual void prepare_kernel(const CompiledKernelData &compiled_kernel_data) {
++  }
++
+   virtual std::size_t get_graph_cache_size() const {
+     return 0;
+   }
+diff --git a/quadrants/program/program.cpp b/quadrants/program/program.cpp
+index 59d80930d..07d5390c0 100644
+--- a/quadrants/program/program.cpp
++++ b/quadrants/program/program.cpp
+@@ -167,6 +167,10 @@ CompileResult Program::compile_kernel(const CompileConfig &compile_config,
+   return compile_result;
+ }
+ 
++void Program::prepare_kernel(const CompiledKernelData &compiled_kernel_data) {
++  program_impl_->get_kernel_launcher().prepare_kernel(compiled_kernel_data);
++}
++
+ void Program::launch_kernel(const CompiledKernelData &compiled_kernel_data, LaunchContextBuilder &ctx) {
+   // Diagnose-snapshot capture strategy depends on when the overflow check fires relative to ctx lifetime:
+   //   - SPIR-V backends poll the overflow flag at `synchronize()` time, by which point the launch ctx is
+diff --git a/quadrants/program/program.h b/quadrants/program/program.h
+index a1b56636c..e8a018c8a 100644
+--- a/quadrants/program/program.h
++++ b/quadrants/program/program.h
+@@ -146,6 +146,11 @@ class QD_DLL_EXPORT Program {
+ 
+   void launch_kernel(const CompiledKernelData &compiled_kernel_data, LaunchContextBuilder &ctx);
+ 
++  // Everything launch_kernel does before running the kernel, without running it (KernelLauncher::prepare_kernel), so
++  // a process can fill the on-disk caches -- CUDA's PTX cache, the driver's compute cache -- for kernels it will never
++  // launch. dump_cache_data_to_disk() then writes what it produced.
++  void prepare_kernel(const CompiledKernelData &compiled_kernel_data);
++
+   std::size_t get_graph_cache_size() {
+     return program_impl_->get_kernel_launcher().get_graph_cache_size();
+   }
+diff --git a/quadrants/program/program_impl.cpp b/quadrants/program/program_impl.cpp
+index 1c0f660c8..f370f4fc3 100644
+--- a/quadrants/program/program_impl.cpp
++++ b/quadrants/program/program_impl.cpp
+@@ -15,6 +15,11 @@ void ProgramImpl::dump_cache_data_to_disk() {
+   mgr.clean_offline_cache(offline_cache::string_to_clean_cache_policy(config->offline_cache_cleaning_policy),
+                           config->offline_cache_max_size_of_files, config->offline_cache_cleaning_factor);
+   mgr.dump();
++  // Backend caches kept beside the offline cache (CUDA's PTX cache) are otherwise written only when the program
++  // finalizes, which a process that exits without finalizing never does.
++  for (auto *node : need_finalizing_) {
++    node->dump_cache_data_to_disk();
++  }
+ }
+ 
+ KernelCompilationManager &ProgramImpl::get_kernel_compilation_manager() {
+diff --git a/quadrants/program/program_impl.h b/quadrants/program/program_impl.h
+index 91fa34446..6bc784c41 100644
+--- a/quadrants/program/program_impl.h
++++ b/quadrants/program/program_impl.h
+@@ -42,6 +42,9 @@ class ProgramImpl {
+   class NeedsFinalizing {
+    public:
+     virtual void finalize() = 0;
++    // Write what finalize() would write to disk, without tearing anything down; called by dump_cache_data_to_disk().
++    virtual void dump_cache_data_to_disk() {
++    }
+     virtual ~NeedsFinalizing() = default;
+   };
+ 
+diff --git a/quadrants/python/export_lang.cpp b/quadrants/python/export_lang.cpp
+index 703419480..38b02d3bb 100644
+--- a/quadrants/python/export_lang.cpp
++++ b/quadrants/python/export_lang.cpp
+@@ -554,6 +554,7 @@ void export_lang(nb::module_ &m) {
+       .def("get_graphics_device", [](Program *program) { return program->get_graphics_device(); })
+       .def("compile_kernel", &Program::compile_kernel, nb::rv_policy::reference)
+       .def("launch_kernel", &Program::launch_kernel)
++      .def("prepare_kernel", &Program::prepare_kernel)
+       .def("get_device_caps", &Program::get_device_caps)
+       .def("subgroup_size", &Program::subgroup_size)
+       .def("get_graph_cache_size", &Program::get_graph_cache_size)
+diff --git a/quadrants/runtime/cuda/jit_cuda.cpp b/quadrants/runtime/cuda/jit_cuda.cpp
+index 6dc76af30..061a47e42 100644
+--- a/quadrants/runtime/cuda/jit_cuda.cpp
++++ b/quadrants/runtime/cuda/jit_cuda.cpp
+@@ -163,7 +163,7 @@ JITModule *JITSessionCUDA::add_kernel_module(const std::string &content_key,
+     return add_module(make_module(), 0);
+   }
+   const std::string key = ptx_cache_->make_content_cache_key(content_key, config_.fast_math);
+-  if (std::optional<std::string> cached = ptx_cache_->load_ptx(key)) {
++  if (std::optional<std::string> cached = ptx_cache_->load_ptx(key, /*allow_unindexed=*/true)) {
+     QD_DEBUG("PTX for content hash {} served from the PTX cache ({})", content_key, key);
+     return load_ptx_module(*cached, 0);
+   }
+diff --git a/quadrants/runtime/cuda/jit_cuda.h b/quadrants/runtime/cuda/jit_cuda.h
+index 5f01d8d36..945da4c30 100644
+--- a/quadrants/runtime/cuda/jit_cuda.h
++++ b/quadrants/runtime/cuda/jit_cuda.h
+@@ -79,6 +79,9 @@ class JITSessionCUDA : public JITSession {
+     void finalize() override {
+       ptx_cache_->dump();
+     }
++    void dump_cache_data_to_disk() override {
++      ptx_cache_->dump();
++    }
+     ~Finalizer() override = default;
+ 
+    private:
+diff --git a/quadrants/runtime/cuda/ptx_cache.cpp b/quadrants/runtime/cuda/ptx_cache.cpp
+index c274ad186..09338bde2 100644
+--- a/quadrants/runtime/cuda/ptx_cache.cpp
++++ b/quadrants/runtime/cuda/ptx_cache.cpp
+@@ -1,6 +1,8 @@
+ // This was copy and hacked from kernel_compilation_manager.cpp
+ // It is used to manage the compilation and caching of PTX kernels
+ 
++#include <filesystem>
++
+ #include "picosha2.h"
+ 
+ #include "llvm/Config/llvm-config.h"
+@@ -78,7 +80,7 @@ void PtxCache::dump() {
+     return;
+   }
+   if (get_cache_mode(compile_config_) != CacheMode::MemAndDiskCache) {
+-    wrapped_by_key_.clear();
++    // Nothing goes to disk; keep serving from memory, since dump_cache_data_to_disk() can come before the end.
+     return;
+   }
+ 
+@@ -89,8 +91,10 @@ void PtxCache::dump() {
+   auto lock_path = join_path(cache_dir_, kMetadataLockName);
+ 
+   if (!lock_with_file(lock_path)) {
+-    QD_WARN("Lock {} failed. Please run 'qd cache clean -p {}' and try again.", lock_path, cache_dir_);
+-    wrapped_by_key_.clear();  // Ignore the caching kernels
++    // Kept for the next dump rather than dropped: with dump_cache_data_to_disk() several processes dump into one
++    // directory while they run, and a lock another one holds is the likely reason, not a stale one.
++    QD_WARN("Lock {} failed; {} PTX entries wait for the next dump. If this persists, run 'qd cache clean -p {}'.",
++            lock_path, wrapped_by_key_.size(), cache_dir_);
+     return;
+   }
+ 
+@@ -109,13 +113,19 @@ void PtxCache::dump() {
+       iter->second.metadata.last_used_at = e->metadata.last_used_at;
+     }
+   }
+-  // Add new data
++  // Add new data. A key the index already lists is only ever stored again after its file could not be read (the
++  // lookup would have served it otherwise), so its entry is replaced and the file written again: inserting beside the
++  // old entry would fail, and the file would stay missing in every later process.
+   for (auto &[kernel_key, wrapped] : wrapped_by_key_) {
+     if (wrapped.metadata.cache_mode == CacheMode::MemAndDiskCache) {
+-      auto [iter, ok] = dataWrapperByCacheKey.insert({kernel_key, std::move(wrapped)});
+-      QD_ASSERT(!ok || iter->second.metadata.size == 0);
++      dataWrapperByCacheKey[kernel_key] = wrapped;
+     }
+   }
++  // Keep serving what is written here: a dump before the program ends (dump_cache_data_to_disk) must not turn this
++  // process's own later lookups of the same keys into misses.
++  for (auto &[kernel_key, wrapped] : wrapped_by_key_) {
++    cached_all_data_.dataWrapperByCacheKey[kernel_key] = std::move(wrapped);
++  }
+   wrapped_by_key_.clear();
+   // Dump cached CompiledKernelData to disk
+   for (auto &[_, k] : dataWrapperByCacheKey) {
+@@ -125,11 +135,23 @@ void PtxCache::dump() {
+     }
+     QD_TRACE("Dumping PTX for cache_key {}", k.metadata.cache_key);
+     auto cache_filename = make_filename(k.metadata.cache_key);
+-    std::ofstream fs{cache_filename, std::ios::out | std::ios::binary};
+-    QD_ASSERT(fs.is_open());
+-    fs << k.ptx.value();
+-    QD_ASSERT(!!fs);
+-    k.metadata.size = fs.tellp();
++    // Written beside and renamed into place, so a process reading it without the lock (try_load_cached, for a key its
++    // start-up index lacks) never sees part of a file.
++    const auto tmp_filename = fmt::format("{}.{}.tmp", cache_filename, PID::get_pid());
++    {
++      std::ofstream fs{tmp_filename, std::ios::out | std::ios::binary};
++      QD_ASSERT(fs.is_open());
++      fs << k.ptx.value();
++      QD_ASSERT(!!fs);
++      k.metadata.size = fs.tellp();
++    }
++    std::error_code ec;
++    std::filesystem::rename(tmp_filename, cache_filename, ec);
++    if (ec) {
++      // The file exists and is open elsewhere (Windows refuses to replace it then): it holds the same PTX, since the
++      // key determines it.
++      std::filesystem::remove(tmp_filename, ec);
++    }
+     data.size += k.metadata.size;
+   }
+   // Dump offline cache metadata
+@@ -186,7 +208,9 @@ std::string PtxCache::make_content_cache_key(const std::string &content_hash, bo
+   return res;
+ }
+ 
+-std::optional<std::string> PtxCache::try_load_cached(const std::string &cache_key, CacheMode cache_mode) {
++std::optional<std::string> PtxCache::try_load_cached(const std::string &cache_key,
++                                                     CacheMode cache_mode,
++                                                     bool allow_unindexed) {
+   {
+     // Find in memory-cache
+     const auto &kernels = wrapped_by_key_;
+@@ -210,6 +234,23 @@ std::optional<std::string> PtxCache::try_load_cached(const std::string &cache_ke
+       k.ptx = ptx;
+       return ptx;
+     }
++    // Absent from the index this process read at start-up, but another process -- a precompile worker, say -- may
++    // have written it since. A whole file ends in the NUL compile_module_to_ptx appends (and dump() renames files into
++    // place whole), so one that does not is not used.
++    if (allow_unindexed && path_exists(make_filename(cache_key))) {
++      std::optional<std::string> ptx = load_data_from_disk(cache_key);
++      if (ptx.has_value() && ptx->back() == '\0') {
++        QD_DEBUG("Found PTX for key '{}' on disk, outside the index read at start-up", cache_key);
++        WrappedPtx k;
++        k.ptx = ptx;
++        k.metadata.cache_key = cache_key;
++        k.metadata.size = ptx->size();
++        k.metadata.created_at = k.metadata.last_used_at = std::time(nullptr);
++        k.metadata.cache_mode = cache_mode;
++        dataWrapperByCacheKey[cache_key] = std::move(k);
++        return ptx;
++      }
++    }
+   }
+   return std::nullopt;
+ }
+@@ -244,9 +285,9 @@ void PtxCache::store_ptx(const std::string &cache_key, const std::string &ptx) {
+   wrapped_by_key_[cache_key] = std::move(k);
+ }
+ 
+-std::optional<std::string> PtxCache::load_ptx(const std::string &cache_key) {
++std::optional<std::string> PtxCache::load_ptx(const std::string &cache_key, bool allow_unindexed) {
+   auto cache_mode = get_cache_mode(compile_config_);
+-  return try_load_cached(cache_key, cache_mode);
++  return try_load_cached(cache_key, cache_mode, allow_unindexed);
+ }
+ 
+ CacheMode PtxCache::get_cache_mode(const CompileConfig &compile_config) {
+diff --git a/quadrants/runtime/cuda/ptx_cache.h b/quadrants/runtime/cuda/ptx_cache.h
+index 50bb18659..ab03ac671 100644
+--- a/quadrants/runtime/cuda/ptx_cache.h
++++ b/quadrants/runtime/cuda/ptx_cache.h
+@@ -61,7 +61,10 @@ class PtxCache final {
+   void dump();
+   void clean_offline_cache(offline_cache::CleanCachePolicy policy, int max_bytes, double cleaning_factor) const;
+   void store_ptx(const std::string &cache_key, const std::string &ptx);
+-  std::optional<std::string> load_ptx(const std::string &cache_key);
++  // `allow_unindexed`: on a miss in the index this process read at start-up, also take a file another process has
++  // written since. Only for make_content_cache_key's keys, which name the compiler that produced the PTX; an IR-text
++  // key does not, and is served only through the version-checked index.
++  std::optional<std::string> load_ptx(const std::string &cache_key, bool allow_unindexed = false);
+   std::string make_cache_key(const std::string &llvm_ir, bool use_fast_math) const;
+   // The key for a kernel known by its offline-cache content hash (LLVM::CompiledKernelData::content_hash), which
+   // determines its module as completely as make_cache_key's IR text does, without the IR having to be printed.
+@@ -74,7 +77,7 @@ class PtxCache final {
+  private:
+   std::string make_filename(const std::string &kernel_key) const;
+   static CacheMode get_cache_mode(const CompileConfig &compile_config);
+-  std::optional<std::string> try_load_cached(const std::string &cache_key, CacheMode cache_mode);
++  std::optional<std::string> try_load_cached(const std::string &cache_key, CacheMode cache_mode, bool allow_unindexed);
+   std::optional<std::string> load_data_from_disk(const std::string &cache_key);
+ 
+   const Config config_;
+diff --git a/quadrants/runtime/llvm/kernel_launcher.cpp b/quadrants/runtime/llvm/kernel_launcher.cpp
+index a06e565a2..988882d7c 100644
+--- a/quadrants/runtime/llvm/kernel_launcher.cpp
++++ b/quadrants/runtime/llvm/kernel_launcher.cpp
+@@ -13,5 +13,10 @@ void KernelLauncher::launch_kernel(const lang::CompiledKernelData &compiled_kern
+   launch_llvm_kernel(handle, ctx);
+ }
+ 
++void KernelLauncher::prepare_kernel(const lang::CompiledKernelData &compiled_kernel_data) {
++  QD_ASSERT(arch_uses_llvm(compiled_kernel_data.arch()));
++  register_llvm_kernel(dynamic_cast<const LLVM::CompiledKernelData &>(compiled_kernel_data));
++}
++
+ }  // namespace LLVM
+ }  // namespace quadrants::lang
+diff --git a/quadrants/runtime/llvm/kernel_launcher.h b/quadrants/runtime/llvm/kernel_launcher.h
+index c0774a9a5..e7aa13ca1 100644
+--- a/quadrants/runtime/llvm/kernel_launcher.h
++++ b/quadrants/runtime/llvm/kernel_launcher.h
+@@ -16,6 +16,7 @@ class KernelLauncher : public lang::KernelLauncher {
+   explicit KernelLauncher(Config config);
+ 
+   void launch_kernel(const lang::CompiledKernelData &compiled_kernel_data, LaunchContextBuilder &ctx) override;
++  void prepare_kernel(const lang::CompiledKernelData &compiled_kernel_data) override;
+ 
+   virtual void launch_llvm_kernel(Handle handle, LaunchContextBuilder &ctx) = 0;
+   virtual Handle register_llvm_kernel(const LLVM::CompiledKernelData &compiled) = 0;

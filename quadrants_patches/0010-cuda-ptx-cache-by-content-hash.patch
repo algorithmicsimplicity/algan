@@ -1,0 +1,619 @@
+diff --git a/quadrants/codegen/compiled_kernel_data.cpp b/quadrants/codegen/compiled_kernel_data.cpp
+index 015d095c2..7c6e7679d 100644
+--- a/quadrants/codegen/compiled_kernel_data.cpp
++++ b/quadrants/codegen/compiled_kernel_data.cpp
+@@ -124,7 +124,7 @@ CompiledKernelData::Err CompiledKernelData::dump(std::ostream &os) const {
+ }
+ 
+ // static functions
+-std::unique_ptr<CompiledKernelData> CompiledKernelData::load(std::istream &is, Err *p_err) {
++std::unique_ptr<CompiledKernelData> CompiledKernelData::load(std::istream &is, Err *p_err, bool defer_src_parse) {
+   Err err = Err::kNoError;
+   CompiledKernelDataFile file;
+   std::unique_ptr<CompiledKernelData> result{nullptr};
+@@ -135,6 +135,7 @@ std::unique_ptr<CompiledKernelData> CompiledKernelData::load(std::istream &is, E
+     }
+     if (err == Err::kNoError) {
+       QD_ASSERT(result);
++      result->defer_src_parse_ = defer_src_parse;
+       err = result->load_impl(file);
+     }
+     if (err != Err::kNoError) {
+diff --git a/quadrants/codegen/compiled_kernel_data.h b/quadrants/codegen/compiled_kernel_data.h
+index 4382af2da..4e6a7b16a 100644
+--- a/quadrants/codegen/compiled_kernel_data.h
++++ b/quadrants/codegen/compiled_kernel_data.h
+@@ -68,6 +68,17 @@ class CompiledKernelDataFile {
+     return src_code_;
+   }
+ 
++  // The SHA-256 (hex) of metadata + src_code: what dump() writes after them and what load() checked them against, so
++  // after either it names the file's content. compute_hash() derives it from the current fields without writing.
++  const std::string &hash() const {
++    return hash_;
++  }
++
++  const std::string &compute_hash() {
++    update_hash();
++    return hash_;
++  }
++
+  private:
+   bool update_hash();
+ 
+@@ -126,7 +137,9 @@ class CompiledKernelData {
+     return kernel_launch_handle_;
+   }
+ 
+-  static std::unique_ptr<CompiledKernelData> load(std::istream &is, Err *p_err);
++  // `defer_src_parse` lets an implementation keep the source text and parse it at first use instead (see
++  // LLVM::CompiledKernelData); one that cannot ignores it.
++  static std::unique_ptr<CompiledKernelData> load(std::istream &is, Err *p_err, bool defer_src_parse = false);
+ 
+   virtual std::string debug_dump_to_string() const {
+     throw std::runtime_error("debug_dump_to_string not implemented");
+@@ -138,6 +151,9 @@ class CompiledKernelData {
+   virtual Err load_impl(const CompiledKernelDataFile &file) = 0;
+   virtual Err dump_impl(CompiledKernelDataFile &file) const = 0;
+ 
++  // Set by the static load() before it calls load_impl().
++  bool defer_src_parse_{false};
++
+  private:
+   using Creator = std::unique_ptr<CompiledKernelData>();
+   static Creator *const llvm_creator;
+diff --git a/quadrants/codegen/llvm/compiled_kernel_data.cpp b/quadrants/codegen/llvm/compiled_kernel_data.cpp
+index fe4cbcc1f..2f61af7c2 100644
+--- a/quadrants/codegen/llvm/compiled_kernel_data.cpp
++++ b/quadrants/codegen/llvm/compiled_kernel_data.cpp
+@@ -22,12 +22,19 @@ Arch CompiledKernelData::arch() const {
+ }
+ 
+ std::unique_ptr<lang::CompiledKernelData> CompiledKernelData::clone() const {
++  materialize_module();  // A clone owns a module; it never carries deferred text.
+   return std::make_unique<CompiledKernelData>(arch_, data_);
+ }
+ 
+ CompiledKernelData::Err CompiledKernelData::check() const {
+   const auto &compiled_data = data_.compiled_data;
+   const auto &tasks = compiled_data.tasks;
++  if (!compiled_data.module) {
++    // A deferred load. The text is what a Quadrants process wrote after this same check passed on it
++    // (KernelCompilationManager::compile_kernel asserts it), and the .qdc's own SHA-256 says it arrived intact;
++    // materialize_module() runs the check again if a launch ever needs the module.
++    return deferred_src_.empty() ? Err::kCompiledKernelDataBroken : Err::kNoError;
++  }
+   if (llvm::verifyModule(*compiled_data.module, &llvm::errs())) {
+     return Err::kCompiledKernelDataBroken;
+   }
+@@ -48,6 +55,34 @@ std::string CompiledKernelData::debug_dump_to_string() const {
+   return oss.str();
+ }
+ 
++const std::string &CompiledKernelData::content_hash() const {
++  if (content_hash_.empty()) {
++    CompiledKernelDataFile file;
++    if (dump_impl(file) == Err::kNoError) {
++      content_hash_ = file.compute_hash();
++    }
++  }
++  return content_hash_;
++}
++
++void CompiledKernelData::materialize_module() const {
++  if (data_.compiled_data.module || deferred_src_.empty()) {
++    return;
++  }
++  QD_DEBUG("Parsing the deferred LLVM IR of a cached kernel (content hash {})", content_hash_);
++  llvm::SMDiagnostic err;
++  auto module = llvm::parseAssemblyString(deferred_src_, err, llvm_ctx_);
++  // load_impl() would have reported either failure as a cache miss. A deferred kernel can no longer be recompiled
++  // from here, and its text passed the same parse and check in the process that wrote it, so neither is expected.
++  QD_ERROR_IF(!module, "The LLVM IR of a cached kernel (offline cache content hash {}) does not parse: {}. Clear the "
++              "offline cache and run again.", content_hash_, err.getMessage().str());
++  module->setModuleIdentifier("kernel");
++  data_.compiled_data.module = std::move(module);
++  std::string().swap(deferred_src_);
++  QD_ERROR_IF(check() != Err::kNoError, "The LLVM IR of a cached kernel (offline cache content hash {}) fails "
++              "verification. Clear the offline cache and run again.", content_hash_);
++}
++
+ CompiledKernelData::Err CompiledKernelData::load_impl(const CompiledKernelDataFile &file) {
+   arch_ = file.arch();
+   if (!arch_uses_llvm(arch_)) {
+@@ -58,6 +93,14 @@ CompiledKernelData::Err CompiledKernelData::load_impl(const CompiledKernelDataFi
+   } catch (const liong::json::JsonException &) {
+     return Err::kParseMetadataFailed;
+   }
++  loaded_from_file_ = true;
++  content_hash_ = file.hash();
++  if (defer_src_parse_) {
++    // Parsing the IR text is ~90% of loading a cached kernel, and on CUDA a PTX cache keyed by content_hash_ makes
++    // the module unnecessary; materialize_module() parses it if anything does need it.
++    deferred_src_ = file.src_code();
++    return Err::kNoError;
++  }
+   llvm::SMDiagnostic err;
+   auto ret = llvm::parseAssemblyString(file.src_code(), err, llvm_ctx_);
+   if (!ret) {  // File not found or Parse failed
+@@ -77,6 +120,10 @@ CompiledKernelData::Err CompiledKernelData::dump_impl(CompiledKernelDataFile &fi
+   } catch (const liong::json::JsonException &) {
+     return Err::kSerMetadataFailed;
+   }
++  if (!data_.compiled_data.module) {
++    file.set_src_code(deferred_src_);
++    return Err::kNoError;
++  }
+   std::string str;
+   llvm::raw_string_ostream oss(str);
+   data_.compiled_data.module->print(oss, /*AAW=*/nullptr);
+diff --git a/quadrants/codegen/llvm/compiled_kernel_data.h b/quadrants/codegen/llvm/compiled_kernel_data.h
+index 1bcaf8a91..9a006f1c1 100644
+--- a/quadrants/codegen/llvm/compiled_kernel_data.h
++++ b/quadrants/codegen/llvm/compiled_kernel_data.h
+@@ -51,10 +51,32 @@ class CompiledKernelData : public lang::CompiledKernelData {
+ 
+   Err check() const override;
+ 
++  // Parses the module first if its parse was deferred (see load_impl).
+   const InternalData &get_internal_data() const {
++    materialize_module();
+     return data_;
+   }
+ 
++  // What a launcher needs besides the module, without parsing it.
++  const std::vector<std::pair<int, Callable::Parameter>> &args() const {
++    return data_.args;
++  }
++
++  const std::vector<OffloadedTask> &tasks() const {
++    return data_.compiled_data.tasks;
++  }
++
++  // The SHA-256 the offline cache stores with this kernel (CompiledKernelDataFile::hash): read from the .qdc for a
++  // kernel loaded from one, otherwise computed once from the serialization dump() writes. It determines the LLVM
++  // module completely, which is what lets it key the PTX cache (JITSessionCUDA::add_kernel_module). Empty if the
++  // serialization fails.
++  const std::string &content_hash() const;
++
++  // True for a kernel loaded from a .qdc rather than compiled in this process.
++  bool loaded_from_file() const {
++    return loaded_from_file_;
++  }
++
+   std::string debug_dump_to_string() const override;  // for debug/dev/testing only
+ 
+  protected:
+@@ -62,9 +84,17 @@ class CompiledKernelData : public lang::CompiledKernelData {
+   Err dump_impl(CompiledKernelDataFile &file) const override;
+ 
+  private:
+-  llvm::LLVMContext llvm_ctx_;
++  // Parse deferred_src_ into the module, if a deferred load left one; a no-op otherwise.
++  void materialize_module() const;
++
++  // Mutable for materialize_module(), which fills in the module a const accessor asks for.
++  mutable llvm::LLVMContext llvm_ctx_;
+   Arch arch_;
+-  InternalData data_;
++  mutable InternalData data_;
++  // The LLVM IR text of a kernel loaded with its parse deferred, until materialize_module() parses it.
++  mutable std::string deferred_src_;
++  mutable std::string content_hash_;
++  bool loaded_from_file_{false};
+ };
+ 
+ }  // namespace LLVM
+diff --git a/quadrants/compilation_manager/kernel_compilation_manager.cpp b/quadrants/compilation_manager/kernel_compilation_manager.cpp
+index 24d73b036..c29cff623 100644
+--- a/quadrants/compilation_manager/kernel_compilation_manager.cpp
++++ b/quadrants/compilation_manager/kernel_compilation_manager.cpp
+@@ -66,7 +66,8 @@ CompileResult KernelCompilationManager::load_or_compile(const CompileConfig &com
+                                                         const Kernel &kernel_def) {
+   auto cache_mode = get_cache_mode(compile_config, kernel_def.ir_is_ast());
+   const auto kernel_key = make_kernel_key(compile_config, caps, kernel_def);
+-  auto cached_kernel = try_load_cached_kernel(kernel_def.get_name(), kernel_key, compile_config.arch, cache_mode);
++  auto cached_kernel = try_load_cached_kernel(kernel_def.get_name(), kernel_key, compile_config.arch, cache_mode,
++                                              defers_src_parse(compile_config));
+   bool cache_hit = (cached_kernel != nullptr);
+   return CompileResult{
+       cached_kernel ? *cached_kernel : compile_and_cache_kernel(kernel_key, compile_config, caps, kernel_def),
+@@ -185,7 +186,8 @@ std::string KernelCompilationManager::make_kernel_key(const CompileConfig &compi
+ const CompiledKernelData *KernelCompilationManager::try_load_cached_kernel(const std::string &kernel_name,
+                                                                            const std::string &kernel_key,
+                                                                            Arch arch,
+-                                                                           CacheData::CacheMode cache_mode) {
++                                                                           CacheData::CacheMode cache_mode,
++                                                                           bool defer_src_parse) {
+   {  // Find in memory-cache (caching_kernels_)
+     const auto &kernels = caching_kernels_;
+     auto iter = kernels.find(kernel_key);
+@@ -203,7 +205,7 @@ const CompiledKernelData *KernelCompilationManager::try_load_cached_kernel(const
+       if (k.compiled_kernel_data) {
+         QD_DEBUG("Create kernel '{}' from cache (key='{}')", kernel_name, kernel_key);
+         return k.compiled_kernel_data.get();
+-      } else if (auto loaded = load_ckd(kernel_key, arch)) {
++      } else if (auto loaded = load_ckd(kernel_key, arch, defer_src_parse)) {
+         QD_DEBUG("Create kernel '{}' from cache (key='{}')", kernel_name, kernel_key);
+         QD_ASSERT(loaded->arch() == arch);
+         k.metadata.last_used_at = std::time(nullptr);
+@@ -252,15 +254,18 @@ const CompiledKernelData *KernelCompilationManager::load_fast_cache(const std::s
+                                                                     const CompileConfig &compile_config,
+                                                                     const DeviceCapabilityConfig &caps) {
+   auto cache_mode = get_cache_mode(compile_config, true);
+-  auto res = try_load_cached_kernel(kernel_name, checksum, compile_config.arch, cache_mode);
++  auto res =
++      try_load_cached_kernel(kernel_name, checksum, compile_config.arch, cache_mode, defers_src_parse(compile_config));
+   return res;
+ }
+ 
+-std::unique_ptr<CompiledKernelData> KernelCompilationManager::load_ckd(const std::string &kernel_key, Arch arch) {
++std::unique_ptr<CompiledKernelData> KernelCompilationManager::load_ckd(const std::string &kernel_key,
++                                                                       Arch arch,
++                                                                       bool defer_src_parse) {
+   const auto filename = make_filename(kernel_key);
+   if (std::ifstream ifs(filename, std::ios::in | std::ios::binary); ifs.is_open()) {
+     CompiledKernelData::Err err;
+-    auto ckd = CompiledKernelData::load(ifs, &err);
++    auto ckd = CompiledKernelData::load(ifs, &err, defer_src_parse);
+     if (err != CompiledKernelData::Err::kNoError) {
+       QD_DEBUG("Load cache file {} failed: {}", filename, CompiledKernelData::get_err_msg(err));
+       return nullptr;
+@@ -279,4 +284,8 @@ CacheData::CacheMode KernelCompilationManager::get_cache_mode(const CompileConfi
+   return compile_config.offline_cache && kernel_ir_is_ast ? CacheData::MemAndDiskCache : CacheData::MemCache;
+ }
+ 
++bool KernelCompilationManager::defers_src_parse(const CompileConfig &compile_config) {
++  return compile_config.arch == Arch::cuda && compile_config.offline_cache_ptx_by_content_hash;
++}
++
+ }  // namespace quadrants::lang
+diff --git a/quadrants/compilation_manager/kernel_compilation_manager.h b/quadrants/compilation_manager/kernel_compilation_manager.h
+index f5baf754d..3ccbd0aa1 100644
+--- a/quadrants/compilation_manager/kernel_compilation_manager.h
++++ b/quadrants/compilation_manager/kernel_compilation_manager.h
+@@ -114,7 +114,8 @@ class KernelCompilationManager final {
+   const CompiledKernelData *try_load_cached_kernel(const std::string &kernel_name,
+                                                    const std::string &kernel_key,
+                                                    Arch arch,
+-                                                   CacheData::CacheMode cache_mode);
++                                                   CacheData::CacheMode cache_mode,
++                                                   bool defer_src_parse = false);
+ 
+   const CompiledKernelData &compile_and_cache_kernel(const std::string &kernel_key,
+                                                      const CompileConfig &compile_config,
+@@ -126,10 +127,14 @@ class KernelCompilationManager final {
+                                    std::unique_ptr<CompiledKernelData> compiled_kernel_data,
+                                    const Kernel &kernel_def);
+ 
+-  std::unique_ptr<CompiledKernelData> load_ckd(const std::string &kernel_key, Arch arch);
++  std::unique_ptr<CompiledKernelData> load_ckd(const std::string &kernel_key, Arch arch, bool defer_src_parse = false);
+ 
+   static CacheData::CacheMode get_cache_mode(const CompileConfig &compile_config, bool kernel_ir_is_ast);
+ 
++  // Whether a kernel loaded from disk may keep its source text unparsed until first use: only where something can
++  // serve the launch without it (CUDA, with CompileConfig::offline_cache_ptx_by_content_hash).
++  static bool defers_src_parse(const CompileConfig &compile_config);
++
+   Config config_;
+   CachingKernels caching_kernels_;
+   CacheData cached_data_;
+diff --git a/quadrants/jit/jit_session.cpp b/quadrants/jit/jit_session.cpp
+index 1bcf44e0f..174389f27 100644
+--- a/quadrants/jit/jit_session.cpp
++++ b/quadrants/jit/jit_session.cpp
+@@ -2,6 +2,7 @@
+ 
+ #ifdef QD_WITH_LLVM
+ #include "llvm/IR/DataLayout.h"
++#include "llvm/IR/Module.h"
+ #endif
+ 
+ namespace quadrants::lang {
+@@ -26,6 +27,17 @@ std::unique_ptr<JITSession> create_llvm_jit_session_amdgpu(QuadrantsLLVMContext
+ JITSession::JITSession(QuadrantsLLVMContext *tlctx, const CompileConfig &config) : tlctx_(tlctx), config_(config) {
+ }
+ 
++JITModule *JITSession::add_kernel_module(const std::string &content_key,
++                                         bool module_from_file,
++                                         const std::function<std::unique_ptr<llvm::Module>()> &make_module) {
++#ifdef QD_WITH_LLVM
++  return add_module(make_module());
++#else
++  QD_NOT_IMPLEMENTED
++  return nullptr;
++#endif
++}
++
+ std::unique_ptr<JITSession> JITSession::create(QuadrantsLLVMContext *tlctx,
+                                                const CompileConfig &config,
+                                                Arch arch,
+diff --git a/quadrants/jit/jit_session.h b/quadrants/jit/jit_session.h
+index af41ad2c0..e9b9c9930 100644
+--- a/quadrants/jit/jit_session.h
++++ b/quadrants/jit/jit_session.h
+@@ -27,6 +27,14 @@ class JITSession {
+ 
+   virtual JITModule *add_module(std::unique_ptr<llvm::Module> M, int max_reg = 0) = 0;
+ 
++  // Add a kernel's module, letting a backend cache serve it by `content_key` -- LLVM::CompiledKernelData::content_hash,
++  // which determines the module completely -- instead of compiling it. `make_module` is called only if no cache can;
++  // `module_from_file` says whether the kernel was loaded from the offline cache rather than compiled in this process.
++  // An empty `content_key` means none is known. Without such a cache this is add_module(make_module()).
++  virtual JITModule *add_kernel_module(const std::string &content_key,
++                                       bool module_from_file,
++                                       const std::function<std::unique_ptr<llvm::Module>()> &make_module);
++
+   // virtual void remove_module(JITModule *module) = 0;
+ 
+   virtual void *lookup(const std::string Name) {
+diff --git a/quadrants/program/compile_config.h b/quadrants/program/compile_config.h
+index ec14a32a2..5bb9f880c 100644
+--- a/quadrants/program/compile_config.h
++++ b/quadrants/program/compile_config.h
+@@ -106,6 +106,12 @@ struct CompileConfig {
+   std::string offline_cache_cleaning_policy{"lru"};        // "never"|"version"|"lru"|"fifo"
+   int offline_cache_max_size_of_files{100 * 1024 * 1024};  // bytes, default: 100MB
+   double offline_cache_cleaning_factor{0.25};              // [0.f, 1.f]
++  // CUDA: key the PTX cache by the SHA-256 every .qdc already carries over its metadata and LLVM IR (the kernel's
++  // content hash) instead of by a SHA-256 of the IR re-printed at each process's first launch, and parse a cached
++  // kernel's IR only when a PTX-cache miss needs the module. A kernel whose .qdc and PTX are both cached then reaches
++  // cuModuleLoadDataEx without its IR being parsed, verified, cloned, printed or hashed. In no cache key: it decides
++  // which file serves the PTX, not what the PTX is. OFF by default.
++  bool offline_cache_ptx_by_content_hash{false};
+ 
+   int num_compile_threads{4};
+   std::string vk_api_version;
+diff --git a/quadrants/python/export_lang.cpp b/quadrants/python/export_lang.cpp
+index 95f0ef543..703419480 100644
+--- a/quadrants/python/export_lang.cpp
++++ b/quadrants/python/export_lang.cpp
+@@ -326,6 +326,10 @@ void export_lang(nb::module_ &m) {
+               "Whether compiled-kernel caches persist on disk and are reused across separate Python processes.")
+       .def_rw("offline_cache_file_path", &CompileConfig::offline_cache_file_path,
+               "Directory that holds the on-disk compilation cache.")
++      .def_rw("offline_cache_ptx_by_content_hash", &CompileConfig::offline_cache_ptx_by_content_hash,
++              "CUDA only. Key the PTX cache by the content hash each offline-cache file already stores, and parse a "
++              "cached kernel's LLVM IR only if its PTX is not cached, so loading a cached kernel skips the IR parse, "
++              "print and hash. Off by default.")
+       .def_rw("offline_cache_cleaning_policy", &CompileConfig::offline_cache_cleaning_policy,
+               "Eviction policy for the compiled-kernel offline cache (\"never\", \"version\", \"lru\", or \"fifo\").")
+       .def_rw("offline_cache_max_size_of_files", &CompileConfig::offline_cache_max_size_of_files,
+diff --git a/quadrants/runtime/cuda/jit_cuda.cpp b/quadrants/runtime/cuda/jit_cuda.cpp
+index 275625457..6dc76af30 100644
+--- a/quadrants/runtime/cuda/jit_cuda.cpp
++++ b/quadrants/runtime/cuda/jit_cuda.cpp
+@@ -148,6 +148,33 @@ JITModule *JITSessionCUDA::add_module(std::unique_ptr<llvm::Module> M, int max_r
+     }
+   }
+ 
++  return load_ptx_module(ptx, max_reg);
++}
++
++JITModule *JITSessionCUDA::add_kernel_module(const std::string &content_key,
++                                             bool module_from_file,
++                                             const std::function<std::unique_ptr<llvm::Module>()> &make_module) {
++  // The debugging paths want the module itself -- IR and PTX dumps, PTX swapped in from a dump, printed IR or PTX --
++  // so they keep add_module's IR-keyed path.
++  const bool debugging = get_environ_config(DUMP_IR_ENV.data()) != 0 || get_environ_config(LOAD_PTX_ENV.data()) != 0 ||
++                         config_.print_kernel_llvm_ir || config_.print_kernel_llvm_ir_optimized ||
++                         config_.print_kernel_asm;
++  if (!config_.offline_cache_ptx_by_content_hash || content_key.empty() || debugging) {
++    return add_module(make_module(), 0);
++  }
++  const std::string key = ptx_cache_->make_content_cache_key(content_key, config_.fast_math);
++  if (std::optional<std::string> cached = ptx_cache_->load_ptx(key)) {
++    QD_DEBUG("PTX for content hash {} served from the PTX cache ({})", content_key, key);
++    return load_ptx_module(*cached, 0);
++  }
++  auto module = make_module();
++  std::string ptx = compile_module_to_ptx(module, /*ir_key=*/module_from_file);
++  ptx_cache_->store_ptx(key, ptx);
++  QD_DEBUG("PTX for content hash {} stored in the PTX cache ({})", content_key, key);
++  return load_ptx_module(ptx, 0);
++}
++
++JITModule *JITSessionCUDA::load_ptx_module(const std::string &ptx, int max_reg) {
+   // TODO: figure out why using the guard leads to wrong tests results
+   // auto context_guard = CUDAContext::get_instance().get_guard();
+   CUDAContext::get_instance().make_current();
+@@ -206,7 +233,7 @@ std::string convert(std::string new_name) {
+   return new_name;
+ }
+ 
+-std::string JITSessionCUDA::compile_module_to_ptx(std::unique_ptr<llvm::Module> &module) {
++std::string JITSessionCUDA::compile_module_to_ptx(std::unique_ptr<llvm::Module> &module, bool ir_key) {
+   QD_AUTO_PROF
+   // Part of this function is borrowed from Halide::CodeGen_PTX_Dev.cpp
+   if (llvm::verifyModule(*module, &llvm::errs())) {
+@@ -221,15 +248,18 @@ std::string JITSessionCUDA::compile_module_to_ptx(std::unique_ptr<llvm::Module>
+     writer.write(module.get());
+   }
+ 
+-  std::string llvm_ir_str;
+-  llvm::raw_string_ostream llvm_ir_stream(llvm_ir_str);
+-  module->print(llvm_ir_stream, nullptr);
+-  llvm_ir_stream.flush();
+-  std::string ptx_cache_key = ptx_cache_->make_cache_key(llvm_ir_str, this->config_.fast_math);
+-  std::optional<std::string> maybe_ptx = ptx_cache_->load_ptx(ptx_cache_key);
+-  if (maybe_ptx.has_value()) {
+-    QD_TRACE("Loaded PTX from cache for module {}", module->getName().str());
+-    return maybe_ptx.value();
++  std::string ptx_cache_key;
++  if (ir_key) {
++    std::string llvm_ir_str;
++    llvm::raw_string_ostream llvm_ir_stream(llvm_ir_str);
++    module->print(llvm_ir_stream, nullptr);
++    llvm_ir_stream.flush();
++    ptx_cache_key = ptx_cache_->make_cache_key(llvm_ir_str, this->config_.fast_math);
++    std::optional<std::string> maybe_ptx = ptx_cache_->load_ptx(ptx_cache_key);
++    if (maybe_ptx.has_value()) {
++      QD_TRACE("Loaded PTX from cache for module {}", module->getName().str());
++      return maybe_ptx.value();
++    }
+   }
+ 
+   for (auto &f : module->globals())
+@@ -358,7 +388,9 @@ std::string JITSessionCUDA::compile_module_to_ptx(std::unique_ptr<llvm::Module>
+ 
+   // Null-terminate the ptx source
+   buffer.push_back(0);
+-  ptx_cache_->store_ptx(ptx_cache_key, buffer);
++  if (ir_key) {
++    ptx_cache_->store_ptx(ptx_cache_key, buffer);
++  }
+   return buffer;
+ }
+ 
+diff --git a/quadrants/runtime/cuda/jit_cuda.h b/quadrants/runtime/cuda/jit_cuda.h
+index 811dfe918..5f01d8d36 100644
+--- a/quadrants/runtime/cuda/jit_cuda.h
++++ b/quadrants/runtime/cuda/jit_cuda.h
+@@ -65,6 +65,10 @@ class JITSessionCUDA : public JITSession {
+                  llvm::DataLayout data_layout,
+                  ProgramImpl *program_impl);
+   JITModule *add_module(std::unique_ptr<llvm::Module> M, int max_reg) override;
++  // Looks the PTX up by PtxCache::make_content_cache_key(content_key) first, under offline_cache_ptx_by_content_hash.
++  JITModule *add_kernel_module(const std::string &content_key,
++                               bool module_from_file,
++                               const std::function<std::unique_ptr<llvm::Module>()> &make_module) override;
+   llvm::DataLayout get_data_layout() override;
+ 
+  private:
+@@ -81,7 +85,12 @@ class JITSessionCUDA : public JITSession {
+     PtxCache *ptx_cache_;
+   };
+ 
+-  std::string compile_module_to_ptx(std::unique_ptr<llvm::Module> &module);
++  // `ir_key`: look the PTX up, and store it, under a hash of the module's printed IR. add_kernel_module turns it off
++  // for a kernel it keys by content hash instead, unless the kernel came from the offline cache and a Quadrants
++  // without that key may have cached its PTX by IR.
++  std::string compile_module_to_ptx(std::unique_ptr<llvm::Module> &module, bool ir_key = true);
++  // cuModuleLoadDataEx on `ptx`, which must be NUL-terminated.
++  JITModule *load_ptx_module(const std::string &ptx, int max_reg);
+   std::unique_ptr<PtxCache> ptx_cache_;
+   ProgramImpl *program_impl_;
+   std::unique_ptr<Finalizer> finalizer_;
+diff --git a/quadrants/runtime/cuda/kernel_launcher.cpp b/quadrants/runtime/cuda/kernel_launcher.cpp
+index 46b2a853d..97ad09db6 100644
+--- a/quadrants/runtime/cuda/kernel_launcher.cpp
++++ b/quadrants/runtime/cuda/kernel_launcher.cpp
+@@ -602,13 +602,18 @@ KernelLauncher::Handle KernelLauncher::register_llvm_kernel(const LLVM::Compiled
+     auto &ctx = contexts_[index];
+     auto *executor = get_runtime_executor();
+ 
+-    auto data = compiled.get_internal_data().compiled_data.clone();
+-    auto *jit_module = executor->create_jit_module(std::move(data.module));
++    // Under offline_cache_ptx_by_content_hash a kernel whose PTX is cached is loaded without its module being cloned
++    // -- or, for one loaded from the offline cache, parsed at all (LLVM::CompiledKernelData defers that).
++    const std::string content_key =
++        executor->get_config().offline_cache_ptx_by_content_hash ? compiled.content_hash() : std::string();
++    auto *jit_module = executor->create_kernel_jit_module(content_key, compiled.loaded_from_file(), [&compiled]() {
++      return compiled.get_internal_data().compiled_data.clone().module;
++    });
+ 
+     // Populate ctx
+     ctx.jit_module = jit_module;
+-    ctx.parameters = &compiled.get_internal_data().args;
+-    ctx.offloaded_tasks = std::move(data.tasks);
++    ctx.parameters = &compiled.args();
++    ctx.offloaded_tasks = compiled.tasks();
+ 
+     compiled.set_handle(handle);
+   }
+diff --git a/quadrants/runtime/cuda/ptx_cache.cpp b/quadrants/runtime/cuda/ptx_cache.cpp
+index 403a57a43..c274ad186 100644
+--- a/quadrants/runtime/cuda/ptx_cache.cpp
++++ b/quadrants/runtime/cuda/ptx_cache.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include "picosha2.h"
+ 
++#include "llvm/Config/llvm-config.h"
++
+ #include "quadrants/analysis/offline_cache_util.h"
+ #include "quadrants/codegen/compiled_kernel_data.h"
+ #include "quadrants/util/offline_cache.h"
+@@ -169,6 +171,21 @@ std::string PtxCache::make_cache_key(const std::string &llvm_ir, bool use_fast_m
+   return res;
+ }
+ 
++std::string PtxCache::make_content_cache_key(const std::string &content_hash, bool use_fast_math) const {
++  // Everything compile_module_to_ptx reads besides the module: the target, fast_math (its TargetOptions), and the code
++  // doing the lowering. 'C' where make_cache_key's keys start with 'T', so the two kinds cannot collide in a directory.
++  const std::string material =
++      fmt::format("ptx-by-content-hash/{};sm_{};fast_math={};llvm={};quadrants={}+{};content={}", kContentKeyRevision,
++                  compute_capability_, use_fast_math ? 1 : 0, LLVM_VERSION_STRING, get_version_string(),
++                  get_commit_hash(), content_hash);
++  picosha2::hash256_one_by_one hasher;
++  hasher.process(material.begin(), material.end());
++  hasher.finish();
++  auto res = picosha2::get_hash_hex_string(hasher);
++  res.insert(res.begin(), 'C');
++  return res;
++}
++
+ std::optional<std::string> PtxCache::try_load_cached(const std::string &cache_key, CacheMode cache_mode) {
+   {
+     // Find in memory-cache
+diff --git a/quadrants/runtime/cuda/ptx_cache.h b/quadrants/runtime/cuda/ptx_cache.h
+index 50de16124..50bb18659 100644
+--- a/quadrants/runtime/cuda/ptx_cache.h
++++ b/quadrants/runtime/cuda/ptx_cache.h
+@@ -63,6 +63,13 @@ class PtxCache final {
+   void store_ptx(const std::string &cache_key, const std::string &ptx);
+   std::optional<std::string> load_ptx(const std::string &cache_key);
+   std::string make_cache_key(const std::string &llvm_ir, bool use_fast_math) const;
++  // The key for a kernel known by its offline-cache content hash (LLVM::CompiledKernelData::content_hash), which
++  // determines its module as completely as make_cache_key's IR text does, without the IR having to be printed.
++  std::string make_content_cache_key(const std::string &content_hash, bool use_fast_math) const;
++
++  // Bump when JITSessionCUDA::compile_module_to_ptx lowers a module differently in a way that neither the LLVM
++  // version nor the Quadrants version and commit in make_content_cache_key records.
++  static constexpr int kContentKeyRevision = 1;
+ 
+  private:
+   std::string make_filename(const std::string &kernel_key) const;
+diff --git a/quadrants/runtime/llvm/llvm_runtime_executor.cpp b/quadrants/runtime/llvm/llvm_runtime_executor.cpp
+index 76b809abc..38920e4a2 100644
+--- a/quadrants/runtime/llvm/llvm_runtime_executor.cpp
++++ b/quadrants/runtime/llvm/llvm_runtime_executor.cpp
+@@ -176,6 +176,13 @@ JITModule *LlvmRuntimeExecutor::create_jit_module(std::unique_ptr<llvm::Module>
+   return jit_session_->add_module(std::move(module));
+ }
+ 
++JITModule *LlvmRuntimeExecutor::create_kernel_jit_module(
++    const std::string &content_key,
++    bool module_from_file,
++    const std::function<std::unique_ptr<llvm::Module>()> &make_module) {
++  return jit_session_->add_kernel_module(content_key, module_from_file, make_module);
++}
++
+ JITModule *LlvmRuntimeExecutor::get_runtime_jit_module() {
+   return runtime_jit_module_;
+ }
+diff --git a/quadrants/runtime/llvm/llvm_runtime_executor.h b/quadrants/runtime/llvm/llvm_runtime_executor.h
+index 43e83f051..f87cdb835 100644
+--- a/quadrants/runtime/llvm/llvm_runtime_executor.h
++++ b/quadrants/runtime/llvm/llvm_runtime_executor.h
+@@ -2,6 +2,7 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <functional>
+ #include <memory>
+ #include <unordered_map>
+ 
+@@ -73,6 +74,12 @@ class LlvmRuntimeExecutor {
+ 
+   JITModule *create_jit_module(std::unique_ptr<llvm::Module> module);
+ 
++  // A kernel's module, through JITSession::add_kernel_module: `make_module` runs only if no backend cache can serve
++  // `content_key`.
++  JITModule *create_kernel_jit_module(const std::string &content_key,
++                                      bool module_from_file,
++                                      const std::function<std::unique_ptr<llvm::Module>()> &make_module);
++
+   JITModule *get_runtime_jit_module();
+ 
+   LLVMRuntime *get_llvm_runtime();

@@ -97,14 +97,17 @@ Stopping a pool (:meth:`PrecompilePool.terminate`) never kills a worker that
 may hold the cache's metadata lock: workers ask before each such section, see
 :func:`worker_main`.
 
-What a pool cannot do: its workers never launch, so on CUDA they leave the
-LLVM artifact (``.qdc``) and nothing else. The render still generates PTX and
-has the driver JIT it at each kernel's first launch -- about 14 s of a 57 s
-cold ``explainer`` render on an RTX 5080 (first launches 36 s, of which the
-backend compile was 22 s). Moving that into the workers needs a compiler entry point that
-registers a compiled kernel with the launcher without launching it; a launch
-with placeholder arguments is not an option (out-of-range reads, unbounded
-loops over garbage data).
+What a pool does not do is launch: a launch with placeholder arguments is
+not an option (out-of-range reads, unbounded loops over garbage data). On the
+published wheel that leaves CUDA workers producing the LLVM artifact
+(``.qdc``) and nothing else, so the render still generates PTX and has the
+driver JIT it at each kernel's first launch -- about 14 s of a 57 s cold
+``explainer`` render on an RTX 5080 (first launches 36 s, of which the backend
+compile was 22 s). Quadrants patch 0011 adds ``Program.prepare_kernel``, which
+does a first launch's work without the launch; where the wheel has it, a CUDA
+worker calls it on every spec (:func:`prepare_for_launch`), so the PTX cache
+and the driver's compute cache are warm before the render reaches the kernel.
+``ALGAN_PRECOMPILE_PTX=0`` turns that off.
 """
 
 from __future__ import annotations
@@ -856,18 +859,75 @@ def _confirm_written_artifacts():
 # ---------------------------------------------------------------------------
 
 
+def prepare_for_launch(prog, compiled_kernel_data):
+    """A first launch's work on ``compiled_kernel_data``, without the launch.
+
+    On CUDA that is the kernel's PTX -- generated, or found in the PTX cache --
+    and the driver's JIT of it into its compute cache (``CUDA_CACHE_PATH``,
+    which the render shares): Quadrants patch 0011's ``Program.prepare_kernel``.
+    It holds no cache lock; the PTX reaches the disk with the next
+    ``dump_cache_data_to_disk``. Returns the seconds it took, or ``None`` where
+    it is not done: off the CUDA arch (the CPU arch keeps no machine code across
+    processes, so a worker would JIT for nothing), on a wheel without the entry
+    point, or under ``ALGAN_PRECOMPILE_PTX=0``.
+    """
+    from algan.taichi_compat import submodule, ti
+
+    if not env_flag("ALGAN_PRECOMPILE_PTX", True):
+        return None
+    prepare = getattr(prog, "prepare_kernel", None)
+    if prepare is None or submodule("lang.impl").current_cfg().arch != ti.cuda:
+        return None
+    started = time.perf_counter()
+    prepare(compiled_kernel_data)
+    return time.perf_counter() - started
+
+
+#: The ``CompiledKernelData`` handles this worker compiled and then dumped, by
+#: ``id`` (the handle is kept, so the id is not reused). Quadrants'
+#: ``KernelCompilationManager::dump`` frees every kernel it writes, so each of
+#: these points at freed memory while ``compiled_kernel_data_by_key`` still
+#: holds it: a later spec with the same key comes back as ``cached`` and must
+#: not be prepared again -- it was prepared before its dump, and touching it
+#: now would read freed memory.
+_DUMPED_HERE = {}
+
+
+def _prepare(prog, compiled_kernel_data, outcome):
+    """:func:`prepare_for_launch`, noting its time or its failure in ``outcome``.
+
+    Returns whether the kernel was prepared. A failure costs only the head
+    start, never the ``.qdc`` the worker just built: the render prepares the
+    kernel again at its first launch and reports what goes wrong there.
+    """
+    try:
+        seconds = prepare_for_launch(prog, compiled_kernel_data)
+    except Exception as exc:  # noqa: BLE001 -- the render repeats it and reports
+        outcome["ptx_error"] = f"{type(exc).__name__}: {exc}"
+        return False
+    if seconds is None:
+        return False
+    outcome["ptx_seconds"] = seconds
+    return True
+
+
 def compile_spec(spec, on_started=None, before_writing=None):
     """Materialize and compile ``spec`` without launching it.
 
     Mirrors ``Kernel.__call__`` up to the launch: ``ensure_compiled`` (which
     goes through the source-keyed index, so a hit loads instead of compiling),
     then the compile-and-index block of ``Kernel.launch_kernel`` verbatim in
-    effect -- ``Program.compile_kernel`` and ``src_hasher.store`` -- and a dump
-    so the artifact is on disk the moment it exists. Returns
-    ``{"status", "seconds"}``; ``status`` is ``cached`` (the index served it),
-    ``offline-hit`` (the frontend ran, the backend was on disk) or ``compiled``.
-    ``before_writing`` is called just before the index store and the dump --
-    the writes that take the cache's metadata lock (see :func:`worker_main`).
+    effect -- ``Program.compile_kernel`` and ``src_hasher.store`` -- then
+    :func:`prepare_for_launch`, and a dump so the artifacts are on disk the
+    moment they exist. Returns ``{"status", "seconds"}``, plus ``ptx_seconds``
+    when the kernel was prepared or ``ptx_error`` when preparing it failed;
+    ``status`` is ``cached`` (the index served it), ``offline-hit`` (the
+    frontend ran, the backend was on disk) or ``compiled``. A cached kernel is
+    still prepared, and dumped if it was: its ``.qdc`` may predate the PTX
+    tier -- unless this worker compiled it, whose handle its dump freed
+    (:data:`_DUMPED_HERE`). ``before_writing`` is called just before the index
+    store and the dump -- the writes that take the cache's metadata lock (see
+    :func:`worker_main`).
     """
     from algan.settings._startup import render_device
     from algan.taichi_compat import program, submodule
@@ -883,12 +943,21 @@ def compile_spec(spec, on_started=None, before_writing=None):
     started = time.perf_counter()
     kernel.raise_on_templated_floats = impl.current_cfg().raise_on_templated_floats
     key = kernel.ensure_compiled(*args)
-    if kernel.compiled_kernel_data_by_key.get(key) is not None:
-        return {"status": "cached", "seconds": time.perf_counter() - started}
     prog = impl.get_runtime().prog
+    cached = kernel.compiled_kernel_data_by_key.get(key)
+    if cached is not None:
+        outcome = {"status": "cached"}
+        if id(cached) not in _DUMPED_HERE and _prepare(prog, cached, outcome):
+            if before_writing is not None:
+                before_writing()
+            program().dump_cache_data_to_disk()
+        outcome["seconds"] = time.perf_counter() - started
+        return outcome
     result = prog.compile_kernel(
         prog.config(), prog.get_device_caps(), kernel.materialized_kernels[key]
     )
+    outcome = {"status": "offline-hit" if result.cache_hit else "compiled"}
+    _prepare(prog, result.compiled_kernel_data, outcome)
     if before_writing is not None:
         before_writing()
     if kernel.fast_checksum:
@@ -911,10 +980,9 @@ def compile_spec(spec, on_started=None, before_writing=None):
         )
     kernel.compiled_kernel_data_by_key[key] = result.compiled_kernel_data
     program().dump_cache_data_to_disk()
-    return {
-        "status": "offline-hit" if result.cache_hit else "compiled",
-        "seconds": time.perf_counter() - started,
-    }
+    _DUMPED_HERE[id(result.compiled_kernel_data)] = result.compiled_kernel_data
+    outcome["seconds"] = time.perf_counter() - started
+    return outcome
 
 
 def _lower_priority():
@@ -1087,6 +1155,8 @@ class _Job:
         "reason",
         "worker",
         "name",
+        "ptx_seconds",
+        "ptx_error",
     )
 
     def __init__(self, spec, context, expected):
@@ -1102,6 +1172,10 @@ class _Job:
         self.reason = None
         self.worker = None
         self.name = kernel_display_name(spec)
+        #: What :func:`prepare_for_launch` took in the worker, or why it failed;
+        #: both ``None`` where it did not run (see :func:`compile_spec`).
+        self.ptx_seconds = None
+        self.ptx_error = None
 
 
 #: How long :meth:`PrecompilePool.terminate` waits for workers to leave a lock
@@ -1417,6 +1491,8 @@ class PrecompilePool:
                         job.status = event.get("status")
                         job.seconds = float(event.get("seconds") or 0.0)
                         job.reason = event.get("reason")
+                        job.ptx_seconds = event.get("ptx_seconds")
+                        job.ptx_error = event.get("ptx_error")
                         job.state = (
                             "done"
                             if job.status in ("cached", "offline-hit", "compiled")

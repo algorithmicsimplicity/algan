@@ -42,6 +42,13 @@ off unless ``ALGAN_READONLY_NDARRAY_LDG=1``, and then set on CUDA only (see
 :func:`taichi_init_kwargs`). ``invariant_arg_loads`` (0004) defaults **on**,
 and ``fast_math`` below is what makes 0007's fast ``expf`` live, so those two
 are the patches an Algan render runs through by default.
+
+``offline_cache_ptx_by_content_hash`` (``0010-cuda-ptx-cache-by-content-hash.patch``)
+is the one Algan turns on itself where the wheel has it: on CUDA, a kernel
+whose ``.qdc`` and PTX are both cached is loaded without its LLVM IR being
+parsed, printed or hashed. ``ALGAN_PTX_CACHE_BY_CONTENT_HASH=0`` is the off
+arm; on any other arch, or a wheel without the patch, the keyword is not
+passed (:func:`ptx_cache_by_content_hash_supported`).
 """
 
 from __future__ import annotations
@@ -789,6 +796,26 @@ def cpu_prep_kernel_enabled(name):
 _INIT_OVERRIDES = {}
 
 
+def ptx_cache_by_content_hash_supported():
+    """Whether the installed compiler has Quadrants patch 0010's config field.
+
+    ``offline_cache_ptx_by_content_hash`` keys the CUDA PTX cache by the
+    SHA-256 each ``.qdc`` already stores and defers parsing a cached kernel's
+    IR until a PTX miss needs it (``quadrants_patches/README.md``, 0010). A
+    wheel without the patch would reject the keyword, so it is asked of the
+    config type, which every Quadrants build exposes before ``init``.
+    """
+    if BACKEND != "quadrants":
+        return False
+    from algan.taichi_compat import submodule
+
+    try:
+        config_type = submodule("_lib.core.quadrants_python").CompileConfig
+    except Exception:
+        return False
+    return hasattr(config_type, "offline_cache_ptx_by_content_hash")
+
+
 def taichi_init_kwargs():
     """Algan's Taichi runtime config, as a kwargs dict.
 
@@ -866,6 +893,19 @@ def taichi_init_kwargs():
     # the off arm's init -- and every key -- is what it was before the switch.
     if kwargs["arch"] == ti.cuda and env_flag("ALGAN_READONLY_NDARRAY_LDG", False):
         kwargs["readonly_ndarray_ldg"] = True
+    # Quadrants patch 0010: a cached CUDA kernel's PTX is found by the content
+    # hash its .qdc already carries, so its IR is never parsed, printed or
+    # hashed when the PTX is there. On by default where the wheel has it;
+    # ALGAN_PTX_CACHE_BY_CONTENT_HASH=0 is the A/B off arm. The field's
+    # `offline_cache` prefix keeps it out of the compiler's key and the source
+    # key alike, so both arms share every artifact. CUDA only: no other arch
+    # has a PTX cache, and the CPU arch needs every module parsed to JIT it.
+    if (
+        kwargs["arch"] == ti.cuda
+        and env_flag("ALGAN_PTX_CACHE_BY_CONTENT_HASH", True)
+        and ptx_cache_by_content_hash_supported()
+    ):
+        kwargs["offline_cache_ptx_by_content_hash"] = True
     kwargs.update(_INIT_OVERRIDES)
     if kwargs["arch"] == ti.metal:
         queue = _torch_mps_command_queue()
@@ -1266,7 +1306,56 @@ def _register_kernel_cache_flush():
     # handlers (``atexit`` is LIFO): Taichi releases the device first, which is
     # the order the destructor path used to get for free.
     atexit.register(flush_kernel_cache)
+    # After it, so it runs first (LIFO) and can see whether the flush will.
+    atexit.register(write_ptx_at_exit)
     _FLUSH_REGISTERED = True
+
+
+def write_ptx_at_exit():
+    """At exit, write the PTX a process generated when the flush will not.
+
+    :func:`flush_kernel_cache` tears the program down -- and so writes every
+    cache -- only in a process that built a specialization. One whose kernels
+    all came from the cache skips it, Quadrants registers no exit hook of its
+    own, and the program is not reliably destroyed at interpreter teardown, so
+    on CUDA the PTX such a process generated was never written: for cached
+    kernels whose PTX was missing, or re-keyed from an older cache (Quadrants
+    patch 0010). Every later process generated it again -- the off arm of the
+    first 0010 A/B paid that in every process.
+
+    Where the wheel has patch 0011, ``dump_cache_data_to_disk`` writes the PTX
+    cache too, so this calls it. That dump frees the kernels it writes, which
+    is why nothing calls it mid-process; at exit nothing launches again.
+    CUDA only (the one arch with a PTX cache), under the flush's own
+    conditions: not under ``ALGAN_FLUSH_KERNEL_CACHE=0``, only on the main
+    thread with no render holding the arch. Returns whether a dump ran.
+    """
+    if _BUILT_A_SPECIALIZATION:
+        return False
+    if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    if render_is_active() or _live_arch() != ti.cuda:
+        return False
+    from algan.taichi_compat import program
+
+    prog = program()
+    if not hasattr(prog, "prepare_kernel"):
+        return False
+    started = time.perf_counter()
+    try:
+        prog.dump_cache_data_to_disk()
+    except Exception as exc:
+        get_logger().log(PERF, "Writing generated PTX at exit failed: %r", exc)
+        return False
+    get_logger().log(
+        PERF,
+        "Wrote generated PTX to %s in %.2f s.",
+        _TAICHI_CACHE_DIRECTORY,
+        time.perf_counter() - started,
+    )
+    return True
 
 
 def _reset_after_interruption():
