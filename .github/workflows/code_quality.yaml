@@ -9,6 +9,9 @@ on:
     # below; see test.yaml for the scopes.
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   merge_group:
+  # Weekly, beside the full test run in test.yaml, for the packaging jobs.
+  schedule:
+    - cron: "23 4 * * 1"
 # One run per pull request; see test.yaml for why another label gets a group
 # of its own.
 concurrency:
@@ -72,14 +75,14 @@ jobs:
       # deliberate act: expect a reformat commit alongside.
       - run: uvx ruff@0.12.4 format --check
 
-  # The two packaging jobs belong to the full scope: a pull request runs them
-  # only with the `full-ci` label, and master, stable and the merge queue run
-  # them always. Neither is a required check.
+  # The two packaging jobs belong to the full scope: they run weekly and on a
+  # pull request labelled `full-ci` (release.yaml builds and checks the wheels
+  # it publishes regardless). Neither is a required check.
   packaging:
     name: Wheel builds and imports
     runs-on: ubuntu-latest
     needs: [lock_file]
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    if: github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -159,7 +162,7 @@ jobs:
     name: Native macOS wheel builds and imports
     runs-on: macos-latest
     needs: [lock_file]
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    if: github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     env:
       ALGAN_RENDER_DEVICE: mps
     steps:

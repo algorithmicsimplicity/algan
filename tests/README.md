@@ -169,13 +169,12 @@ anyway.
 | PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
 | Shadows, refraction, glow, Monte Carlo, glTF, camera moves | Another kernel variant or tracer path each | `tests/full_renders/` |
 
-**CI is not the fast suite.** It names `tests/unit_tests tests/fast` as paths
-and runs everything under them, `fast`-marked or not (see the comment in
-`.github/workflows/test.yaml`). The fast suite is a development loop; CI can
-afford twelve minutes and should keep spending them.
-
-It runs those paths in four ordinary matrix arms: Linux 3.10/3.13 with the
-`auto` render device, plus macOS 3.10 once on CPU and once on MPS. The macOS
+**CI is not the fast suite.** A pull request and a push to master run the
+**CI group** (next section), on Linux 3.10 with the `auto` render device and
+macOS 3.10 on CPU. The weekly run, `workflow_dispatch` and a PR labelled
+`full-ci` run everything under `tests/unit_tests tests/fast` in four matrix
+arms instead: Linux 3.10 and 3.14 with the `auto` render device, plus macOS
+3.10 once on CPU and once on MPS. The macOS
 CPU arm preserves the portability check. The MPS arm pins
 `ALGAN_RENDER_DEVICE=mps` and, before pytest, asserts both that torch exposes an
 MPS device and that Algan's own startup resolver returns `mps`; a silent CPU
@@ -207,13 +206,56 @@ removing a line:
 entry whose test has been renamed or deleted is an `xfail` that silently marks
 nothing, so it fails collection-time rather than passing quietly.
 
+## Test groups: CI and pre-PR
+
+Two lists of node ids, `tests/groups/ci.txt` and `tests/groups/pre-pr.txt`,
+that `--group` narrows a run to. They exist to catch a change breaking
+something far from where it was made, so they are picked by measurement, not
+by hand: `scripts/select_test_groups.py` takes one run of the suite with
+per-test coverage and durations and adds tests greedily by lines of `algan/`
+newly covered per second until each budget is spent.
+
+| Group | Command | Who runs it | Size |
+| --- | --- | --- | --- |
+| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~5700 tests, ~80 s of test time on a runner, 82% of the lines the whole suite covers |
+| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~6400 tests, ~7 minutes on a runner, effectively 100% of those lines |
+
+The CI group always contains the fast suite, every test that takes 10 ms or
+less, and a short named list of guards (`ALWAYS_CI` in the script) that read
+the source rather than run it, such as
+`test_every_builtin_spec_still_matches_a_live_kernel`: they cover almost no
+lines, so the greedy pass would never choose them, yet they are what trips on
+a change made elsewhere. The pre-PR group always contains the whole CI group.
+
+**Regenerate** when a group drifts (a big new test file, a budget overrun),
+not on every change. `test_test_groups.py` fails when a listed test is renamed
+or deleted; dropping that line by hand is fine. To regenerate, measure on a
+warm kernel cache:
+
+```bash
+<venv-python> -m pytest -q -p no:cacheprovider tests/unit_tests tests/fast -n 1 \
+    --durations=0 --cov=algan --cov-context=test --cov-report= > durations.txt
+<venv-python> scripts/select_test_groups.py --durations durations.txt --coverage .coverage
+```
+
+The current lists were measured on GitHub runners (ten shards, py3.14 under
+coverage), because a whole-suite coverage run is more than a development
+container comfortably holds.
+
+**The weekly full run** (Mondays 04:23 UTC, `schedule` in `test.yaml`,
+`docs.yaml` and `code_quality.yaml`) runs everything under `tests/unit_tests
+tests/fast` on all four arms with a cold kernel cache, plus the Sphinx build
+and the packaging jobs. `tests/full_renders` and `tests/path_traced` are not in
+it: their baselines are per machine (see "Baselines are per machine too"
+below), so they gate locally. A PR labelled `full-ci` gets the same run.
+
 ## The full suite
 
 ```bash
 <venv-python> -m pytest -q
 ```
 
-Everything, about twelve minutes on CUDA. Run it before pushing, after touching
+Everything, about twelve minutes on CUDA. Run it after touching
 the renderer, and whenever the fast suite's coverage table above says the thing
 you changed lives here.
 
@@ -443,7 +485,7 @@ carries PN surfaces, shadows, refraction or glTF — which is what
 `pn_criterion_kernel` under `fast_math` predicts, since which tessellation
 levels sit on a boundary depends on the CPU evaluating the criterion.
 
-So **CI runs `tests/unit_tests` and `tests/fast`**, the two that are portable,
+So **CI runs only `tests/unit_tests` and `tests/fast`**, the two that are portable,
 and `test_full_render_scene` skips itself when `CI` is set. Run it anyway with
 `ALGAN_RUN_FULL_RENDERS=1` — on the machine whose baselines these are, or to
 re-measure the spread.
