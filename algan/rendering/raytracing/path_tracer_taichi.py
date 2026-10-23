@@ -266,6 +266,7 @@ from algan.rendering.raytracing.pt_media_taichi import (
     _pt_medium_id,
     _pt_medium_sample,
     _pt_medium_top,
+    _pt_medium_tracked,
     _pt_medium_transmittance,
 )
 from algan.rendering.raytracing.pt_volume_taichi import (
@@ -2556,7 +2557,9 @@ def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
                       circuit_border_colors: ti.template(),
                       edges_2d: ti.template(), edge_accel: ti.template(),
                       tri_shell: ti.template(), caster_offset, media,
-                      media_offset, glass_energy: ti.template()):
+                      media_offset, glass_energy: ti.template(),
+                      vol_i: ti.template(), vol_f: ti.template(),
+                      vol_seed: ti.u32):
     """One light sample's caustic connection (roadmap section 1).
 
     ``x0`` is the receiver, ``sorigin`` the shadow ray's spawn point off it
@@ -2568,7 +2571,7 @@ def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
     (``_pt_mnee_probe``), which seed a manifold walk (``_pt_mnee_solve``) to
     the bent chain that reaches the same light end by refracting at each of
     them. Returns ``(straight, ok, w0, g, tau, nr2, e, d_path, overflow,
-    capped, media_over, media_cut, count)``:
+    capped, media_over, media_cut, vol_over, count)``:
 
     * ``straight`` -- what the STRAIGHT connection keeps through the casters
       (their uncovered fraction), the factor the caller applies to its own
@@ -2592,7 +2595,10 @@ def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
     * ``capped`` -- the walk gave up at ``MNEE_MAX_ITERATIONS`` still
       walking; ``media_over`` / ``media_cut`` -- a leg's medium stack
       overflowed or its walk was truncated (``PT_STAT_MEDIA_*``). Each of
-      these leaves ``ok`` at 0.
+      these leaves ``ok`` at 0. ``vol_over`` counts leg pieces whose
+      density-grid tracking exhausted its step budget and was absorbed
+      (``PT_STAT_VOLUME_STEPS``); each leg is ratio-tracked from
+      ``vol_seed`` and its ordinal.
     * ``count`` -- the caster interfaces the straight segment crosses: the
       chain's vertices, when there is one.
     """
@@ -2601,6 +2607,7 @@ def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
     capped = 0
     media_over = 0
     media_cut = 0
+    vol_over = 0
     w0 = ti.math.vec3(0.0, 0.0, 0.0)
     g = 0.0
     tau = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2706,18 +2713,17 @@ def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
                         circuit_border_colors, edges_2d, edge_accel)
                     # Inside a caster (never toward a light at infinity,
                     # which is not admissible): the camera path's
-                    # Beer-Lambert, unless a scattering medium fills the
-                    # solid -- the medium walk below integrates that one.
+                    # Beer-Lambert, unless the medium walk below integrates
+                    # the solid's interior -- a scattering one, or one a
+                    # density grid varies (``_pt_medium_tracked``).
                     if inner >= 0:
-                        scattering = 0
+                        tracked = 0
                         if media_offset > 0:
                             if _pt_medium_id(tri_shell, f, inner,
                                              media_offset) >= 0:
-                                _sa_m, ss_m, _g_m = _pt_medium_coeff(
-                                    tri_mat, f, inner)
-                                if ss_m.max() > 0.0:
-                                    scattering = 1
-                        if scattering == 0:
+                                tracked = _pt_medium_tracked(
+                                    vol_i, tri_mat, f, inner)
+                        if tracked == 0:
                             tma = f % tri_mat.shape[0]
                             for k in ti.static(range(3)):
                                 tau[k] *= ti.exp(
@@ -2725,14 +2731,16 @@ def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
                                              _MAT_ATTENUATION_SIGMA + k]
                                     * leg_len)
                     if media_offset > 0:
-                        m_vis, m_over, m_cut = _pt_medium_transmittance(
+                        m_vis, m_over, m_cut, m_steps = _pt_medium_transmittance(
                             refit, origin, ray_d, f,
                             _pt_shadow_tmax(origin, ray_d, reach), m_stack,
                             layer_offset_triangles, t_nodes, t_node_miss,
                             t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
-                            tri_mat, tri_shell, media_offset)
+                            tri_mat, tri_shell, media_offset, vol_i, vol_f,
+                            _pt_vol_seed(vol_seed, q))
                         media_over += m_over
                         media_cut += m_cut
+                        vol_over += m_steps
                         tau *= m_vis
                         if b_prim >= 0:
                             m_stack, m_push = _pt_medium_cross(
@@ -2754,7 +2762,7 @@ def _pt_caustic_chain(refit: ti.template(), shadow_mode: ti.template(),
             else:
                 e = -y
     return straight, ok, w0, g, tau, nr2, e, d_path, overflow, capped, \
-        media_over, media_cut, count
+        media_over, media_cut, vol_over, count
 
 
 @ti.kernel
@@ -3930,9 +3938,15 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     if not medium_vertex:
                                         n_side = fnrm if fnrm.dot(-rd) >= 0.0 \
                                             else -fnrm
+                                    # A density grid on a leg is ratio-tracked
+                                    # from a stream of its own, apart from the
+                                    # straight connection's below.
+                                    m_vseed = _pt_vol_seed(_pt_vol_seed(
+                                        path_seed ^ ti.u32(0x7F4A7C15), pair_sel),
+                                        s_index)
                                     (straight_m, m_ok, m_w0, m_g, m_tau,
                                      m_nr2, m_e, m_d, m_over, m_capped,
-                                     m_mo, m_mc, m_k) = _pt_caustic_chain(
+                                     m_mo, m_mc, m_vo, m_k) = _pt_caustic_chain(
                                         refit, shadow_mode, has_tri, has_bez,
                                         hit_p, sorigin, n_side, m_wi, m_ld,
                                         m_y, m_fixed, f, ff,
@@ -3950,7 +3964,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         circuit_meta, circuit_colors,
                                         circuit_border_colors, edges_2d,
                                         edge_accel, tri_shell, caster_offset,
-                                        media, media_offset, pt_glass_energy)
+                                        media, media_offset, pt_glass_energy,
+                                        pt_vol_i, pt_vol_f, m_vseed)
+                                    ti.atomic_add(
+                                        pt_stats[PT_STAT_VOLUME_STEPS], m_vo)
                                     if m_over != 0:
                                         ti.atomic_add(
                                             pt_stats[PT_STAT_CAUSTIC_CHAIN], 1)
