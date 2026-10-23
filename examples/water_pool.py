@@ -6,9 +6,17 @@ computes them itself: every frame it refracts a dense grid of sun rays through
 the same wave surface, gathers where they land on the pool floor, and paints
 the result into the floor's texture.
 
-Usage:  python examples/water_pool.py STILL [quality] [spp] [time]
-        python examples/water_pool.py VIDEO [quality] [spp]
+Usage::
+
+    python examples/water_pool.py          # the 6 s looping video, 1080p at 80 spp
+    python examples/water_pool.py still    # one 1080p frame at 256 spp
+    python examples/water_pool.py draft    # a quick low-resolution, low-sample video
+
+The full video is path traced at 80 samples per pixel: about 45 minutes on a
+Tesla T4 GPU, and far longer on a CPU, so start with ``draft``.
 """
+
+from __future__ import annotations
 
 import math
 import sys
@@ -17,10 +25,9 @@ import torch
 
 from algan import *
 
-MODE = sys.argv[1] if len(sys.argv) > 1 else "STILL"
-QUALITY = globals()[sys.argv[2]] if len(sys.argv) > 2 else PREVIEW
-SPP = int(sys.argv[3]) if len(sys.argv) > 3 else 64
-AT = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
+MODE = sys.argv[1] if len(sys.argv) > 1 else "video"
+QUALITY, SPP = {"video": (HD, 80), "still": (HD, 256), "draft": (PREVIEW, 8)}[MODE]
+STILL_AT = 2.0  # seconds into the loop
 
 SETTINGS.raytracing.set(samples_per_pixel=SPP, max_bounces=8)
 
@@ -36,7 +43,7 @@ SUN = SUN / SUN.norm()
 FLOOR_TEXELS = (1024, 716)  # 40 x 28 tiles, ~25 texels each
 FLOOR_TILES = (40, 28)
 
-g = torch.Generator().manual_seed(7)
+RNG = torch.Generator().manual_seed(7)
 
 
 # -- Sky ----------------------------------------------------------------------
@@ -84,8 +91,8 @@ def tiles(cells, texels, tile, grout, line_width=0.08, variation=0.05):
     )
     u = torch.arange(texels[0]) * cells[0] // texels[0]
     v = torch.arange(texels[1]) * cells[1] // texels[1]
-    shade = 1 + variation * torch.randn(cells, generator=g)
-    grain = 1 + 0.025 * torch.randn(texels, generator=g)
+    shade = 1 + variation * torch.randn(cells, generator=RNG)
+    grain = 1 + 0.025 * torch.randn(texels, generator=RNG)
     texture[..., :3] *= (shade[u][:, v] * grain)[..., None]
     return texture.clamp(0, 1)
 
@@ -203,7 +210,7 @@ def sun_on_floor(seconds, rays=(2400, 1680), waves=True):
 
 
 _FLAT = sun_on_floor(0.0, waves=False)
-_LIT = _FLAT > 0.02 * _FLAT.max()
+_LIT = _FLAT.max() * 0.02 < _FLAT
 
 
 def floor_texture(seconds):
@@ -319,7 +326,7 @@ with Off():
         location=SUN * 30, target=ORIGIN, intensity=4.5, color=Color("#fff1dc")
     ).spawn()
 
-    start = AT if MODE == "STILL" else 0.0
+    start = STILL_AT if MODE == "still" else 0.0
     floor = rect(
         POOL_W, POOL_D, (0, -DEPTH, 0), (1, 0, 0), (0, 0, -1), floor_texture(start)
     )
@@ -409,14 +416,14 @@ with Off():
 
 with Sync():
     Homotopy(water, gerstner, runtime=LOOP, easing=easings.linear)
-    if MODE != "STILL":
+    if MODE != "still":
         # One caustic texture per frame; Algan blends between them.
         keys = round(LOOP * FPS)
         with Seq(runtime_per_part=LOOP / keys, easing=easings.linear):
             for i in range(1, keys + 1):
                 floor.color_texture = floor_texture(i * LOOP / keys)
 
-if MODE == "STILL":
-    Scene.save_frame(f"water_pool_{SPP}spp_{AT:.1f}.png", QUALITY, at=AT)
+if MODE == "still":
+    Scene.save_frame("water_pool.png", QUALITY, at=STILL_AT)
 else:
-    Scene.save_video(f"water_pool_{SPP}spp.mp4", QUALITY, overwrite=True)
+    Scene.save_video(f"water_pool_{MODE}.mp4", QUALITY, overwrite=True)
