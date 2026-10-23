@@ -272,10 +272,15 @@ Five further consequences of the split, not covered there:
     diffuse gives up the share the highlight reflects. Nothing is dropped;
     nothing matches the deterministic renderer pixel for pixel either.
   * :class:`~algan.rendering.shaders.materials.MeshStandardMaterial` and
-    :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial` use the
-    exact Smith term and multiple-scattering compensation here, where the
-    deterministic renderer uses Schlick-GGX, so a rough highlight differs by
-    a few percent.
+    :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial` light
+    with the same GGX lobe in both renderers, including three.js's
+    height-correlated Smith masking term, so a highlight or a back-lit rim
+    has the same shape in both. The difference is that the path tracer adds
+    multiple-scattering compensation: the light a rough surface reflects
+    after bouncing between its own microfacets, which the deterministic
+    renderer's direct lighting leaves out. A rough highlight is therefore
+    brighter here, by more the rougher and more metallic the material is. A
+    smooth one barely changes.
   * The ambient and hemisphere fill reaches **diffuse only**, as it does in
     the deterministic renderer. A constant irradiance arriving from every
     direction, through the diffuse lobe's ``albedo / pi``, is exactly what the

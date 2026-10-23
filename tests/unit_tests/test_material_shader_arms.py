@@ -23,8 +23,8 @@ So this file pins three things:
   meant to be two evaluations of one formula, and a term added to one only is
   a material that looks different depending on which route a scene takes;
 * the BRDF helpers against the formulas their docstrings name: GGX (Walter et
-  al. 2007 with three.js's ``alpha = roughness^2``), Smith Schlick-GGX with
-  Karis's direct-lighting ``k``, three.js's ``D_Charlie``, ``V_Neubelt`` and
+  al. 2007 with three.js's ``alpha = roughness^2``), the height-correlated
+  Smith term (three.js's ``V_GGX_SmithCorrelated``), three.js's ``D_Charlie``, ``V_Neubelt`` and
   ``IBLSheenBRDF`` transcribed from its shader source, the sheen layer's energy
   compensation, and ``_light_geometry``'s clamps.
 
@@ -422,26 +422,108 @@ def test_ggx_at_full_roughness_is_the_uniform_lobe():
     torch.testing.assert_close(got, torch.full_like(n_dot_h, 1.0 / math.pi))
 
 
-def test_smith_is_schlick_ggx_with_the_direct_lighting_k():
-    """Karis 2013: ``k = (roughness + 1)^2 / 8``, ``G = G1(N.V) * G1(N.L)``
-    with ``G1(x) = x / (x (1 - k) + k)``; 1 head-on, falling with roughness
-    and toward grazing.
+def _three_v_ggx_smith_correlated(roughness, n_dot_l, n_dot_v):
+    """three.js ``V_GGX_SmithCorrelated``, transcribed, on ``BRDF_GGX``'s
+    ``alpha = roughness^2`` -- the visibility term, ``G2 / (4 n.l n.v)``.
     """
-    nv = torch.tensor([1.0, 0.8, 0.5, 0.2, 0.05], dtype=torch.float64)
-    nl = torch.tensor([1.0, 0.3, 0.9, 0.6, 0.4], dtype=torch.float64)
-    for roughness in (0.0, 0.3, 0.7, 1.0):
-        k = (roughness + 1.0) ** 2 / 8.0
+    a2 = roughness**4
+    gv = n_dot_l * torch.sqrt(a2 + (1.0 - a2) * n_dot_v**2)
+    gl = n_dot_v * torch.sqrt(a2 + (1.0 - a2) * n_dot_l**2)
+    return 0.5 / (gv + gl)
 
-        def g1(x, k=k):
-            return x / (x * (1.0 - k) + k)
 
-        got = ms.smith_geometry(nv, nl, torch.tensor(roughness, dtype=torch.float64))
-        torch.testing.assert_close(got, g1(nv) * g1(nl), rtol=1e-12, atol=0.0)
-        assert float(got[0]) == pytest.approx(1.0)
-    rough = ms.smith_geometry(nv, nl, torch.tensor(1.0, dtype=torch.float64))
-    smooth = ms.smith_geometry(nv, nl, torch.tensor(0.2, dtype=torch.float64))
-    assert bool((rough[1:] < smooth[1:]).all())
-    assert bool((torch.diff(ms.smith_geometry(nv, nv, torch.tensor(0.5))) < 0).all())
+def _smith_lambda(cos_theta, roughness):
+    """Smith's ``Lambda`` for isotropic GGX, as the path tracer writes it."""
+    t2 = (1.0 - cos_theta**2) / cos_theta**2
+    return 0.5 * (torch.sqrt(1.0 + roughness**4 * t2) - 1.0)
+
+
+#: (view, light) angles from the normal in degrees: head-on, mid, grazing and
+#: mixed, so a term that is right only head-on (where every Smith form is 1)
+#: or only symmetric cannot pass.
+_SMITH_ANGLES = [
+    (0.0, 0.0),
+    (45.0, 45.0),
+    (60.0, 60.0),
+    (80.0, 80.0),
+    (85.0, 30.0),
+    (20.0, 75.0),
+    (70.0, 5.0),
+    (88.0, 88.0),
+]
+_SMITH_ROUGHNESS = [0.15, 0.3, 0.5, 0.8, 1.0]
+
+
+def _smith_grid():
+    """Every (n.v, n.l, roughness) of the angle and roughness lists above, f64."""
+    rows = [
+        (math.cos(math.radians(v)), math.cos(math.radians(lt)), r)
+        for v, lt in _SMITH_ANGLES
+        for r in _SMITH_ROUGHNESS
+    ]
+    nv, nl, rough = torch.tensor(rows, dtype=torch.float64).unbind(-1)
+    return nv, nl, rough
+
+
+def test_smith_is_three_js_height_correlated_visibility():
+    """``smith_geometry`` over ``4 n.v n.l`` is three.js's ``V_GGX_SmithCorrelated``.
+
+    It used to be UE4's Schlick-GGX with ``k = (r + 1)^2 / 8``: right head-on,
+    but at roughness 0.3 with view and light both at 80 degrees it gave
+    ``G = 0.249`` where the exact height-correlated term is 0.891, so back-lit
+    rims rendered 3.6x dimmer than in three.js and the path tracer. The same
+    term is the path tracer's ``1 / (1 + Lambda_v + Lambda_l)``.
+    """
+    nv, nl, rough = _smith_grid()
+    got = ms.smith_geometry(nv, nl, rough)
+    v = _three_v_ggx_smith_correlated(rough, nl, nv)
+    torch.testing.assert_close(got, 4.0 * nv * nl * v, rtol=1e-12, atol=0.0)
+    exact = 1.0 / (1.0 + _smith_lambda(nv, rough) + _smith_lambda(nl, rough))
+    torch.testing.assert_close(got, exact, rtol=1e-9, atol=0.0)
+
+    c80 = torch.tensor(math.cos(math.radians(80.0)), dtype=torch.float64)
+    g = ms.smith_geometry(c80, c80, torch.tensor(0.3, dtype=torch.float64))
+    assert float(g) == pytest.approx(0.891, abs=5e-4)
+    # 1 head-on, falling with roughness and toward grazing.
+    one = torch.tensor(1.0, dtype=torch.float64)
+    assert float(ms.smith_geometry(one, one, torch.tensor(0.7))) == pytest.approx(1.0)
+    rough_g = ms.smith_geometry(nv, nl, torch.ones_like(nv))
+    smooth_g = ms.smith_geometry(nv, nl, torch.full_like(nv, 0.2))
+    assert bool((rough_g[nv < 1.0] < smooth_g[nv < 1.0]).all())
+    sweep = torch.linspace(1.0, 0.05, 12, dtype=torch.float64)
+    assert bool(
+        (torch.diff(ms.smith_geometry(sweep, sweep, torch.tensor(0.5))) < 0).all()
+    )
+
+
+@ti.kernel
+def _smith_probe(
+    nv: ti.types.ndarray(),
+    nl: ti.types.ndarray(),
+    rough: ti.types.ndarray(),
+    out: ti.types.ndarray(),
+):
+    for i in range(nv.shape[0]):
+        out[i] = st._smith_geometry(nv[i], nl[i], rough[i])
+
+
+def test_the_kernels_smith_term_is_three_js_height_correlated_visibility():
+    """The deterministic renderer's in-kernel ``_smith_geometry`` -- the term
+    every GGX stage and the direct specular lobe divide by ``4 n.v n.l`` -- is
+    ``V_GGX_SmithCorrelated`` too, at grazing and mid angles as well as head-on,
+    and it is its torch twin's number.
+    """
+    init_taichi()
+    nv, nl, rough = _smith_grid()
+    out = torch.zeros(nv.shape[0], dtype=torch.float32)
+    _smith_probe(nv.float(), nl.float(), rough.float(), out)
+    v = _three_v_ggx_smith_correlated(rough, nl, nv)
+    # Room for a GPU kernel's fast-math sqrt; the Schlick remap this replaced
+    # is off by a factor of up to 3.6 on this grid.
+    torch.testing.assert_close(out.double(), 4.0 * nv * nl * v, rtol=1e-4, atol=1e-6)
+    torch.testing.assert_close(
+        out.double(), ms.smith_geometry(nv, nl, rough), rtol=1e-4, atol=1e-6
+    )
 
 
 def _three_d_charlie(roughness, n_dot_h):
