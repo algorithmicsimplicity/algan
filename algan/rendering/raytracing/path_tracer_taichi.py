@@ -544,7 +544,10 @@ _NM_AUTHORED_COUNT = 19  # ... out of this many entries in the authored table
 _NM_BLUE_NOISE = 20
 _NM_MEDIA = 21  # second-half offset in tri_shell, 0 = no volume transport
 # Offset of the caustic-caster section in tri_shell (``_pt_caster_id``), 0 =
-# no caster; read only by a kernel compiled with ``caustics`` on.
+# no caster; read only by a kernel compiled with ``caustics`` on. Negative
+# when only medium vertices receive through it: ``pt_caustics`` is off and
+# the section is there to carry delta lights into a subsurface interior
+# (``pt_caustics._prepare_casters``).
 _NM_CAUSTIC = 22
 
 # Blue-noise screen-space error distribution (roadmap section 7; Heitz et al.
@@ -2952,12 +2955,18 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              tree_on, tree_mix, num_inf, quad_base,
              blue_noise) = _pt_meta_hit(nee_meta)
             # Caustic state (``caustics``): the caster section's offset in
-            # tri_shell and the path's caustic count (``_PT_CAU_COUNT``).
-            # Declared either way; nothing reads them in a kernel without.
+            # tri_shell, whether only medium vertices receive through it
+            # (``_NM_CAUSTIC``'s sign), and the path's caustic count
+            # (``_PT_CAU_COUNT``). Declared either way; nothing reads them in
+            # a kernel without.
             caster_offset = 0
+            cau_media_only = 0
             cst = 0
             if ti.static(caustics != 0):
-                caster_offset = ti.cast(nee_meta[_NM_CAUSTIC] + 0.5, ti.i32)
+                cau_word = nee_meta[_NM_CAUSTIC]
+                caster_offset = ti.cast(ti.abs(cau_word) + 0.5, ti.i32)
+                if cau_word < 0.0:
+                    cau_media_only = 1
                 cst = ti.cast(pt_cau[r, _PT_CAU_COUNT] + 0.5, ti.i32)
             g = ray_offset + rs_pix[r]
             f_rel = g // pixels_per_frame
@@ -3625,10 +3634,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # coverage test (an emitter crossing that is a receiver
                     # itself): its record still describes that path's
                     # receiver, so this vertex lights as with caustics off.
+                    # With ``pt_caustics`` off the section is there for the
+                    # subsurface case alone (``cau_media_only``), and a
+                    # surface keeps its straight shadow.
                     if ti.static((caustics != 0) and (shadows != 0)):
                         if (caster_offset > 0) and (num_nee > 0) \
                                 and (recv == 1) and (not glass) \
                                 and (not null_boundary) \
+                                and (medium_vertex or (cau_media_only == 0)) \
                                 and (pt_cau[r, _PT_CAU_KIND] < 0.5):
                             mnee_vertex = 1
                             if (scattered == 0) and (

@@ -850,7 +850,9 @@ Limits and approximations
   area light or the environment map focuses without the firefly clamp
   capping the focus. A glass object's shadow is then the light it bends away,
   and the medium inside a subsurface solid is lit through its boundary by
-  every kind of light. The deterministic renderer has no equivalent. Where it
+  every kind of light -- the one part of this that is also on without
+  ``pt_caustics`` (`Homogeneous volumes and subsurface scattering`_). The
+  deterministic renderer has no equivalent. Where it
   stops:
 
   - **Smooth refraction, at most two interfaces per connection**: into and
@@ -1442,12 +1444,19 @@ Important limits:
   out of a scattering interior: the bent path into a subsurface object must be
   sampled by the actual Fresnel/BSDF walk, not approximated with an unbent
   transparent shadow ray, which would double-count energy inside it. Point,
-  spot and directional lights, which no sampled ray can hit, therefore never
-  reach a subsurface object's interior -- unless shadow caustics are on
-  (``pt_caustics``; see `Limits and approximations`_), which connect them to
-  the medium's scatter points along the path bent at the boundary; area
-  lights, emissive meshes and the environment map do either way, through
-  sampled refraction. Glass that does not scatter
+  spot and directional lights, which no sampled ray can hit, reach a
+  subsurface object's interior along the path bent at its boundary instead:
+  each scatter point's light sample is connected through the boundary the way
+  shadow caustics connect a surface through glass (`Limits and
+  approximations`_). This is on by default, with ``pt_caustics`` off too,
+  and then applies to scatter points only, so no other surface gains a
+  caustic. It needs a smooth boundary (``roughness`` at most 0.01): inside a
+  rough one these lights still do not arrive, and the scatter point is lit
+  only by area lights, emissive meshes and the environment map, which arrive
+  through sampled refraction either way. Turn it off with
+  ``SETTINGS.raytracing.experimental.set(pt_subsurface_delta_lights=False)``
+  to render such an interior as before, unlit by delta lights, and skip the
+  extra kernel variant it compiles. Glass that does not scatter
   -- clear, or tinted with ``attenuation_color`` -- is unaffected: it casts
   the same straight, tinted shadow it does in a scene without any medium, and
   honours ``shadows`` and ``casts_shadows`` the same way. Glass sitting

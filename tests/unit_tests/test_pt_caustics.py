@@ -954,22 +954,62 @@ def test_the_caster_section_follows_the_shell_columns(caster_merge):
     memory, merged = caster_merge
     merged["tri_extra"][0, 1, 9:12] = 0.0
     placeholder = torch.full((1, 1), -1, dtype=torch.int32)
-    shells, offset = _prepare_casters(memory, merged, placeholder)
-    assert offset == 5
+    shells, offset, media_only = _prepare_casters(memory, merged, placeholder)
+    assert (offset, media_only) == (5, False)
     assert shells.tolist() == [[-1] * 5 + [10, -1, 12, 13, 14]]
     # Behind the media section (two N-wide sections already): appended after.
     media = torch.arange(10, dtype=torch.int32).view(1, 10)
-    shells, offset = _prepare_casters(memory, merged, media)
-    assert offset == 10
+    shells, offset, media_only = _prepare_casters(memory, merged, media, 5)
+    assert (offset, media_only) == (10, False)
     assert shells[:, :10].tolist() == media.tolist()
     assert shells[0, 10:].tolist() == [10, -1, 12, 13, 14]
-    # Off, or nothing that refracts: the table is untouched and the kernel
-    # compiles without caustics.
+    # Off, with no scattering medium or with subsurface delta lights off, or
+    # nothing that refracts: the table is untouched and the kernel compiles
+    # without caustics.
     rt_settings.pt_caustics = False
-    assert _prepare_casters(memory, merged, media) == (media, 0)
+    assert _prepare_casters(memory, merged, media) == (media, 0, False)
+    rt_settings.pt_subsurface_delta_lights = False
+    assert _prepare_casters(memory, merged, media, 5) == (media, 0, False)
+    rt_settings.pt_subsurface_delta_lights = True
     rt_settings.pt_caustics = True
     merged["tri_extra"][..., 9:12] = 0.0
-    assert _prepare_casters(memory, merged, media) == (media, 0)
+    assert _prepare_casters(memory, merged, media) == (media, 0, False)
+
+
+def test_without_caustics_the_section_holds_only_subsurface_boundaries(
+    caster_merge, monkeypatch
+):
+    """With ``pt_caustics`` off a batch with a scattering medium still gets a
+    caster section, so delta lights reach the medium's scatter points through
+    its boundary (``pt_subsurface_delta_lights``). It names only the smooth
+    boundaries of scattering interiors, and says it is for media only.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.rendering.raytracing.pt_caustics import _prepare_casters
+    from algan.rendering.raytracing.shading_taichi import (
+        _MAT_MEDIUM_CLOSED,
+        _MAT_SIGMA_S,
+    )
+
+    memory, merged = caster_merge
+    monkeypatch.setattr(rt_settings, "pt_caustics", False)
+    monkeypatch.setattr(rt_settings, "pt_subsurface_delta_lights", True)
+    mat = merged["tri_mat"]
+    mat[0, :, _MAT_MEDIUM_CLOSED] = 1.0
+    mat[0, 0:2, _MAT_SIGMA_S] = 4.0  # 0 and 1 bound a scattering interior
+    mat[0, 3, _MAT_SIGMA_S + 2] = 0.5  # so does 3, scattering blue only
+    merged["tri_extra"][0, 1, 1:6:2] = 0.3  # 1 is rough: no caster
+    media = torch.arange(10, dtype=torch.int32).view(1, 10)
+    shells, offset, media_only = _prepare_casters(memory, merged, media, 5)
+    assert (offset, media_only) == (10, True)
+    # 2 and 4 are clear glass: no caster without caustics.
+    assert shells[0, 10:].tolist() == [10, -1, -1, 13, -1]
+    # No media section: nothing to light, nothing built.
+    opacity = media[:, :5]
+    assert _prepare_casters(memory, merged, opacity, 0) == (opacity, 0, False)
+    # A medium whose boundary is open is not closed: not a subsurface solid.
+    mat[0, :, _MAT_MEDIUM_CLOSED] = 0.0
+    assert _prepare_casters(memory, merged, media, 5) == (media, 0, False)
 
 
 def test_the_caster_section_broadcasts_collapsed_time_rows(caster_merge):
@@ -978,7 +1018,7 @@ def test_the_caster_section_broadcasts_collapsed_time_rows(caster_merge):
 
     merged["tri_extra"] = merged["tri_extra"].repeat(3, 1, 1)
     merged["tri_extra"][1, 0, 9:12] = 0.0
-    shells, offset = _prepare_casters(
+    shells, offset, _media_only = _prepare_casters(
         memory, merged, torch.full((1, 1), -1, dtype=torch.int32)
     )
     assert shells.shape == (3, 10)
