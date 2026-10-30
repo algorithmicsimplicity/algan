@@ -1,263 +1,8 @@
 {
  "entries": {
-  "112bdc560d6c7c5ad597058e5e0ae8f6": {
-   "requires": {},
-   "seconds": 26.39,
-   "spec": {
-    "args": [
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "tuple",
-       []
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       -1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       4
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "T",
-      [
-       "int",
-       3
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "bool",
-       false
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "A",
-      "float32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ]
-    ],
-    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
-   },
-   "variants": [
-    "glass"
-   ]
-  },
   "14c813e4eab2ac37cf99e8c9a4cdfa9f": {
    "requires": {},
-   "seconds": 6.59,
+   "seconds": 5.98,
    "spec": {
     "args": [
      [
@@ -572,9 +317,257 @@
     "3d"
    ]
   },
+  "168d8ca45ca69b1bea743b9724128574": {
+   "requires": {},
+   "seconds": 11.2,
+   "spec": {
+    "args": [
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "tuple",
+       []
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       -1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       3
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
+   },
+   "variants": [
+    "glass"
+   ]
+  },
   "16ffc9d9c17ef9c2caa008cc0cadc7b6": {
    "requires": {},
-   "seconds": 0.32,
+   "seconds": 0.34,
    "spec": {
     "args": [
      [
@@ -684,11 +677,260 @@
     "glass"
    ]
   },
+  "1791a0c4d3814ea889c22a703bce6a5c": {
+   "requires": {},
+   "seconds": 10.45,
+   "spec": {
+    "args": [
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "tuple",
+       []
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       -1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       3
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
+   },
+   "variants": [
+    "3d",
+    "3d-default-light"
+   ]
+  },
   "22a225e76cd445b7a9136100fbaa0eb8": {
    "requires": {
     "shadows": true
    },
-   "seconds": 6.12,
+   "seconds": 6.11,
    "spec": {
     "args": [
      [
@@ -1003,9 +1245,259 @@
     "shadows"
    ]
   },
+  "252a2fe52ee06c08210917fdb1269d35": {
+   "requires": {
+    "shadows": true
+   },
+   "seconds": 4.35,
+   "spec": {
+    "args": [
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "tuple",
+       []
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       2
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       3
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
+   },
+   "variants": [
+    "shadows"
+   ]
+  },
   "2a5476330b7d5d11a61d29925d9d94e9": {
    "requires": {},
-   "seconds": 0.56,
+   "seconds": 0.45,
    "spec": {
     "args": [
      [
@@ -1438,7 +1930,7 @@
   },
   "3d4b29ed8eea0e128c56cb27076a6dab": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -1560,266 +2052,9 @@
     "glass"
    ]
   },
-  "4878a096d13d018940fed02f7d6df83f": {
-   "requires": {
-    "shadows": true
-   },
-   "seconds": 27.84,
-   "spec": {
-    "args": [
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "T",
-      [
-       "int",
-       4
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "tuple",
-       []
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       -1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       4
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "T",
-      [
-       "int",
-       3
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       2
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "bool",
-       false
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "A",
-      "float32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ]
-    ],
-    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
-   },
-   "variants": [
-    "shadows"
-   ]
-  },
   "48a46811026513dd762b150e531cacf7": {
    "requires": {},
-   "seconds": 0.03,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -1848,11 +2083,9 @@
     "glass"
    ]
   },
-  "495d3dd8e412a963eef1e846834f0a88": {
-   "requires": {
-    "shadows": true
-   },
-   "seconds": 5.75,
+  "4f75d9701f406a858af36663f61ee7c4": {
+   "requires": {},
+   "seconds": 6.18,
    "spec": {
     "args": [
      [
@@ -1899,46 +2132,7 @@
       "T",
       [
        "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       4
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "T",
-      [
-       "int",
-       3
+       0
       ]
      ],
      [
@@ -1970,10 +2164,42 @@
       ]
      ],
      [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
       "T",
       [
        "int",
        1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
       ]
      ],
      [
@@ -2102,12 +2328,12 @@
     "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
    },
    "variants": [
-    "shadows"
+    "2d"
    ]
   },
   "54df2e94dedcd5928295107e79428c33": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -2187,7 +2413,7 @@
   },
   "5776584a8995bf56e8b4152ba0f015df": {
    "requires": {},
-   "seconds": 1.82,
+   "seconds": 1.63,
    "spec": {
     "args": [
      [
@@ -2386,7 +2612,7 @@
   },
   "65263531ef3e007c706431aead1e8619": {
    "requires": {},
-   "seconds": 0.68,
+   "seconds": 0.74,
    "spec": {
     "args": [
      [
@@ -2555,7 +2781,7 @@
   },
   "69c444d4aa1df8ec59bf0fe1cee77594": {
    "requires": {},
-   "seconds": 0.94,
+   "seconds": 0.98,
    "spec": {
     "args": [
      [
@@ -2754,7 +2980,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 3.57,
+   "seconds": 3.11,
    "spec": {
     "args": [
      [
@@ -2962,7 +3188,7 @@
   },
   "72fbc6c9b759589228778270a2f925ff": {
    "requires": {},
-   "seconds": 0.38,
+   "seconds": 0.33,
    "spec": {
     "args": [
      [
@@ -3120,7 +3346,7 @@
   },
   "7446e372699ab4f0493a4aee80544567": {
    "requires": {},
-   "seconds": 2.43,
+   "seconds": 1.8,
    "spec": {
     "args": [
      [
@@ -3282,7 +3508,7 @@
   },
   "7ddfd827b075660c8ccaed3ca3bf779d": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.06,
    "spec": {
     "args": [
      [
@@ -3326,7 +3552,7 @@
   },
   "7e5667092e02b311d7c89bc721b5814c": {
    "requires": {},
-   "seconds": 0.03,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -3382,7 +3608,7 @@
   },
   "809fa45a1572b41cf1390260919aa936": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -3485,7 +3711,7 @@
   },
   "8622a1b18bff0cff7b09f39ef442299e": {
    "requires": {},
-   "seconds": 1.43,
+   "seconds": 1.24,
    "spec": {
     "args": [
      [
@@ -3701,7 +3927,7 @@
   },
   "9145fb1b3375f853f9da4b08cf7b46a9": {
    "requires": {},
-   "seconds": 2.0,
+   "seconds": 1.92,
    "spec": {
     "args": [
      [
@@ -3885,264 +4111,9 @@
     "glass"
    ]
   },
-  "921dad19bc9ee03f3e438b51cd01668a": {
-   "requires": {},
-   "seconds": 10.73,
-   "spec": {
-    "args": [
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "tuple",
-       []
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       -1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "bool",
-       false
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "A",
-      "float32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ]
-    ],
-    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
-   },
-   "variants": [
-    "2d"
-   ]
-  },
   "99662f0b46624b6662612e07c7321bd7": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.08,
    "spec": {
     "args": [
      [
@@ -4199,7 +4170,7 @@
   },
   "9abff45188bd2eeb4e7cae8edb81a5a5": {
    "requires": {},
-   "seconds": 0.03,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -4296,7 +4267,7 @@
   },
   "9c6a8ec057ab597e7e4603d70dc522e2": {
    "requires": {},
-   "seconds": 0.22,
+   "seconds": 0.19,
    "spec": {
     "args": [
      [
@@ -4396,7 +4367,7 @@
   },
   "9fd18930082054fab591e6f9f8c3d301": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -4455,7 +4426,7 @@
   },
   "a331718025810f8ac181f885dc003b91": {
    "requires": {},
-   "seconds": 0.11,
+   "seconds": 0.08,
    "spec": {
     "args": [
      [
@@ -4578,7 +4549,7 @@
   },
   "a910f1b2aa99c5729a0299c790c88374": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.09,
    "spec": {
     "args": [
      [
@@ -4635,7 +4606,7 @@
   },
   "af94aad78a2d3b676ce719517c064538": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.08,
    "spec": {
     "args": [
      [
@@ -4728,7 +4699,7 @@
   },
   "b4bc30aa5a1a77875aa05cdd32655a77": {
    "requires": {},
-   "seconds": 0.05,
+   "seconds": 0.06,
    "spec": {
     "args": [
      [
@@ -4821,7 +4792,7 @@
   },
   "b5c5e0b51f55bac2489a0c47e8b9713a": {
    "requires": {},
-   "seconds": 0.09,
+   "seconds": 0.11,
    "spec": {
     "args": [
      [
@@ -5164,6 +5135,256 @@
     "glass"
    ]
   },
+  "c264d82c31c139da567f396b3f7fbdb6": {
+   "requires": {
+    "shadows": true
+   },
+   "seconds": 10.66,
+   "spec": {
+    "args": [
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "tuple",
+       []
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       -1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       4
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "T",
+      [
+       "int",
+       3
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       2
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "T",
+      [
+       "int",
+       1
+      ]
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "int",
+       0
+      ]
+     ],
+     [
+      "A",
+      "float32",
+      2,
+      []
+     ],
+     [
+      "T",
+      [
+       "bool",
+       false
+      ]
+     ],
+     [
+      "S",
+      "float"
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
+   },
+   "variants": [
+    "shadows"
+   ]
+  },
   "c4648153df9190f14f4e38cd235f9428": {
    "requires": {},
    "seconds": 0.04,
@@ -5225,7 +5446,7 @@
   },
   "c73defcc9e8a5c00ab2fa6b94776260b": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.05,
    "spec": {
     "args": [
      [
@@ -5382,7 +5603,7 @@
   },
   "cebb87ce6b3da4ec09930887ed75d168": {
    "requires": {},
-   "seconds": 0.25,
+   "seconds": 0.44,
    "spec": {
     "args": [
      [
@@ -5511,7 +5732,7 @@
   },
   "d234d7577202e0e7254398b87f118e08": {
    "requires": {},
-   "seconds": 0.1,
+   "seconds": 0.11,
    "spec": {
     "args": [
      [
@@ -5575,7 +5796,7 @@
   },
   "e0c3f33d4fa0eb6d8b6a38fd0476326b": {
    "requires": {},
-   "seconds": 6.22,
+   "seconds": 6.46,
    "spec": {
     "args": [
      [
@@ -5927,265 +6148,9 @@
     "glass"
    ]
   },
-  "e69c1363fd20567f19790e4fe879cdbb": {
-   "requires": {},
-   "seconds": 29.87,
-   "spec": {
-    "args": [
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "tuple",
-       []
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       -1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       4
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "T",
-      [
-       "int",
-       3
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "T",
-      [
-       "int",
-       1
-      ]
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      2,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "int",
-       0
-      ]
-     ],
-     [
-      "A",
-      "float32",
-      2,
-      []
-     ],
-     [
-      "T",
-      [
-       "bool",
-       false
-      ]
-     ],
-     [
-      "S",
-      "float"
-     ],
-     [
-      "A",
-      "float32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int32",
-      1,
-      []
-     ]
-    ],
-    "kernel": "algan.rendering.raytracing.sheet_resolve_taichi:sheet_resolve_shade_arena"
-   },
-   "variants": [
-    "3d",
-    "3d-default-light"
-   ]
-  },
   "ead195edee0b6d723d54112f48ca31e1": {
    "requires": {},
-   "seconds": 6.17,
+   "seconds": 5.79,
    "spec": {
     "args": [
      [
@@ -6582,7 +6547,7 @@
   },
   "f850c38dc3b91d40a6a6b4ea6fb00208": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -6666,7 +6631,7 @@
   },
   "f8b0941f5382429798f443dd78c63c5c": {
    "requires": {},
-   "seconds": 0.04,
+   "seconds": 0.06,
    "spec": {
     "args": [
      [
@@ -6715,7 +6680,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 1.86,
+   "seconds": 1.6,
    "spec": {
     "args": [
      [

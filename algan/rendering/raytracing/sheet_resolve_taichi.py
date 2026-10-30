@@ -126,8 +126,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _reset_shell_segment,
     _sample_env_map,
     _tri_color_g,
-    _tri_extra_g,
-    _tri_ior_transmission_g,
+    _tri_material_g,
     _tri_normal_g,
 )
 from algan.taichi_compat import ti
@@ -236,7 +235,6 @@ def sheet_resolve_shade_arena(
         has_bez: ti.template(),
         sec_aa: ti.template(), sec_min_energy: ti.f32,
         glossy: ti.template(),
-        env_in_composite: ti.template(),
         # Deliver the direct lights' share of the reflected specular lobe,
         # which the continuation this hit spawns cannot (rt_settings.
         # direct_specular_lobe). 0 restores the previous weighting exactly.
@@ -379,25 +377,22 @@ def sheet_resolve_shade_arena(
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[41], (ashp[83], ashp[84])))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
-    env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
-    env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
-    env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
-    env_intensity = layer_offsets[4]
     far_clip = layer_offsets[5]
     max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
-    # Taps the five continuation fans below unroll (``for s in
+    # Taps the continuation fan site below unrolls (``for s in
     # ti.static(range(fan_taps))``). Each tap inlines a jittered surface
     # sample, a normal fetch and a pool spawn, so at ``sec_aa`` 4 the fans are
-    # most of this kernel's compile time. The event pass (mode 1) compiles
-    # their bodies out: all a body produces is the pool spawns, which mode 1
+    # the largest part of this kernel's compile time. The event pass (mode 1)
+    # compiles the site out: all it produces is the pool spawns, which mode 1
     # never makes, and the re-aimed ``ro``/``rd``, which nothing reads after
-    # the ``break`` that follows. What surrounds the bodies -- the fan
-    # conditions, the ``weight`` scale by ``1 / sec_n``, ``bounces_left``,
+    # the ``break`` that follows. What the branches do to ask for a fan -- the
+    # fan conditions, the ``weight`` scale by ``1 / sec_n``, ``bounces_left``,
     # ``bounced`` -- stays, so mode 1 walks the same transport as mode 2.
-    # ``sec_aa`` stays specialised in mode 1 all the same: the ``event_dp``
-    # footprint below reads it, and so does raster_shadow_trace. (The host
-    # passes ``sec_aa`` 1 to the shading launches of a batch with nothing a
-    # fan could reflect or refract through; raster_pipeline.)
+    # Past that, mode 1's output depends on ``sec_aa`` only through
+    # ``sec_aa > 1`` (the ``event_dp`` footprint below), so the host passes it
+    # 2 for any count above 1, and passes ``sec_aa`` 1 to the shading launches
+    # of a batch with nothing a fan could reflect or refract through
+    # (raster_pipeline's ``event_args`` and ``shade_taps``).
     fan_taps = ti.static(sec_aa if mode != 1 else 0)
     # Quadrants patch 0005's per-kernel register cap, off unless
     # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
@@ -797,11 +792,16 @@ def sheet_resolve_shade_arena(
                     alpha = sheet_memo[idx, 4]
                     reflectivity = sheet_memo[idx, 5]
                     rough = sheet_memo[idx, 6]
+                    ior = sheet_memo[idx, 7]
+                    T = sheet_memo[idx, 8]
                 else:
                     color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
                                                 col_row, tri_uvs, tri_tex_meta,
                                                 textures, num_colored_triangles, tex_du, tex_dv)
-                    reflectivity, rough = _tri_extra_g(
+                    # All four in one call: a promoted constant material
+                    # drives every property from its map, and separate
+                    # reflectivity and IOR calls sampled the same texel twice.
+                    reflectivity, rough, ior, T = _tri_material_g(
                         0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
@@ -836,13 +836,6 @@ def sheet_resolve_shade_arena(
                                            num_lights, color,
                                            ti.static(1 if mode == 2 else 0),
                                            lvis, cam_origin, cam_proj)
-                if ti.static(memo != 0 and mode == 2):
-                    ior = sheet_memo[idx, 7]
-                    T = sheet_memo[idx, 8]
-                else:
-                    ior, T = _tri_ior_transmission_g(
-                        0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                 # MEMO WRITE (mode 1). ``color`` is still the FETCHED color
                 # here: _shade_tri_hit is inside the ``mode != 1`` branch
                 # above, so the event walk never overwrites it. Written for
@@ -1115,6 +1108,23 @@ def sheet_resolve_shade_arena(
             if ti.static(sec_aa > 1):
                 sec_pm, sec_n = _sec_positions(msk_low, sec_aa)
 
+            # The continuation fans the branches below ask for, which the one
+            # fan site after them traces: at most the glass's refraction
+            # (``fan_refract``, at ``fan_w0`` per tap across the face
+            # ``fan_face_n``) and one reflection (``fan_reflect``, at
+            # ``fan_w1`` per tap off ``fan_n1``), whose first tap re-aims the
+            # primary when ``fan_to_primary``. A branch whose primary becomes
+            # the reflection sets ``bounce_break``, and the walk breaks once
+            # the fans are out.
+            fan_refract = False
+            fan_reflect = False
+            fan_to_primary = False
+            fan_w0 = ti.math.vec3(0.0, 0.0, 0.0)
+            fan_w1 = ti.math.vec3(0.0, 0.0, 0.0)
+            fan_n1 = ti.math.vec3(0.0, 0.0, 0.0)
+            fan_face_n = ti.math.vec3(0.0, 0.0, 0.0)
+            bounce_break = False
+
             if is_glass:
                 wt = weight * trans_energy * tint
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
@@ -1133,48 +1143,14 @@ def sheet_resolve_shade_arena(
                     face_normal = (v1 - v0).cross(v2 - v0)
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
-                        wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
-                        for s in ti.static(range(fan_taps)):
-                            if (sec_pm >> s) & 1:
-                                rdj, hpj, nj, _b1, _b2 = \
-                                    _jittered_surface_sample(
-                                        f, px, py,
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                        gen_meta, fetched_bez, prim, hp, normal,
-                                        tri_pos, tri_norm, tri_uvs,
-                                        tri_tex_meta, textures,
-                                        num_colored_triangles,
-                                        cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y, cam_proj)
-                                nj = _transmission_normal(rdj, nj, face_normal)
-                                rel_j = _relative_ior(rs_sca, r, ior,
-                                                     rdj.dot(face_normal) < 0.0,
-                                                     ior_stack)
-                                rdt = _refract_ray(rdj, nj, rel_j)
-                                if ti.static(mode != 1):
-                                    # Refraction off a primary: push or pop the
-                                    # hit medium, the side read from the
-                                    # GEOMETRIC face normal (see
-                                    # _relative_ior). Not assumed to be an
-                                    # entry: a partially covering glass
-                                    # fragment lets the primary walk on to the
-                                    # solid's back face, where an
-                                    # unconditional push would record a medium
-                                    # the ray is leaving.
-                                    _spawn_pool_ray(
-                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc,
-                                        _offset_transmitted_origin(
-                                            hpj, rdt, face_normal, nj),
-                                        rdt, wsub, base_dist + t_hit,
-                                        bounces_left - 1, processed, pixel, r, r, 1,
-                                        ior_stack, 1, ior, rdj.dot(face_normal) < 0.0)
+                        fan_refract = True
+                        fan_w0 = wt * (1.0 / ti.cast(sec_n, ti.f32))
+                        fan_face_n = face_normal
                     else:
                         rdt = _refract_ray(surf_rd, interface_n, rel)
                         if ti.static(mode != 1):
                             # Refraction off a primary: push or pop the hit
-                            # medium (see the jittered spawn above).
+                            # medium (see the fan site's refraction below).
                             _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
@@ -1198,57 +1174,15 @@ def sheet_resolve_shade_arena(
                     if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                             and (sec_n > 1):
                         weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
-                        placed = False
-                        jtap = 0
-                        for s in ti.static(range(fan_taps)):
-                            if (sec_pm >> s) & 1:
-                                rdj, hpj, nj, _b1, _b2 = \
-                                    _jittered_surface_sample(
-                                        f, px, py,
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                        gen_meta, fetched_bez, prim, hit_point,
-                                        nref, tri_pos, tri_norm, tri_uvs,
-                                        tri_tex_meta, textures,
-                                        num_colored_triangles,
-                                        cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y, cam_proj)
-                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                                if ti.static(glossy == 1 or glossy == 2):
-                                    if rough > _GLOSSY_MIN_ROUGHNESS:
-                                        rdr = _glossy_reflect(
-                                            rdj, nj, rough, jtap, sec_n,
-                                            g_roff, g_aoff)
-                                jtap += 1
-                                org = _offset_ray_origin(hpj, nj)
-                                if placed:
-                                    if ti.static(mode != 1):
-                                        _spawn_pool_ray(
-                                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                            rs_pix, rs_alloc, org, rdr, weight,
-                                            base_dist + t_hit, bounces_left - 1,
-                                            processed, pixel, r, r, 1,
-                                            ior_stack, 0, 0.0, 0)
-                                else:
-                                    rd = rdr
-                                    ro = org
-                                    placed = True
+                        fan_reflect = True
+                        fan_to_primary = True
+                        fan_w1 = weight
+                        fan_n1 = nref
                     else:
                         rd = refl_rd
                         ro = _offset_ray_origin(hit_point, nref)
                         weight *= refl_energy
-                    base_dist += t_hit
-                    bounces_left -= 1
-                    bounced = True
-                    if ti.static(dump):
-                        if dmatch:
-                            _aa_dump_frag(dump_out, q - 1,
-                                          d_kind, 2,
-                                          prim_raw, 0, 0, msk, cov,
-                                          _popcount_samples(msk), cfac, eff,
-                                          mat_alpha, alpha, trans_share,
-                                          refl_max, t_hit, svis)
-                    break
+                    bounce_break = True
                 else:
                     rwt = weight * refl_energy
                     rwt_max = ti.max(rwt[0], ti.max(rwt[1], rwt[2]))
@@ -1258,39 +1192,9 @@ def sheet_resolve_shade_arena(
                         rhp = surf_pos
                         if ti.static(sec_aa > 1) \
                                 and (rwt_max > sec_min_energy) and (sec_n > 1):
-                            rwsub = rwt * (1.0 / ti.cast(sec_n, ti.f32))
-                            jtap = 0
-                            for s in ti.static(range(fan_taps)):
-                                if (sec_pm >> s) & 1:
-                                    rdj, hpj, nj, _b1, _b2 = \
-                                        _jittered_surface_sample(
-                                            f, px, py,
-                                            ti.static(
-                                                _AA_SEC_JITTER[sec_aa][s][0]),
-                                            ti.static(
-                                                _AA_SEC_JITTER[sec_aa][s][1]),
-                                            gen_meta, fetched_bez, prim, rhp,
-                                            nref, tri_pos, tri_norm, tri_uvs,
-                                            tri_tex_meta, textures,
-                                            num_colored_triangles,
-                                            cam_origin, screen_point,
-                                            pixel_basis_x, pixel_basis_y, cam_proj)
-                                    rdr, nj = _reflect_frame(rdj, nj,
-                                                             geo_normal)
-                                    if ti.static(glossy == 1 or glossy == 2):
-                                        if rough > _GLOSSY_MIN_ROUGHNESS:
-                                            rdr = _glossy_reflect(
-                                                rdj, nj, rough, jtap, sec_n,
-                                                g_roff, g_aoff)
-                                    jtap += 1
-                                    if ti.static(mode != 1):
-                                        _spawn_pool_ray(
-                                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                            rs_pix, rs_alloc,
-                                            _offset_ray_origin(hpj, nj),
-                                            rdr, rwsub, base_dist + t_hit,
-                                            bounces_left - 1, processed, pixel, r, r,
-                                            1, ior_stack, 0, 0.0, 0)
+                            fan_reflect = True
+                            fan_w1 = rwt * (1.0 / ti.cast(sec_n, ti.f32))
+                            fan_n1 = nref
                         else:
                             if ti.static(mode != 1):
                                 _spawn_pool_ray(
@@ -1390,37 +1294,9 @@ def sheet_resolve_shade_arena(
                     hp = surf_pos
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
-                        wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
-                        jtap = 0
-                        for s in ti.static(range(fan_taps)):
-                            if (sec_pm >> s) & 1:
-                                rdj, hpj, nj, _b1, _b2 = \
-                                    _jittered_surface_sample(
-                                        f, px, py,
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                        gen_meta, fetched_bez, prim, hp, nref,
-                                        tri_pos, tri_norm, tri_uvs,
-                                        tri_tex_meta, textures,
-                                        num_colored_triangles,
-                                        cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y, cam_proj)
-                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                                if ti.static(glossy == 1 or glossy == 2):
-                                    if rough > _GLOSSY_MIN_ROUGHNESS:
-                                        rdr = _glossy_reflect(
-                                            rdj, nj, rough, jtap, sec_n,
-                                            g_roff, g_aoff)
-                                jtap += 1
-                                if ti.static(mode != 1):
-                                    _spawn_pool_ray(
-                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc,
-                                        _offset_ray_origin(hpj, nj),
-                                        rdr,
-                                        wsub, base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, r, 1,
-                                        ior_stack, 0, 0.0, 0)
+                        fan_reflect = True
+                        fan_w1 = wt * (1.0 / ti.cast(sec_n, ti.f32))
+                        fan_n1 = nref
                     else:
                         if ti.static(mode != 1):
                             _spawn_pool_ray(
@@ -1437,7 +1313,71 @@ def sheet_resolve_shade_arena(
                 if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                         and (sec_n > 1):
                     weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
-                    placed = False
+                    fan_reflect = True
+                    fan_to_primary = True
+                    fan_w1 = weight
+                    fan_n1 = nref
+                else:
+                    rd = refl_rd
+                    ro = _offset_ray_origin(hit_point, nref)
+                    weight *= refl_energy
+                bounce_break = True
+
+            # The occlusion write, reached by every branch above that does not
+            # turn the primary into a reflection (``bounce_break``). Glass and
+            # the prefiltered claim pass their light on through rays of their
+            # own, so they occlude as opaque; everything else keeps
+            # ``trans_share`` of what it covers, through its tint.
+            #
+            # A band's siblings write once, at the sheet that closes the band,
+            # as the unsplit surface would have: each adds its coverage factor
+            # times ITS OWN alpha, and what of that it transmits per channel,
+            # to the band's sums. Taking the closing sibling's alpha for the
+            # whole band, as this did, let a crease between faces of different
+            # opacity occlude by whichever face the walk reached last.
+            if not bounce_break:
+                ts_w = trans_share
+                if is_glass or prefilter_take:
+                    ts_w = 0.0
+                if defer or cont_band:
+                    pa = cfac * a_s
+                    band_pa += pa
+                    band_pat += pa * ts_w
+                    band_patc += (pa * ts_w) * tint
+                if not defer:
+                    if cont_band:
+                        weight *= _band_write(svis, slots, own_msk, band_pa,
+                                              band_pat, band_patc)
+                    else:
+                        weight *= _occlusion_write(
+                            svis, slots, own_msk, a_s, ts_w, cfac, tint,
+                            a_s * ts_w > 1e-6)
+                    band_pc = 0.0
+                    band_claim = 0.0
+                    band_pa = 0.0
+                    band_pat = 0.0
+                    band_patc = ti.math.vec3(0.0, 0.0, 0.0)
+
+            # THE CONTINUATION FANS: one site for the up to two the branches
+            # above asked for, so the kernel unrolls ``fan_taps`` jittered
+            # surface samples once, where it unrolled them in each of the five
+            # branches that can fan. Job 0 is the glass's refraction, job 1 the
+            # reflection; a runtime loop runs whichever were asked for, in that
+            # order. The fans now follow the branch's single-ray spawns rather
+            # than preceding them, which reorders a pixel's rays in the pool
+            # and nothing else: a batch that can fan splits, and a splitting
+            # batch commits on the order-independent grid (``det_sum``).
+            if ti.static(sec_aa > 1 and fan_taps > 0):
+                fan_first = 0 if fan_refract else 1
+                fan_jobs = (1 if fan_refract else 0) + (1 if fan_reflect else 0)
+                for fj in range(fan_jobs):
+                    job = fan_first + fj
+                    n_in = normal
+                    fw = fan_w0
+                    if job == 1:
+                        n_in = fan_n1
+                        fw = fan_w1
+                    to_pool = (job == 0) or (not fan_to_primary)
                     jtap = 0
                     for s in ti.static(range(fan_taps)):
                         if (sec_pm >> s) & 1:
@@ -1445,35 +1385,54 @@ def sheet_resolve_shade_arena(
                                 f, px, py,
                                 ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
                                 ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                gen_meta, fetched_bez, prim, hit_point, nref,
+                                gen_meta, fetched_bez, prim, surf_pos, n_in,
                                 tri_pos, tri_norm, tri_uvs, tri_tex_meta,
                                 textures, num_colored_triangles,
                                 cam_origin, screen_point,
                                 pixel_basis_x, pixel_basis_y, cam_proj)
-                            rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                            if ti.static(glossy == 1 or glossy == 2):
-                                if rough > _GLOSSY_MIN_ROUGHNESS:
-                                    rdr = _glossy_reflect(
-                                        rdj, nj, rough, jtap, sec_n,
-                                        g_roff, g_aoff)
-                            jtap += 1
-                            org = _offset_ray_origin(hpj, nj)
-                            if placed:
-                                if ti.static(mode != 1):
+                            if job == 0:
+                                # Refraction off a primary: push or pop the
+                                # hit medium, the side read from the GEOMETRIC
+                                # face normal (see _relative_ior). Not assumed
+                                # to be an entry: a partially covering glass
+                                # fragment lets the primary walk on to the
+                                # solid's back face, where an unconditional
+                                # push would record a medium the ray is
+                                # leaving.
+                                entering = rdj.dot(fan_face_n) < 0.0
+                                nj = _transmission_normal(rdj, nj, fan_face_n)
+                                rel_j = _relative_ior(rs_sca, r, ior, entering,
+                                                      ior_stack)
+                                rdt = _refract_ray(rdj, nj, rel_j)
+                                _spawn_pool_ray(
+                                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                    rs_pix, rs_alloc,
+                                    _offset_transmitted_origin(
+                                        hpj, rdt, fan_face_n, nj),
+                                    rdt, fw, base_dist + t_hit,
+                                    bounces_left - 1, processed, pixel, r, r, 1,
+                                    ior_stack, 1, ior, entering)
+                            else:
+                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
+                                if ti.static(glossy == 1 or glossy == 2):
+                                    if rough > _GLOSSY_MIN_ROUGHNESS:
+                                        rdr = _glossy_reflect(
+                                            rdj, nj, rough, jtap, sec_n,
+                                            g_roff, g_aoff)
+                                jtap += 1
+                                org = _offset_ray_origin(hpj, nj)
+                                if to_pool:
                                     _spawn_pool_ray(
                                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc, org, rdr, weight,
+                                        rs_pix, rs_alloc, org, rdr, fw,
                                         base_dist + t_hit, bounces_left - 1,
                                         processed, pixel, r, r, 1,
                                         ior_stack, 0, 0.0, 0)
-                            else:
-                                rd = rdr
-                                ro = org
-                                placed = True
-                else:
-                    rd = refl_rd
-                    ro = _offset_ray_origin(hit_point, nref)
-                    weight *= refl_energy
+                                else:
+                                    rd = rdr
+                                    ro = org
+                                    to_pool = True
+            if bounce_break:
                 base_dist += t_hit
                 bounces_left -= 1
                 bounced = True
@@ -1485,39 +1444,6 @@ def sheet_resolve_shade_arena(
                                       mat_alpha, alpha, trans_share, refl_max,
                                       t_hit, svis)
                 break
-
-            # The occlusion write, reached by every branch above that does not
-            # turn the primary into a reflection. Glass and the prefiltered
-            # claim pass their light on through rays of their own, so they
-            # occlude as opaque; everything else keeps ``trans_share`` of what
-            # it covers, through its tint.
-            #
-            # A band's siblings write once, at the sheet that closes the band,
-            # as the unsplit surface would have: each adds its coverage factor
-            # times ITS OWN alpha, and what of that it transmits per channel,
-            # to the band's sums. Taking the closing sibling's alpha for the
-            # whole band, as this did, let a crease between faces of different
-            # opacity occlude by whichever face the walk reached last.
-            ts_w = trans_share
-            if is_glass or prefilter_take:
-                ts_w = 0.0
-            if defer or cont_band:
-                pa = cfac * a_s
-                band_pa += pa
-                band_pat += pa * ts_w
-                band_patc += (pa * ts_w) * tint
-            if not defer:
-                if cont_band:
-                    weight *= _band_write(svis, slots, own_msk, band_pa,
-                                          band_pat, band_patc)
-                else:
-                    weight *= _occlusion_write(svis, slots, own_msk, a_s, ts_w,
-                                               cfac, tint, a_s * ts_w > 1e-6)
-                band_pc = 0.0
-                band_claim = 0.0
-                band_pa = 0.0
-                band_pat = 0.0
-                band_patc = ti.math.vec3(0.0, 0.0, 0.0)
 
             if ti.static(dump):
                 if dmatch:
@@ -1652,27 +1578,18 @@ def sheet_resolve_shade_arena(
                 # A bounced ray's leftover is reflected/transmitted throughput
                 # through an area the geometry does cover, which must not be
                 # clamped that way, so it deposits nothing here and the
-                # composite falls back to the plain linear blend. Captured
-                # before the env fold below zeroes ``weight``.
+                # composite falls back to the plain linear blend.
                 if not bounced:
                     ti.atomic_add(pix_accum[r, ACC_GEO], weight[0])
-                # Background-as-final-sheet (§4.5): on the sparse route the frame
-                # buffer is prefilled with the background — env map included, via
+                # Background-as-final-sheet (§4.5): the frame buffer is
+                # prefilled with the background — env map included, via
                 # env_background_prefill — and the composite multiplies the
-                # leftover weight by it. The primary retire direction IS the
-                # prefill direction, so folding the env here as well would count
-                # it twice; env_in_composite skips the fold and hands the weight
-                # through. Bounced rays retire in wavefront_shade, which still
-                # samples the env with THEIR direction (the pixel's background
-                # would be the wrong ray).
-                if ti.static(not env_in_composite):
-                    if (env_w > 0) and (ti.max(weight[0], ti.max(
-                            weight[1], weight[2])) > 0.0):
-                        ec = _sample_env_map(f, rd, env_off, env_w, env_h,
-                                             env_intensity, textures)
-                        for k in ti.static(range(3)):
-                            acc[k] += weight[k] * ec[k]
-                        weight = ti.math.vec3(0.0, 0.0, 0.0)
+                # leftover weight by it, so the weight is handed through
+                # rather than folded with the env here. The primary retire
+                # direction IS the prefill direction; sampling the env again
+                # would count it twice. Bounced rays retire in wavefront_shade,
+                # which still samples the env with THEIR direction (the pixel's
+                # background would be the wrong ray).
                 for k in ti.static(range(4)):
                     ti.atomic_add(pix_accum[r, k], _det_deposit(acc[k], det_sum))
                 for k in ti.static(range(3)):
@@ -1742,7 +1659,7 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "light_col", "num_lights", "vis_lights", "layer_offsets", "frag_shading",
     "frag_pipelines", "tri_pids", "refraction", "ior_stack",
     "skip_unlit_normal", "has_bez", "sec_aa", "sec_min_energy", "glossy",
-    "env_in_composite", "direct_spec", "mode", "shadow_term", "sided_cull",
+    "direct_spec", "mode", "shadow_term", "sided_cull",
     "memo", "det_sum",
     "sheet_memo", "sheet_accept", "event_pos", "event_snrm", "event_fnrm",
     "event_frame", "event_msk", "event_dp", "event_toff", "sheet_event_id",

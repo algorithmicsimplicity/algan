@@ -2354,9 +2354,9 @@ sheet_shade_split = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 # What IS available is carrying them across. With this on, mode 1 stores each
 # processed triangle sheet's color (4), alpha, reflectivity, roughness, IOR,
 # transmission and surface point -- twelve floats -- and mode 2 reads them
-# back instead of calling _tri_color_g / _tri_extra_g /
-# _tri_ior_transmission_g / _tri_surface_point again. The values are copied
-# verbatim through f32, so the frame is BYTE-IDENTICAL
+# back instead of calling _tri_color_g / _tri_material_g / _tri_surface_point
+# again. The values are copied verbatim through f32, so the frame is
+# BYTE-IDENTICAL
 # (benchmarks/_sheet_memo_parity.py).
 #
 # DEFAULT OFF, on measurement -- the candidate is built and correct, and it

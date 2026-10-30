@@ -1,10 +1,11 @@
 """Which ``sheet_resolve_shade`` variant each launch compiles.
 
 The resolve is the renderer's largest kernel, and its cold compile is paid once
-per distinct set of template values. Most of that cost is the five
-continuation-tap fans, each unrolling ``sec_aa`` inlined copies of a jittered
-surface sample, a normal fetch and a pool spawn. Two launches compiled them for
-nothing (``findings/raster_bvh_verdicts.md`` S1):
+per distinct set of template values. The largest part of that cost is the
+continuation-tap fan site, which unrolls ``sec_aa`` inlined copies of a jittered
+surface sample, a normal fetch and a pool spawn (there were five such fans, one
+per branch that can fan, before they shared one site). Two launches compiled the
+fans for nothing (``findings/raster_bvh_verdicts.md`` S1):
 
 * the shadow event pass (mode 1), which spawns nothing and reads nothing a fan
   writes after the ``break`` that follows it;
@@ -13,14 +14,18 @@ nothing (``findings/raster_bvh_verdicts.md`` S1):
 
 These tests pin both: the kernel's fans unroll ``fan_taps``, which is zero in
 mode 1, and the host hands a non-reflective batch's shading launches
-``sec_aa`` 1 while the event pass keeps the live count its ``event_dp``
-footprint is sized and computed from. That the output is unchanged rests on
-the branches being unreachable, and was checked by rendering before and after.
+``sec_aa`` 1 while the event pass keeps a count above 1 wherever the live one
+is, which is all its ``event_dp`` footprint asks. That the output is unchanged
+rests on the branches being unreachable, and was checked by rendering before
+and after.
 
 ``vis_lights``, the light slots of the per-sheet visibility payload, is the
 same kind of waste (S2): only mode 2 reads the payload, yet every launch
 specialised on the batch's light bucket, so each bucket compiled its own
-identical mode-0 and mode-1 resolves.
+identical mode-0 and mode-1 resolves. The event pass specialised on the
+shading axes too (frag_shading, frag_pipelines, tri_pids, skip_unlit_normal,
+direct_spec), which only ``mode != 1`` code reads, and on the exact tap count,
+of which it reads only whether it exceeds 1.
 
 The same recorder shows which scenes reach the resolve at all, and with what:
 glass with the refraction template and the nested-IOR stack, an environment
@@ -104,16 +109,22 @@ def _fan_loops(tree):
 def test_mode_1_unrolls_no_continuation_fan():
     """The event pass compiled all five fans at the full tap count.
 
-    Each fan is gated ``mode != 1`` only around its spawns, and the frontend
+    Each fan was gated ``mode != 1`` only around its spawns, and the frontend
     builds the rest regardless (``advanced_optimization`` is off), so a
     shadowed batch's event pass cost about as much to compile as its shading
     pass. The fans now unroll ``fan_taps``, a compile-time count that is the
     live ``sec_aa`` in modes 0 and 2 and zero in mode 1.
+
+    And they unroll it once: the glass refraction and the four reflection
+    fans each inlined their own ``sec_aa`` jittered samples, though a sheet
+    fans at most twice (a refraction and a reflection). The branches now
+    record what they would fan and one site after them runs it, so a second
+    fan loop here is a branch unrolling its own copy again.
     """
     source = inspect.getsource(sheet_resolve_taichi.sheet_resolve_shade_arena)
     tree = ast.parse(source.lstrip())
     fans = _fan_loops(tree)
-    assert len(fans) == 5, f"expected the five continuation fans, found {fans}"
+    assert len(fans) == 1, f"expected the one continuation fan site, found {fans}"
     assert set(fans) == {"fan_taps"}, (
         f"a fan unrolls {sorted(set(fans) - {'fan_taps'})} instead of fan_taps, "
         "so the event pass compiles it"
@@ -169,13 +180,14 @@ def test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe():
     sheet and keeps ``_mirror_share``'s throttle on every other reflective
     sheet, yet still spread those sheets' fans too: rough glass and a weaker
     second reflector drew stair-edged ghost copies of what they reflected on
-    top of the throttle. Every spread now sits behind a gate that compiles it
+    top of the throttle. The spread now sits behind a gate that compiles it
     into modes 1 and 2 only, which also keeps it out of the default kernel.
-    ``test_glossy_prefilter`` renders the image this changed.
+    ``test_glossy_prefilter`` renders the image this changed. There is one
+    spread, in the continuation fan site every reflection's fan goes through.
     """
     source = inspect.getsource(sheet_resolve_taichi.sheet_resolve_shade_arena)
     sites = _static_gates(ast.parse(source.lstrip()), "_glossy_reflect")
-    assert len(sites) == 4, f"expected the four lobe-spread sites, found {len(sites)}"
+    assert len(sites) == 1, f"expected the one lobe-spread site, found {len(sites)}"
     for gates in sites:
         modes = None
         for gate in gates:
@@ -346,19 +358,19 @@ def test_a_batch_with_nothing_to_reflect_compiles_its_shading_without_fans(
 
     The shading launches took the live tap count anyway, so the built-in 2-D
     variant compiled ~45 s where ~17 s does the same work. The event pass keeps
-    the live count: its ``event_dp`` footprint is sized from it, and
-    raster_shadow_trace reads it.
+    a count above 1: its ``event_dp`` footprint is computed whenever there is
+    one, and raster_shadow_trace reads it.
     """
     live = rt_settings.effective_analytic_aa_secondary_samples()
     assert launches["plain", False][0]["sec_aa"] == 1
     assert launches["plain", True][2]["sec_aa"] == 1
-    assert launches["plain", True][1]["sec_aa"] == live
+    assert launches["plain", True][1]["sec_aa"] == min(live, 2)
 
 
 def test_a_batch_with_a_mirror_keeps_its_fans(launches):
     live = rt_settings.effective_analytic_aa_secondary_samples()
     assert launches["mirror", False][0]["sec_aa"] == live
-    assert launches["mirror", True][1]["sec_aa"] == live
+    assert launches["mirror", True][1]["sec_aa"] == min(live, 2)
     assert launches["mirror", True][2]["sec_aa"] == live
 
 
@@ -433,3 +445,73 @@ def test_a_transparent_background_keeps_the_route(renders):
     assert set(render.launches) == {0}
     with Image.open(render.image) as image:
         assert image.mode == "RGBA", "the background came out opaque"
+
+
+#: What the event pass (mode 1) is handed for the axes only shading reads.
+_EVENT_PASS_FIXED = {
+    "frag_shading": 0,
+    "frag_pipelines": (),
+    "tri_pids": 0,
+    "skip_unlit_normal": 0,
+    "direct_spec": 0,
+}
+
+
+def _off_in_mode_1(test):
+    """Whether an ``if`` test is a ``ti.static`` conjunction with ``mode != 1``."""
+    if not (isinstance(test, ast.Call) and ast.unparse(test.func) == "ti.static"):
+        return False
+    cond = test.args[0]
+    if isinstance(cond, ast.BoolOp):
+        if not isinstance(cond.op, ast.And):
+            return False
+        terms = cond.values
+    else:
+        terms = [cond]
+    return any(ast.unparse(term) == "mode != 1" for term in terms)
+
+
+def test_only_code_mode_1_compiles_out_reads_the_shading_axes():
+    """The host's fixed event-pass values are sound only while this holds.
+
+    Every read of a fixed axis must sit in the test or the body of an ``if
+    ti.static(... and mode != 1 ...)``, or in a block nested inside one; an
+    ``else`` of such a gate runs in mode 1 and does not count.
+    """
+    source = inspect.getsource(sheet_resolve_taichi.sheet_resolve_shade_arena)
+    func = ast.parse(source.lstrip()).body[0]
+    parents = {}
+    for node in ast.walk(func):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    reads = 0
+    for node in ast.walk(func):
+        if not (isinstance(node, ast.Name) and node.id in _EVENT_PASS_FIXED):
+            continue
+        reads += 1
+        child, gated = node, False
+        while child is not func and not gated:
+            parent = parents[child]
+            gated = (
+                isinstance(parent, ast.If)
+                and _off_in_mode_1(parent.test)
+                and (child is parent.test or child in parent.body)
+            )
+            child = parent
+        assert gated, f"{node.id} is read in mode 1 (line {node.lineno} of the kernel)"
+    assert reads >= len(_EVENT_PASS_FIXED)
+
+
+def test_the_event_pass_compiles_one_variant_whatever_the_shading(launches):
+    """Mode 1 of a Lambert batch and of a mirror batch: the same template values.
+
+    Each shading configuration used to compile its own event pass, about 5.6 s
+    cold on a 4-vCPU CPU, though mode 1 shades nothing.
+    """
+    for name in ("plain", "mirror"):
+        event = launches[name, True][1]
+        for axis, want in _EVENT_PASS_FIXED.items():
+            assert event[axis] == want, (name, axis)
+    plain, mirror = launches["plain", True][1], launches["mirror", True][1]
+    for axis in (*_EVENT_PASS_FIXED, "sec_aa", "vis_lights"):
+        assert plain[axis] == mirror[axis], axis
