@@ -305,6 +305,13 @@ def sheet_resolve_shade_arena(
         rs_int: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
         pix_accum: ti.types.ndarray(), dump: ti.template(), dump_out: ti.types.ndarray(),
         projected: ti.template(),
+        # The display-referred coverage resolve's per-sheet ceiling
+        # (rt_settings.aa_display_resolve, DESIGN_sheet_resolve.md §4.8): the
+        # largest linear value the display still tells apart, ``1 /
+        # exposure``, or 0 for none. A partially covering sheet's local
+        # radiance is clamped to it over the area the sheet claims. Runtime,
+        # so the switch and the exposure compile nothing.
+        display_cap: ti.f32,
         arena_f32: ti.types.ndarray(),
         arena_i32: ti.types.ndarray(),
         arena_i64: ti.types.ndarray(),
@@ -1074,9 +1081,27 @@ def sheet_resolve_shade_arena(
             r_glow = ti.max(R[0], ti.max(R[1], R[2]))
             w_glow = ti.max(weight[0], ti.max(weight[1], weight[2]))
             share = (weight * alpha) * (one3 - R - trans_share)
-            acc += ti.math.vec4(
+            lit = ti.math.vec4(
                 share[0], share[1], share[2],
                 w_glow * alpha * (1.0 - r_glow - trans_share)) * color
+            # Display-referred resolve (``display_cap``, §4.8). The area this
+            # sheet claims shows at most ``display_cap`` per channel, so that
+            # is all its local shading may put in the pixel. The tracer sets
+            # the cap only on an opaque batch, whose claims sit side by side
+            # and partition the pixel, so the clamp gives exactly the area
+            # average of the displayed colour -- over another sheet as much as
+            # over the background, and across a crease. A reflected share
+            # lands on the same area and stays out of the clamp, so a
+            # reflector can come out brighter than that average, never
+            # darker. Exempt: a glowing sheet, whose radiance bloom reads,
+            # and a full claim, which the display clamps by itself.
+            if (display_cap > 0.0) and (color[3] <= 0.0) \
+                    and (alpha < 1.0 - _AA_FULL_DUST):
+                ceiling = weight * (alpha * display_cap)
+                lit = ti.math.vec4(ti.min(lit[0], ceiling[0]),
+                                   ti.min(lit[1], ceiling[1]),
+                                   ti.min(lit[2], ceiling[2]), lit[3])
+            acc += lit
             # The direct lights' share of the REFLECTED lobe. The continuation
             # spawned below carries ``R`` of that lobe, but it is a ray and a
             # delta light has nothing for a ray to hit, so it can only return
@@ -1676,6 +1701,7 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
     "gen_meta", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix",
     "pix_accum", "rs_alloc", "dump", "dump_out", "cam_proj_table", "projected",
+    "display_cap",
 )
 
 _sheet_resolve_shade_launch = arena_packed(

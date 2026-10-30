@@ -533,6 +533,46 @@ their sum. Fixing that means clamping each sheet's contribution to its own
 claim inside P5, which is a bigger change than this one and wants its own
 measurement.
 
+**CORRECTED 2026-10-30.** The residual was not only creases. `geo == 0`
+wherever the sheets cover the whole pixel, so every silhouette over other
+geometry kept the linear blend as well: a slab at R = 2.0 over a grey board
+showed 255 along that edge where a 6x render shows 213. P5 now clamps each
+sheet's own claim, as the paragraph above proposes. The commit limits a
+partially covering sheet's local radiance to `weight * alpha * display_cap`
+per channel, where `alpha` is the area the sheet claims and `display_cap`
+(`1 / exposure`) is the largest linear value the display shows. An opaque
+batch's claims partition the pixel, so that is the area average of the
+displayed colour wherever the sheets sit, over the background as much as
+over another sheet. Two kinds of sheet are exempt. A glowing sheet keeps its
+radiance, because bloom reads it (`color * glow^3`); over the background the
+composite's clamp still applies to it, as before. A full claim is exempt too:
+the display clamps it by itself, and its HDR value reaches post-processing
+unchanged. A sheet's reflected share lands on the same area and stays out of
+the clamp, so a reflector's edge can come out brighter than the area average
+but never darker. The tracer sets `display_cap` on exactly the batches whose
+composite it gives `geo_cov`.
+
+The composite's own ceiling had two faults, fixed the same day. It ended at
+1 whatever `tonemap_exposure` said, and it applied to every covered pixel, a
+fully covered one included: `cap` started at 255, which in the float buffer
+is the top of the display range, not "no ceiling". So the over-range colour
+the paragraph above says reaches bloom unclamped did not. A halo was drawn
+from at most 1, and at exposure 0.4 a red of 2.0 showed as 0.4 instead of
+0.8. The ceiling now ends at `255 / exposure` and applies only where the
+resolve deposited a residual.
+
+And neither clamp applies under a tone curve any more. The paragraphs above
+assume the display transform is a clip, which is only true with `tonemapping`
+off. A curve compresses an over-range channel instead, so that channel keeps
+its coverage, and PBR Neutral's desaturation couples the channels through
+their peak, so clamping one channel to the covered area moves the other two.
+Measured on the slab and the grey board under the neutral curve, the clamp
+is as far from a 6x render as the linear blend, about 40 levels each, so it
+buys nothing there. The composite's old ceiling did worse: it held every
+covered pixel at 1 before the curve, and inside the slab the colour went from
+(249, 127, 85) to (240, 131, 46). A batch rendered with `tonemapping` on keeps
+the linear blend, as this section's opening paragraph intends.
+
 4.9 Continuations, shadows, and the identity items that stay live
 ------------------------------------------------------------------
 Reflective/refractive sheets spawn continuations weighted by their visible

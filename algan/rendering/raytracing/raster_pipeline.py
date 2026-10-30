@@ -3839,6 +3839,9 @@ def shade_sparse_raster_coverage(
         sdump,
         cam_proj_table,
         projected,
+        # Set by the tracer on a batch the display-referred resolve applies
+        # to, beside the composite's ``geo_cov``; 0 (no clamp) everywhere else.
+        float(merged.get("display_cap", 0.0)),
     )
     dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
     dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)

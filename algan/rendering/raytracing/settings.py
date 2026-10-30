@@ -2653,8 +2653,8 @@ analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 
 # Resolve a partially covered pixel in DISPLAY-referred terms rather than
 # purely in linear HDR. The composite blend is linear and the display
-# transform (``clamp`` then the OETF, or a tonemap curve) runs after it, so a
-# channel whose radiance is above the display range carries no coverage
+# transform (``clamp`` then the OETF, with ``tonemapping`` off) runs after it,
+# so a channel whose radiance is above the display range carries no coverage
 # information at all: at ORANGE under this package's own example lighting the
 # cone's red is 1.85, and a 60%-covered silhouette pixel still holds 1.11 and
 # shows the same 255 as the interior while its green and blue fall with
@@ -2667,12 +2667,27 @@ analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 # area it actually covers, which is exactly the area average of the displayed
 # colour a supersampled render produces (verified against a 6x render of
 # solids_and_camera: the cone's silhouette goes from 73 channels off by more
-# than 25 to none). It applies only where the leftover weight is a genuine
-# AREA -- ``sheet_resolve_taichi`` deposits that separately -- and only when
-# the batch is entirely opaque, because a transmissive or reflective leftover
-# is superimposed on the covered area rather than beside it and only the SUM
-# of such parts may be clamped. Everything else keeps the plain linear blend,
-# so this is byte-inert on a scene with no over-range silhouette.
+# than 25 to none). Two clamps do it. The resolve limits each sheet that
+# claims part of a pixel to its claim times the display range
+# (``sheet_resolve_taichi``'s ``display_cap``): that is what covers a
+# silhouette over other geometry and a crease, where the sheets fill the
+# whole pixel. The composite limits the geometry's sum to the area the
+# background leaves it, which ``sheet_resolve_taichi`` deposits separately:
+# that still holds the edge of a glowing sheet, which the resolve leaves alone
+# because bloom reads its radiance. Both end where the display's range does,
+# at ``1 / tonemap_exposure``, and a pixel either leaves unclamped keeps its
+# HDR value for bloom. Both apply only when the batch is entirely
+# opaque, because a transmissive leftover is superimposed on the covered area
+# rather than beside it and only the SUM of such parts may be clamped. A
+# reflection is superimposed too: the resolve leaves a sheet's reflected share
+# out of its clamp, and a pixel whose primary bounced deposits no residual for
+# the composite's. Nor does it apply with ``tonemapping`` on: a tone curve
+# compresses an over-range channel instead of clipping it, so the channel
+# keeps its coverage, and PBR Neutral moves the other channels with the peak,
+# so clamping one moved the others: along an over-range edge the clamp came
+# out as far from a 6x render as the linear blend, about 40 levels each.
+# Everything else keeps the plain linear blend, so this is byte-inert on a
+# scene with no over-range edge.
 aa_display_resolve = env_flag("ALGAN_AA_DISPLAY_RESOLVE", True)
 
 # PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space

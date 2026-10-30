@@ -4521,16 +4521,32 @@ def raytrace_render_wavefront(
             # a bounced primary deposits no geometric residual, so those
             # pixels opt themselves out.) It also needs the linear frame
             # buffer -- under an in-kernel tonemap the composite's output is
-            # already display-referred and the clamp would be applied twice.
+            # already display-referred and the clamp would be applied twice --
+            # and an exposure to divide the display range by: at 0 the display
+            # shows black whatever the clamp. And the display transform has to
+            # be the plain clip: a tone curve keeps an over-range channel's
+            # coverage, and PBR Neutral's desaturation couples the channels
+            # through their peak, so clamping one to the covered area moves
+            # the other two (DESIGN_sheet_resolve.md §4.8).
+            exposure = float(rt_settings.tonemap_exposure)
             geo_cov_sparse = int(
                 bool(rt_settings.aa_display_resolve)
                 and t_val_sparse == 3
+                and not rt_settings.tonemapping
+                and exposure > 0.0
                 and not merged.get("has_any_translucent")
                 and not merged.get("has_transmissive")
                 and not merged.get("has_refractive")
                 and not merged.get("has_refl_transparent")
                 and not merged.get("has_uncertain_texture_alpha")
             )
+            # The resolve's half of the same decision: the ceiling it clamps
+            # each partially covering sheet to, the largest linear value the
+            # display still tells apart (sheet_resolve_taichi's
+            # ``display_cap``). The composite's clamp needs a residual to
+            # clamp against, which a pixel the sheets cover entirely -- a
+            # silhouette over other geometry, a crease -- does not have.
+            merged["display_cap"] = 1.0 / exposure if geo_cov_sparse else 0.0
             with _stage("wavefront:   - sparse setup"):
                 if t_val_sparse != 3:
                     # In-kernel tonemap on the sparse route (sheet unification,
