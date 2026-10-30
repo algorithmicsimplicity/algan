@@ -78,6 +78,12 @@ ALWAYS_CI = (
     # MPS-friendly mode spends the closed-shell ceiling per segment.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_float32_shell_ceiling_spend_does_not_degrade_with_stream_length",
     "tests/unit_tests/test_sheet_chain_kernels.py::test_float32_segment_prefix_matches_the_float64_global_difference",
+    # The closed-shell ceiling clamps each segment on that segment alone, which
+    # is what lets a stream with a closed solid take the stroke-pixel split; the
+    # split's kernels match its torch arm bit for bit.
+    "tests/unit_tests/test_sheet_chain_kernels.py::test_shell_ceiling_clamp_reads_only_its_own_segment",
+    "tests/unit_tests/test_stroke_sheets.py::test_stroke_pixel_split_holds_with_a_closed_solid",
+    "tests/unit_tests/test_stroke_sheets.py::test_stroke_pixel_split_kernels_match_the_torch_arm",
     # Which batches the sheet route takes, and which fall back.
     "tests/unit_tests/test_sheet_route_vetoes.py::",
     # The closed-shell coverage ceiling, on synthetic streams: tensors only.
