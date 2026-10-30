@@ -849,8 +849,10 @@ and tonemap conditions are gone from the sparse gate when the route is on:
 
 * **Background-as-final-sheet (§4.5)**: `env_background_prefill` writes
   `env(ray)` per (frame, pixel) into the frame buffer, the resolve hands
-  its leftover weight to the composite (`env_in_composite`, pinned at
-  emission), and empty pixels are final with no resolve launch. One bug
+  its leftover weight to the composite (always, since 2026-10: the
+  `env_in_composite` template that could fold the env in the resolve
+  instead only ever compiled that fold for batches with no env map), and
+  empty pixels are final with no resolve launch. One bug
   found by the parity panel: frame-buffer column 3 is the GLOW lane, and
   prefilling it with 255 bloomed every pixel white (max|d| 222 over the
   whole frame) — the sky emits glow 0, matching the dense retire.
