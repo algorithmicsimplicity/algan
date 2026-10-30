@@ -2692,8 +2692,8 @@ analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 
 # Resolve a partially covered pixel in DISPLAY-referred terms rather than
 # purely in linear HDR. The composite blend is linear and the display
-# transform (``clamp`` then the OETF, or a tonemap curve) runs after it, so a
-# channel whose radiance is above the display range carries no coverage
+# transform (``clamp`` then the OETF, with ``tonemapping`` off) runs after it,
+# so a channel whose radiance is above the display range carries no coverage
 # information at all: at ORANGE under this package's own example lighting the
 # cone's red is 1.85, and a 60%-covered silhouette pixel still holds 1.11 and
 # shows the same 255 as the interior while its green and blue fall with
@@ -2720,8 +2720,13 @@ analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 # rather than beside it and only the SUM of such parts may be clamped. A
 # reflection is superimposed too: the resolve leaves a sheet's reflected share
 # out of its clamp, and a pixel whose primary bounced deposits no residual for
-# the composite's. Everything else keeps the plain linear blend, so this is
-# byte-inert on a scene with no over-range edge.
+# the composite's. Nor does it apply with ``tonemapping`` on: a tone curve
+# compresses an over-range channel instead of clipping it, so the channel
+# keeps its coverage, and PBR Neutral moves the other channels with the peak,
+# so clamping one moved the others: along an over-range edge the clamp came
+# out as far from a 6x render as the linear blend, about 40 levels each.
+# Everything else keeps the plain linear blend, so this is byte-inert on a
+# scene with no over-range edge.
 aa_display_resolve = env_flag("ALGAN_AA_DISPLAY_RESOLVE", True)
 
 # PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space

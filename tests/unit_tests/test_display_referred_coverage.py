@@ -345,3 +345,25 @@ def test_a_glowing_sheet_keeps_its_radiance(tmp_path):
     with _aa_display_resolve(False):
         off = _render(tmp_path, "glow_off", _SIDE, glowing)
     assert np.array_equal(on, off)
+
+
+@pytest.mark.skipif(
+    not SETTINGS.raytracing.is_post_process_tonemap_enabled(),
+    reason="the in-kernel tonemap composites in display-referred values already",
+)
+def test_a_tone_curve_keeps_the_linear_blend(tmp_path):
+    """Under a tone curve the switch changes nothing.
+
+    A curve compresses an over-range channel instead of clipping it, so the
+    channel keeps its coverage, and PBR Neutral moves the other channels with
+    the peak: clamping one channel to the covered area moved the other two.
+
+    REGRESSION: the composite also held every covered pixel at 1 before the
+    curve, which took the inside of the slab from (249, 127, 85) to
+    (240, 131, 46).
+    """
+    with _raytracing(tonemapping=True, tonemap_method="neutral"):
+        on = _render(tmp_path, "curve_on", _SIDE, _slab_before_a_board)
+        with _aa_display_resolve(False):
+            off = _render(tmp_path, "curve_off", _SIDE, _slab_before_a_board)
+    assert np.array_equal(on, off)

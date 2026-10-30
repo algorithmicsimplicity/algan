@@ -559,6 +559,18 @@ from at most 1, and at exposure 0.4 a red of 2.0 showed as 0.4 instead of
 0.8. The ceiling now ends at `255 / exposure` and applies only where the
 resolve deposited a residual.
 
+And neither clamp applies under a tone curve any more. The paragraphs above
+assume the display transform is a clip, which is only true with `tonemapping`
+off. A curve compresses an over-range channel instead, so that channel keeps
+its coverage, and PBR Neutral's desaturation couples the channels through
+their peak, so clamping one channel to the covered area moves the other two.
+Measured on the slab and the grey board under the neutral curve, the clamp
+is as far from a 6x render as the linear blend, about 40 levels each, so it
+buys nothing there. The composite's old ceiling did worse: it held every
+covered pixel at 1 before the curve, and inside the slab the colour went from
+(249, 127, 85) to (240, 131, 46). A batch rendered with `tonemapping` on keeps
+the linear blend, as this section's opening paragraph intends.
+
 4.9 Continuations, shadows, and the identity items that stay live
 ------------------------------------------------------------------
 Reflective/refractive sheets spawn continuations weighted by their visible

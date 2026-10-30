@@ -4514,11 +4514,16 @@ def raytrace_render_wavefront(
             # buffer -- under an in-kernel tonemap the composite's output is
             # already display-referred and the clamp would be applied twice --
             # and an exposure to divide the display range by: at 0 the display
-            # shows black whatever the clamp.
+            # shows black whatever the clamp. And the display transform has to
+            # be the plain clip: a tone curve keeps an over-range channel's
+            # coverage, and PBR Neutral's desaturation couples the channels
+            # through their peak, so clamping one to the covered area moves
+            # the other two (DESIGN_sheet_resolve.md §4.8).
             exposure = float(rt_settings.tonemap_exposure)
             geo_cov_sparse = int(
                 bool(rt_settings.aa_display_resolve)
                 and t_val_sparse == 3
+                and not rt_settings.tonemapping
                 and exposure > 0.0
                 and not merged.get("has_any_translucent")
                 and not merged.get("has_transmissive")
