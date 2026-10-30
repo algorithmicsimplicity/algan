@@ -747,7 +747,9 @@ class _Spy:
         stats = self.stats
 
         def spy(*args, **kwargs):
-            coverage = original(*args, **kwargs)
+            # The probe reads the raw fragment stream, which the pipeline
+            # releases once the sheets are made unless asked to keep it.
+            coverage = original(*args, keep_fragment_stream=True, **kwargs)
             if coverage is not None:
 
                 def arg(name, pos):

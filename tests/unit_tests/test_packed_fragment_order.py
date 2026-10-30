@@ -108,3 +108,28 @@ def test_binned_order_declines_out_of_range_pixels():
         rpl._binned_fragment_order(key, ref, 3, 40, min_fragments=0, devices=(device,))
         is None
     )
+
+
+def test_binned_order_declines_a_window_of_mostly_empty_bins():
+    """Past ``max_bins_per_fragment`` the bins, not the fragments, are the cost.
+
+    A sparse window -- a few fragments over many frames of pixels -- goes to
+    the comparison sort instead; up to the limit the counting sort still runs,
+    and still gives the two sorts' order.
+    """
+    device = _kernel_device()
+    n = 1000
+    limit = rpl._BINNED_MAX_BINS_PER_FRAGMENT * n
+    key, ref = _stream(2, n, 50, 2, 3, device)
+    want, _layer = _reference(key, ref, offset=3)
+    got = rpl._binned_fragment_order(
+        key, ref, 3, limit, min_fragments=0, devices=(device,)
+    )
+    assert got is not None
+    assert torch.equal(got, want)
+    assert (
+        rpl._binned_fragment_order(
+            key, ref, 3, limit + 1, min_fragments=0, devices=(device,)
+        )
+        is None
+    )

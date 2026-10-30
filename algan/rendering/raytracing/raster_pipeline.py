@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from algan.environment import env_flag, env_str
+from algan.rendering import fragment_capture
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     clamp_floor,
@@ -1263,6 +1264,19 @@ def _circuit_pair_expand_rows(
         float(half_h),
         float(aa_hw),
     )
+    # Every masked box big enough to go row by row gets a slot per row for
+    # its span, which the count pass fills and the write pass reads: one
+    # readback more than sizing the rows alone, for a write pass that no
+    # longer projects anything.
+    bh = (y1f - y0f + 1).clamp_min(0)
+    span_rows = torch.where(
+        (mflat != 0) & ((x1f - x0f + 1) * bh >= span_min_area), bh, 0
+    )
+    row_offs = torch.cumsum(span_rows, 0) - span_rows
+    num_span_rows = int(span_rows.sum().item())
+    del bh, span_rows
+    span_x = torch.empty((max(num_span_rows, 1), 2), dtype=torch.float32, device=device)
+    spans = torch.empty(numel, dtype=torch.int32, device=device)
     counts = torch.empty(numel, dtype=torch.int64, device=device)
     pair_expand_count_circuits(
         mflat.view(torch.uint8),
@@ -1273,6 +1287,9 @@ def _circuit_pair_expand_rows(
         numel,
         raster_chunk,
         counts,
+        spans,
+        row_offs,
+        span_x,
         f_abs_k,
         ncirc,
         span_min_area,
@@ -1295,8 +1312,9 @@ def _circuit_pair_expand_rows(
         ncirc,
         raster_chunk,
         rows,
-        span_min_area,
-        *geometry,
+        spans,
+        row_offs,
+        span_x,
     )
     return rows
 
@@ -1487,6 +1505,16 @@ def _fragment_layer(frag_ref, layer_offset_triangles):
     return torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
 
 
+#: The most pixel bins per fragment the counting sort takes on. Its bins cost
+#: about 8 B each live (the counts, then the offsets beside the scatter
+#: cursor), torch allocations outside the arena that the batch planner never
+#: sees, against about 32 B a fragment for the radix sort it replaces. Past
+#: this a mostly empty window -- a 30-frame 4K chunk is 249M bins, 2 GB --
+#: spends several times the radix sort's memory, and more time than it takes,
+#: on clearing and scanning empty bins.
+_BINNED_MAX_BINS_PER_FRAGMENT = 16
+
+
 def _binned_fragment_order(
     frag_key,
     frag_ref,
@@ -1495,6 +1523,7 @@ def _binned_fragment_order(
     *,
     exact_depth=False,
     min_fragments=65536,
+    max_bins_per_fragment=_BINNED_MAX_BINS_PER_FRAGMENT,
     devices=("cuda",),
 ):
     """The same order as the two stable sorts, by counting sort, or None.
@@ -1523,10 +1552,11 @@ def _binned_fragment_order(
     :func:`_tie_grouped_fragment_order`. The bits sit above the layer at
     ``<< 31``, so the key stays non-negative for every 32-bit pattern.
 
-    Declines (None) below ``min_fragments``, off ``devices``, where a launch
-    would stage its arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and
-    when any key's pixel lies outside ``[0, num_bins)`` -- a bug upstream,
-    which the comparison sort would at least keep in order.
+    Declines (None) below ``min_fragments``, above ``max_bins_per_fragment``
+    bins per fragment, off ``devices``, where a launch would stage its
+    arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and when any key's
+    pixel lies outside ``[0, num_bins)`` -- a bug upstream, which the
+    comparison sort would at least keep in order.
     """
     from algan.animation_timeline.timeline import _opt_disabled
     from algan.rendering.raytracing.sheet_stream import stream_kernel_available
@@ -1535,6 +1565,7 @@ def _binned_fragment_order(
     num_bins = int(num_bins)
     if (
         n < min_fragments
+        or num_bins > max_bins_per_fragment * n
         or frag_key.device.type not in devices
         or not 0 < num_bins < 2**31 - 1
         or _opt_disabled("binfragsort")
@@ -2320,6 +2351,7 @@ def prepare_sparse_raster_coverage(
     layer_offset_triangles,
     env_in_composite=False,
     depth_order_eye=None,
+    keep_fragment_stream=None,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
@@ -2332,8 +2364,15 @@ def prepare_sparse_raster_coverage(
     wavefront state can coexist with it and be reset independently.
 
     Returns ``None`` when no exact pixel is covered, otherwise a dict
-    containing compact ``frag_*``, ``covered_idx`` and ``run_offsets``
-    arrays plus the ``sheet_*`` arrays the resolve consumes.
+    containing ``covered_idx`` and the ``sheet_*`` arrays the resolve
+    consumes, plus the compact fragment stream the sheets were made from
+    (``frag_*`` and its ``run_offsets`` CSR). Nothing on the render path reads
+    that stream past the compaction, so it is released with this function's
+    scratch and comes back as ``None`` -- unless ``keep_fragment_stream`` asks
+    for it, which by default it does only while a fragment capture is armed
+    (``fragment_capture``, which copies it after this returns). A window with
+    no triangle fragment compacts one sheet per fragment, so there the stream
+    is the sheet record itself and always comes back.
 
     Under analytic circuit coverage the per-fragment ``frag_cov`` lane carries
     the fraction of the pixel square each circuit fragment covers, and the
@@ -2356,6 +2395,9 @@ def prepare_sparse_raster_coverage(
     """
     device = merged["tri_pos"].device
     ppf = int(width) * int(height)
+    if keep_fragment_stream is None:
+        keep_fragment_stream = fragment_capture.is_armed()
+    keep_fragment_stream = bool(keep_fragment_stream)
     depth_order = None
     g0 = 0
     g1 = (int(time_end) - int(time_start)) * ppf
@@ -2991,17 +3033,23 @@ def prepare_sparse_raster_coverage(
                 "env_in_composite": bool(env_in_composite),
             }
         else:
-            frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
-            frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
-            frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
-            frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
-            frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
-            frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+            # The stream is the compaction's input and nothing else's on the
+            # render path -- the resolve walks the sheets -- so it is this
+            # scope's forward scratch and goes with it, instead of holding 32
+            # B/fragment at the reverse end through the whole resolve (68 MB
+            # of a 2.1M-fragment HD chunk). Kept only when asked for.
+            keep = keep_fragment_stream
+            frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=keep)
+            frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=keep)
+            frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=keep)
+            frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=keep)
+            frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=keep)
+            frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=keep)
             covered_idx = _arena_tensor(
                 memory, (num_covered,), torch.int32, persist=True
             )
             run_offsets = _arena_tensor(
-                memory, (num_covered + 1,), torch.int32, 0, persist=True
+                memory, (num_covered + 1,), torch.int32, 0, persist=keep
             )
             frag_key.copy_(key_s)
             frag_ref.copy_(ref_s)
@@ -3124,21 +3172,15 @@ def prepare_sparse_raster_coverage(
             pixels=int(width) * int(height),
         )
 
-    # Reserve for the next chunk's discovery peak: the pre-truncation scratch
-    # (frag_*_u: 8+4+8+4+4+1 B/frag) plus the persistent compact result
-    # (frag_key/ref/ab/cov/msk/cap: 8+4+8+4+4+4 B/frag; covered_idx/
-    # run_offsets: 4+4 B/covered) coexist in the arena at the copy. Amortized
-    # per output frame so the render-chunk preflight sizes later chunks to fit
-    # it instead of over-committing.
-    # 32 B/fragment of compact result, plus 32 B of persistent sheet record +
-    # the sheet CSR. The torch-side sort and scatter intermediates are
-    # allocator-owned, like the fragment sort's.
-    # frag_cap is a persist=True allocation like the other five (it carries the
-    # per-pixel one-mesh coverage ceiling into compaction), so leaving it out
-    # of the sum reported this scope 12.5% smaller than the arena it actually
-    # took -- and this number is what the render-chunk preflight reserves
-    # against for the next chunk. The 1.25 sparse_discovery_safety factor was
-    # absorbing the error rather than spending it on the margin it exists for.
+    # The discovery's arena peak, amortized per output frame for a render-chunk
+    # preflight to reserve against (``sparse_discovery_bytes_for_frames``,
+    # which no planner reads yet): the pre-truncation scratch (frag_*_u:
+    # 8+4+8+4+4+1 B/frag), the compact stream (frag_key/ref/ab/cov/msk/cap:
+    # 8+4+8+4+4+4 B/frag; covered_idx/run_offsets: 4+4 B/covered), and 32 B of
+    # sheet record per sheet plus the sheet CSR. Of these only covered_idx and
+    # the sheets outlive this function unless the stream is kept. The
+    # torch-side sort and scatter intermediates are allocator-owned, like the
+    # fragment sort's.
     per_frag = 32
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
@@ -3152,6 +3194,10 @@ def prepare_sparse_raster_coverage(
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
+    if not stroke_only and not keep_fragment_stream:
+        # Reclaimed with the scope above: no view of it may leave here.
+        frag_key = frag_ref = frag_ab = frag_cov = frag_msk = frag_cap = None
+        run_offsets = None
 
     result = {
         "frag_key": frag_key,

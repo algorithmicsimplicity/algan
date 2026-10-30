@@ -12,8 +12,11 @@ needs to the host before the arena reclaims them.
 
 It follows the shape of the ``ALGAN_AA_DUMP`` diagnostic next door: the tracer's
 call site is one ``is_armed()`` test, which is a module-global read and costs
-nothing on a render nobody is inspecting, and no array here is arena-allocated, so
-an armed capture cannot perturb the memory model's view of a chunk.
+nothing on a render nobody is inspecting, and no array here is arena-allocated.
+Arming does change one thing about a chunk: the raw fragment stream, which
+``prepare_sparse_raster_coverage`` otherwise releases with its scratch once the
+sheets are made, is kept to the window's end for the copy, so a captured chunk
+holds 32 B/fragment more of arena through its resolve.
 
 Deliberately free of Algan imports beyond torch, so the render path can import it
 at module scope without a cycle.
