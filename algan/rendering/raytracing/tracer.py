@@ -4522,6 +4522,16 @@ def raytrace_render_wavefront(
                 and not merged.get("has_refl_transparent")
                 and not merged.get("has_uncertain_texture_alpha")
             )
+            # The resolve's half of the same decision: the ceiling it clamps
+            # each partially covering sheet to, the largest linear value the
+            # display still tells apart (sheet_resolve_taichi's
+            # ``display_cap``). The composite's clamp needs a residual to
+            # clamp against, which a pixel the sheets cover entirely -- a
+            # silhouette over other geometry, a crease -- does not have.
+            exposure = float(rt_settings.tonemap_exposure)
+            merged["display_cap"] = (
+                1.0 / exposure if geo_cov_sparse and exposure > 0.0 else 0.0
+            )
             with _stage("wavefront:   - sparse setup"):
                 if t_val_sparse != 3:
                     # In-kernel tonemap on the sparse route (sheet unification,

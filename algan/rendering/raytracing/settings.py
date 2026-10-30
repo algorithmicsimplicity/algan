@@ -2706,12 +2706,20 @@ analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 # area it actually covers, which is exactly the area average of the displayed
 # colour a supersampled render produces (verified against a 6x render of
 # solids_and_camera: the cone's silhouette goes from 73 channels off by more
-# than 25 to none). It applies only where the leftover weight is a genuine
-# AREA -- ``sheet_resolve_taichi`` deposits that separately -- and only when
-# the batch is entirely opaque, because a transmissive or reflective leftover
-# is superimposed on the covered area rather than beside it and only the SUM
-# of such parts may be clamped. Everything else keeps the plain linear blend,
-# so this is byte-inert on a scene with no over-range silhouette.
+# than 25 to none). Two clamps do it. The resolve limits each sheet that
+# claims part of a pixel to its claim times the display range
+# (``sheet_resolve_taichi``'s ``display_cap``): that is what covers a
+# silhouette over other geometry and a crease, where the sheets fill the
+# whole pixel. The composite limits the geometry's sum to the area the
+# background leaves it, which ``sheet_resolve_taichi`` deposits separately:
+# that still holds the edge of a glowing sheet, which the resolve leaves alone
+# because bloom reads its radiance. Both apply only when the batch is entirely
+# opaque, because a transmissive leftover is superimposed on the covered area
+# rather than beside it and only the SUM of such parts may be clamped. A
+# reflection is superimposed too: the resolve leaves a sheet's reflected share
+# out of its clamp, and a pixel whose primary bounced deposits no residual for
+# the composite's. Everything else keeps the plain linear blend, so this is
+# byte-inert on a scene with no over-range edge.
 aa_display_resolve = env_flag("ALGAN_AA_DISPLAY_RESOLVE", True)
 
 # PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space
