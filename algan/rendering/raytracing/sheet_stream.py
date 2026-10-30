@@ -10,13 +10,33 @@ from contextlib import nullcontext
 
 import torch
 
+#: Quadrants addresses an ndarray in int32 -- the flat offset of an element,
+#: so a ``[n, 2]`` array runs out at ``n = 2**30`` -- and takes a ``ti.i32``
+#: argument modulo 2**32. Neither refuses an extent past it: the launch warns
+#: about the array and then reads and writes outside it, and the argument
+#: wraps silently. Read at call time, so a test can lower it.
+KERNEL_EXTENT_LIMIT = 2**31
+
+
+def kernel_extents_fit(*extents):
+    """Whether a kernel may be handed every one of ``extents``.
+
+    Each is a count the kernel takes as ``ti.i32``, the element count of an
+    array it indexes (``numel()``, which for a 2-D array is what Quadrants
+    linearizes), or a product the kernel forms in int32, such as the
+    lane-owner table's ``rows * AA_NUM_SAMPLES``. All are host integers, so
+    asking costs no readback. Every kernel dispatch on the fragment-to-sheet
+    path asks this first and takes its int64 torch arm on a no.
+    """
+    return all(int(e) < KERNEL_EXTENT_LIMIT for e in extents)
+
 
 def stream_kernel_available(tensor):
     """Do not initialize a compiler or stage arrays to a different device."""
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
     return (
-        tensor.shape[0] < 2**31
+        kernel_extents_fit(tensor.shape[0])
         and _live_arch() is not None
         and taichi_launch_is_local(tensor.device)
     )
