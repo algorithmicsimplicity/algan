@@ -118,6 +118,10 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sheet_compaction.py::test_a_stream_past_every_kernel_extent_compacts_in_torch",
     "tests/unit_tests/test_sheet_compaction.py::test_the_raster_fragment_passes_past_the_extent_limit_take_torch",
     "tests/unit_tests/test_sheet_chain_kernels.py::test_class_pairs_flat_past_the_extent_limit_expands_in_torch",
+    # A cgroup's page cache is no memory pressure, and a trace-counter reading
+    # survives the reset real pressure brings: files and stubs, no kernel.
+    "tests/unit_tests/test_manual_memory.py::test_a_cgroup_counts_its_working_set_not_its_page_cache",
+    "tests/unit_tests/test_trace_counters.py::test_a_reading_spans_a_program_teardown",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

@@ -514,6 +514,54 @@ def test_host_memory_pressure_honors_a_finite_cgroup_before_host_ram(monkeypatch
     assert mu._host_memory_pressure() is False
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_a_cgroup_counts_its_working_set_not_its_page_cache(
+    monkeypatch, tmp_path, version
+):
+    """Inactive file cache is reclaimed before anything is OOM-killed.
+
+    Shaped like the cloud container where raw usage stood at 9.4 of 14.3 GB,
+    5.5 GB of it inactive file cache: counting that as pressure reset the
+    Quadrants program after every render.
+    """
+    from pathlib import Path
+
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(mu.sys, "platform", "linux")
+    # Every absolute path the module reads lands under tmp_path, once.
+    monkeypatch.setattr(
+        mu,
+        "Path",
+        lambda p: Path(p)
+        if str(p).startswith(str(tmp_path))
+        else Path(f"{tmp_path}{p}"),
+    )
+    gb = 1 << 30
+    if version == "v1":
+        rel = "process_api/job/bash"
+        (tmp_path / "proc/self").mkdir(parents=True)
+        (tmp_path / "proc/self/cgroup").write_text(f"4:memory:/{rel}\n0::/\n")
+        root = tmp_path / "sys/fs/cgroup/memory" / rel
+        root.mkdir(parents=True)
+        (root / "memory.usage_in_bytes").write_text(f"{9 * gb}\n")
+        (root / "memory.limit_in_bytes").write_text(f"{14 * gb}\n")
+        # v1's own inactive_file leaves out child cgroups; the total does not.
+        stat = f"inactive_file {gb // 64}\ntotal_inactive_file {5 * gb}\n"
+    else:
+        root = tmp_path / "sys/fs/cgroup"
+        root.mkdir(parents=True)
+        (root / "memory.current").write_text(f"{9 * gb}\n")
+        (root / "memory.max").write_text(f"{14 * gb}\n")
+        stat = f"anon {3 * gb}\ninactive_file {5 * gb}\nactive_file {gb}\n"
+    (root / "memory.stat").write_text(stat)
+    assert mu._linux_cgroup_memory_usage() == (4 * gb, 14 * gb)
+
+    # No memory.stat to read: the raw usage, as before.
+    (root / "memory.stat").unlink()
+    assert mu._linux_cgroup_memory_usage() == (9 * gb, 14 * gb)
+
+
 def test_pressure_cleanup_trims_then_resets_only_if_pressure_remains(monkeypatch):
     from algan.utils import memory_utils as mu
 

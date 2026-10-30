@@ -475,6 +475,22 @@ def _read_positive_int(path):
     return value if value > 0 else None
 
 
+def _reclaimable_page_cache(stat_path, key):
+    """The cgroup's inactive file cache from its ``memory.stat``, or 0."""
+    try:
+        lines = Path(stat_path).read_text(encoding="ascii").splitlines()
+    except (OSError, ValueError):
+        return 0
+    for line in lines:
+        name, _, value = line.partition(" ")
+        if name == key:
+            try:
+                return max(int(value), 0)
+            except ValueError:
+                return 0
+    return 0
+
+
 def _linux_cgroup_memory_usage():
     """Return ``(current, limit)`` for this process's finite memory cgroup.
 
@@ -482,13 +498,23 @@ def _linux_cgroup_memory_usage():
     mount root is tried first because container mount namespaces normally make
     it the process's own cgroup already; ``/proc/self/cgroup`` supplies the
     nested path on hosts that expose the hierarchy root instead.
+
+    ``current`` is the working set: usage less the inactive file cache, the
+    figure the kernel reclaims before it would OOM-kill anything (and the one
+    ``kubectl top`` and ``docker stats`` report). Raw usage counts every page
+    of file cache. On a 14.3 GB cloud container that had read a few GB of
+    kernel cache, wheels and test data it stood at 9.4 GB, 5.5 GB of it
+    inactive file cache, so :func:`_host_memory_pressure` reported pressure
+    after every render and reset the Quadrants program each time.
     """
     if not sys.platform.startswith("linux"):
         return None
 
     candidates = []
     v2_root = Path("/sys/fs/cgroup")
-    candidates.append((v2_root / "memory.current", v2_root / "memory.max"))
+    candidates.append(
+        (v2_root / "memory.current", v2_root / "memory.max", "inactive_file")
+    )
     try:
         lines = Path("/proc/self/cgroup").read_text(encoding="ascii").splitlines()
     except OSError:
@@ -501,15 +527,23 @@ def _linux_cgroup_memory_usage():
         rel = rel.lstrip("/")
         if hierarchy == "0" and controllers == "":
             root = v2_root / rel
-            candidates.append((root / "memory.current", root / "memory.max"))
+            candidates.append(
+                (root / "memory.current", root / "memory.max", "inactive_file")
+            )
         elif "memory" in controllers.split(","):
             root = Path("/sys/fs/cgroup/memory") / rel
             candidates.append(
-                (root / "memory.usage_in_bytes", root / "memory.limit_in_bytes")
+                (
+                    root / "memory.usage_in_bytes",
+                    root / "memory.limit_in_bytes",
+                    # v1's own ``inactive_file`` leaves out child cgroups,
+                    # which its usage counts.
+                    "total_inactive_file",
+                )
             )
 
     seen = set()
-    for current_path, limit_path in candidates:
+    for current_path, limit_path, cache_key in candidates:
         key = (str(current_path), str(limit_path))
         if key in seen:
             continue
@@ -522,7 +556,10 @@ def _linux_cgroup_memory_usage():
         # effectively unlimited. Do not mistake that for a useful hard cap.
         if limit >= (1 << 60):
             continue
-        return current, limit
+        cache = _reclaimable_page_cache(
+            current_path.with_name("memory.stat"), cache_key
+        )
+        return max(current - cache, 0), limit
     return None
 
 
