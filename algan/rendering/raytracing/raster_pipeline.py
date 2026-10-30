@@ -1264,6 +1264,19 @@ def _circuit_pair_expand_rows(
         float(half_h),
         float(aa_hw),
     )
+    # Every masked box big enough to go row by row gets a slot per row for
+    # its span, which the count pass fills and the write pass reads: one
+    # readback more than sizing the rows alone, for a write pass that no
+    # longer projects anything.
+    bh = (y1f - y0f + 1).clamp_min(0)
+    span_rows = torch.where(
+        (mflat != 0) & ((x1f - x0f + 1) * bh >= span_min_area), bh, 0
+    )
+    row_offs = torch.cumsum(span_rows, 0) - span_rows
+    num_span_rows = int(span_rows.sum().item())
+    del bh, span_rows
+    span_x = torch.empty((max(num_span_rows, 1), 2), dtype=torch.float32, device=device)
+    spans = torch.empty(numel, dtype=torch.int32, device=device)
     counts = torch.empty(numel, dtype=torch.int64, device=device)
     pair_expand_count_circuits(
         mflat.view(torch.uint8),
@@ -1274,6 +1287,9 @@ def _circuit_pair_expand_rows(
         numel,
         raster_chunk,
         counts,
+        spans,
+        row_offs,
+        span_x,
         f_abs_k,
         ncirc,
         span_min_area,
@@ -1296,8 +1312,9 @@ def _circuit_pair_expand_rows(
         ncirc,
         raster_chunk,
         rows,
-        span_min_area,
-        *geometry,
+        spans,
+        row_offs,
+        span_x,
     )
     return rows
 
