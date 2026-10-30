@@ -812,10 +812,14 @@ cutoff only ever hands a T4 window to the faster sort: at HD, 30 frames, one
 of the explainer's two discoveries now declines it and the fragment sort went
 49 -> 21 ms.
 
-Not done: `note_sparse_discovery_footprint` still records a footprint for
-`sparse_discovery_bytes_for_frames`, which nothing calls, so the
-`sparse_discovery_safety` setting does nothing. The binned order's 77-83 -> 44
-ms (`binfragsort`, above) was against the classic path's two radix sorts; the
-default tie-gap path sorts once, and against that one sort the binned arm lost
-on the T4, with no timing on another card noted here. Time it on the next card
-before keeping it in that path.
+`note_sparse_discovery_footprint` recorded a footprint for
+`sparse_discovery_bytes_for_frames`, which nothing called, so the
+`sparse_discovery_safety` setting (`ALGAN_SPARSE_DISCOVERY_SAFETY`) did
+nothing; a follow-up removed all three. The ManualMemory peak model, which
+measures the discovery like everything else, is what sizes chunks for it.
+
+Not done: whether the counting sort should stay in the default tie-gap path,
+which sorts once. On the T4 it lost to that one radix sort at every density.
+The commit that added it (`52df5e9`) timed an 8.9M-fragment HD chunk at 44 ms
+with fused keys against 76 ms for one packed sort, on a card it does not name.
+Run `benchmarks/_binned_sort_density.py` on that card before removing it.
