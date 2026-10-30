@@ -11,8 +11,10 @@ and shades those (``sheet_resolve_taichi.sheet_resolve_shade``).
 Important implementation properties:
 
 * Triangle projection data is precomputed once per frame/primitive by
-  :func:`raster_pipeline.precompute_triangle_projection`.  Straddling cases use
-  exact per-pixel ray casting.
+  :func:`raster_pipeline.precompute_triangle_projection`.  Straddling cases,
+  and all-front triangles projected too far off-screen for the exact
+  coverage lattice (see ``_AA_LATTICE_MAX_EXTENT``), use per-pixel ray
+  casting instead.
 * Triangle/circuit COUNT and WRITE kernels fetch sampled alpha and discard
   alpha-zero texels before sorting.  Records contain only exact-distance
   key, typed primitive reference (including the circuit border/fill blend
@@ -170,10 +172,12 @@ _AA_FLAG_SHIFT = 16
 # window was tried first and rejected: no threshold in pixel footprints survives
 # grazing incidence, where it splits genuine shared edges.)
 #
-# Now informational only: per-sample transmittance (ss18) needs no facing to keep
-# a mesh's back faces out of its own silhouette, because each sample composites
-# in true depth order. It is still written, so the resolve can distinguish the
-# sheets if a future rule wants to.
+# Load-bearing downstream: the sheet compaction's band key, the closed-shell
+# coverage ceiling and the one-mesh front/back sums all split a pixel's
+# fragments by it. So BOTH coverage paths set it: _ss_pixel from the sign of
+# the exact lattice area, _raycast_pixel (straddlers, and triangles demoted off
+# the lattice) from the sign of its Moller-Trumbore determinant, calibrated to
+# agree with the projected path (tests/unit_tests/test_raster_lattice_bound.py).
 _AA_BACKFACE_BIT = 1 << _AA_FLAG_SHIFT
 
 # Marks a fragment whose coverage came from the sliver rule rather than from a
@@ -245,18 +249,40 @@ _AA_SLIVER_EXACT_OCC = 3
 # set machinery buys them nothing, and the SDF is exact.
 
 # Sub-pixel lattice for the exact coverage test: 1/4096 of a pixel. An edge
-# function is a product of two coordinate differences, so at a 4096-wide screen
-# (~2^24 lattice units) it reaches ~2^50 and the accumulator must be 64-bit --
-# which is also the ceiling on how fine this can go.
+# function is a product of two coordinate differences, so the accumulator must
+# be 64-bit -- which is also the ceiling on how fine this can go.
 #
 # Resolution matters because a triangle whose projected area rounds to ZERO on
 # the lattice has no usable edge functions at all. Near a silhouette, where the
 # surface turns edge-on, triangles get arbitrarily foreshortened; at 1/256 that
 # left visible holes around every rim.
+#
+# What the 64 bits must hold is set by the triangle's VERTICES, not by the
+# screen: a vertex just in front of the camera plane projects arbitrarily far
+# off it. With M_x, M_y the triangle's largest |sx|, |sy| and W x H the screen,
+# every product in _ss_pixel is at most 2^25 (M_x + W)(M_y + H) and every edge
+# function, sample test and the area sum at most 2^26 (M_x + W)(M_y + H)
+# lattice units. The wrapped int64 arithmetic is exact while those TRUE values
+# fit, so _AA_LATTICE_MAX_EXTENT = 2^36 keeps them under 2^62; past about 2^38
+# the orientation and the masks come out wrong (measured: most of a floor slab
+# 0.01 in front of the camera vanished). The same bound covers _ss_pixel's
+# float pre-reject: near an edge its two products are each about
+# |edge| * |dx dy| / |d| <= |edge| * sqrt(2^36 / 2) px^2, d = (dx, dy) the
+# pixel's offset from the edge's start, so six f32 roundings move a distance
+# by at most 6 * 2^-24 * 2^17.5 = 0.066 px -- inside the 0.088 px between its
+# 0.7072 threshold and the farthest of the 8 samples (the 16-sample pattern
+# leaves 0.043 px, and would need 2^34). _AA_LATTICE_MAX_COORD bounds the
+# coordinates themselves: at 2^21 px an f32 coordinate resolves only 1/4 px,
+# and the f32 clipped areas built from it err by up to ~0.1 of a pixel -- the
+# ray-cast path's own sampled-coverage error -- while span candidates (1 px
+# margin) stay safe. raster_pipeline._triangle_projection_fused demotes an
+# all-front triangle past either bound to flag 0.5, the per-pixel ray cast.
 _AA_FIXED_SHIFT = 12
 _AA_FIXED_SCALE = float(1 << _AA_FIXED_SHIFT)
 _AA_FIXED_HALF = 1 << (_AA_FIXED_SHIFT - 1)
 _AA_Q_INF = 1 << 62
+_AA_LATTICE_MAX_EXTENT = float(1 << 36)
+_AA_LATTICE_MAX_COORD = float(1 << 21)
 
 # The standard sparse sample positions (the D3D 8x and 16x patterns), in 16ths
 # of a pixel from its centre: one sample per row and per column of an 8x8 / 16x16
@@ -1027,10 +1053,13 @@ def _ss_setup(f, prim, ss_enabled: ti.template(), tri_pos: ti.template(),
     """Load the per-(frame, triangle) projection prepared once by the host.
 
     ``tri_screen[..., 0:3]`` are sx, ``3:6`` sy, ``6:9`` reciprocal
-    perspective divisors, and column 9 is a validity flag.  World vertices are
-    still read from ``tri_pos`` for hit reconstruction and the ray-cast
-    fallback.  This removes repeated camera projection setup from every z,
-    count, write, shadow-event, and resolve chunk.
+    perspective divisors, and column 9 is the path flag
+    (:func:`raster_pipeline.precompute_triangle_projection` lists its
+    values): above 0.5 the projected lattice path, otherwise the ray-cast
+    fallback -- which includes 0.5, an all-front triangle too far off-screen
+    for the lattice.  World vertices are still read from ``tri_pos`` for hit
+    reconstruction and the ray-cast fallback.  This removes repeated camera
+    projection setup from every count and write chunk.
 
     Under analytic coverage (``aa``) columns 10:13 additionally hold the
     reciprocal screen edge lengths, returned as ``il``; the host only allocates
@@ -1557,8 +1586,11 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                    cam_proj: ti.template(),
                    aa: ti.template()):
     """Per-pixel ray-cast fallback (Moller-Trumbore), used when a triangle
-    straddles the camera plane so screen-space projection is invalid. Returns
-    ``(ok, t, w1, w2, cov, msk)``.
+    straddles the camera plane so screen-space projection is invalid, and for
+    an all-front triangle projected too far off-screen for the exact lattice
+    (projection flag 0.5, see ``_AA_LATTICE_MAX_EXTENT``). Returns
+    ``(ok, t, w1, w2, cov, msk)``; under analytic coverage ``msk`` carries the
+    facing bit exactly as :func:`_ss_pixel` sets it.
 
     Under analytic coverage this does NOT report full coverage. It cannot use the
     screen-space edge functions -- the projection that would supply them is the
@@ -1652,6 +1684,10 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
             # a closed mesh backwards along every silhouette). A fully covered
             # fragment's centroid is the pixel centre, so it keeps the centre
             # ray untouched.
+            # ``det_hit`` is the determinant of whichever ray ``th`` ends up
+            # from: the facing test below needs a ray that meets the plane in
+            # FRONT of the camera.
+            det_hit = det
             if (m != 0) and (m != _AA_MASK_ALL):
                 inv_n = 1.0 / ti.cast(nsm, ti.f32)
                 jxc = 0.5 + sox * inv_n * ti.static(1.0 / _AA_FIXED_SCALE)
@@ -1668,11 +1704,29 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                     b1 = tvc.dot(pvc) * ivc
                     b2 = rdc.dot(qvc) * ivc
                     th = e2.dot(qvc) * ivc
+                    det_hit = detc
             if (m != 0) and (th > min_hit_distance):
                 ok = 1
                 t = th
                 cov = ti.cast(_popcount_samples(m), ti.f32) * _AA_SAMPLE_WEIGHT
                 msk = m
+                # Facing, as _ss_pixel reports it: there the bit is set when
+                # the lattice area is negative, and for an all-front triangle
+                # that area's sign is sign(big_d) * sign((V0 - eye) . N),
+                # N = e1 x e2, big_d = (screen_point - eye) . n with
+                # n = pixel_basis_x x pixel_basis_y. Here det = e1 . (rd x e2)
+                # = -rd . N, and for a ray meeting the plane at th > 0,
+                # sign(rd . N) = sign((V0 - eye) . N); every forward ray has
+                # sign(rd . n) = sign(big_d). So the same bit is
+                # det * (rd . n) > 0 -- and it stays defined for a straddler,
+                # whose projected area is not.
+                nvec = ti.math.vec3(
+                    pixel_basis_x[f, 0], pixel_basis_x[f, 1],
+                    pixel_basis_x[f, 2]).cross(ti.math.vec3(
+                        pixel_basis_y[f, 0], pixel_basis_y[f, 1],
+                        pixel_basis_y[f, 2]))
+                if det_hit * rd.dot(nvec) > 0.0:
+                    msk |= _AA_BACKFACE_BIT
                 # The centre may lie outside the triangle when only some samples
                 # are inside, so project its barycentrics onto the simplex
                 # before they index colors, normals and UVs (as _ss_pixel does).

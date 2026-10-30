@@ -1091,7 +1091,11 @@ Camera
 * ``camera.near > 0`` forces the supersampled fallback path for the whole batch.
   Leave it at ``0`` unless you specifically need near clipping.
 * Geometry crossing the camera plane is handled **exactly** -- such a primitive
-  is intersected by ray casting per sub-pixel sample rather than projected --
+  is intersected by ray casting per sub-pixel sample rather than projected.
+  So is a large triangle lying a hair in front of the plane, which would
+  project too far off-screen for the projected path's fixed-point coverage
+  arithmetic. Ray-cast edges get eight-sample coverage rather than the exact
+  area the projected path computes, and cost a few times more per pixel --
   but a primitive whose bounding box *contains the camera origin* cannot be
   bounded on screen at all and is tested against the whole frame. A camera
   flying through the middle of a scene puts many primitives in that state at
