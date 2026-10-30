@@ -3598,7 +3598,6 @@ def raytrace_render_wavefront(
             "Analytic raster AA was selected before allocation, but the "
             "wavefront route rejected the batch."
         )
-    env_active = env_meta is not None and int(env_meta[1]) > 0
     # The sheet route is the only raster resolve (the dense fragment walk is
     # deleted): env-mapped batches prefill the frame buffer in render_chunk,
     # the resolve stays linear, and an in-kernel tonemap runs in the
@@ -4493,7 +4492,6 @@ def raytrace_render_wavefront(
                 half_screen_w,
                 half_screen_h,
                 layer_offset_triangles,
-                env_in_composite=env_active,
                 depth_order_eye=depth_order_eye,
                 near_clip=near_clip,
                 far_clip=far_clip,

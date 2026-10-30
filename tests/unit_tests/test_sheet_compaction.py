@@ -1459,3 +1459,152 @@ def test_compaction_reads_back_a_bounded_number_of_scalars():
             setattr(torch.Tensor, name, originals[name])
     assert out["num_sheets"] >= 5
     assert counts["n"] <= 5, f"{counts['n']} scalar readbacks in one compaction"
+
+
+# ---- Kernel extents past int32 -------------------------------------------------
+# Quadrants addresses an ndarray in int32 and wraps a ``ti.i32`` argument, so
+# every kernel on the fragment-to-sheet path is asked
+# ``sheet_stream.kernel_extents_fit`` first and its torch arm runs on a no. A
+# stream that large would not fit in memory, so the bounds are pinned as
+# predicates at their true values and the routing by lowering the limit.
+
+_KERNEL_MODULES = (
+    "sheet_compact_taichi",
+    "sheet_depth_taichi",
+    "sheet_metadata_taichi",
+    "sheet_rank_groups_taichi",
+    "sheet_sibling_taichi",
+    "sheet_sort_taichi",
+    "sheet_stream_taichi",
+)
+
+
+def _record_kernel_launches(monkeypatch):
+    """The names of the compaction kernels launched from here on."""
+    import importlib
+
+    launched = []
+    for module_name in _KERNEL_MODULES:
+        module = importlib.import_module(f"algan.rendering.raytracing.{module_name}")
+        for name, kernel in list(vars(module).items()):
+            if getattr(kernel, "_is_wrapped_kernel", False):
+
+                def spy(*args, _kernel=kernel, _name=name):
+                    launched.append(_name)
+                    return _kernel(*args)
+
+                monkeypatch.setattr(module, name, spy)
+    return launched
+
+
+def _assert_same_tensors(got, want):
+    assert got.keys() == want.keys()
+    for field, value in want.items():
+        if torch.is_tensor(value):
+            assert torch.equal(got[field], value), field
+        else:
+            assert got[field] == value, field
+
+
+def test_the_lane_owner_table_bounds_its_entries_not_its_rows():
+    # The kernels address row ``b``'s lanes from ``b * AA_NUM_SAMPLES`` in
+    # int32, which wraps from row 2**28 on while the row count is far below
+    # 2**31.
+    from algan.rendering.raytracing.raster_taichi import _AA_NUM_SAMPLES
+    from algan.rendering.raytracing.sheets import _lane_table_fits
+
+    rows = 2**31 // _AA_NUM_SAMPLES
+    assert _lane_table_fits(2**31 - 1, rows - 1)
+    assert not _lane_table_fits(1, rows)
+    assert not _lane_table_fits(2**31, 1)
+
+
+@pytest.mark.parametrize("spare", [0, 1])
+def test_a_lane_table_at_the_extent_limit_takes_the_torch_arm(monkeypatch, spare):
+    # Four triangle fragments size a four-row table. With the limit at exactly
+    # its entries the owner kernel must not launch, and with one to spare it
+    # must; the sheets are the same either way.
+    from algan.rendering.raytracing import sheet_stream
+    from algan.rendering.raytracing.raster_taichi import _AA_NUM_SAMPLES
+
+    kwargs = {"band_rule": "facing", "sample_depth": True, "num_tri_fragments": 4}
+    want = _compact(_CROSSING_WITH_STROKES, **kwargs)
+    launched = _record_kernel_launches(monkeypatch)
+    limit = 4 * _AA_NUM_SAMPLES + spare
+    monkeypatch.setattr(sheet_stream, "KERNEL_EXTENT_LIMIT", limit)
+    got = _compact(_CROSSING_WITH_STROKES, **kwargs)
+    assert ("sheet_lane_first_owner" in launched) == bool(spare)
+    _assert_same_tensors(got, want)
+
+
+def test_a_stream_past_every_kernel_extent_compacts_in_torch(monkeypatch):
+    # At a limit of 1 every extent is refused, so not one compaction kernel may
+    # launch, and the torch arms must hand back the sheets the kernels did.
+    from algan.rendering.raytracing import sheet_stream
+
+    z = (0.0, 0.0, 1.0)
+    x = (1.0, 0.0, 0.0)
+    tn = _norms({0: (z, z, z), 1: (x, x, x), 4: (z, z, z), 5: (z, z, z)})
+    frags = _CROSSING_WITH_STROKES + [
+        (3, 1.001, 0, 0.5, 0b00001111 | MAT_OPAQUE),
+        (3, 1.002, 1, 0.5, 0b11110000 | MAT_OPAQUE),
+    ]
+    kwargs = {
+        "band_rule": "facing",
+        "shade_split": True,
+        "sample_depth": True,
+        "tri_norm": tn,
+        "num_tri_fragments": 6,
+    }
+    launched = _record_kernel_launches(monkeypatch)
+    want = _compact(frags, **kwargs)
+    assert launched, "no kernel arm ran at the real limit, so nothing is compared"
+    launched.clear()
+    monkeypatch.setattr(sheet_stream, "KERNEL_EXTENT_LIMIT", 1)
+    got = _compact(frags, **kwargs)
+    assert launched == []
+    _assert_same_tensors(got, want)
+
+
+def test_the_raster_fragment_passes_past_the_extent_limit_take_torch(monkeypatch):
+    # The emission's sorted-stream passes ahead of the compaction: the fused
+    # gather, the opaque-prefix truncation and the one-mesh caps.
+    from algan import SETTINGS
+    from algan.rendering.raytracing import raster_pipeline as rp
+    from algan.rendering.raytracing import sheet_stream
+
+    coverage, merged, _cam, _pws = _coverage(_CROSSING_WITH_STROKES)
+    key, ref, ab, cov, msk = (
+        coverage[name]
+        for name in ("frag_key", "frag_ref", "frag_ab", "frag_cov", "frag_msk")
+    )
+    n = key.numel()
+    opaque = (msk & MAT_OPAQUE) != 0
+    _covered, counts = torch.unique_consecutive(key >> 32, return_counts=True)
+    order = torch.arange(n - 1, -1, -1)
+
+    def run():
+        return (
+            rp._gather_fragment_arrays(order, key, ref, ab, cov, msk, opaque),
+            rp._opaque_prefix_keep(opaque, counts, n),
+            rp._one_mesh_pixel_caps(
+                key, ref, cov, msk.clone(), opaque, counts, merged["tri_obj"], 16, 0
+            ),
+        )
+
+    with SETTINGS.raytracing.experimental.override(raster_fused_gather=True):
+        launched = _record_kernel_launches(monkeypatch)
+        want = run()
+        assert {
+            "gather_fragment_arrays",
+            "opaque_prefix_keep",
+            "one_mesh_pixel_reduce",
+        } <= set(launched)
+        launched.clear()
+        monkeypatch.setattr(sheet_stream, "KERNEL_EXTENT_LIMIT", 1)
+        got = run()
+    assert launched == []
+    for g, w in zip(
+        (*got[0], got[1], *got[2]), (*want[0], want[1], *want[2]), strict=True
+    ):
+        assert torch.equal(g, w)

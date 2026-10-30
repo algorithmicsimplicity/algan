@@ -835,44 +835,6 @@ wf_gen_fused_min_win = env_float("ALGAN_WF_GEN_FUSED_MIN_WIN", 30.0)
 _WF_GEN_FUSED_ON = False
 _WF_GEN_FUSED_BATCHES = 0
 
-# Learned per-output-frame arena footprint of the sparse-coverage discovery
-# (prepare_sparse_raster_coverage): the whole-window exact hit stream + compact
-# result is a data-dependent, whole-window allocation the wavefront memory model
-# cannot predict a priori (it scales with the covered-fragment count, unknown
-# until the COUNT kernel runs). Rather than bound it by a crippling worst-case
-# (full-frame coverage), the actual footprint of each rendered chunk is amortized
-# per output frame here, and the render-chunk preflight reserves
-# ``num_frames * this`` so subsequent chunks are sized to fit the discovery peak
-# instead of over-committing and relying on the OOM window-halving. Reset per
-# render job; tracked as the running maximum (coverage is temporally coherent, so
-# the densest chunk seen is a safe reservation). Bytes per frame, float.
-_SPARSE_DISCOVERY_BYTES_PER_FRAME = 0.0
-# Safety multiplier on the learned footprint: absorbs the small per-pair count
-# arrays, arena alignment, and modest coverage growth between adjacent chunks.
-sparse_discovery_safety = env_float("ALGAN_SPARSE_DISCOVERY_SAFETY", 1.25)
-
-
-def note_sparse_discovery_footprint(arena_bytes, num_frames):
-    """Record the arena footprint of one sparse-coverage discovery pass so the
-    render-chunk preflight can reserve for the next one (see
-    ``_SPARSE_DISCOVERY_BYTES_PER_FRAME``).
-    """
-    global _SPARSE_DISCOVERY_BYTES_PER_FRAME
-    per_frame = float(arena_bytes) / max(1, int(num_frames))
-    if per_frame > _SPARSE_DISCOVERY_BYTES_PER_FRAME:
-        _SPARSE_DISCOVERY_BYTES_PER_FRAME = per_frame
-
-
-def sparse_discovery_bytes_for_frames(num_frames):
-    """Reserved arena bytes for the sparse-coverage discovery over ``num_frames``
-    frames (0 until the first discovery of the job establishes a density).
-    """
-    return int(
-        _SPARSE_DISCOVERY_BYTES_PER_FRAME
-        * sparse_discovery_safety
-        * max(1, int(num_frames))
-    )
-
 
 def set_wf_gen_fused(mode):
     """Set fused primary-ray generation on the deterministic wavefront:
@@ -898,9 +860,8 @@ def _begin_render_job():
     """Render-loop hook: a new render job starts (resets the per-job batch
     count; the fused decision itself stays sticky for the process).
     """
-    global _WF_GEN_FUSED_BATCHES, _SPARSE_DISCOVERY_BYTES_PER_FRAME
+    global _WF_GEN_FUSED_BATCHES
     _WF_GEN_FUSED_BATCHES = 0
-    _SPARSE_DISCOVERY_BYTES_PER_FRAME = 0.0
 
 
 def _note_batch_rendered(frames, seconds, frames_remaining):
@@ -2354,9 +2315,9 @@ sheet_shade_split = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 # What IS available is carrying them across. With this on, mode 1 stores each
 # processed triangle sheet's color (4), alpha, reflectivity, roughness, IOR,
 # transmission and surface point -- twelve floats -- and mode 2 reads them
-# back instead of calling _tri_color_g / _tri_extra_g /
-# _tri_ior_transmission_g / _tri_surface_point again. The values are copied
-# verbatim through f32, so the frame is BYTE-IDENTICAL
+# back instead of calling _tri_color_g / _tri_material_g / _tri_surface_point
+# again. The values are copied verbatim through f32, so the frame is
+# BYTE-IDENTICAL
 # (benchmarks/_sheet_memo_parity.py).
 #
 # DEFAULT OFF, on measurement -- the candidate is built and correct, and it

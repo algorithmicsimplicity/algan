@@ -43,6 +43,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
 from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
+from algan.rendering.raytracing.sheet_stream import kernel_extents_fit
 from algan.settings import SETTINGS
 from algan.utils.torch_compile import compiled
 
@@ -1320,6 +1321,12 @@ def _class_any_flags(pre_m):
     )
 
 
+#: What :func:`_pair_expand_rows` returns when the rows it counted are more
+#: than its write pass can address; ``_class_pairs_flat`` then builds them in
+#: torch. ``None`` already means "no rows".
+_PAIRS_TOO_MANY = object()
+
+
 def _pair_expand_rows(
     mask, x0, x1, y0, y1, f_abs, ncirc, device, screen=None, circuits=None
 ):
@@ -1383,6 +1390,8 @@ def _pair_expand_rows(
     total = int(counts.sum().item())
     if total == 0:
         return None
+    if not kernel_extents_fit(total * 8):
+        return _PAIRS_TOO_MANY
     rows = torch.empty((total, 8), dtype=torch.int32, device=device)
     pair_expand_write(
         mflat.view(torch.uint8),
@@ -1467,6 +1476,8 @@ def _circuit_pair_expand_rows(
     row_offs = torch.cumsum(span_rows, 0) - span_rows
     num_span_rows = int(span_rows.sum().item())
     del bh, span_rows
+    if not kernel_extents_fit(num_span_rows * 2):
+        return _PAIRS_TOO_MANY
     span_x = torch.empty((max(num_span_rows, 1), 2), dtype=torch.float32, device=device)
     spans = torch.empty(numel, dtype=torch.int32, device=device)
     counts = torch.empty(numel, dtype=torch.int64, device=device)
@@ -1491,6 +1502,8 @@ def _circuit_pair_expand_rows(
     total = int(counts.sum().item())
     if total == 0:
         return None
+    if not kernel_extents_fit(total * 8):
+        return _PAIRS_TOO_MANY
     rows = torch.empty((total, 8), dtype=torch.int32, device=device)
     pair_expand_write_circuits(
         mflat.view(torch.uint8),
@@ -1523,10 +1536,13 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None, circuits
         rt_settings.raster_pair_expand_kernel
         and mask.numel()
         and f_abs.numel() * ncirc == mask.numel()
+        and kernel_extents_fit(mask.numel())
     ):
-        return _pair_expand_rows(
+        rows = _pair_expand_rows(
             mask, x0, x1, y0, y1, f_abs, ncirc, device, screen, circuits
         )
+        if rows is not _PAIRS_TOO_MANY:
+            return rows
     idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
     if idx.numel() == 0:
         return None
@@ -1648,6 +1664,28 @@ def _check_circuit_ref_capacity(merged):
             f"{num_circuits} bezier circuits in one render batch exceeds the "
             f"{limit} a packed fragment ref can address; reduce the frame "
             f"batch size (SETTINGS.computing) or split the scene."
+        )
+
+
+def _check_raster_chunk_capacity(num_frags):
+    """Guard the int32 extents of one raster chunk's fragment arrays.
+
+    The emission's write kernels fill ``[num_frags, 2]`` barycentrics, which
+    Quadrants addresses by an int32 flat offset, so they run out at 2**30
+    fragments. ``run_offsets``, the pixel-run CSR a coverage record carries, is
+    int32 by the record's format and ends at the fragment count, and the host
+    builds it with an int32 ``cumsum``, which wraps rather than fails. Neither
+    has a wider arm to fall back to, so a chunk of 2**30 or more fragments is
+    refused where the emission sizes it, before anything is allocated. (A
+    literal, not :func:`kernel_extents_fit`, so a test that lowers the kernels'
+    limit to reach their torch arms still renders.)
+    """
+    if num_frags >= 2**30:
+        raise OverflowError(
+            f"{num_frags} fragments in one raster chunk exceeds the 2**30 - 1 "
+            f"the emission's int32-addressed [n, 2] barycentrics can hold; "
+            f"reduce the frame batch size (SETTINGS.computing) or split the "
+            f"scene."
         )
 
 
@@ -2063,7 +2101,13 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     is +53 MB of peak for 4 ms of gather, so that site stays sequential.
     """
     m = int(idx.shape[0])
-    if not rt_settings.raster_fused_gather or m == 0:
+    # The kernel narrows ``idx`` and addresses the [N, 2] and [m, 2]
+    # barycentrics, the widest arrays it takes.
+    if (
+        not rt_settings.raster_fused_gather
+        or m == 0
+        or not kernel_extents_fit(ab.numel(), 2 * m)
+    ):
         # ``key`` is the packed 64-bit fragment key and takes the split gather
         # (see ``gather_packed_key``); the other five are 32 bits or narrower
         # and go straight through. Off MPS-friendly mode both are
@@ -2115,7 +2159,12 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
     flag comparisons over identical ranges, so they agree by construction.
     """
     device = opaque_s.device
-    if not rt_settings.raster_opaque_trunc_kernel or num_frags == 0:
+    # The kernel narrows each pixel's CSR start and end, which reach ``num_frags``.
+    if (
+        not rt_settings.raster_opaque_trunc_kernel
+        or num_frags == 0
+        or not kernel_extents_fit(num_frags)
+    ):
         positions = torch.arange(num_frags, dtype=torch.int64, device=device)
         segments = torch.repeat_interleave(
             torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
@@ -2178,7 +2227,11 @@ def _one_mesh_pixel_caps(
     """
     device = key_s.device
     num_covered = int(counts.numel())
-    if rt_settings.sheet_one_mesh_kernel:
+    # The kernels narrow each pixel's CSR start and end, which reach the stream
+    # length, and the reduce takes ``ppf`` as i32 and addresses ``tri_obj``.
+    if rt_settings.sheet_one_mesh_kernel and kernel_extents_fit(
+        key_s.numel(), tri_obj.numel(), ppf
+    ):
         from algan.rendering.raytracing.sheet_compact_taichi import (
             one_mesh_pixel_apply,
             one_mesh_pixel_reduce,
@@ -2554,7 +2607,6 @@ def prepare_sparse_raster_coverage(
     half_w,
     half_h,
     layer_offset_triangles,
-    env_in_composite=False,
     depth_order_eye=None,
     keep_fragment_stream=None,
     near_clip=0.0,
@@ -2903,6 +2955,7 @@ def prepare_sparse_raster_coverage(
         num_frags = int(frag_bounds[-1])
         if num_frags == 0:
             return None
+        _check_raster_chunk_capacity(num_frags)
         # Pre-truncation emitted-fragment count: this sizes the discovery
         # scratch (frag_*_u) and, for an opaque-heavy pixel, exceeds the final
         # kept count. The arena footprint recorded before the return reserves
@@ -3262,7 +3315,6 @@ def prepare_sparse_raster_coverage(
                 "sheet_cap": frag_cap,
                 "sheet_offsets": run_offsets,
                 "num_sheets": num_frags,
-                "env_in_composite": bool(env_in_composite),
             }
         else:
             # The stream is the compaction's input and nothing else's on the
@@ -3389,9 +3441,6 @@ def prepare_sparse_raster_coverage(
                 "sheet_cap": sheet_cap_t,
                 "sheet_offsets": sheet_offsets,
                 "num_sheets": ns,
-                # Pinned with the emission like aa_*: the resolve's env
-                # handling must match the frame buffer this batch prefilled.
-                "env_in_composite": bool(env_in_composite),
             }
 
         # Recorded for calibration: the fragment/covered counts are this
@@ -3405,28 +3454,6 @@ def prepare_sparse_raster_coverage(
             pixels=int(width) * int(height),
         )
 
-    # The discovery's arena peak, amortized per output frame for a render-chunk
-    # preflight to reserve against (``sparse_discovery_bytes_for_frames``,
-    # which no planner reads yet): the pre-truncation scratch (frag_*_u:
-    # 8+4+8+4+4+1 B/frag), the compact stream (frag_key/ref/ab/cov/msk/cap:
-    # 8+4+8+4+4+4 B/frag; covered_idx/run_offsets: 4+4 B/covered), and 32 B of
-    # sheet record per sheet plus the sheet CSR. Of these only covered_idx and
-    # the sheets outlive this function unless the stream is kept. The
-    # torch-side sort and scatter intermediates are allocator-owned, like the
-    # fragment sort's.
-    per_frag = 32
-    discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
-    discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
-    # New scratch is observed by ManualMemory's peak model too. Keep this
-    # explicit reserve conservative: the scan and sorted-stream scratch have
-    # disjoint lifetimes, and final records are copied after scratch is freed.
-    if rt_settings.sheet_device_runs:
-        discovery_bytes += 8 * discovery_frags
-    if rt_settings.sheet_fused_stream:
-        discovery_bytes += 21 * num_frags + 8  # dtype alignment
-    rt_settings.note_sparse_discovery_footprint(
-        discovery_bytes, int(time_end) - int(time_start)
-    )
     if not stroke_only and not keep_fragment_stream:
         # Reclaimed with the scope above: no view of it may leave here.
         frag_key = frag_ref = frag_ab = frag_cov = frag_msk = frag_cap = None
@@ -3586,10 +3613,10 @@ def shade_sparse_raster_coverage(
     # so in a batch with none of them no fan can run, and compiling ``sec_aa``
     # taps there buys nothing but the unrolled bodies -- most of the kernel's
     # compile time (the built-in 2-D variant: ~45 s against ~17 s on a 4-vCPU
-    # CPU). The event pass (mode 1) keeps the live count, because its
-    # ``event_dp`` footprint -- sized below, read by raster_shadow_trace --
-    # depends on it; it compiles its fans out by itself (the kernel's
-    # ``fan_taps``).
+    # CPU). The event pass (mode 1) compiles its fans out by itself (the
+    # kernel's ``fan_taps``) and takes a fixed 2 for any live count above 1:
+    # its ``event_dp`` footprint -- sized below, read by raster_shadow_trace
+    # -- only asks whether there is a fan (``event_args``).
     from algan.rendering.raytracing.tracer import _batch_can_spawn_continuations
 
     shade_taps = sec_aa if _batch_can_spawn_continuations(merged) else 1
@@ -3659,12 +3686,37 @@ def shade_sparse_raster_coverage(
         # accumulator rows this launch writes; the live mode where no batch
         # decision was made.
         int(merged.get("glossy_mode", rt_settings.glossy_reflection_mode())),
-        1 if coverage.get("env_in_composite") else 0,
         int(rt_settings.direct_specular_lobe),
     )
 
     def pre_args(vis_slots, taps):
         return (*pre_head, vis_slots, *pre_mid, taps, *pre_tail)
+
+    # The event pass (mode 1) reads none of the shading axes -- frag_shading,
+    # frag_pipelines, tri_pids, skip_unlit_normal and direct_spec reach only
+    # ``mode != 1`` code -- and its output depends on ``sec_aa`` only through
+    # ``sec_aa > 1`` (the ``event_dp`` footprint; its fans compile out). Fixed
+    # values for them give every batch's event pass one compiled variant
+    # instead of one per shading configuration, each about 5.6 s cold on a
+    # 4-vCPU CPU. ``vis_lights`` is already 1 here (``shaded_slots``).
+    layer_arg, _frag, _pipes, _pids, refr_arg, stack_arg, _skip, bez_arg = pre_mid
+    energy_arg, glossy_arg, _spec = pre_tail
+    event_args = (
+        *pre_head,
+        1,  # vis_lights
+        layer_arg,
+        0,  # frag_shading
+        (),  # frag_pipelines
+        0,  # tri_pids
+        refr_arg,
+        stack_arg,
+        0,  # skip_unlit_normal
+        bez_arg,
+        min(sec_aa, 2),
+        energy_arg,
+        glossy_arg,
+        0,  # direct_spec
+    )
 
     post_args = (
         covered_idx,
@@ -3732,7 +3784,7 @@ def shade_sparse_raster_coverage(
         )
         sheet_memo = _arena_tensor(memory, (S if memo_on else 1, 12), torch.float32)
         sheet_resolve_shade(
-            *pre_args(1, sec_aa),
+            *event_args,
             1,
             term_mode,
             sided_on,
