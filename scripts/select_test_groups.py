@@ -77,6 +77,8 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sheet_resolve_variants.py::test_mode_1_unrolls_no_continuation_fan",
     # Nor, under the glossy prefilter, spreads one over the GGX lobe.
     "tests/unit_tests/test_sheet_resolve_variants.py::test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe",
+    # Its launches name every argument, so none can land in another's place.
+    "tests/unit_tests/test_sheet_resolve_variants.py::test_a_resolve_launch_names_every_argument",
     # The sequential oracle's band, claim, residue and NaN rules, which the
     # kernel follows (test_sheet_resolve_parity.py): tensors only.
     "tests/unit_tests/test_sheet_compaction.py::test_oracle_band_occludes_by_each_siblings_own_alpha",

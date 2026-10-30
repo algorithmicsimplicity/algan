@@ -398,7 +398,7 @@ def sheet_resolve_shade_arena(
     # ``sec_aa > 1`` (the ``event_dp`` footprint below), so the host passes it
     # 2 for any count above 1, and passes ``sec_aa`` 1 to the shading launches
     # of a batch with nothing a fan could reflect or refract through
-    # (raster_pipeline's ``event_args`` and ``shade_taps``).
+    # (raster_pipeline's ``event_axes`` and ``shade_taps``).
     fan_taps = ti.static(sec_aa if mode != 1 else 0)
     # Quadrants patch 0005's per-kernel register cap, off unless
     # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
@@ -1714,9 +1714,30 @@ def sheet_resolve_shade(*args):
 
     Takes the argument list this kernel had before it was converted to
     the arena calling convention, so no launch site changed; see
-    `arena_args_taichi`.
+    `arena_args_taichi`. The launch sites build that list by name, with
+    :func:`sheet_resolve_args`.
     """
     return _sheet_resolve_shade_launch(*args)
+
+
+def sheet_resolve_args(**named):
+    """``sheet_resolve_shade``'s positional argument list, from every one of
+    its arguments by name.
+
+    The launch takes 76 arguments by position, and so does every hook on it,
+    but a launch site that lists them by position can slip without an error:
+    the templates ``mode``, ``shadow_term``, ``sided_cull``, ``memo`` and
+    ``det_sum`` sit side by side, and two swapped compile and run another
+    variant. So the launch sites name them here instead, and a name that is
+    missing or not one of the kernel's raises.
+    """
+    missing = [n for n in _SHEET_RESOLVE_SHADE_PARAMS if n not in named]
+    unknown = sorted(set(named) - set(_SHEET_RESOLVE_SHADE_PARAMS))
+    if missing or unknown:
+        raise TypeError(
+            f"sheet_resolve_shade: missing arguments {missing}, "
+            f"unknown arguments {unknown}")
+    return tuple(named[n] for n in _SHEET_RESOLVE_SHADE_PARAMS)
 
 
 @ti.kernel
