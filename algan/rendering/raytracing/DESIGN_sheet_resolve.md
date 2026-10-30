@@ -284,6 +284,21 @@ interior tiling produces `area == 1`, `Q == 1`, `corr == 1` natively.
 Intra-sheet coverage is exact; inter-sheet occlusion is resolved at N sample
 positions — that split is deliberate (§6.1).
 
+Two refinements since (2026-10-30). Where `corr > 1` the claim is also capped
+at `sum_s T[s] / N`, what the whole pixel still shows: the sheet covers more
+than its samples' share, but behind a nearer occluder the rest of its area is
+hidden, not elsewhere, and the clamped write's redistributed residue already
+stops there. Uncapped, a back silhouette of area 0.45 on the three samples a
+nearer sheet left open claimed 0.45 of a pixel that showed 0.375. And a
+coloured transmitter's tint rides in the throughput, since `T[s]` is one
+number: it is the ratio of what the samples keep per channel to what they
+keep, weighed by `T[s]`, which is exact for the pixel. It used to blend
+toward the full-coverage tint linearly in the sheet's area, and a green sheet
+passing half its light, over half a red pixel, let 0.375 of the red through,
+against the 0.5 its uncovered half alone shows. (Glass refracts through a ray
+of its own and occludes as opaque here; this is a transmitter at an index of
+1, or glass with no bounces left.)
+
 4.4 Within a band: siblings composite additively
 -------------------------------------------------
 Sheets sharing `(pixel, mesh, facing, band)` but different region class
@@ -314,11 +329,12 @@ and ranks CLASS-BLIND (a band is the sheet the split-off compaction would
 build) and subdivides it afterwards, so each sibling can be handed the band's
 sample union and `p_i = corr * share_i`, its share of the band's per-sample
 coverage factor. Every sibling but the one that closes the band in walk order
-carries `p_i` NEGATED: the sign is the flag that tells the resolve the band
-continues, so it claims against the undimmed visibility and defers the write.
-The resolve sums `p_i` in a register and writes once, at the closing sibling,
-with `corr` and the material alpha -- exactly the write the unsplit band
-made. Committed coverage is therefore independent of the split at any alpha,
+carries `_AA_BAND_CONT_BIT` (mask bit 28): the flag that tells the resolve the
+band continues, so it claims against the undimmed visibility and defers the
+write. The resolve sums `p_i` times each sibling's own alpha (and the part of
+that it transmits) in registers and writes once, where the band closes -- at
+a uniform alpha exactly the write the unsplit band made. Committed coverage is
+therefore independent of the split at any alpha,
 which is what the compaction suite pins (donor, corr > 1, partitioned and
 mismatched samples, alpha 1/0.6/0.25). Areal bands (empty union, or a
 fragment sliver) are position-less and stay whole. A band another surface
@@ -392,6 +408,31 @@ tied, summed error 1143 -> 245. The other four scenes move 1 pixel each at
 their worst frame, every one closer (94->0, 28->7, 13->2, 8->0, 13->1).
 `manim_compat_and_plots` -- pure circuits, which carry no rank -- is
 byte-identical, the mechanism confirming itself again.
+
+**The band's write is its siblings', and it is always made (2026-10-30).** The
+Sheet Resolve Review found three ways the write above went wrong; each is
+fixed in the kernel and the oracle together.
+
+* It took the CLOSING sibling's alpha and transmission for the whole band.
+  Siblings are one surface but not one material sample: a cube whose faces
+  have different opacities, or a per-vertex alpha gradient, hands them
+  different alphas, and the crease occluded by whichever face the walk reached
+  last. On a cube over a floor with four of its twelve triangles at 0.2 and
+  the rest at 0.75, what 376 crease pixels claimed and let through summed to
+  0.56-0.60 of the pixel instead of all of it. Each
+  sibling now adds its own coverage factor times alpha, and its own
+  transmitted share and tint, to the band's sums.
+* A closing sibling that claimed nothing (`eff <= min_alpha`: its own share
+  tiny, or a veil in front darkening the band's samples) dropped the band's
+  write, so the siblings before it claimed but never occluded. Behind a 0.9
+  veil, the band and the floor behind it claimed 0.1997 of a pixel that had
+  0.1 left. That
+  skip now makes the write, and so does the end of a walk that stops inside a
+  band (the far clip, the surface cap).
+* The flag rode in the sign of `p_i`. A sibling of zero area -- the
+  closed-shell ceiling makes them, 17% of triangle sheets on a default scene
+  -- came out -0.0, which is not below zero, and closed its band one sheet
+  early. It is a mask bit now.
 
 4.5 The background is the final sheet
 --------------------------------------

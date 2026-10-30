@@ -19,10 +19,15 @@ sequential oracle; tests/unit_tests/test_sheet_resolve_parity.py pins them):
 * A FULL-union sheet takes ``corr = 1`` inside the ``_AA_FULL_DUST`` band
   (interior tilings stay bit-clean) and ``min(area, 1)`` outside it.
 * A PARTIAL-union sheet takes ``corr = min(area, 1) / Q``; ``corr > 1``
-  keeps the claim exact and redistributes the clamped occlusion residue onto
-  the sheet's unowned samples immediately (the old rule B collapsed from walk
-  state to per-record arithmetic -- ``_run_svis_write`` + ``_run_redistribute``
-  with no pending flag and no cross-record feedback).
+  keeps the claim exact, up to what the whole pixel still shows, and
+  redistributes the clamped occlusion residue onto the sheet's unowned samples
+  immediately (the old rule B collapsed from walk state to per-record
+  arithmetic -- ``_occlusion_write`` -- with no pending flag and no
+  cross-record feedback).
+* The siblings of a §4.4 band claim against the visibility the band met and
+  occlude once, where the band closes, by the sum of their coverage factors
+  times their own alphas (``_band_write``). A band the walk leaves early
+  still writes what its siblings covered.
 
 Launched only by the sparse covered-pixel path, with the same ray-state
 contract as the walk -- retired pixels accumulate into ``pix_accum``, bounces
@@ -46,6 +51,7 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     _reflector_magnification,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BAND_CONT_BIT,
     _AA_FULL_DUST,
     _AA_LOSE_SHIFT,
     _AA_MASK_ALL,
@@ -126,6 +132,86 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 from algan.taichi_compat import ti
 
 
+@ti.func
+def _sheet_slots(msk, areal):
+    """The samples a sheet claims and occludes: 1.0 on each, 0.0 elsewhere.
+
+    Every sample for an areal sheet; otherwise its mask's, less the ones
+    sheet_sample_depth ceded to a strictly nearer surface
+    (sheets.compact_sheets). Claiming a ceded sample painted an
+    interpenetrating surface whole-pixel wrong; zeroed, it drops both the claim
+    and this sheet's share of the occlusion there, and the winner claims that
+    ink. Off, the host sets no lose bits and every owned sample stays.
+    """
+    slots = ti.Vector([1.0 for _ in range(_AA_NUM_SAMPLES)])
+    if not areal:
+        low = msk & _AA_MASK_ALL
+        lose = (msk >> _AA_LOSE_SHIFT) & _AA_MASK_ALL
+        for s in ti.static(range(_AA_NUM_SAMPLES)):
+            if (((low >> s) & 1) == 0) or (((lose >> s) & 1) != 0):
+                slots[s] = 0.0
+    return slots
+
+
+@ti.func
+def _occlusion_write(svis: ti.template(), slots, own_msk, a_s, trans_share,
+                     cfac, tint, tinted):
+    """A sheet's occlusion of what lies behind it, and its tint.
+
+    Each claimed sample keeps ``(1 - ak) + ak * trans_share``, ``ak = cfac *
+    a_s``, and rule B pushes what a factor clamped at zero would have taken
+    onto the samples outside ``own_msk`` (``_run_svis_write``,
+    ``_run_redistribute``). Returns what the throughput takes per channel:
+    ``svis`` is one number per sample, so a coloured transmitter's tint rides
+    in the throughput instead, as the ratio of the light the pixel keeps per
+    channel (``trans_share`` through ``tint``) to what ``svis`` keeps after
+    the write. Each channel's sum is left unclamped per sample, which is rule
+    B for that channel: where ``corr > 1`` covers more than the sheet's own
+    samples, what a channel's factor takes below zero comes off the rest of
+    the pixel. That is exact for the pixel at any coverage. It used to blend
+    toward the full-coverage tint linearly in the sheet's area: a green sheet
+    passing half its light, over half a red pixel, let 0.375 of the red
+    through, against the 0.5 its uncovered half alone shows. One where
+    ``tinted`` is off.
+    """
+    kept_c = ti.math.vec3(0.0, 0.0, 0.0)
+    if tinted:
+        for s in ti.static(range(_AA_NUM_SAMPLES)):
+            ak = cfac * a_s * slots[s]
+            kept_c += svis[s] * ((1.0 - ak) + (ak * trans_share) * tint)
+    rr = _run_svis_write(svis, slots, a_s, trans_share, cfac, 1)
+    _run_redistribute(svis, own_msk, rr)
+    ratio = ti.math.vec3(1.0, 1.0, 1.0)
+    if tinted:
+        kept = 0.0
+        for s in ti.static(range(_AA_NUM_SAMPLES)):
+            kept += svis[s]
+        if kept > 1e-12:
+            ratio = ti.max(kept_c, 0.0) / kept
+    return ratio
+
+
+@ti.func
+def _band_write(svis: ti.template(), slots, own_msk, band_pa, band_pat,
+                band_patc):
+    """A §4.4 band's one occlusion write, from its siblings' sums.
+
+    ``band_pa`` is the sum over the siblings of coverage factor times alpha,
+    ``band_pat`` the part of it transmitted and ``band_patc`` that part per
+    channel, so the band occludes as its siblings' area-weighted mix:
+    ``_occlusion_write`` at a factor of 1, with the mix's transmitted share
+    and tint.
+    """
+    ts = 0.0
+    if band_pa > 0.0:
+        ts = band_pat / band_pa
+    tint = ti.math.vec3(1.0, 1.0, 1.0)
+    if band_pat > 0.0:
+        tint = band_patc / band_pat
+    return _occlusion_write(svis, slots, own_msk, band_pa, ts, 1.0, tint,
+                            band_pat > 1e-6)
+
+
 @ti.kernel
 def sheet_resolve_shade_arena(
         num_covered: int,
@@ -194,7 +280,7 @@ def sheet_resolve_shade_arena(
         # Sound because the two walks process the same sheets: every
         # ``mode != 1`` gate in this body wraps a spawn, a shade, the
         # truncation counter or a pixel commit, and none of them touches the
-        # loop-carried transport state (``weight``, ``svis``, ``band_p``,
+        # loop-carried transport state (``weight``, ``svis``, the band sums,
         # ``bounces_left``, ``processed``, ``done``) or any break/continue
         # condition. The two skips that precede the fetch -- the far-clip
         # break and the ``eff <= min_alpha`` continue -- are transport-only
@@ -448,12 +534,21 @@ def sheet_resolve_shade_arena(
         mesh_ink = 0.0
         # §4.4 band state: sheets of ONE band (the shading-class siblings the
         # compaction subdivides) claim against the same incoming visibility
-        # and occlude ONCE, at the band's last sheet, by their summed
-        # coverage factor. A NEGATIVE sheet coverage is the host's flag that
-        # this band continues at the NEXT sheet of the walk, which is what
-        # lets the sum ride in a register (sheets.py, ``_sibling_weights``).
-        band_p = 0.0
+        # and occlude ONCE, where the band closes. _AA_BAND_CONT_BIT is the
+        # host's flag that a band continues at the NEXT sheet of the walk,
+        # which is what lets the sums ride in registers (sheets.py,
+        # ``_sibling_weights``). Per band: the summed coverage factor and
+        # claim (for the over-claim cap), the summed factor times each
+        # sibling's alpha, the part of that transmitted, and that part per
+        # channel; and the last sibling's mask word, for a band the walk
+        # leaves before it closes.
         band_open = False
+        band_pc = 0.0
+        band_claim = 0.0
+        band_pa = 0.0
+        band_pat = 0.0
+        band_patc = ti.math.vec3(0.0, 0.0, 0.0)
+        band_msk = 0
         base_dist = 0.0
         bounces_left = max_bounces
         processed = 0
@@ -477,9 +572,9 @@ def sheet_resolve_shade_arena(
             if (ti.bit_cast(cov, ti.u32) & ti.u32(0x7FFFFFFF)) \
                     > ti.u32(0x7F800000):
                 cov = 0.0
-            defer = cov < 0.0
-            cov = ti.abs(cov)
+            cov = ti.max(cov, 0.0)
             msk = sheet_msk[idx]
+            defer = (msk & _AA_BAND_CONT_BIT) != 0
             in_border = 0.0
             q += 1
             if (far_clip > 0.0) and (base_dist + t_hit > far_clip):
@@ -515,41 +610,24 @@ def sheet_resolve_shade_arena(
             area = ti.min(cov, 1.0)
             cfac = 1.0
             dens = 1.0
-            nsm = _AA_NUM_SAMPLES
-            slots = ti.Vector([1.0 for _ in range(_AA_NUM_SAMPLES)])
-            # sheet_sample_depth: the host ceded these samples to a strictly
-            # nearer other-surface sheet (sheets.compact_sheets), so claiming
-            # them here painted an interpenetrating surface whole-pixel wrong.
-            # Zeroing slots drops both the claim and this sheet's share of the
-            # occlusion write at them -- the winner claims that ink, whose own
-            # svis the gated loser no longer dims. cfac stays normalized to
-            # the ORIGINAL mask popcount; off, the host sets no bits and this
-            # reads zero, which is bit-identical arithmetic.
-            lose = 0
-            if not areal:
-                lose = (msk >> _AA_LOSE_SHIFT) & _AA_MASK_ALL
+            slots = _sheet_slots(msk, areal)
             if areal:
                 dens = area
             else:
                 pop = _popcount_samples(msk_low)
-                nsm = pop
                 if msk_low == _AA_MASK_ALL:
                     if ti.abs(1.0 - cov) > _AA_FULL_DUST:
                         cfac = area
-                    if lose != 0:
-                        for s in ti.static(range(_AA_NUM_SAMPLES)):
-                            if ((lose >> s) & 1) != 0:
-                                slots[s] = 0.0
                 else:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if ((msk_low >> s) & 1) == 0:
-                            slots[s] = 0.0
-                    if lose != 0:
-                        for s in ti.static(range(_AA_NUM_SAMPLES)):
-                            if ((lose >> s) & 1) != 0:
-                                slots[s] = 0.0
+                    # Normalized to the mask's own popcount, ceded samples
+                    # included: their share of the area is the winner's ink.
                     cfac = area * ti.static(float(_AA_NUM_SAMPLES)) \
                         / ti.cast(pop, ti.f32)
+            # The samples this sheet's occlusion residue may NOT go to (rule
+            # B redistributes onto the rest): its own, ceded ones included.
+            own_msk = msk_low
+            if areal:
+                own_msk = _AA_MASK_ALL
             vis = 0.0
             for s in ti.static(range(_AA_NUM_SAMPLES)):
                 vis += slots[s] * svis[s]
@@ -565,29 +643,39 @@ def sheet_resolve_shade_arena(
                 if eff > room:
                     dens *= room / ti.max(eff, min_alpha)
                     eff = room
-            # This sheet's contribution to its band's single occlusion write
-            # (inert outside a band: there band_p IS the sheet's own factor).
-            band_p += cfac * dens
-            # A band's CLOSING sibling owes the band's occlusion write even
-            # where its own claim is nothing -- a share the closed-shell
-            # ceiling spent to zero, or a sliver of the band -- so it is shaded
-            # rather than skipped wherever that write still matters: skipping
-            # it dropped the write for the whole band, and every earlier
-            # sibling's claim then occluded nothing behind it (measured: a
-            # translucent cube cut by the near plane let the background
-            # through on rim pixels whose last back-face sibling the ceiling
-            # had zeroed).
-            owes_band = ((not defer) and band_open
-                         and (vis * _AA_SAMPLE_WEIGHT * band_p > min_alpha))
-            if (eff <= min_alpha) and not owes_band:
+            # A coverage factor above 1 -- a sheet covering more of the pixel
+            # than its samples' share, or a band whose siblings sum past it --
+            # claims more than its own samples show, which is how corr > 1
+            # keeps a claim exact. But it may not claim more than the WHOLE
+            # pixel still shows: behind a nearer occluder the rest of its area
+            # is hidden, not elsewhere, and the write below (rule B) already
+            # stops there. The band's claim so far counts against it, as the
+            # unsplit band's one claim would. Below 1 this cannot bind.
+            band_pc += cfac * dens
+            if band_pc > 1.0:
+                shown = 0.0
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    shown += svis[s]
+                eff = ti.min(eff, ti.max(
+                    shown * _AA_SAMPLE_WEIGHT - band_claim, 0.0))
+            if eff <= min_alpha:
                 if not defer:
-                    # The band ends here with nothing left to claim -- its
-                    # samples are already dark -- so drop the pending sum
-                    # rather than carry it into the next band.
-                    band_p = 0.0
+                    if band_open:
+                        # The band's last sibling claims nothing, but the
+                        # ones before it did, and their occlusion is still
+                        # owed: write it here, on this sheet's samples, which
+                        # are the band's.
+                        weight *= _band_write(svis, slots, own_msk, band_pa,
+                                              band_pat, band_patc)
                     band_open = False
+                    band_pc = 0.0
+                    band_claim = 0.0
+                    band_pa = 0.0
+                    band_pat = 0.0
+                    band_patc = ti.math.vec3(0.0, 0.0, 0.0)
                 else:
                     band_open = True
+                    band_msk = msk
                 if ti.static(dump):
                     if dmatch:
                         _aa_dump_frag(dump_out, q - 1, d_kind, 1,
@@ -597,6 +685,7 @@ def sheet_resolve_shade_arena(
                 continue
             if not is_bez:
                 mesh_ink += eff
+            band_claim += eff
 
             color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
             alpha = 0.0
@@ -844,16 +933,10 @@ def sheet_resolve_shade_arena(
             mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
             alpha = ti.math.clamp(mat_alpha * eff, 0.0, 1.0)
             a_s = mat_alpha * dens
-            # Inside a subdivided band the occlusion write is the BAND's, made
-            # once at its last sheet: the summed coverage factor against the
-            # material alpha. A lone sheet writes its own, unchanged.
-            w_cfac = cfac
-            w_a_s = a_s
             cont_band = band_open
-            if defer or cont_band:
-                w_cfac = band_p
-                w_a_s = mat_alpha
             band_open = defer
+            if defer:
+                band_msk = msk
             # This sheet may share the pixel's prefiltered glossy claim only if
             # it continues the band that made it (see ``gl_band`` above); the
             # claim moves to whichever band claims next, and dies with its own.
@@ -1000,11 +1083,6 @@ def sheet_resolve_shade_arena(
             if ti.static(sec_aa > 1):
                 sec_pm, sec_n = _sec_positions(msk_low, sec_aa)
 
-            # The redistribution target: the samples this sheet does NOT own.
-            own_msk = msk_low
-            if areal:
-                own_msk = _AA_MASK_ALL
-
             # The continuation fans the branches below ask for, which the one
             # fan site after them traces: at most the glass's refraction
             # (``fan_refract``, at ``fan_w0`` per tap across the face
@@ -1101,10 +1179,6 @@ def sheet_resolve_shade_arena(
                                     refl_rd, rwt, base_dist + t_hit,
                                     bounces_left - 1, processed, pixel, r, r, 1,
                                     ior_stack, 0, 0.0, 0)
-                    if not defer:
-                        rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
-                        _run_redistribute(svis, own_msk, rr)
-                        band_p = 0.0
             elif prefilter_take:
                 # The claim records ONE ray, the mirror direction, which the
                 # walk spawns into the pixel's glossy row once it ends (below
@@ -1187,10 +1261,6 @@ def sheet_resolve_shade_arena(
                     gl_wt += wt
                     gl_back += wt * ti.math.vec3(color[0], color[1], color[2])
                     gl_glow += w_glow * alpha * r_glow * color[3]
-                if not defer:
-                    rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
-                    _run_redistribute(svis, own_msk, rr)
-                    band_p = 0.0
             elif is_pane or split_refl:
                 wt = weight * refl_energy
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
@@ -1212,18 +1282,6 @@ def sheet_resolve_shade_arena(
                                 wt, base_dist + t_hit, bounces_left - 1,
                                 processed, pixel, r, r, 1,
                                 ior_stack, 0, 0.0, 0)
-                ts_s = w_a_s * trans_share
-                pm = (1.0 - w_a_s) + ts_s
-                if not defer:
-                    rr = _run_svis_write(svis, slots, w_a_s, trans_share,
-                                         w_cfac, 1)
-                    _run_redistribute(svis, own_msk, rr)
-                    band_p = 0.0
-                    if ts_s > 1e-6:
-                        frac = w_cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                        num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - w_a_s)
-                               + ts_s * tint)
-                        weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
             elif (refl_max > min_alpha) and (refl_max >= cover_pass):
                 refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                 hit_point = surf_pos
@@ -1239,19 +1297,41 @@ def sheet_resolve_shade_arena(
                     ro = _offset_ray_origin(hit_point, nref)
                     weight *= refl_energy
                 bounce_break = True
-            else:
-                ts_s = w_a_s * trans_share
-                pm = (1.0 - w_a_s) + ts_s
+
+            # The occlusion write, reached by every branch above that does not
+            # turn the primary into a reflection (``bounce_break``). Glass and
+            # the prefiltered claim pass their light on through rays of their
+            # own, so they occlude as opaque; everything else keeps
+            # ``trans_share`` of what it covers, through its tint.
+            #
+            # A band's siblings write once, at the sheet that closes the band,
+            # as the unsplit surface would have: each adds its coverage factor
+            # times ITS OWN alpha, and what of that it transmits per channel,
+            # to the band's sums. Taking the closing sibling's alpha for the
+            # whole band, as this did, let a crease between faces of different
+            # opacity occlude by whichever face the walk reached last.
+            if not bounce_break:
+                ts_w = trans_share
+                if is_glass or prefilter_take:
+                    ts_w = 0.0
+                if defer or cont_band:
+                    pa = cfac * a_s
+                    band_pa += pa
+                    band_pat += pa * ts_w
+                    band_patc += (pa * ts_w) * tint
                 if not defer:
-                    rr = _run_svis_write(svis, slots, w_a_s, trans_share,
-                                         w_cfac, 1)
-                    _run_redistribute(svis, own_msk, rr)
-                    band_p = 0.0
-                    if ts_s > 1e-6:
-                        frac = w_cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                        num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - w_a_s)
-                               + ts_s * tint)
-                        weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
+                    if cont_band:
+                        weight *= _band_write(svis, slots, own_msk, band_pa,
+                                              band_pat, band_patc)
+                    else:
+                        weight *= _occlusion_write(
+                            svis, slots, own_msk, a_s, ts_w, cfac, tint,
+                            a_s * ts_w > 1e-6)
+                    band_pc = 0.0
+                    band_claim = 0.0
+                    band_pa = 0.0
+                    band_pat = 0.0
+                    band_patc = ti.math.vec3(0.0, 0.0, 0.0)
 
             # THE CONTINUATION FANS: one site for the up to two the branches
             # above asked for, so the kernel unrolls ``fan_taps`` jittered
@@ -1354,6 +1434,19 @@ def sheet_resolve_shade_arena(
             if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < min_weight:
                 done = True
                 break
+
+        if band_open and (not bounced):
+            # The walk stopped inside a band -- at the far clip, or at the
+            # surface cap -- before the sibling that would have written it.
+            # The siblings it did reach claimed, so what they cover still
+            # hides the background.
+            b_low = band_msk & _AA_MASK_ALL
+            b_areal = ((band_msk & _AA_SLIVER_BIT) != 0) or (b_low == 0)
+            b_own = b_low
+            if b_areal:
+                b_own = _AA_MASK_ALL
+            weight *= _band_write(svis, _sheet_slots(band_msk, b_areal), b_own,
+                                  band_pa, band_pat, band_patc)
 
         if not bounced:
             vis_all = 0.0

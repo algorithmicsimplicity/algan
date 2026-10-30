@@ -243,14 +243,23 @@ _AA_MAT_OPAQUE_BIT = 8 << _AA_FLAG_SHIFT  # bit 19, set per fragment
 # reader of them) before widening the pattern.
 _AA_LOSE_SHIFT = 20  # bits 20..27, per sheet
 
+# §4.4 band continuation, set by the compaction (sheets._sibling_weights) on
+# every sibling of a subdivided band but the one that closes it in walk order:
+# the resolve claims such a sheet against the visibility the band met and
+# leaves the band's occlusion write to the sheet that closes it. It used to
+# ride in the sign of the sheet's coverage, which a sibling of zero area could
+# not carry -- -0.0 is not below zero -- so its band closed early.
+_AA_BAND_CONT_BIT = 1 << 28
+
 # Marks a fragment the camera's near clip plane cut in this pixel: the cut took
 # exact area from it (more than _NEAR_TRIM_AREA, decided by the write kernel's
 # exact lanes), or, on the ray-cast path, a sample hit the triangle short of the
 # plane. A ray that starts inside a solid crosses its shell once, not twice, so
 # the closed-shell opacity ceiling must not spend this pixel's allowance as if
 # the near shell were whole (sheets.compact_sheets). Set per fragment at
-# emission; inert for every other reader, as the bits above are.
-_AA_NEAR_CUT_BIT = 1 << 28
+# emission; inert for every other reader. Bit 29, because 28 is the band
+# continuation above and bit 31 stays clear.
+_AA_NEAR_CUT_BIT = 1 << 29
 
 # Sample-less-triangle policies, matching ``settings.ANALYTIC_AA_SLIVER_MODES``.
 # The live mode reaches ``_ss_pixel`` inside the ``aa`` template value (the

@@ -8,6 +8,7 @@ import torch
 from algan import SETTINGS
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.sheets import (
+    AA_BAND_CONT_BIT,
     AA_MASK_ALL,
     AA_ONE_MESH_BIT,
     AA_SLIVER_BIT,
@@ -62,7 +63,9 @@ def test_sibling_kernel_matches_original(pattern, mask_dtype, friendly, monkeypa
     reference = retained[0]
     for weights, masks in retained[1:]:
         torch.testing.assert_close(weights, reference[0], rtol=2e-6, atol=1e-7)
-        assert torch.equal(torch.signbit(weights), torch.signbit(reference[0]))
+        # The band flag is a mask bit, compared with the masks; a weight is an
+        # area, never negative.
+        assert not bool(torch.signbit(weights).any())
         assert torch.equal(masks, reference[1])
         assert bool(torch.isfinite(weights).all())
     for value, snapshot in zip(args, before, strict=True):
@@ -86,8 +89,14 @@ def test_sibling_kernel_uses_band_union_only_for_uninterrupted_runs(monkeypatch)
         torch.tensor([0.8, 1.0, 0.3], device=device),
     ]
     weights, masks = _sibling_weights(*args)
-    torch.testing.assert_close(weights.cpu(), torch.tensor([-0.2, 0.6, 0.2, 0.3, 0.4]))
-    assert masks.cpu().tolist() == [AA_MASK_ALL, AA_MASK_ALL, AA_SLIVER_BIT, 4, 8]
+    torch.testing.assert_close(weights.cpu(), torch.tensor([0.2, 0.6, 0.2, 0.3, 0.4]))
+    assert masks.cpu().tolist() == [
+        AA_MASK_ALL | AA_BAND_CONT_BIT,
+        AA_MASK_ALL,
+        AA_SLIVER_BIT,
+        4,
+        8,
+    ]
 
 
 def test_sibling_kernel_accepts_offset_views_and_preserves_canaries(monkeypatch):
@@ -126,9 +135,15 @@ def test_sibling_kernel_accepts_offset_views_and_preserves_canaries(monkeypatch)
         taichi_accumulate_dtype(),
     )
     torch.testing.assert_close(
-        weight_base.cpu(), torch.tensor([-99.0, -0.25, 0.75, 0.5, -99.0])
+        weight_base.cpu(), torch.tensor([-99.0, 0.25, 0.75, 0.5, -99.0])
     )
-    assert result_mask_base.cpu().tolist() == [-99, AA_MASK_ALL, AA_MASK_ALL, 4, -99]
+    assert result_mask_base.cpu().tolist() == [
+        -99,
+        AA_MASK_ALL | AA_BAND_CONT_BIT,
+        AA_MASK_ALL,
+        4,
+        -99,
+    ]
     assert counts_base.cpu().tolist() == [
         [-99, -99],
         [2, 1],
@@ -154,5 +169,5 @@ def test_sibling_tiny_area_floor_and_partial_union(union, monkeypatch):
     monkeypatch.setattr(rt_settings, "sheet_sibling_weights_kernel", True)
     weights, masks = _sibling_weights(*args)
     factor = max(union.bit_count(), 1) / 8
-    torch.testing.assert_close(weights.cpu(), torch.tensor([-0.01, 0.02]) * factor)
-    assert masks.cpu().tolist() == [union, union]
+    torch.testing.assert_close(weights.cpu(), torch.tensor([0.01, 0.02]) * factor)
+    assert masks.cpu().tolist() == [union | AA_BAND_CONT_BIT, union]

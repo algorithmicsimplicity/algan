@@ -88,6 +88,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BAND_CONT_BIT as AA_BAND_CONT_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_LOSE_SHIFT as AA_LOSE_SHIFT,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -313,10 +316,10 @@ def resolve_pixel_reference(
     * A PARTIAL-union sheet takes ``corr = min(area, 1) / Q`` — §4.3's rule,
       claim exact by construction.
     * ``corr > 1`` (a sheet covering more than its sample share, e.g. a
-      sub-sample rod) keeps its claim exact and redistributes the clamped
-      occlusion residue onto the samples the sheet does NOT own — the old
-      rule B, collapsed from walk state to per-record arithmetic. No
-      cross-record feedback exists.
+      sub-sample rod) keeps its claim exact, up to what the whole pixel still
+      shows, and redistributes the clamped occlusion residue onto the samples
+      outside its mask — the old rule B, collapsed from walk state to
+      per-record arithmetic. No cross-record feedback exists.
     * The ONE-MESH ceiling survives as sheet data (``caps``, the per-pixel
       ``frag_cap`` the host reduced — max of the mesh's two sheet areas). On
       a pixel flagged single-opaque-mesh, the mesh's committed coverage is
@@ -326,10 +329,13 @@ def resolve_pixel_reference(
       it the coarse Cylinder's far sheet re-claims the corr residue and
       wobble regresses 2-4x.
     * §4.4 BAND siblings (the shading-class split's crease faces) arrive as
-      consecutive sheets, all but the last carrying a NEGATIVE area: each
-      claims against the same incoming ``T`` and the band occludes once, at
-      its last sheet, by the summed factor. One sheet per band -- every
-      sheet with the split off -- is the unchanged arithmetic above.
+      consecutive sheets, all but the last flagged ``AA_BAND_CONT_BIT``: each
+      claims against the same incoming ``T`` and the band occludes once, where
+      it closes, by the sum of its siblings' coverage factors times their own
+      alphas (and transmitted shares). A closing sibling that claims nothing
+      still makes that write, and so does the end of the list for a band it
+      leaves open. One sheet per band -- every sheet with the split off -- is
+      the unchanged arithmetic above.
     * No run scan, no seam deduplication, no engagement gate, and no
       TRUNCATED-sum machinery: fragment-walk apparatus the representation
       deletes (§7).
@@ -343,23 +349,43 @@ def resolve_pixel_reference(
     T = [1.0] * N
     claims = []
     mesh_ink = 0.0
-    band_p = 0.0
+
+    def occlude(own, free, a, t):
+        """Each sample keeps ``1 - a + t`` of its ``T`` where the sheet sits
+        (``a`` is coverage factor times alpha, ``t`` the part transmitted);
+        what a factor clamped at zero would have removed comes off ``free``.
+        """
+        resid = 0.0
+        for s in range(N):
+            fct = (1.0 - a * own[s]) + t * own[s]
+            if fct < 0.0:
+                resid -= fct * T[s]
+                fct = 0.0
+            T[s] *= fct
+        if resid > 0.0:
+            tot = sum(T[s] for s in free)
+            if tot > 1e-12:
+                sc = max(1.0 - resid / tot, 0.0)
+                for s in free:
+                    T[s] *= sc
+
+    # The open band's sums: coverage factor and claim (the over-claim cap),
+    # factor times alpha, and the part of that transmitted; and the last
+    # sibling's samples, for a band the list ends inside.
     band_open = False
+    band_pc = band_claim = band_pa = band_pat = 0.0
+    band_own = band_free = None
     for i in range(n):
         msk_low = msks[i] & AA_MASK_ALL
         areal = bool(is_bez[i]) or (msks[i] & AA_SLIVER_BIT) or msk_low == 0
         alpha = alphas[i]
-        # A negative area marks a sheet whose §4.4 band continues at the next
-        # one: it claims against the same incoming T and defers the band's
-        # single occlusion write to the band's last sheet, which makes it with
-        # the summed coverage factor (``sheets._sibling_weights``).
+        defer = bool(msks[i] & AA_BAND_CONT_BIT)
         cov = covs[i]
         if cov != cov:
             # A NaN area claims nothing, as in the resolve kernel (whose CPU
             # ``min`` would otherwise make it a full claim).
             cov = 0.0
-        defer = cov < 0.0
-        raw = abs(cov)
+        raw = max(cov, 0.0)
         area = min(raw, 1.0)
         # Per-sample coverage BEFORE material alpha, which is what the walk's
         # ``eff`` is and what the one-mesh ceiling bounds.
@@ -370,9 +396,12 @@ def resolve_pixel_reference(
         else:
             p_i = area / (bin(msk_low).count("1") / N)
         own = [1.0 if (areal or (msk_low >> s) & 1) else 0.0 for s in range(N)]
+        # Rule B's residue goes to the samples outside the sheet's mask --
+        # not to ones it ceded below, which another surface owns.
+        free = [s for s in range(N) if not own[s]]
         # sheet_sample_depth: samples the host ceded to a strictly nearer
         # other-surface sheet claim nothing here -- same placement as the
-        # resolve kernel's pre-``eff`` block, non-areal sheets only. The
+        # resolve kernel's ``_sheet_slots``, non-areal sheets only. The
         # coverage factor ``p_i`` stays normalized to the ORIGINAL mask
         # popcount: ceded ink is claimed by the winner.
         if not areal:
@@ -394,46 +423,43 @@ def resolve_pixel_reference(
                 k = room / max(eff, 1e-9)
                 p_i *= k
                 eff = room
-        band_p += p_i
-        # A band's closing sibling owes the band's occlusion write even where
-        # its own claim is nothing (the kernel's ``owes_band``).
-        owes_band = (
-            not defer
-            and band_open
-            and sum(T[s] * own[s] for s in range(N)) / N * band_p > min_alpha
-        )
-        if eff <= min_alpha and not owes_band:
+        # No claim past what the whole pixel still shows (corr > 1, or a band
+        # summing past 1); below a factor of 1 this cannot bind.
+        band_pc += p_i
+        if band_pc > 1.0:
+            eff = min(eff, max(sum(T) / N - band_claim, 0.0))
+        if eff <= min_alpha:
             claims.append(0.0)
-            if not defer:
-                band_p = 0.0
-            band_open = defer
+            if defer:
+                band_open = True
+                band_own, band_free = own, free
+            else:
+                if band_open:
+                    occlude(own, free, band_pa, band_pat)
+                band_open = False
+                band_pc = band_claim = band_pa = band_pat = 0.0
             continue
         claims.append(alpha * eff)
         if not is_bez[i]:
             mesh_ink += eff
-        # The write factor: the band's sum at a band's last sheet, the
-        # sheet's own everywhere else (identical outside a subdivided band).
-        w = band_p if (defer or band_open) else p_i
+        band_claim += eff
+        in_band = defer or band_open
         band_open = defer
-        if defer:
+        a_i = alpha * p_i
+        t_i = a_i * trans[i]
+        if not in_band:
+            occlude(own, free, a_i, t_i)
+            band_pc = band_claim = 0.0
             continue
-        band_p = 0.0
-        a = [alpha * w * own[s] for s in range(N)]
-        ts = trans[i]
-        resid = 0.0
-        for s in range(N):
-            fct = (1.0 - a[s]) + a[s] * ts
-            if fct < 0.0:
-                resid -= fct * T[s]
-                fct = 0.0
-            T[s] *= fct
-        if resid > 0.0:
-            free = [s for s in range(N) if a[s] == 0.0]
-            tot = sum(T[s] for s in free)
-            if tot > 1e-12:
-                sc = max(1.0 - resid / tot, 0.0)
-                for s in free:
-                    T[s] *= sc
+        band_pa += a_i
+        band_pat += t_i
+        if defer:
+            band_own, band_free = own, free
+            continue
+        occlude(own, free, band_pa, band_pat)
+        band_pc = band_claim = band_pa = band_pat = 0.0
+    if band_open:
+        occlude(band_own, band_free, band_pa, band_pat)
     return claims, T
 
 
@@ -1572,14 +1598,15 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
 
         ``p_i = corr * share_i``,   ``share_i = area_i / sum(area)``
 
-    and every sibling but the LAST carries it negated: the sign is the flag
-    that tells the resolve this band continues, so it claims ``p_i`` against
-    the undimmed visibility and defers the occlusion write. The resolve sums
-    the band's ``p_i`` as it walks and writes once, at the closing sibling,
-    with ``corr`` -- the unsplit band's own write. Coverage is therefore
-    identical to the unsplit band's whatever the material alpha, and the
-    color becomes the area-weighted blend of the siblings' own shading:
-    the interior-edge AA the split is for.
+    and every sibling but the LAST carries ``AA_BAND_CONT_BIT`` in its mask:
+    the flag that tells the resolve this band continues, so it claims ``p_i``
+    against the undimmed visibility and defers the occlusion write. The
+    resolve sums the band's ``p_i`` times each sibling's own alpha as it walks
+    and writes once, where the band closes -- at a uniform alpha, the unsplit
+    band's own write. Coverage is therefore identical to the unsplit band's,
+    and the color becomes the area-weighted blend of the siblings' own
+    shading: the interior-edge AA the split is for. (The flag was the sign of
+    ``p_i`` once, which a zero-area sibling's -0.0 dropped.)
 
     The sum rides in a register, so the flag marks band CONTINUATION in walk
     order rather than membership: siblings are consecutive there in the
@@ -1685,21 +1712,21 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     # the sample-share fraction of it on a partial one.
     wgt = torch.where(full, p, p * pop / float(AA_NUM_SAMPLES)).to(torch.float32)
 
-    # Negative = "this band continues at the NEXT sheet of the walk", which
-    # is exactly when the register sum is safe to carry. Nothing reorders the
-    # walk for it: a band whose sheets some other surface interleaves (a
-    # coincident depth) simply closes early there and its remainder
-    # composites sheet by sheet, as it did before the split existed.
+    # The flag means "this band continues at the NEXT sheet of the walk",
+    # which is exactly when the register sums are safe to carry. Nothing
+    # reorders the walk for it: a band whose sheets some other surface
+    # interleaves (a coincident depth) is not ``multi`` and composites sheet
+    # by sheet, as it did before the split existed.
     cont = torch.zeros(nb, dtype=torch.bool, device=device)
     if nb > 1:
         cont[:-1] = sheet_band[1:] == sheet_band[:-1]
-    wgt = torch.where(multi & cont, -wgt, wgt)
     # A donor sibling carries the sliver bit because its OWN union is empty;
     # inside a band it holds the band's samples, so the areal (position-less)
     # rule no longer applies to it. Fragment slivers cannot appear here --
     # ``_band_composite`` leaves those bands whole.
-    flags = msk & ~AA_MASK_ALL & ~AA_SLIVER_BIT
+    flags = msk & ~AA_MASK_ALL & ~AA_SLIVER_BIT & ~AA_BAND_CONT_BIT
     wmsk = union.to(msk.dtype) | flags
+    wmsk = torch.where(cont, wmsk | AA_BAND_CONT_BIT, wmsk)
     return torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
 
 
@@ -3346,7 +3373,7 @@ def compact_sheets(
         )
         only_band = members.index_select(0, band_of_sheet) == 1
         del members
-        positive_wgt = sheet_wgt >= 0.0
+        closes = (sheet_wmsk & AA_BAND_CONT_BIT) == 0
         # The surface id: one band never spans two meshes, so the dominant
         # fragment's mesh is every member's. Circuits have no sid and are
         # excluded by ``is_tri_sheet`` on both sides.
@@ -3362,9 +3389,9 @@ def compact_sheets(
             & full_s
             & ((sheet_cov_final - 1.0).abs() <= FULL_DUST)
             & only_band
-            & positive_wgt
+            & closes
         )
-        subject = is_tri_sheet & nonareal_s & only_band & positive_wgt
+        subject = is_tri_sheet & nonareal_s & only_band & closes
 
         if rt_settings.sheet_depth_reduce_kernel and kernel_extents_fit(
             nb, sample_depths.numel()
@@ -3402,7 +3429,7 @@ def compact_sheets(
         sheet_msk_final = sheet_msk_final | lose_word
         sheet_wmsk = sheet_wmsk | lose_word
         del lose_word, sample_depths, depth_row, band_of_sheet, only_band
-        del positive_wgt, sheet_sid, enforcer, subject, is_tri_sheet, low
+        del closes, sheet_sid, enforcer, subject, is_tri_sheet, low
         del positioned_s, full_s, mat_opaque_s, nonareal_s
     del cid_band, sheet_band_final
 

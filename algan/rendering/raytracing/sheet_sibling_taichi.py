@@ -1,6 +1,7 @@
 """Sibling coverage in two passes, without per-operation Torch temporaries."""
 
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BAND_CONT_BIT,
     _AA_MASK_ALL,
     _AA_NUM_SAMPLES,
     _AA_SLIVER_BIT,
@@ -57,9 +58,10 @@ def sibling_coverage_weights(
                     pop += (u >> lane) & 1
                 p = p * ti.cast(ti.max(pop, 1), acc) / ti.cast(_AA_NUM_SAMPLES, acc)
             weight = ti.cast(p, ti.f32)
+            word = u | (word & ~_AA_MASK_ALL & ~_AA_SLIVER_BIT
+                        & ~_AA_BAND_CONT_BIT)
             if i + 1 < n:
                 if band[i + 1] == b:
-                    weight = -weight
-            word = u | (word & ~_AA_MASK_ALL & ~_AA_SLIVER_BIT)
+                    word |= _AA_BAND_CONT_BIT
         weights[i] = weight
         masks[i] = word

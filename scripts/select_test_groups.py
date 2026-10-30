@@ -75,6 +75,17 @@ ALWAYS_CI = (
     "tests/unit_tests/test_renderer_audit_contract.py::test_every_audit_scene_normalizes_identically_in_both_bridges",
     # The sheet resolve's event pass compiles none of its continuation fans.
     "tests/unit_tests/test_sheet_resolve_variants.py::test_mode_1_unrolls_no_continuation_fan",
+    # Nor, under the glossy prefilter, spreads one over the GGX lobe.
+    "tests/unit_tests/test_sheet_resolve_variants.py::test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe",
+    # The sequential oracle's band, claim, residue and NaN rules, which the
+    # kernel follows (test_sheet_resolve_parity.py): tensors only.
+    "tests/unit_tests/test_sheet_compaction.py::test_oracle_band_occludes_by_each_siblings_own_alpha",
+    "tests/unit_tests/test_sheet_compaction.py::test_oracle_band_writes_when_its_last_sibling_claims_nothing",
+    "tests/unit_tests/test_sheet_compaction.py::test_oracle_band_the_list_leaves_open_still_occludes",
+    "tests/unit_tests/test_sheet_compaction.py::test_oracle_zero_area_sibling_keeps_its_band_open",
+    "tests/unit_tests/test_sheet_compaction.py::test_oracle_claims_no_more_than_the_pixel_still_shows",
+    "tests/unit_tests/test_sheet_compaction.py::test_oracle_redistributes_only_outside_the_sheets_mask",
+    "tests/unit_tests/test_sheet_compaction.py::test_oracle_drops_a_nan_area",
     # MPS-friendly mode spends the closed-shell ceiling per segment.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_float32_shell_ceiling_spend_does_not_degrade_with_stream_length",
     "tests/unit_tests/test_sheet_chain_kernels.py::test_float32_segment_prefix_matches_the_float64_global_difference",
@@ -120,6 +131,11 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_raster_lattice_bound.py::",
     "tests/unit_tests/test_near_camera_plane_render.py::",
     "tests/unit_tests/test_emission_write_miss.py::",
+    # The resolve's shading against renders: the glass rim, a NaN area, the
+    # byte buffer under a bright sky, partial-coverage tint, and rough glass
+    # with and without the prefilter.
+    "tests/unit_tests/test_sheet_resolve_shading.py::",
+    "tests/unit_tests/test_glossy_prefilter.py::test_rough_glass_reflects_the_same_with_and_without_the_prefilter",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")

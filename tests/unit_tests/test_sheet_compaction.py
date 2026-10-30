@@ -22,6 +22,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as BACKFACE,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BAND_CONT_BIT as BAND_CONT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_LOSE_SHIFT as LOSE_SHIFT,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -221,15 +224,15 @@ def test_a_seam_rank_split_composites_as_one_band():
         assert torch.allclose(out["sheet_cov"], torch.tensor([0.80, 0.21])), rule
         assert [int(m) & MASK_ALL for m in out["sheet_msk"]] == [0b11011111, 0b00110000]
         wgt = out["sheet_wgt"]
-        # Negative = "this band continues at the next sheet": the first sibling
-        # claims against the undimmed visibility and defers the band's single
-        # occlusion write to the second.
-        assert wgt[0] < 0, rule
-        assert wgt[1] > 0, rule
-        # Both carry the BAND's union, and their magnitudes sum to the band's
-        # own coverage factor -- 1.0, the clamped 1.01 of a full union.
+        # The flag says "this band continues at the next sheet": the first
+        # sibling claims against the undimmed visibility and defers the band's
+        # single occlusion write to the second.
+        cont = [bool(int(m) & BAND_CONT) for m in out["sheet_wmsk"]]
+        assert cont == [True, False], rule
+        # Both carry the BAND's union, and their weights sum to the band's own
+        # coverage factor -- 1.0, the clamped 1.01 of a full union.
         assert [int(m) & MASK_ALL for m in out["sheet_wmsk"]] == [MASK_ALL, MASK_ALL]
-        assert float(wgt.abs().sum()) == pytest.approx(1.0, abs=1e-5)
+        assert float(wgt.sum()) == pytest.approx(1.0, abs=1e-5)
 
     # And the oracle then leaves nothing of the pixel for what is behind.
     from algan.rendering.raytracing.sheets import resolve_pixel_reference
@@ -583,6 +586,118 @@ def test_oracle_drops_a_nan_area():
         claims, T = resolve_pixel_reference([nan], [msk], [False])
         assert claims == [0.0]
         assert all(t == 1.0 for t in T)
+
+
+def test_oracle_band_occludes_by_each_siblings_own_alpha():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # Two siblings of one band, half the pixel each, at alpha 1 and 0.2: a
+    # crease between cube faces of different opacity. The band lets through
+    # 1 - (0.5 * 1 + 0.5 * 0.2) = 0.4 whichever face the walk reaches last. It
+    # used to occlude by the closing sibling's alpha alone: 0.8 with the faint
+    # face last (claims and leftover summing to 1.4), 0 with the opaque one.
+    msks = [MASK_ALL | BAND_CONT, MASK_ALL]
+    for alphas in ([1.0, 0.2], [0.2, 1.0]):
+        claims, T = resolve_pixel_reference(
+            [0.5, 0.5], msks, [False, False], alphas=alphas
+        )
+        assert claims == pytest.approx([0.5 * alphas[0], 0.5 * alphas[1]])
+        assert sum(T) / len(T) == pytest.approx(0.4)
+    # Transmission likewise: each sibling passes its own share.
+    _claims, T = resolve_pixel_reference(
+        [0.5, 0.5], msks, [False, False], trans=[0.5, 0.0]
+    )
+    assert sum(T) / len(T) == pytest.approx(0.25)
+
+
+def test_oracle_band_writes_when_its_last_sibling_claims_nothing():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # The closing sibling's share is too small to claim, but the sibling
+    # before it claimed 0.6, and its occlusion is still owed. Dropped, the
+    # floor behind claimed the whole pixel again.
+    claims, T = resolve_pixel_reference(
+        [0.6, 0.0005, 1.0],
+        [MASK_ALL | BAND_CONT, MASK_ALL, MASK_ALL],
+        [False] * 3,
+        min_alpha=1e-3,
+    )
+    assert claims == pytest.approx([0.6, 0.0, 0.4])
+    # And where a veil in front is what darkens the closing sibling: the band
+    # and the floor share the 0.1 the veil leaves, rather than take 0.19.
+    claims, T = resolve_pixel_reference(
+        [1.0, 0.9, 0.005, 1.0],
+        [MASK_ALL, MASK_ALL | BAND_CONT, MASK_ALL, MASK_ALL],
+        [False] * 4,
+        alphas=[0.9, 1.0, 1.0, 1.0],
+        min_alpha=1e-3,
+    )
+    assert claims[2] == 0.0
+    assert sum(claims[1:]) == pytest.approx(0.1)
+
+
+def test_oracle_band_the_list_leaves_open_still_occludes():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # The walk can stop inside a band -- at the far clip, or at the surface
+    # cap -- before the sibling that closes it. The siblings before claimed,
+    # so they still hide what is behind them.
+    claims, T = resolve_pixel_reference([0.6], [MASK_ALL | BAND_CONT], [False])
+    assert claims == pytest.approx([0.6])
+    assert sum(T) / len(T) == pytest.approx(0.4)
+
+
+def test_oracle_zero_area_sibling_keeps_its_band_open():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # The closed-shell ceiling makes siblings of exactly zero area. The band
+    # flag is a mask bit, so one of them continues its band. It was the sign
+    # of the area once, and -0.0 is not below zero: the band closed there,
+    # dropped the first sibling's occlusion, and the last composited alone,
+    # 1.5 of a pixel in all.
+    claims, T = resolve_pixel_reference(
+        [0.5, 0.0, 0.5, 1.0],
+        [MASK_ALL | BAND_CONT, MASK_ALL | BAND_CONT, MASK_ALL, MASK_ALL],
+        [False] * 4,
+    )
+    assert claims == pytest.approx([0.5, 0.0, 0.5, 0.0])
+    assert sum(T) == 0.0
+
+
+def test_oracle_claims_no_more_than_the_pixel_still_shows():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # An opaque sheet on five samples, then a back silhouette of area 0.45 on
+    # the other three (corr 1.2). The pixel shows 0.375 behind the first
+    # sheet, and that is what the second claims -- not 0.45, 1.075 in all.
+    front, back = 0b11111000, 0b00000111
+    claims, T = resolve_pixel_reference([0.625, 0.45], [front, back], [False] * 2)
+    assert claims == pytest.approx([0.625, 0.375])
+    assert sum(T) == pytest.approx(0.0, abs=1e-12)
+    # Over the background it keeps its exact claim.
+    claims, T = resolve_pixel_reference([0.45], [back], [False])
+    assert claims == pytest.approx([0.45])
+    assert sum(T) / len(T) == pytest.approx(0.55)
+    # And split into a band's two siblings it claims the same in total.
+    claims, T = resolve_pixel_reference(
+        [0.625, 0.27, 0.18], [front, back | BAND_CONT, back], [False] * 3
+    )
+    assert sum(claims[1:]) == pytest.approx(0.375)
+
+
+def test_oracle_redistributes_only_outside_the_sheets_mask():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # A corr > 1 sheet's clamped residue goes to the samples outside its mask,
+    # as the kernel's does -- not to the ones it ceded to a nearer surface,
+    # whose ink is that surface's. Sample 2 and 3 ceded, corr 1.2: the
+    # residue of 0.4 comes off samples 4-7 alone, and the sheet behind sees
+    # 0.475 of the pixel, where it saw 0.4667 when 2 and 3 took a share.
+    ceded = 0b00001100 << LOSE_SHIFT
+    claims, T = resolve_pixel_reference(
+        [0.6, 0.5], [0b00001111 | ceded, 0b00111100], [False] * 2
+    )
+    assert claims == pytest.approx([0.3, 0.475])
 
 
 def _norms(rows):
