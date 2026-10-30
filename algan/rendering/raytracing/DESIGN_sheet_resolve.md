@@ -746,13 +746,11 @@ Phase 4. Results:
   max|d| 0), engagement asserted (kernel launch counters).
 * **Oracle parity**: `sheets.resolve_pixel_reference` (the §2 oracle) vs
   the kernel's `ALGAN_AA_DUMP` rows — worst |claim| diff **8.94e-08** over
-  56 committed sheet rows at 24 probed pixels.
-  **CORRECTED 2026-10-30: no current run backs this figure**; it is this
-  2026-08-19 build's number only. A 2026-10-24 rerun
-  (`benchmarks/_sheet_resolve_parity.py --verify 1`, `--res ld`) probed a
-  frame the capture does not hold (329), got no dump rows, and printed
-  `[PASS]` over **0** committed sheet rows. The check passes when it has
-  checked nothing, so re-measure before quoting a parity figure.
+  56 committed sheet rows at 24 probed pixels. (The harness's spy later
+  read `prepare_sparse_raster_coverage` by position, went stale when
+  `cam_proj` was inserted, and passed over zero rows until it was repaired
+  in 2026-10; `tests/unit_tests/test_sheet_resolve_parity.py` now runs the
+  kernel against the oracle in the pre-PR group.)
 * **Ink wobble** (`_aa_line_check`, md, daemon-free A/B): bezier and flat
   quad identical to four decimals; the coarse Cylinder's mean over
   non-degenerate angles **0.0159 → 0.0050 (−69%)** and the fine rod
@@ -865,9 +863,18 @@ records.** The resolve kernel gained a `mode` template — 1 walks the
 transport and writes one candidate event per accepted lit triangle sheet
 (no shading, no spawns), 2 shades reading the traced visibility — so the
 event pass and the shading pass are the SAME kernel body and a
-resolve/shadow desync is structurally impossible (the machinery the old
-lockstep pair needed, `_aa_dump_check`'s lockstep leg included, has
-nothing left to check on this route). Event identity is the SHEET INDEX
+resolve/shadow desync can no longer be written into the source (the
+machinery the old lockstep pair needed, `_aa_dump_check`'s lockstep leg
+included, has nothing left to check on this route). **CORRECTED
+2026-10-30:** it is not bit-exact. Modes 1 and 2 are separate fast-math
+compiles, so a value within rounding of a threshold (the
+`eff <= min_alpha` skip, the far clip, the `min_weight` cut) can fall on
+different sides of it in the two walks. Only a sheet at such a threshold
+can flip (one claiming about `min_alpha`, one reached with under
+`min_weight` left, or one at the far clip to within rounding); a sheet
+the shading pass meets without an event is lit unshadowed, and the
+opt-in material memo (`sheet_resolve_memo`) reads a row the event pass
+never wrote. Event identity is the SHEET INDEX
 into dense per-sheet tables: no counter, no atomic reserve; the host
 compacts accepted rows (deterministic ascending order) and the unchanged
 `raster_shadow_trace` runs over the compact queue. `sheet_route` no
