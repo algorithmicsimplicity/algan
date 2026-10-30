@@ -772,7 +772,10 @@ the second read; every written frame was hashed and matches master's bytes
   MB. The batch model sees the lower peak and plans wider windows: explainer
   HD renders in three chunks instead of four, graphics in six of other
   extents. Those frames did not move, but a scene whose pixels depend on its
-  windows can (October 23).
+  windows can (October 23). Tiles get the freed bytes too: in
+  `test_adaptive_tile_pool.py`'s scene at 20 MB the tiles had 0.3 MB more,
+  the estimate's fit after one halving, and both arms retried four times
+  where they had 12 and 7, so that test now renders at 18 MB.
 - **Sparse-window counting sort.** `_binned_fragment_order` sizes its counting
   sort by the window's pixel bins, about 8 B each live and outside the arena:
   a 30-frame 4K chunk is 249M bins, 2 GB, whatever its fragments. It declines
