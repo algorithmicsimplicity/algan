@@ -120,8 +120,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _reset_shell_segment,
     _sample_env_map,
     _tri_color_g,
-    _tri_extra_g,
-    _tri_ior_transmission_g,
+    _tri_material_g,
     _tri_normal_g,
 )
 from algan.taichi_compat import ti
@@ -686,11 +685,16 @@ def sheet_resolve_shade_arena(
                     alpha = sheet_memo[idx, 4]
                     reflectivity = sheet_memo[idx, 5]
                     rough = sheet_memo[idx, 6]
+                    ior = sheet_memo[idx, 7]
+                    T = sheet_memo[idx, 8]
                 else:
                     color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
                                                 col_row, tri_uvs, tri_tex_meta,
                                                 textures, num_colored_triangles, tex_du, tex_dv)
-                    reflectivity, rough = _tri_extra_g(
+                    # All four in one call: a promoted constant material
+                    # drives every property from its map, and separate
+                    # reflectivity and IOR calls sampled the same texel twice.
+                    reflectivity, rough, ior, T = _tri_material_g(
                         0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
@@ -725,13 +729,6 @@ def sheet_resolve_shade_arena(
                                            num_lights, color,
                                            ti.static(1 if mode == 2 else 0),
                                            lvis, cam_origin, cam_proj)
-                if ti.static(memo != 0 and mode == 2):
-                    ior = sheet_memo[idx, 7]
-                    T = sheet_memo[idx, 8]
-                else:
-                    ior, T = _tri_ior_transmission_g(
-                        0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                 # MEMO WRITE (mode 1). ``color`` is still the FETCHED color
                 # here: _shade_tri_hit is inside the ``mode != 1`` branch
                 # above, so the event walk never overwrites it. Written for
