@@ -160,6 +160,96 @@ def _sheet_slots(msk, areal):
 
 
 @ti.func
+def _shown(svis: ti.template()):
+    """The share of the pixel ``svis`` still shows: its samples' visibility,
+    summed and weighted.
+    """
+    vis = 0.0
+    for s in ti.static(range(_AA_NUM_SAMPLES)):
+        vis += svis[s]
+    return vis * _AA_SAMPLE_WEIGHT
+
+
+@ti.func
+def _sheet_factors(msk, cov, areal, svis: ti.template()):
+    """One sheet's coverage, as the claim and the occlusion write read it.
+
+    The claim comes from the exact area, the position from the sample union.
+    ``corr`` rides in the coverage factor ``cfac`` exactly where the walk's run
+    correction did, so the arithmetic downstream (claim, tint fraction,
+    occlusion write) is the walk's with the run replaced by one record. An
+    areal sheet carries its area in its density instead, over every sample.
+    Returns ``cfac``, the density, the samples the sheet claims and occludes
+    (``_sheet_slots``), the samples its occlusion residue may NOT go to (rule
+    B redistributes onto the rest: its own, ceded ones included), and its
+    claim on what ``svis`` still shows.
+    """
+    msk_low = msk & _AA_MASK_ALL
+    area = ti.min(cov, 1.0)
+    cfac = 1.0
+    dens = 1.0
+    slots = _sheet_slots(msk, areal)
+    if areal:
+        dens = area
+    else:
+        pop = _popcount_samples(msk_low)
+        if msk_low == _AA_MASK_ALL:
+            if ti.abs(1.0 - cov) > _AA_FULL_DUST:
+                cfac = area
+        else:
+            # Normalized to the mask's own popcount, ceded samples
+            # included: their share of the area is the winner's ink.
+            cfac = area * ti.static(float(_AA_NUM_SAMPLES)) \
+                / ti.cast(pop, ti.f32)
+    own_msk = msk_low
+    if areal:
+        own_msk = _AA_MASK_ALL
+    vis = 0.0
+    for s in ti.static(range(_AA_NUM_SAMPLES)):
+        vis += slots[s] * svis[s]
+    eff = vis * _AA_SAMPLE_WEIGHT * dens * cfac
+    return cfac, dens, slots, own_msk, eff
+
+
+@ti.func
+def _one_mesh_cap(msk, is_bez, cap, mesh_ink, eff, dens, sealed,
+                  refraction: ti.template()):
+    """A sheet's claim and density under its pixel's one-mesh ceiling.
+
+    The ceiling is kept from the walk as sheet DATA (see sheets.py's docstring
+    for the measurement that kept it): on a single-opaque-mesh pixel the mesh
+    may claim at most the larger of its two sheets' exact areas in total, with
+    the occlusion scaled to the claim. ``cap`` is that area, 2.0 the host's
+    "no ceiling" sentinel, and ``mesh_ink`` what the mesh has claimed so far.
+
+    A pixel of one solid of any other material (_AA_ONE_SOLID_BIT, flagged only
+    where primaries can refract) takes the same ceiling once ``sealed``: the
+    walk refracted at a sheet of it at full alpha, whose continuation carries
+    everything behind it and which occluded what it claimed as an opaque sheet
+    does. A far sheet of the solid would otherwise claim that sheet's ``corr <
+    1`` residue -- background area, spent instead on a ray through the solid's
+    back face, and at a grazing silhouette a TIR one: the faint dark rim round
+    clear glass. Before any such sheet the solid is a transmitter whose far
+    side shows THROUGH its near one, which is why the flag alone does not bind
+    -- translucent solids, glass at alpha < 1 and glass at an index of 1 never
+    seal. Neither does anything in a variant that cannot refract, so that
+    variant compiles the test out.
+    """
+    capped_eff = eff
+    capped_dens = dens
+    capped = (msk & _AA_ONE_MESH_BIT) != 0
+    if ti.static(refraction != 0):
+        if sealed and ((msk & _AA_ONE_SOLID_BIT) != 0):
+            capped = True
+    if (not is_bez) and capped and (cap <= 1.0):
+        room = ti.max(cap - mesh_ink, 0.0)
+        if eff > room:
+            capped_dens *= room / ti.max(eff, min_alpha)
+            capped_eff = room
+    return capped_eff, capped_dens
+
+
+@ti.func
 def _occlusion_write(svis: ti.template(), slots, own_msk, a_s, trans_share,
                      cfac, tint, tinted):
     """A sheet's occlusion of what lies behind it, and its tint.
@@ -616,68 +706,15 @@ def sheet_resolve_shade_arena(
                 if is_bez:
                     d_kind = 1
 
-            # -- per-sheet coverage: claim from the exact area, position from
-            # the sample union. corr rides in cfac exactly where the walk's
-            # run correction did, so the downstream arithmetic (claim, tint
-            # fraction, occlusion write) is the walk's with the run replaced
-            # by one record.
+            # -- per-sheet coverage (``_sheet_factors``), under the pixel's
+            # one-mesh ceiling (``_one_mesh_cap``).
             msk_low = msk & _AA_MASK_ALL
             sliver = (msk & _AA_SLIVER_BIT) != 0
             areal = is_bez or sliver or (msk_low == 0)
-            area = ti.min(cov, 1.0)
-            cfac = 1.0
-            dens = 1.0
-            slots = _sheet_slots(msk, areal)
-            if areal:
-                dens = area
-            else:
-                pop = _popcount_samples(msk_low)
-                if msk_low == _AA_MASK_ALL:
-                    if ti.abs(1.0 - cov) > _AA_FULL_DUST:
-                        cfac = area
-                else:
-                    # Normalized to the mask's own popcount, ceded samples
-                    # included: their share of the area is the winner's ink.
-                    cfac = area * ti.static(float(_AA_NUM_SAMPLES)) \
-                        / ti.cast(pop, ti.f32)
-            # The samples this sheet's occlusion residue may NOT go to (rule
-            # B redistributes onto the rest): its own, ceded ones included.
-            own_msk = msk_low
-            if areal:
-                own_msk = _AA_MASK_ALL
-            vis = 0.0
-            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                vis += slots[s] * svis[s]
-            eff = vis * _AA_SAMPLE_WEIGHT * dens * cfac
-            # ONE-MESH ceiling (kept from the walk as sheet DATA — see
-            # sheets.py's docstring for the measurement that kept it): on a
-            # single-opaque-mesh pixel the mesh may claim at most the larger
-            # of its two sheets' exact areas in total, occlusion scaled with
-            # the claim. 2.0 is the host's "no ceiling" sentinel.
-            #
-            # A pixel of one solid of any other material (_AA_ONE_SOLID_BIT,
-            # flagged only where primaries can refract) takes the same
-            # ceiling once ``solid_sealed``: the walk refracted at a sheet of
-            # it at full alpha, whose continuation carries everything behind
-            # it and which occluded what it claimed as an opaque sheet does.
-            # A far sheet of the solid would otherwise claim that sheet's
-            # ``corr < 1`` residue -- background area, spent instead on a ray
-            # through the solid's back face, and at a grazing silhouette a
-            # TIR one: the faint dark rim round clear glass. Before any such
-            # sheet the solid is a transmitter whose far side shows THROUGH
-            # its near one, which is why the flag alone does not bind --
-            # translucent solids, glass at alpha < 1 and glass at an index of
-            # 1 never seal. Neither does anything in a variant that cannot
-            # refract, so that variant compiles the test out.
-            capped = (msk & _AA_ONE_MESH_BIT) != 0
-            if ti.static(refraction != 0):
-                if solid_sealed and ((msk & _AA_ONE_SOLID_BIT) != 0):
-                    capped = True
-            if (not is_bez) and capped and (sheet_cap[idx] <= 1.0):
-                room = ti.max(sheet_cap[idx] - mesh_ink, 0.0)
-                if eff > room:
-                    dens *= room / ti.max(eff, min_alpha)
-                    eff = room
+            cfac, dens, slots, own_msk, eff = _sheet_factors(msk, cov, areal,
+                                                             svis)
+            eff, dens = _one_mesh_cap(msk, is_bez, sheet_cap[idx], mesh_ink,
+                                      eff, dens, solid_sealed, refraction)
             # A coverage factor above 1 -- a sheet covering more of the pixel
             # than its samples' share, or a band whose siblings sum past it --
             # claims more than its own samples show, which is how corr > 1
@@ -688,11 +725,7 @@ def sheet_resolve_shade_arena(
             # unsplit band's one claim would. Below 1 this cannot bind.
             band_pc += cfac * dens
             if band_pc > 1.0:
-                shown = 0.0
-                for s in ti.static(range(_AA_NUM_SAMPLES)):
-                    shown += svis[s]
-                eff = ti.min(eff, ti.max(
-                    shown * _AA_SAMPLE_WEIGHT - band_claim, 0.0))
+                eff = ti.min(eff, ti.max(_shown(svis) - band_claim, 0.0))
             if eff <= min_alpha:
                 if not defer:
                     if band_open:
@@ -1164,17 +1197,9 @@ def sheet_resolve_shade_arena(
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
                 if wt_max > min_weight:
                     hp = surf_pos
-                    tp = f % tri_pos.shape[0]
-                    v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                      tri_pos[tp, prim, 1],
-                                      tri_pos[tp, prim, 2])
-                    v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                      tri_pos[tp, prim, 4],
-                                      tri_pos[tp, prim, 5])
-                    v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                      tri_pos[tp, prim, 7],
-                                      tri_pos[tp, prim, 8])
-                    face_normal = (v1 - v0).cross(v2 - v0)
+                    # Glass is a triangle (``is_glass``), whose face normal
+                    # ``geo_normal`` already is.
+                    face_normal = geo_normal
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
                         fan_refract = True
@@ -1486,10 +1511,7 @@ def sheet_resolve_shade_arena(
                                   _popcount_samples(msk), cfac, eff,
                                   mat_alpha, alpha, trans_share, refl_max,
                                   t_hit, svis)
-            vis_all = 0.0
-            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                vis_all += svis[s]
-            cur_w = weight * (vis_all * _AA_SAMPLE_WEIGHT)
+            cur_w = weight * _shown(svis)
             if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < min_weight:
                 done = True
                 break
@@ -1508,10 +1530,7 @@ def sheet_resolve_shade_arena(
                                   band_pa, band_pat, band_patc)
 
         if not bounced:
-            vis_all = 0.0
-            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                vis_all += svis[s]
-            weight *= vis_all * _AA_SAMPLE_WEIGHT
+            weight *= _shown(svis)
 
         if processed >= max_surfaces_per_ray:
             # Truncation, not completion (``truncation.py``): ``done`` is
