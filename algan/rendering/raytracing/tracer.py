@@ -122,6 +122,9 @@ from algan.logging.logger import PERF, get_logger
 # package __init__ -> primitives).
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     _BOX_SIGMA,
+    GL_BOX_EMPTY,
+    GL_BOX_WIDTH,
+    GL_BOX_X1,
     GL_MAIN_SIGMA,
     GL_MAIN_WIDTH,
     GL_PYR_WIDTH,
@@ -593,28 +596,32 @@ def _tracer_opt_disabled(name):
     return _opt_disabled(name)
 
 
-def _gloss_clear(gl_main, gl_pyr):
+def _gloss_clear(gl_main, gl_pyr, gl_box):
     """Reset the per-frame reflection buffers.
 
     The blur radius column is initialised NEGATIVE, not zero: it is what marks
     a pixel as having a prefiltered glossy branch at all, and zero is a legal
-    radius (a reflection in contact with its reflector).
+    radius (a reflection in contact with its reflector). The whole pyramid is
+    zeroed, every level, and the glossy bounding box emptied: ``gloss_finish``
+    reduces, composites and resets only inside the box, which is exact only
+    on a pyramid that starts the frame zero outside it.
 
-    ``gloss_clear`` writes the same bytes into ``gl_main`` in one coalesced
-    pass, and zeroes only level 0 of ``gl_pyr``: each higher level is written
-    whole by the frame's own reduction before anything reads it. The fallback
-    (``ALGAN_OPT_DISABLE=exactfills``) is the strided column write.
+    ``gloss_clear`` writes the same bytes in one coalesced pass over each
+    buffer. The fallback (``ALGAN_OPT_DISABLE=exactfills``) is the strided
+    column write.
     """
     if not _tracer_opt_disabled("exactfills"):
-        gloss_clear(int(gl_main.shape[0]), gl_main, gl_pyr)
+        gloss_clear(int(gl_main.shape[0]), gl_main, gl_pyr, gl_box)
         return
     gl_main.zero_()
     gl_main[:, GL_MAIN_SIGMA] = -1.0
     gl_pyr.zero_()
+    gl_box[:GL_BOX_X1] = GL_BOX_EMPTY
+    gl_box[GL_BOX_X1:] = -1
 
 
 def _gloss_finish_frame(
-    frame_rel, gl_levels, gl_main, gl_pyr, width, height, tonemapping, out
+    frame_rel, gl_levels, gl_main, gl_pyr, gl_box, width, height, tonemapping, out
 ):
     """Prefilter one frame's reflection buffer, composite it, and reset the
     buffers for the next frame.
@@ -623,15 +630,17 @@ def _gloss_finish_frame(
     glossy pixel fetches it trilinearly at the level matching its own blur
     radius and overwrites the value the tile composite wrote for it.
 
-    ``gloss_finish`` does all of it in one launch, where the separate kernels
-    took one per pyramid level, one for the composite and the clear's own
-    (``ALGAN_OPT_DISABLE=glossfuse`` restores those).
+    ``gloss_finish`` does all of it in one launch, and only inside ``gl_box``,
+    the bounding box of the pixels the frame's scatter wrote: a frame with no
+    glossy pixel costs the launch alone, and the box is read on the device,
+    so no frame waits on a readback. The separate kernels took one launch per
+    pyramid level, one for the composite and the clear's own, over the whole
+    frame (``ALGAN_OPT_DISABLE=glossfuse`` restores those).
     """
     num_levels = int(gl_levels.shape[0])
     if not _tracer_opt_disabled("glossfuse"):
         gloss_finish(
             num_levels,
-            int(width) * int(height),
             int(width),
             int(height),
             num_levels,
@@ -641,6 +650,7 @@ def _gloss_finish_frame(
             gl_levels,
             gl_main,
             gl_pyr,
+            gl_box,
             out,
         )
         return
@@ -659,7 +669,7 @@ def _gloss_finish_frame(
         gl_pyr,
         out,
     )
-    _gloss_clear(gl_main, gl_pyr)
+    _gloss_clear(gl_main, gl_pyr, gl_box)
 
 
 def _batch_glossy_mode(merged):
@@ -4320,7 +4330,7 @@ def raytrace_render_wavefront(
                 # buffer layout cannot disagree.
                 merged["glossy_mode"] = _batch_glossy_mode(merged)
                 gl_active = merged["glossy_mode"] == 3
-                gl_main = gl_pyr = gl_levels = None
+                gl_main = gl_pyr = gl_box = gl_levels = None
                 gl_sigma_max = 0.0
                 gl_bounds = None
                 if gl_active:
@@ -4331,6 +4341,7 @@ def raytrace_render_wavefront(
                         (int(width) * int(height), GL_MAIN_WIDTH), f32
                     )
                     gl_pyr = memory.get_tensor((pyr_texels, GL_PYR_WIDTH), f32)
+                    gl_box = memory.get_tensor((GL_BOX_WIDTH,), i32)
                     gl_levels = _arena_values(
                         memory, [c for row in levels for c in row], torch.int32
                     ).view(len(levels), 3)
@@ -4340,7 +4351,7 @@ def raytrace_render_wavefront(
                         int(width) * int(height),
                         int(time_end) - int(time_start),
                     )
-                    _gloss_clear(gl_main, gl_pyr)
+                    _gloss_clear(gl_main, gl_pyr, gl_box)
                 gl_frame = 0
 
                 # One 7-column accumulator row per primary on the plain route; the
@@ -4824,6 +4835,7 @@ def raytrace_render_wavefront(
                                     pix_accum,
                                     gl_main,
                                     gl_pyr,
+                                    gl_box,
                                     out,
                                     int(a),
                                     cam_proj_table,
@@ -4854,6 +4866,7 @@ def raytrace_render_wavefront(
                                         gl_levels,
                                         gl_main,
                                         gl_pyr,
+                                        gl_box,
                                         int(width),
                                         int(height),
                                         t_val_sparse,

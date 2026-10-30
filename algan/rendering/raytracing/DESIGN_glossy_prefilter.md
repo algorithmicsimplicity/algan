@@ -504,12 +504,15 @@ Two per-**frame** buffers, allocated once outside the tile loop:
 | --- | --- | --- |
 | `gl_main` | `(pixels_per_frame, 10)` f32 | `csum.rgba` (the pixel's linear pre-finalize color, background folded in), `W.rgb`, `sigma_px` (`< 0` = not a glossy pixel), `G` (the radius as a fraction of the full lobe's, before the clamp) and `S` (the full lobe's radius) |
 | `gl_pyr` | `(~4/3 · pixels_per_frame, 14)` f32 | the mip pyramid of `B` in two layers, far then near (§3), each `(B.rgb, B.glow, v, v·G)` with `v` the layer's validity weight, the near layer followed by `(v·log2 S, v·log2² S)`, level 0 first. The glow lane is `out`'s column 3 (it is bloom coverage, not alpha) and it has to be prefiltered with the color or a blurred reflection would carry a sharp bloom mask. |
+| `gl_box` | `(4,)` i32 | the bounding box of the frame's glossy pixels so far, `(x0, y0, x1, y1)` inclusive; empty is `x0 = y0 = 2^30`, `x1 = y1 = -1` |
 
 Per frame, not per batch: a batch is many frames and this would otherwise be the
 dominant allocation. Covered ordinals are ordered by global pixel index, so a
-frame's covered pixels are a contiguous ordinal range; when the prefilter is
-active the tile loop **clamps each tile to the current frame's range** and
-flushes at the boundary. The extra cost is at most one short tile per frame.
+frame's covered pixels are a contiguous ordinal range. A tile is **not** clamped
+to one frame's range: a tile that spans several frames is scattered, composited
+and finished one frame-part at a time, in frame order, and a frame whose pixels
+straddle two tiles keeps its buffers across them. (Clamping each tile to a frame
+used to cost a whole bounce loop per frame rather than per tile.)
 
 Per tile, after the drain and **before** `wf_composite_accum_sparse` (which
 overwrites the raw prefilled background this reads):
@@ -522,7 +525,8 @@ overwrites the raw prefilled background this reads):
   far and `(w_n · B, w_n, w_n · G, w_n · log2 S, w_n · log2² S)` near, with
   `B` the glossy row's radiance
   composited against the same background and `w_n = 1 - w_f` the pixel's near
-  weight (§3).
+  weight (§3). It also grows `gl_box` to take the pixel in (an atomic min or
+  max, only where the box's current bound does not already hold it).
 
 Then `wf_composite_accum_sparse` runs unchanged and finalizes every covered
 pixel including the glossy ones — its value for a glossy pixel is simply
@@ -540,20 +544,32 @@ At the frame boundary:
   halo); one beside near content makes up to six.
 * reset both buffers for the next frame.
 
-`gloss_finish` does all three in ONE launch: each pyramid level is its own
-top-level loop (so its own offloaded task, run in order), then the composite's
-loop, then the reset. Every kernel here computes a texel or a pixel through the
-same `ti.func`, so the arithmetic and its order are the separate launches'. The
-reset is cut to what the next frame reads: the composite puts each glossy
-pixel's `sigma_px` back to -1 after reading it (the scatter writes every
-`gl_main` column of a pixel it marks, and nothing reads an unmarked pixel past
-`sigma_px`), and a last loop zeroes level 0 of `gl_pyr` (each higher level is
-written whole by the next frame's reduction before anything reads it). The
-reset before a chunk's first frame, `gloss_clear`, writes `gl_main` whole in
-one coalesced pass and zeroes level 0 alone. `ALGAN_OPT_DISABLE=glossfuse`
-restores the separate launches and `ALGAN_OPT_DISABLE=exactfills` the
-strided clear; `tests/unit_tests/test_glossy_fused_finish.py` holds both to
-them bit for bit, with everything the new reset skips poisoned.
+`gloss_finish` does all three in ONE launch, and only inside `gl_box`: each
+pyramid level is its own top-level loop (so its own offloaded task, run in
+order) over the texels the box reaches at that level, then the composite's loop
+over the box's first to last pixel, then the reset. Outside the box's reach
+every level is zero -- level 0 is written only at glossy pixels, and the reset
+keeps the rest zero -- and zero is what the full-frame reduction computes
+there, so the composite reads the same pyramid either way. A frame with no
+glossy pixel is one launch whose loops are all empty; one glossy object costs
+its own box, not the frame.
+Every kernel here computes a texel or a pixel through the same `ti.func`, so
+the arithmetic and its order are the separate launches'. The composite walks
+the box's pixels as one row-major range rather than box texel by box texel so
+that the pixel index stays the loop's own variable, as in `gloss_composite`:
+under `fast_math` the other loop shape fused the composite's arithmetic
+differently and moved a few pixels by an ulp or two. The reset is cut to what
+the next frame reads: the composite puts each glossy pixel's `sigma_px` back to
+-1 after reading it (the scatter writes every `gl_main` column of a pixel it
+marks, and nothing reads an unmarked pixel past `sigma_px`), a last loop zeroes
+every level within the box's reach, and the box is emptied. The reset before a
+chunk's first frame, `gloss_clear`, writes `gl_main` whole in one coalesced
+pass, zeroes the whole pyramid and empties the box.
+`ALGAN_OPT_DISABLE=glossfuse` restores the separate launches and
+`ALGAN_OPT_DISABLE=exactfills` the strided clear;
+`tests/unit_tests/test_glossy_fused_finish.py` holds both to them bit for bit,
+with everything the new reset skips poisoned, on frames whose glossy pixels
+fill a corner of the frame or none of it.
 
 `finalize` is `finalize_pixel_color` with the same tonemapping template value
 and exposure the tile composite used, so a glossy pixel takes the identical
