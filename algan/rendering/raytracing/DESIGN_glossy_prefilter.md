@@ -562,7 +562,10 @@ differently and moved a few pixels by an ulp or two. The reset is cut to what
 the next frame reads: the composite puts each glossy pixel's `sigma_px` back to
 -1 after reading it (the scatter writes every `gl_main` column of a pixel it
 marks, and nothing reads an unmarked pixel past `sigma_px`), a last loop zeroes
-every level within the box's reach, and the box is emptied. The reset before a
+every level within the box's reach, a texel and all its lanes per iteration,
+and the box is emptied. Zeroing the levels above 0, which the full-frame
+launches left for the next frame's reduction to overwrite, is what a frame
+glossy all over pays over them: a few percent of its finish. The reset before a
 chunk's first frame, `gloss_clear`, writes `gl_main` whole in one coalesced
 pass, zeroes the whole pyramid and empties the box.
 `ALGAN_OPT_DISABLE=glossfuse` restores the separate launches and

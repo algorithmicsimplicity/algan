@@ -737,3 +737,64 @@ gathers the pairs instead of viewing them). One small cost seen: scene 21
 renders ~1 s slower in every A/B, all of it in `bloom fft conv` (0.27 -> 1.08 s)
 and `memory reclaim` on identical frames -- allocator state after the build,
 not the build, which got faster; not chased.
+
+## Glossy finish box, fragment stream lifetime, sparse-window sort, circuit spans (October 30)
+
+Four items from the sheet resolve review, each a cost the sheet route paid every
+frame or chunk whatever the scene asked of it. Measured in a 4-vCPU CPU
+container on `benchmarks/performance/explainer_scene.py` and `graphics_scene.py`,
+master (`8d0c503`) and branch alternated in fresh processes, two renders each,
+the second read; every written frame was hashed and matches master's bytes
+(explainer PREVIEW 30 frames, HD 30 frames, graphics PREVIEW 55 frames).
+
+- **Glossy finish box.** `gloss_finish` reduced, composited and zeroed the
+  whole frame's pyramid every frame. `gloss_scatter` now grows `gl_box`, the
+  bounding box of the frame's glossy pixels, and the finish works only inside
+  it and the texels it reaches at each level: outside, every level is zero,
+  which is what the full-frame reduction computes there
+  (`DESIGN_glossy_prefilter.md` §4.4). Finish over the clip: explainer PREVIEW
+  117 -> 38 ms, HD 684-880 -> 96-109 ms, graphics PREVIEW 1712 -> 1149 ms.
+  On synthetic 704x396 inputs, with master's kernel loaded beside the
+  branch's in one process: no glossy pixel 3.9-5.8 -> 0.7-1.9 ms, a quarter of
+  the frame 13-16 -> 8-9 ms, glossy all over within 1-4% (3% at HD), that
+  being the zeroing of levels above 0, which the full-frame finish left to the
+  next frame's reduction. The reset clears a texel, all its lanes, per
+  iteration; a first cut that cleared a lane per iteration put a division by
+  the box width on every lane, made the reset 20x master's on the CPU and left
+  the graphics finish 2-4% slower than master's.
+- **Fragment stream lifetime.** `prepare_sparse_raster_coverage` held `frag_*`
+  and `run_offsets` (32 B a fragment plus 4 B a covered pixel) at the arena's
+  reverse end through the resolve, though past compaction only the viewer's
+  fragment capture reads them. They are now forward scratch of the discovery
+  scope, `None` in the result unless `fragment_capture.is_armed()` or
+  `keep_fragment_stream=True`. Held through the first chunk's resolve:
+  explainer HD 52.1 -> 26.8 MB, PREVIEW 9.1 -> 4.6 MB, graphics 84.6 -> 36.7
+  MB. The batch model sees the lower peak and plans wider windows: explainer
+  HD renders in three chunks instead of four, graphics in six of other
+  extents. Those frames did not move, but a scene whose pixels depend on its
+  windows can (October 23).
+- **Sparse-window counting sort.** `_binned_fragment_order` sizes its counting
+  sort by the window's pixel bins, about 8 B each live and outside the arena:
+  a 30-frame 4K chunk is 249M bins, 2 GB, whatever its fragments. It declines
+  past `_BINNED_MAX_BINS_PER_FRAGMENT` (16) bins per fragment and the radix
+  sort orders the stream, in the same order. CUDA only;
+  `benchmarks/_binned_sort_density.py` times both arms, with their peak
+  allocation, across bin densities.
+- **Circuit row spans.** `pair_expand_count_circuits` and
+  `pair_expand_write_circuits` projected every edge of a span candidate's
+  circuit for every one of its rows, in both passes. The count pass now goes
+  edge by edge, each edge projected once and widening only the rows within
+  its reach (each still taking the exact per-row test), and leaves each row's
+  `(xs, xe)` in a buffer the write pass reads. 23 captured calls (a pinhole
+  camera at 100° FOV, orthographic and near-orthographic stress scenes, the
+  explainer at PREVIEW and HD) replay to byte-identical rows, 287 -> 34-38
+  ms. In the render: explainer PREVIEW 54-69 -> 9-12 ms, HD 186-206 -> 17-22
+  ms.
+
+Wall, second render: explainer PREVIEW 1.70-1.75 -> 1.46-1.49 s (two pairs),
+HD 6.46-8.01 -> 6.21-6.61 s (four), graphics PREVIEW 68.0 -> 64.7 s (one, with
+the final reset).
+
+Not done: `note_sparse_discovery_footprint` still records a footprint for
+`sparse_discovery_bytes_for_frames`, which nothing calls, so the
+`sparse_discovery_safety` setting does nothing.
