@@ -42,7 +42,10 @@ and other route gates can select the classic frontend. PN surfaces are diced
 into flat triangles during geometry preparation, not rejected merely for their
 PN origin.
 """
+import warnings
+
 from algan.environment import env_int
+from algan.errors import AlganWarning
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     RowView,
@@ -106,10 +109,23 @@ from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 from algan.taichi_compat import ti
 
 # Candidate pixels per (prim, chunk) pair: one fine-raster thread tests at
-# most this many pixels, bounding load imbalance for large bboxes. Purely a
+# most this many pixels, bounding load imbalance for large bboxes. A
 # work-partitioning knob -- every candidate is exact-tested either way, so the
 # image does not depend on it -- exposed for tuning against a card's occupancy.
-raster_chunk = max(1, env_int("ALGAN_RASTER_CHUNK", 32))
+# At most 32: the count pass records each pair's accepted pixels as one bit
+# apiece in an i32 (``pair_accept``) that the write pass replays, so a 33rd
+# pixel would have no bit and the two passes would disagree.
+_RASTER_CHUNK_MAX = 32
+raster_chunk = max(1, env_int("ALGAN_RASTER_CHUNK", _RASTER_CHUNK_MAX))
+if raster_chunk > _RASTER_CHUNK_MAX:
+    warnings.warn(
+        f"ALGAN_RASTER_CHUNK={raster_chunk} exceeds the {_RASTER_CHUNK_MAX} "
+        f"pixels one pair's acceptance mask can hold; using "
+        f"{_RASTER_CHUNK_MAX}.",
+        AlganWarning,
+        stacklevel=2,
+    )
+    raster_chunk = _RASTER_CHUNK_MAX
 
 # Empty typed visibility-buffer entry. Real hits pack the same strict ordering
 # used by the classic deterministic tracer:
@@ -122,6 +138,18 @@ raster_chunk = max(1, env_int("ALGAN_RASTER_CHUNK", 32))
 # recover the winning geometry type/id from the layer without a second winner
 # buffer. Exact t/barycentrics are recomputed only for the terminal winner.
 Z_SENTINEL = 0x7FFFFFFFFFFFFFFF
+
+# Depth bits of the record a WRITE kernel stores for a pixel the count pass
+# accepted but the write pass's own geometry evaluation then missed. The two
+# passes run the same code, so this should never happen; if it does, the slot
+# the count reserved still has to be filled, and this fills it inertly: the
+# candidate's own pixel, no samples, zero coverage, and the smallest positive
+# depth, so it sorts ahead of its pixel's real fragments and the resolve skips
+# it before any shading. (The write used to store the miss as-is: pixel 0, depth
+# 0, full coverage -- an opaque fragment nobody emitted.) The low key bits are
+# then exactly 1, which no real fragment's depth has, so the opt-in key check
+# (``raster_pipeline._check_emitted_keys``) counts them.
+_WRITE_MISS_T_BITS = 1
 
 # Reach of the analytic-coverage box filter, in pixels: half the diagonal of the
 # pixel square, so a nearest-edge query centred on the pixel centre is
@@ -1759,7 +1787,9 @@ def _pair_pixel(prim, f, x0, y0, bw, bh, off, j,
     the screen-space path (``use_ss``) or the ray-cast fallback. Returns
     ``(ok, local_pixel, t, w1, w2, cov, msk)``; both paths supply analytic
     coverage under ``aa``, the fallback by casting one ray per sub-pixel sample
-    (see :func:`_raycast_pixel`).
+    (see :func:`_raycast_pixel`). ``local_pixel`` is the candidate's pixel
+    whenever it lies in the tile, hit or not (the write kernels' miss record
+    needs it; see ``_WRITE_MISS_T_BITS``), and 0 otherwise.
     """
     ok = 0
     lp = 0
@@ -1775,6 +1805,7 @@ def _pair_pixel(prim, f, x0, y0, bw, bh, off, j,
         lpi = ((f - time_start) * (width * height) + py * width + px
                - tile_start)
         if (lpi >= 0) and (lpi < tile_pixels):
+            lp = lpi
             hit = 0
             th = 0.0
             b1 = 0.0
@@ -1791,7 +1822,6 @@ def _pair_pixel(prim, f, x0, y0, bw, bh, off, j,
                     pixel_basis_x, pixel_basis_y, cam_proj, aa)
             if hit != 0:
                 ok = 1
-                lp = lpi
                 t = th
                 w1 = b1
                 w2 = b2
@@ -2171,7 +2201,9 @@ def _bez_pair_pixel(circuit, f, x0, y0, bw, bh, off, j,
                     circuit_meta: ti.template(), circuit_colors: ti.template(),
                     edges_2d: ti.template(), edge_accel: ti.template(),
                     aa: ti.template(), aa_min_half_width: ti.f32):
-    """Pair wrapper around :func:`_bez_pixel_hit`."""
+    """Pair wrapper around :func:`_bez_pixel_hit`. ``lp`` is the candidate's
+    pixel whenever it lies in the tile, hit or not, as in :func:`_pair_pixel`.
+    """
     ok = 0
     lp = 0
     t = 0.0
@@ -2186,6 +2218,7 @@ def _bez_pair_pixel(circuit, f, x0, y0, bw, bh, off, j,
         lpi = ((f - time_start) * (width * height) + py * width + px
                - tile_start)
         if (lpi >= 0) and (lpi < tile_pixels):
+            lp = lpi
             hit, th, uu, vv, ib, cv = _bez_pixel_hit(
                 circuit, f, px, py, half_w, half_h, cam_origin, screen_point,
                 pixel_basis_x, pixel_basis_y, cam_proj, pixel_world_scale, circuit_meta,
@@ -2193,7 +2226,6 @@ def _bez_pair_pixel(circuit, f, x0, y0, bw, bh, off, j,
                 aa)
             if hit != 0:
                 ok = 1
-                lp = lpi
                 t = th
                 u = uu
                 v = vv
@@ -2233,7 +2265,8 @@ def raster_tri_count(
     owned); the sparse emission always passes 0, as it does for ``z_cull``.
 
     ``pair_accept[p]`` records the per-pixel acceptance decisions as a bitmask
-    (bit ``j`` = chunk pixel ``j`` survived; ``raster_chunk`` is 32, one i32).
+    (bit ``j`` = chunk pixel ``j`` survived; ``raster_chunk`` is at most 32,
+    so one i32 holds them).
     The write pass replays these bits instead of recomputing the whole
     acceptance chain -- most importantly the texture-sampling alpha fetch --
     so this kernel IS the acceptance authority the write contract points at.
@@ -2318,7 +2351,9 @@ def raster_tri_write(
     (lp/t/w1/w2/cov/msk) still come from the exact ``_pair_pixel`` evaluation
     (mode 1: the cov lane carries the exact area for masked fragments; the
     count's acceptance used the sampled share, which the bits already bake
-    in).
+    in). Should that evaluation miss a pixel the count accepted, the slot
+    gets the inert ``_WRITE_MISS_T_BITS`` record rather than the miss's
+    default lanes.
     """
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for p in range(num_pairs):
@@ -2341,6 +2376,12 @@ def raster_tri_write(
                     sm, vm, cam_o, il, cam_origin, screen_point,
                     pixel_basis_x, pixel_basis_y, cam_proj, aa, 1)
                 tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                if ok == 0:
+                    tb = ti.i64(_WRITE_MISS_T_BITS)
+                    w1 = 0.0
+                    w2 = 0.0
+                    cov = 0.0
+                    msk = 0
                 frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
                 frag_ref[w] = prim
                 frag_ab[w, 0] = w1
@@ -2445,7 +2486,8 @@ def raster_bez_write(
     Acceptance replays the count pass's ``pair_accept`` bits (see
     :func:`raster_tri_write`) -- the passes cannot diverge, and this one
     skips the color sampling entirely; the exact ``_bez_pair_pixel``
-    evaluation still supplies the record's geometry lanes.  ``frag_cov`` is
+    evaluation still supplies the record's geometry lanes (a miss there gets
+    the inert ``_WRITE_MISS_T_BITS`` record).  ``frag_cov`` is
     the analytic coverage lane, pre-filled with 1.0 by the host so geometry
     without analytic coverage (flat triangles today) needs no write of its
     own.
@@ -2470,6 +2512,12 @@ def raster_bez_write(
                     pixel_world_scale, circuit_meta, circuit_colors,
                     edges_2d, edge_accel, aa, aa_min_half_width)
                 tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                if ok == 0:
+                    # See _WRITE_MISS_T_BITS (raster_tri_write).
+                    tb = ti.i64(_WRITE_MISS_T_BITS)
+                    u = 0.0
+                    v = 0.0
+                    cov = 0.0
                 frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
                 frag_ref[w] = _pack_bez_ref(circuit, ib)
                 frag_ab[w, 0] = u

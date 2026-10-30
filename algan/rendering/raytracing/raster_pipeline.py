@@ -61,6 +61,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_LATTICE_MAX_COORD,
     _AA_LATTICE_MAX_EXTENT,
     _BEZ_BORDER_BITS,
+    _WRITE_MISS_T_BITS,
     AA_FULL_COVERAGE,
     Z_SENTINEL,
     _aa_run_full,
@@ -2183,11 +2184,24 @@ def _check_emitted_keys(frag_key_u, tile_pixels, num_frags):
     emitted fewer than the count pass promised) or are scattered (a gather or
     an ordering problem upstream of them).
 
-    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is two reductions and a
+    It also counts the write pass's MISS records (depth bits
+    ``_WRITE_MISS_T_BITS``): pixels the count pass accepted whose geometry the
+    write pass's own evaluation then rejected. Those keys are in range and
+    the records are inert, so only this count can show that the two passes
+    disagreed.
+
+    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is three reductions and a
     host readback over the whole fragment stream.
     """
     if not env_flag("ALGAN_RASTER_KEY_CHECK", False) or num_frags <= 0:
         return
+    n_miss = int(((frag_key_u[:num_frags] & 0xFFFFFFFF) == _WRITE_MISS_T_BITS).sum())
+    if n_miss:
+        print(
+            f"[raster-key-check] {n_miss} of {num_frags} slots hold the write "
+            f"pass's miss record: pixels the COUNT pass accepted and the WRITE "
+            f"pass's geometry evaluation rejected (count/write divergence)."
+        )
     pix = frag_key_u[:num_frags] >> 32
     bad = (pix < 0) | (pix >= tile_pixels)
     n_bad = int(bad.sum())
