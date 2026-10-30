@@ -103,6 +103,9 @@ ALWAYS_CI = (
     "tests/unit_tests/test_settings_api.py::test_an_inert_field_is_readable_but_refuses_a_write",
     # The closed-shell coverage ceiling, on synthetic streams: tensors only.
     "tests/unit_tests/test_closed_shell_ceiling.py::",
+    # The one-mesh ceiling behind a refracted sheet (the glass rim), at the
+    # oracle and the emission: tensors and two small kernels.
+    "tests/unit_tests/test_one_solid_ceiling.py::",
     # A triangle too big for the coverage lattice is sent to the ray cast.
     "tests/unit_tests/test_raster_lattice_bound.py::test_lattice_demotion_keeps_safe_triangles_and_sends_the_rest_to_half",
 )
@@ -123,9 +126,10 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_raster_lattice_bound.py::",
     "tests/unit_tests/test_near_camera_plane_render.py::",
     "tests/unit_tests/test_emission_write_miss.py::",
-    # The resolve's shading against renders: the glass rim, a NaN area, the
-    # byte buffer under a bright sky, partial-coverage tint, and rough glass
-    # with and without the prefilter.
+    # The resolve's shading against renders: the glass rim, the refracting
+    # variant against the oracle and the solids its ceiling must leave alone,
+    # a NaN area, the byte buffer under a bright sky, partial-coverage tint,
+    # and rough glass with and without the prefilter.
     "tests/unit_tests/test_sheet_resolve_shading.py::",
     "tests/unit_tests/test_glossy_prefilter.py::test_rough_glass_reflects_the_same_with_and_without_the_prefilter",
 )

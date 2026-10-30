@@ -250,6 +250,20 @@ _AA_LOSE_SHIFT = 20  # bits 20..27, per sheet
 # not carry -- -0.0 is not below zero -- so its band closed early.
 _AA_BAND_CONT_BIT = 1 << 28
 
+# Marks every fragment of a pixel whose fragments are ALL triangles of ONE
+# surface, whatever their material -- _AA_ONE_MESH_BIT's pixels and the
+# transmissive and translucent ones besides -- set by
+# prepare_sparse_raster_coverage beside the one-mesh bit, with the same
+# ceiling in ``frag_cap``, and only in a batch whose primaries can refract.
+# The sheet resolve applies that ceiling on such a pixel only once its walk
+# has refracted at a full-alpha sheet of the solid: from there the sheet's
+# refraction continuation stands for everything behind it, so a far sheet of
+# the same solid must not claim the near sheet's ``corr < 1`` residue (the
+# dark rim round clear glass). A translucent sheet, glass with refraction
+# off, out of bounces or at alpha < 1, never refracts it that way, so the
+# bit is inert there.
+_AA_ONE_SOLID_BIT = 1 << 29
+
 # Sample-less-triangle policies, matching ``settings.ANALYTIC_AA_SLIVER_MODES``.
 # The live mode reaches ``_ss_pixel`` inside the ``aa`` template value (the
 # geometry kernels are launched with ``1 + mode``) so that each policy gets its

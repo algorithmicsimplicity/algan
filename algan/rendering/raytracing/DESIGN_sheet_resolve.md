@@ -297,7 +297,9 @@ toward the full-coverage tint linearly in the sheet's area, and a green sheet
 passing half its light, over half a red pixel, let 0.375 of the red through,
 against the 0.5 its uncovered half alone shows. (Glass refracts through a ray
 of its own and occludes as opaque here; this is a transmitter at an index of
-1, or glass with no bounces left.)
+1, or glass with no bounces left. Behind a refracted full-alpha sheet of a
+solid that has the pixel to itself, the one-mesh ceiling binds as on an opaque
+mesh: §7.)
 
 4.4 Within a band: siblings composite additively
 -------------------------------------------------
@@ -678,7 +680,33 @@ regresses 2–4x, including 0.000 → 0.032 at the exact-fit angles. The
 one-mesh ceiling therefore SURVIVES — as data on the sheet record
 (`sheet_cap`, the host's f64-reduced `max(front, back)`), clamped in the
 resolve's bounded per-pixel loop with occlusion scaled alongside the claim
-(§6.6.2's completion). What §7 does retire of §6.6 is its *walk* costume:
+(§6.6.2's completion).
+
+**Extended 2026-10-30 to solids the walk refracts.** The host flagged
+single-OPAQUE-mesh pixels only, since a translucent solid's far sheet is
+visible through its near one (`DESIGN_mesh_identity.md` §6.6). Clear glass
+is not opaque, so its far sheet re-claimed the near sheet's `corr < 1`
+residue just as the Cylinder's had, and spent it on a ray through the
+solid's back face, which at a grazing silhouette totally reflects into the
+solid: the faint dark rim R1's fix left round a clear sphere on white, 16
+pixels below 245 at 192x108 where the supersampled reference has none
+below 250 (a measured pixel: near sheet 0.358 of the pixel, far sheet a
+further 0.016). Where the batch's primaries can refract (the resolve's
+refraction template on, its bounce budget above zero) the host now also
+flags every pixel of ONE surface of any material, `_AA_ONE_SOLID_BIT`, with
+the same `max(front, back)`, and the resolve applies the ceiling there once
+its walk has refracted at a full-alpha sheet of the solid: that sheet
+occluded what it claimed as an opaque one does, and its continuation
+carries everything behind it. Before such a sheet the flag binds nothing,
+so a translucent solid, and glass the walk does not refract (no bounces
+left, an index of 1, refraction compiled out) or meets at alpha < 1,
+composites exactly as before; a render test forces the flag off and finds
+every such solid byte-identical. The oracle takes the same rule from its
+`refracts` argument. After: 2 pixels below 245, and at both the far sheet
+now claims nothing: what is left is the near sheet's single shading point at
+the limb, against the reference's many.
+
+What §7 does retire of §6.6 is its *walk* costume:
 the per-fragment clamp interleaved with run state. Continuing the list: run
 rules A and B **as walk state** and the redistribution residue (rule B's
 arithmetic survives per-record, sheet-local, no pending flag); the run

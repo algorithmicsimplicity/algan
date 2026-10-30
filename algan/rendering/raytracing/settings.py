@@ -2961,6 +2961,16 @@ analytic_aa_run_full = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # frag_msk bit, so no kernel argument changes; carried as aa_grp = 3, and every
 # ti.static(aa_grp) test in the kernels is a truthiness test.
 #
+# One exception to OPAQUE, where the batch's primaries can refract: a pixel of
+# one surface of any material carries _AA_ONE_SOLID_BIT and the same ceiling,
+# and the resolve binds it behind a sheet its walk refracted at full alpha. That
+# sheet's refraction ray carries everything behind it, so the far sheet's view
+# through it is already in the pixel, and its re-claim of the residue was a ray
+# into the solid instead of background: the faint dark rim round clear glass
+# (16 pixels below 245 on a sphere on white, 2 after). A translucent solid, and
+# glass the walk does not refract or sees at alpha < 1, never seals the pixel,
+# so it composites exactly as before. This switch turns both off.
+#
 # Measured on benchmarks/_aa_line_check's own thin Cylinder at 33 deg -- the
 # geometry its ink-wobble metric actually reads -- mean coverage error over
 # silhouette pixels 0.0299 -> 0.0064, which is 79% of the error there. Note that
