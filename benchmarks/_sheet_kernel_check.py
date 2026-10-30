@@ -570,25 +570,24 @@ print("\nsolid_shell_ceiling vs the torch post-sort segment clamp it replaced")
 
 
 def shell_case(label, key, o2, back, cov_in):
-    """Both arms consume ONE cub-scan exclusive prefix, built exactly as
-    ``compact_sheets`` builds it -- the prefix stays in torch under the
-    toggle, so sharing it is not a shortcut, it is the production shape.
-    (Two separately-built prefixes can legitimately differ: cuB's
-    reassociation follows the workspace the allocator hands it, so comparing
-    arms that each rebuilt the prefix would test allocator noise.)
+    """The kernel against the torch block it replaced, bit for bit.
+
+    The spend is Q32 integer arithmetic in both arms (a whole-stream integer
+    prefix differenced at each segment's base here, a serial per-segment sum
+    in the kernel), so the arms agree by construction on it; what this pins
+    is the float tail and the facing-split sums.
     """
     from algan.rendering.raytracing.sheet_compact_taichi import (
+        SHELL_SPEND_ONE,
+        SHELL_SPEND_QUANTUM,
         solid_shell_ceiling,
     )
 
     device = key.device
     nn_ = int(key.numel())
-    cov64 = cov_in.to(torch.float64)
-    c2 = cov64.index_select(0, o2)
-    del cov64
-    excl = torch.cumsum(c2, 0).sub_(c2)
 
     def torch_apply(cov_src):
+        c2 = cov_src.to(torch.float64).index_select(0, o2)
         k2 = key.index_select(0, o2)
         seg_start = torch.ones(nn_, dtype=torch.bool, device=device)
         if nn_ > 1:
@@ -598,8 +597,15 @@ def shell_case(label, key, o2, back, cov_in):
         nseg = int(seg[-1].item()) + 1
         first = torch.zeros(nseg, dtype=torch.int64, device=device)
         first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
-        spent = excl - excl.index_select(0, first).index_select(0, seg)
-        del first, seg_start
+        q2 = (c2 * SHELL_SPEND_ONE).to(torch.int64)
+        excl_q = torch.cumsum(q2, 0).sub_(q2)
+        del q2
+        spent = (
+            (excl_q - excl_q.index_select(0, first).index_select(0, seg))
+            .to(torch.float64)
+            .mul_(SHELL_SPEND_QUANTUM)
+        )
+        del excl_q, first, seg_start
         backf2 = back.index_select(0, o2)
         z64 = torch.zeros((), dtype=torch.float64, device=device)
         front = torch.zeros(nseg, dtype=torch.float64, device=device)
@@ -623,13 +629,10 @@ def shell_case(label, key, o2, back, cov_in):
 
     want = torch_apply(cov_in)
     got = cov_in.clone()
-    cov64k = cov_in.to(torch.float64)  # the kernel's barrier scratch
     solid_shell_ceiling(
         key.contiguous(),
         o2.contiguous(),
         back.contiguous().view(torch.uint8),
-        excl,
-        cov64k,
         nn_,
         got,
         ti.f64,
@@ -643,7 +646,7 @@ def shell_case(label, key, o2, back, cov_in):
         )
     # The facing-split sums are the float contract: the kernel must also
     # reproduce ITSELF bitwise across runs (serial walks, so this should be
-    # exact); the shared ``excl`` makes the repeats read the same spend.
+    # exact).
     repeats = []
     for _ in range(4):
         c = cov_in.clone()
@@ -651,8 +654,6 @@ def shell_case(label, key, o2, back, cov_in):
             key.contiguous(),
             o2.contiguous(),
             back.contiguous().view(torch.uint8),
-            excl,
-            cov64k,
             nn_,
             c,
             ti.f64,
@@ -660,7 +661,6 @@ def shell_case(label, key, o2, back, cov_in):
         repeats.append(c)
     ok = ok and all(bits_equal(r, got) for r in repeats)
     nseg = int(torch.unique(key[o2]).numel())
-    del cov64k
     check(f"{label} ({nseg:,} segments)", ok)
 
 

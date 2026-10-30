@@ -202,14 +202,14 @@ def _install_sheet_dump(width, height):
 _CEILING_CHECK: list = []
 
 
-def _reference_ceiling(key, o2, back, excl, cov):
+def _reference_ceiling(key, o2, back, cov):
     """The solid-shell ceiling, in float64 on the host, from the same inputs.
 
     A transcription of ``sheet_compact_taichi.solid_shell_ceiling``: segments
     are runs of equal ``key`` along ``o2``, each segment's cap is
     ``float32(max(front sum, back sum))``, and each fragment keeps
     ``min(max(cap - spent, 0) / denom, 1)`` of its own area, where ``spent`` is
-    the global exclusive prefix differenced at the segment's own base.
+    what the segment's earlier fragments (along ``o2``) already hold.
 
     Its purpose is to be the ORACLE the device's answer is checked against, so
     it is deliberately the slow, obvious form: float64 throughout, one Python
@@ -230,8 +230,7 @@ def _reference_ceiling(key, o2, back, excl, cov):
         c = cov[rows].astype(np.float64)
         is_back = back[rows] != 0
         cap = np.float64(np.float32(max(c[~is_back].sum(), c[is_back].sum())))
-        base = np.float64(excl[i])
-        spent = excl[i:j].astype(np.float64) - base
+        spent = np.concatenate([[0.0], np.cumsum(c)[:-1]])
         denom = np.maximum(c, 1e-12)
         scale = np.minimum(np.maximum(cap - spent, 0.0) / denom, 1.0)
         out[rows] = denom * scale
@@ -256,19 +255,18 @@ def _install_ceiling_check():
 
     original = sc.solid_shell_ceiling
 
-    def checked(key, o2, back, excl, scratch, n, cov, acc_t):
+    def checked(key, o2, back, n, cov, acc_t):
         try:
             before = (
                 key[:n].detach().cpu().numpy(),
                 o2[:n].detach().cpu().numpy(),
                 back[:n].detach().cpu().numpy(),
-                excl[:n].detach().cpu().to(torch.float64).numpy(),
                 cov[:n].detach().cpu().to(torch.float64).numpy(),
             )
         except Exception as exc:  # noqa: BLE001
             _CEILING_CHECK.append(f"  (could not read the inputs: {exc!r})")
-            return original(key, o2, back, excl, scratch, n, cov, acc_t)
-        result = original(key, o2, back, excl, scratch, n, cov, acc_t)
+            return original(key, o2, back, n, cov, acc_t)
+        result = original(key, o2, back, n, cov, acc_t)
         try:
             after = cov[:n].detach().cpu().to(torch.float64).numpy()
             oracle = _reference_ceiling(*before)
@@ -278,7 +276,7 @@ def _install_ceiling_check():
                 f"  n={n} fragments; kernel vs host oracle: {bad} differ by "
                 f"> 1e-6, worst {float(delta.max()) if delta.size else 0.0:.6g}"
             )
-            k_before, o2_before, back_before, excl_before, cov_before = before
+            k_before, o2_before, back_before, cov_before = before
             worst = np.argsort(-delta)[:6]
             for row in worst:
                 if delta[row] <= 1e-6:
@@ -309,7 +307,6 @@ def _install_ceiling_check():
             _CEILING_CHECK.append(
                 f"  cov in sum {cov_before.sum():.6f} out sum {after.sum():.6f}; "
                 f"back-facing {int((back_before != 0).sum())}; "
-                f"excl last {excl_before[-1]:.6f}; "
                 f"unchanged {kept} clamped-to-zero {zeroed} "
                 f"partly {n - kept - zeroed}"
             )
