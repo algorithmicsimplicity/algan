@@ -42,7 +42,7 @@ import pytest
 import torch
 
 from algan.rendering import kernel_precompile as kp
-from algan.taichi_compat import BACKEND, ti
+from algan.taichi_compat import BACKEND, program, ti
 
 quadrants_only = pytest.mark.skipif(
     BACKEND != "quadrants", reason="precompiling rests on the Quadrants-only index"
@@ -1142,8 +1142,18 @@ def test_a_worker_binds_its_placeholders_the_way_a_launch_would(monkeypatch):
 
     On MPS that is what imports them, so the worker's source key describes the
     imported ndarrays the render's does; off MPS it is the identity.
+
+    Without its dump. ``compile_spec`` is a worker's, and a worker never
+    launches again; Quadrants' ``KernelCompilationManager::dump`` frees every
+    kernel the process compiled, so in this process it left each one's
+    ``compiled_kernel_data_by_key`` entry and taichi_fast_launch plan
+    dangling. The next launch of any of them read freed memory: a test run
+    that compiled kernels before this test segfaulted some 500 tests later
+    (``test_orthographic_render``'s sheet route, in whichever launch met the
+    freed memory first), and a run on a warm cache, which compiles nothing,
+    never did.
     """
-    from algan.rendering import mps_zero_copy
+    from algan.rendering import mps_zero_copy, taichi_runtime
 
     seen = []
 
@@ -1152,6 +1162,9 @@ def test_a_worker_binds_its_placeholders_the_way_a_launch_would(monkeypatch):
         return tuple(args)
 
     monkeypatch.setattr(mps_zero_copy, "launch_arguments", recording)
+    taichi_runtime.ensure_taichi_for_render()
+    monkeypatch.setattr(type(program()), "dump_cache_data_to_disk", lambda self: None)
+    monkeypatch.setattr(kp, "_DUMPED_HERE", {})
     kernel = _tonemap()
     spec = kp.encode_spec(kernel, _tonemap_args())
     kp.compile_spec(spec)
