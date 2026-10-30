@@ -4495,6 +4495,10 @@ def raytrace_render_wavefront(
                 depth_order_eye=depth_order_eye,
                 near_clip=near_clip,
                 far_clip=far_clip,
+                # The resolve's refraction template and the primary's bounce
+                # budget: without both no sheet refracts, and the one-solid
+                # ceiling has nothing to bind behind.
+                refracting_primaries=bool(refraction_flag) and int(max_bounces) > 0,
             )
             if coverage is not None and coverage.get("depth_order") is not None:
                 merged.setdefault(DEPTH_ORDER_RECORDS, []).append(

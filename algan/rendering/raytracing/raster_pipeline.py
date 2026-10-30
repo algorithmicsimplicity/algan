@@ -86,6 +86,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_ONE_SOLID_BIT as AA_ONE_SOLID_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -2204,13 +2207,32 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
 
 
 def _one_mesh_pixel_caps(
-    key_s, ref_s, cov_s, msk_s, mat_opaque_s, counts, tri_obj, ppf, time_start
+    key_s,
+    ref_s,
+    cov_s,
+    msk_s,
+    mat_opaque_s,
+    counts,
+    tri_obj,
+    ppf,
+    time_start,
+    *,
+    solid=False,
 ):
     """The one-mesh block (DESIGN_mesh_identity.md ss6.6): flags every pixel
     whose fragments are all opaque triangles of ONE surface by folding
     ``_AA_ONE_MESH_BIT`` into ``msk_s``, and returns ``(msk_s, cap_s)`` with
     the per-fragment ceiling -- the larger of that surface's two sheets' exact
     areas, 2.0 (the no-ceiling sentinel) everywhere else.
+
+    ``solid`` (the batch's primaries can refract) also flags every pixel whose
+    fragments are all triangles of one surface WHATEVER their material with
+    ``_AA_ONE_SOLID_BIT``, and gives those pixels the same ceiling. They are a
+    superset of the one-mesh pixels, and the ceiling is the same number on
+    both, since the facing-split sums read every fragment of the pixel. The
+    resolve applies it there only behind a sheet it refracts at full alpha,
+    which is what keeps a translucent solid's far sheet visible through its
+    near one (``raster_taichi._AA_ONE_SOLID_BIT``).
 
     Under ``sheet_one_mesh_kernel`` two kernels walk each covered pixel's CSR
     run instead of scattering through a whole-stream segment map:
@@ -2267,6 +2289,38 @@ def _one_mesh_pixel_caps(
         # no fragment at all, which cannot happen; see the kernel docstring.
         one_mesh = (lo == hi) & (lo >= 0)
         cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
+        one_solid = None
+        if solid:
+            # The same spread over EVERY triangle fragment. The reduce reads
+            # ``mat_opaque`` only as its usable mask, so all ones asks "one
+            # surface?" where the launch above asked "one opaque mesh?". Its
+            # coverage sums never read the mask: they come back as above and
+            # are not read again.
+            lo.fill_(2147483647)
+            hi.fill_(-1)
+            front.zero_()
+            back.zero_()
+            one_mesh_pixel_reduce(
+                key_s,
+                ref_s,
+                torch.ones(int(key_s.shape[0]), dtype=torch.uint8, device=device),
+                msk_s,
+                cov_s,
+                kernel_index(counts),
+                kernel_index(starts),
+                num_covered,
+                int(ppf),
+                int(time_start),
+                int(tri_obj.shape[0]),
+                int(AA_BACKFACE_BIT),
+                tri_obj,
+                lo,
+                hi,
+                front,
+                back,
+                taichi_accumulate_dtype(),
+            )
+            one_solid = (lo == hi) & (lo >= 0)
         del front, back, lo, hi
         cap_s = torch.empty_like(cov_s)
         one_mesh_pixel_apply(
@@ -2279,6 +2333,20 @@ def _one_mesh_pixel_caps(
             cap_s,
             int(AA_ONE_MESH_BIT),
         )
+        if one_solid is not None:
+            # Over a superset of the pixels above, so this pass rewrites their
+            # ceilings with the same values, and its 2.0 lands only where the
+            # first pass wrote 2.0 too.
+            one_mesh_pixel_apply(
+                kernel_index(counts),
+                kernel_index(starts),
+                num_covered,
+                one_solid.view(torch.uint8),
+                cap_pix,
+                msk_s,
+                cap_s,
+                int(AA_ONE_SOLID_BIT),
+            )
         return msk_s, cap_s
 
     frame_of = _tri_obj_row(key_s >> 32, ppf, time_start, tri_obj.shape[0])
@@ -2289,24 +2357,30 @@ def _one_mesh_pixel_caps(
     # is the wide one -- exactly the argument the kernel arm above already
     # makes for its own int32 spread.
     idx_dtype = reduction_index_dtype()
-    sid = tri_obj[frame_of, safe_ref].to(idx_dtype)
-    # A bezier fragment has ref < 0 and no surface id; a pixel holding
-    # one is never single-mesh. Same for a non-opaque fragment, whose
-    # far sheet is legitimately visible THROUGH the near one.
-    usable = (ref_s >= 0) & mat_opaque_s
-    sid = torch.where(usable, sid, torch.full_like(sid, -1))
-    del frame_of, safe_ref, usable
+    sid_all = tri_obj[frame_of, safe_ref].to(idx_dtype)
+    del frame_of, safe_ref
     seg = torch.repeat_interleave(
         torch.arange(num_covered, dtype=torch.int64, device=device), counts
     )
-    lo = torch.full(
-        (num_covered,), reduction_index_sentinel(), dtype=idx_dtype, device=device
-    )
-    hi = torch.full((num_covered,), -1, dtype=idx_dtype, device=device)
-    lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
-    hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
-    one_mesh = (lo == hi) & (lo >= 0)
-    del lo, hi, sid
+
+    def single_surface(sid_all, usable):
+        sid = torch.where(usable, sid_all, torch.full_like(sid_all, -1))
+        lo = torch.full(
+            (num_covered,), reduction_index_sentinel(), dtype=idx_dtype, device=device
+        )
+        hi = torch.full((num_covered,), -1, dtype=idx_dtype, device=device)
+        lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
+        hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
+        return (lo == hi) & (lo >= 0)
+
+    # A bezier fragment has ref < 0 and no surface id; a pixel holding
+    # one is never single-mesh. Same for a non-opaque fragment, whose
+    # far sheet is legitimately visible THROUGH the near one -- unless the
+    # resolve refracts at the near one, which is what the one-solid flag
+    # leaves it to decide.
+    one_mesh = single_surface(sid_all, (ref_s >= 0) & mat_opaque_s)
+    one_solid = single_surface(sid_all, ref_s >= 0) if solid else None
+    del sid_all
     # The mesh's coverage CEILING: the larger of the two sheets' exact areas.
     # Well inside a silhouette a closed solid's sheets tile to the same area,
     # so this is that area and the far sheet gets no room -- the suppression
@@ -2348,9 +2422,16 @@ def _one_mesh_pixel_caps(
         torch.full_like(msk_s, AA_ONE_MESH_BIT),
         torch.zeros_like(msk_s),
     )
-    cap_s = torch.where(
-        one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0
-    )
+    capped = one_mesh
+    if one_solid is not None:
+        msk_s = msk_s | torch.where(
+            one_solid.index_select(0, seg),
+            torch.full_like(msk_s, AA_ONE_SOLID_BIT),
+            torch.zeros_like(msk_s),
+        )
+        # A superset of the one-mesh pixels, with the same ceiling.
+        capped = one_solid
+    cap_s = torch.where(capped.index_select(0, seg), cap_pix.index_select(0, seg), 2.0)
     return msk_s, cap_s
 
 
@@ -2611,6 +2692,7 @@ def prepare_sparse_raster_coverage(
     keep_fragment_stream=None,
     near_clip=0.0,
     far_clip=0.0,
+    refracting_primaries=False,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
@@ -2658,6 +2740,12 @@ def prepare_sparse_raster_coverage(
     emitted, so none can occlude, truncate or claim samples ahead of the
     geometry behind it. The far clip only culls what lies wholly past it;
     the resolve still stops each pixel's walk at it.
+
+    ``refracting_primaries`` says the resolve this coverage feeds can refract
+    a primary: its refraction template is on and its bounce budget is above
+    zero. Only then are the one-solid pixels flagged (``_AA_ONE_SOLID_BIT``),
+    since without both no sheet of the walk refracts and the flag could never
+    bind.
     """
     device = merged["tri_pos"].device
     ppf = int(width) * int(height)
@@ -3227,6 +3315,16 @@ def prepare_sparse_raster_coverage(
         # A stream with no triangle fragment has no one-mesh pixel (a circuit
         # fragment has no surface id), so the block would only write the 2.0
         # sentinel below over every fragment and leave the masks as they are.
+        #
+        # Where the batch's primaries can refract, the same ceiling also goes
+        # on every pixel of ONE surface of any material, under its own flag
+        # (``_AA_ONE_SOLID_BIT``): a clear glass solid is not opaque, but once
+        # the walk refracts at its near sheet that sheet's continuation carries
+        # everything behind it, and its far sheet re-claiming the near one's
+        # ``corr < 1`` residue sends background area into the solid -- a TIR
+        # far sheet at a grazing silhouette turns it dark. Whether the walk did
+        # refract is the resolve's to say, from the material it fetches; the
+        # flag only says where the question applies.
         stroke_only = num_tri_frags == 0 and not _opt_disabled("strokesheets")
         if rt_settings.analytic_aa_one_mesh and num_frags and not stroke_only:
             msk_s, cap_s = _one_mesh_pixel_caps(
@@ -3239,6 +3337,7 @@ def prepare_sparse_raster_coverage(
                 merged["tri_obj"],
                 int(width) * int(height),
                 int(time_start),
+                solid=bool(refracting_primaries),
             )
         else:
             # Per-fragment so the kernels index it exactly like frag_cov; 2.0

@@ -22,6 +22,10 @@ Pure unlit colours keep shading out of the comparison: what is compared is
 coverage, claims and occlusion, the arithmetic the two are meant to share.
 Transmission and circuits stay out (they need the refraction variant and a
 circuit in the scene); circuits take the areal rule the sliver cases exercise.
+So does the one-solid ceiling's binding half, which needs a sheet the walk
+refracts: here the flag must bind nothing, and
+``test_sheet_resolve_shading.py`` checks the refracting variant against the
+oracle on a glass sphere.
 
 Not marked fast: only a change to the resolve, its launch or the oracle can
 break it.
@@ -54,6 +58,9 @@ from algan.rendering.raytracing.raster_taichi import (
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_ONE_MESH_BIT as ONE_MESH,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_ONE_SOLID_BIT as ONE_SOLID,
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as SLIVER,
@@ -172,6 +179,18 @@ CASES = {
     "one-mesh ceiling splits a sheet": [
         S("R", 0.3, ONE_MESH | 0b00001111, cap=0.4),
         S("G", 0.3, ONE_MESH | 0b11110000, cap=0.4),
+    ],
+    # The one-solid flag binds only behind a sheet the walk refracted, and
+    # nothing refracts here: the far sheet re-claims the residue as it would
+    # unflagged.
+    "one-solid flag with nothing refracted": [
+        S("R", 0.25, ONE_SOLID | 0b00000111, cap=0.25),
+        S("G", 0.25, ONE_SOLID | 0b00000111, cap=0.25),
+    ],
+    # An opaque mesh where primaries refract carries both flags.
+    "one-mesh ceiling under both flags": [
+        S("R", 0.25, ONE_MESH | ONE_SOLID | 0b00000111, cap=0.25),
+        S("G", 0.25, ONE_MESH | ONE_SOLID | 0b00000111, cap=0.25),
     ],
     "ceded samples": [
         S("R", 0.4, 0b00001111 | _ceded(0b00001100)),

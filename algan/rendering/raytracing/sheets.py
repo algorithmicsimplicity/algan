@@ -109,6 +109,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_ONE_SOLID_BIT as AA_ONE_SOLID_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -284,7 +287,15 @@ sheet_rank_pool_layers = max(1.0, env_float("ALGAN_SHEET_RANK_POOL_LAYERS", 1.05
 
 
 def resolve_pixel_reference(
-    covs, msks, is_bez, alphas=None, trans=None, *, caps=None, min_alpha=0.0
+    covs,
+    msks,
+    is_bez,
+    alphas=None,
+    trans=None,
+    *,
+    caps=None,
+    min_alpha=0.0,
+    refracts=None,
 ):
     """The sheet resolve's per-pixel semantics, plain and sequential — the ORACLE.
 
@@ -299,6 +310,11 @@ def resolve_pixel_reference(
     optional per-sheet material ``alphas`` (default 1, matte) and transmission
     shares ``trans`` (default 0). ``min_alpha`` mirrors the walk's
     ``eff <= min_alpha`` skip when parity with a kernel is wanted.
+    ``refracts`` (default none) marks the sheets the walk refracts -- the
+    kernel's ``is_glass``: its refraction template on, bounces left, a
+    transmitting triangle at an index away from 1. Such a sheet passes its
+    light on through rays of its own, so it occludes as opaque whatever
+    ``trans`` says.
 
     Returns ``(claims, T)``: what each sheet paints, and the per-sample
     transmittance left for the background (§4.5's final sheet).
@@ -328,6 +344,16 @@ def resolve_pixel_reference(
       per-sheet claims"; the Phase-2 ink-wobble A/B refuted that — without
       it the coarse Cylinder's far sheet re-claims the corr residue and
       wobble regresses 2-4x.
+    * A pixel flagged ONE SOLID (``AA_ONE_SOLID_BIT``: every sheet one
+      surface, any material, flagged only where primaries can refract) takes
+      the same ceiling once a claiming sheet before it was refracted at full
+      alpha. That sheet's continuation carries everything behind it and it
+      occluded its claim like an opaque one, so a far sheet of the solid
+      claiming its ``corr < 1`` residue would spend background area on a ray
+      through the solid -- the faint dark rim round clear glass. Until such a
+      sheet the solid's far side shows through its near one, so a translucent
+      solid, and glass that is not refracted or not at full alpha, composites
+      exactly as without the flag.
     * §4.4 BAND siblings (the shading-class split's crease faces) arrive as
       consecutive sheets, all but the last flagged ``AA_BAND_CONT_BIT``: each
       claims against the same incoming ``T`` and the band occludes once, where
@@ -346,9 +372,14 @@ def resolve_pixel_reference(
         alphas = [1.0] * n
     if trans is None:
         trans = [0.0] * n
+    if refracts is None:
+        refracts = [False] * n
     T = [1.0] * N
     claims = []
     mesh_ink = 0.0
+    # A claiming sheet was refracted at full alpha: the one-solid ceiling
+    # binds from the next sheet on (the resolve's ``solid_sealed``).
+    sealed = False
 
     def occlude(own, free, a, t):
         """Each sample keeps ``1 - a + t`` of its ``T`` where the sheet sits
@@ -415,7 +446,9 @@ def resolve_pixel_reference(
         if (
             caps is not None
             and not is_bez[i]
-            and (msks[i] & AA_ONE_MESH_BIT)
+            and (
+                (msks[i] & AA_ONE_MESH_BIT) or (sealed and (msks[i] & AA_ONE_SOLID_BIT))
+            )
             and caps[i] <= 1.0
         ):
             room = max(caps[i] - mesh_ink, 0.0)
@@ -442,11 +475,15 @@ def resolve_pixel_reference(
         claims.append(alpha * eff)
         if not is_bez[i]:
             mesh_ink += eff
+        # A circuit refracts as a pane, which transmits as before.
+        glass = bool(refracts[i]) and not is_bez[i]
+        if glass and alpha >= 1.0 - 1e-6:
+            sealed = True
         band_claim += eff
         in_band = defer or band_open
         band_open = defer
         a_i = alpha * p_i
-        t_i = a_i * trans[i]
+        t_i = 0.0 if glass else a_i * trans[i]
         if not in_band:
             occlude(own, free, a_i, t_i)
             band_pc = band_claim = 0.0

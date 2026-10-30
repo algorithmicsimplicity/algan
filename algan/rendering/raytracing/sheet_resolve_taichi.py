@@ -28,6 +28,11 @@ sequential oracle; tests/unit_tests/test_sheet_resolve_parity.py pins them):
   occlude once, where the band closes, by the sum of their coverage factors
   times their own alphas (``_band_write``). A band the walk leaves early
   still writes what its siblings covered.
+* On a pixel of one opaque mesh (``_AA_ONE_MESH_BIT``) the mesh claims at
+  most ``sheet_cap``, the larger of its two sheets' exact areas, occlusion
+  scaled with the claim. On a pixel of one solid of any material
+  (``_AA_ONE_SOLID_BIT``) the same ceiling binds once the walk has refracted
+  at a full-alpha sheet of it, and not before.
 
 Launched only by the sparse covered-pixel path, with the same ray-state
 contract as the walk -- retired pixels accumulate into ``pix_accum``, bounces
@@ -57,6 +62,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL,
     _AA_NUM_SAMPLES,
     _AA_ONE_MESH_BIT,
+    _AA_ONE_SOLID_BIT,
     _AA_SAMPLE_WEIGHT,
     _AA_SEC_JITTER,
     _AA_SLIVER_BIT,
@@ -532,6 +538,10 @@ def sheet_resolve_shade_arena(
         # already committed. Only meaningful where the host flagged the pixel
         # (the _AA_ONE_MESH_BIT rides in every sheet's flags there).
         mesh_ink = 0.0
+        # The walk has refracted at a full-alpha sheet, which puts a pixel the
+        # host flagged one solid (_AA_ONE_SOLID_BIT) under the same ceiling
+        # from the next sheet on; see the ceiling below.
+        solid_sealed = False
         # §4.4 band state: sheets of ONE band (the shading-class siblings the
         # compaction subdivides) claim against the same incoming visibility
         # and occlude ONCE, where the band closes. _AA_BAND_CONT_BIT is the
@@ -637,8 +647,26 @@ def sheet_resolve_shade_arena(
             # single-opaque-mesh pixel the mesh may claim at most the larger
             # of its two sheets' exact areas in total, occlusion scaled with
             # the claim. 2.0 is the host's "no ceiling" sentinel.
-            if (not is_bez) and ((msk & _AA_ONE_MESH_BIT) != 0) \
-                    and (sheet_cap[idx] <= 1.0):
+            #
+            # A pixel of one solid of any other material (_AA_ONE_SOLID_BIT,
+            # flagged only where primaries can refract) takes the same
+            # ceiling once ``solid_sealed``: the walk refracted at a sheet of
+            # it at full alpha, whose continuation carries everything behind
+            # it and which occluded what it claimed as an opaque sheet does.
+            # A far sheet of the solid would otherwise claim that sheet's
+            # ``corr < 1`` residue -- background area, spent instead on a ray
+            # through the solid's back face, and at a grazing silhouette a
+            # TIR one: the faint dark rim round clear glass. Before any such
+            # sheet the solid is a transmitter whose far side shows THROUGH
+            # its near one, which is why the flag alone does not bind --
+            # translucent solids, glass at alpha < 1 and glass at an index of
+            # 1 never seal. Neither does anything in a variant that cannot
+            # refract, so that variant compiles the test out.
+            capped = (msk & _AA_ONE_MESH_BIT) != 0
+            if ti.static(refraction != 0):
+                if solid_sealed and ((msk & _AA_ONE_SOLID_BIT) != 0):
+                    capped = True
+            if (not is_bez) and capped and (sheet_cap[idx] <= 1.0):
                 room = ti.max(sheet_cap[idx] - mesh_ink, 0.0)
                 if eff > room:
                     dens *= room / ti.max(eff, min_alpha)
@@ -1033,6 +1061,12 @@ def sheet_resolve_shade_arena(
                         is_pane = True
                     else:
                         is_glass = True
+                        # Seals a one-solid pixel (the ceiling above): at full
+                        # alpha nothing of what this sheet claims passes it
+                        # but its own rays. The threshold is the host's
+                        # material-opacity one (primitives.py).
+                        if mat_alpha >= 1.0 - 1e-6:
+                            solid_sealed = True
 
             one3 = ti.math.vec3(1.0, 1.0, 1.0)
             tint = ti.math.clamp(albedo3, 0.0, 1.0)
