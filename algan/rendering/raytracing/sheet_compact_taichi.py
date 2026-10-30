@@ -166,6 +166,166 @@ def gather_fragment_arrays(
 
 
 @ti.kernel
+def split_mixed_pixels(
+    run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
+    frag_ref: ti.types.ndarray(),  # [n] i32 -- negative for a circuit fragment
+    nc: ti.i32,
+    mixed: ti.types.ndarray(),  # [nc] u8 OUT -- 1 where the pixel holds a triangle
+    tally: ti.types.ndarray(),  # [nc, 2] i32 OUT -- (mixed, its fragments if mixed)
+):
+    """``_split_stroke_pixels``' classification: which covered pixels hold a
+    triangle fragment, and how many fragments each such pixel brings.
+
+    One thread per covered pixel scans its run until the first triangle
+    fragment. ``tally``'s two columns are what the caller's single ``cumsum``
+    turns into each pixel's triangle-pixel rank and its run's end in the
+    triangle pixels' stream -- and, in its last row, the two totals.
+    """
+    for p in range(nc):
+        s = ti.cast(run_offsets[p], ti.i32)
+        e = ti.cast(run_offsets[p + 1], ti.i32)
+        hit = 0
+        i = s
+        while i < e:
+            if frag_ref[i] >= 0:
+                hit = 1
+                break
+            i += 1
+        mixed[p] = ti.cast(hit, ti.u8)
+        tally[p, 0] = hit
+        tally[p, 1] = hit * (e - s)
+
+
+@ti.kernel
+def split_gather_pixels(
+    mixed: ti.types.ndarray(),  # [nc] u8 -- ``split_mixed_pixels``' flags
+    ends: ti.types.ndarray(),  # [nc, 2] i32 -- ``tally``'s inclusive prefix
+    run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
+    nc: ti.i32,
+    in_key: ti.types.ndarray(),  # [n] i64
+    in_ref: ti.types.ndarray(),  # [n] i32
+    in_ab: ti.types.ndarray(),  # [n, 2] f32
+    in_cov: ti.types.ndarray(),  # [n] f32
+    in_msk: ti.types.ndarray(),  # [n] i32
+    in_cap: ti.types.ndarray(),  # [n] f32
+    out_key: ti.types.ndarray(),  # [m_frags] i64
+    out_ref: ti.types.ndarray(),  # [m_frags] i32
+    out_ab: ti.types.ndarray(),  # [m_frags, 2] f32
+    out_cov: ti.types.ndarray(),  # [m_frags] f32
+    out_msk: ti.types.ndarray(),  # [m_frags] i32
+    out_cap: ti.types.ndarray(),  # [m_frags] f32
+):
+    """``_split_stroke_pixels``' triangle-pixel stream: the six fragment arrays
+    of every covered pixel holding a triangle fragment, copied run by run.
+
+    One thread per covered pixel; a stroke pixel copies nothing, and a
+    triangle pixel's run lands so that it ends at ``ends[p, 1]``. Copies of
+    the stored bits, so exact. Replaces a per-fragment pixel map, its gather,
+    a ``nonzero`` and six ``index_select`` s.
+    """
+    for p in range(nc):
+        if mixed[p] != 0:
+            s = ti.cast(run_offsets[p], ti.i32)
+            e = ti.cast(run_offsets[p + 1], ti.i32)
+            d = ends[p, 1] - e
+            for i in range(s, e):
+                out_key[d + i] = in_key[i]
+                out_ref[d + i] = in_ref[i]
+                out_ab[d + i, 0] = in_ab[i, 0]
+                out_ab[d + i, 1] = in_ab[i, 1]
+                out_cov[d + i] = in_cov[i]
+                out_msk[d + i] = in_msk[i]
+                out_cap[d + i] = in_cap[i]
+
+
+@ti.kernel
+def split_merge_sheets(
+    mixed: ti.types.ndarray(),  # [nc] u8 -- ``split_mixed_pixels``' flags
+    ends: ti.types.ndarray(),  # [nc, 2] i32 -- ``tally``'s inclusive prefix
+    run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
+    sub_frags: ti.types.ndarray(),  # [m + 1] i32 -- the triangle pixels' CSR
+    sub_sheets: ti.types.ndarray(),  # [m + 1] i64 -- their sheets' CSR
+    nc: ti.i32,
+    mask_all: ti.i32,  # _AA_MASK_ALL
+    sliver_bit: ti.i32,  # _AA_SLIVER_BIT
+    frag_key: ti.types.ndarray(),  # [n] i64
+    frag_ref: ti.types.ndarray(),  # [n] i32
+    frag_ab: ti.types.ndarray(),  # [n, 2] f32
+    frag_cov: ti.types.ndarray(),  # [n] f32
+    frag_msk: ti.types.ndarray(),  # [n] i32
+    frag_cap: ti.types.ndarray(),  # [n] f32
+    sub_key: ti.types.ndarray(),  # [sub_nb] i64
+    sub_ref: ti.types.ndarray(),  # [sub_nb] i32
+    sub_ab: ti.types.ndarray(),  # [sub_nb, 2] f32
+    sub_wgt: ti.types.ndarray(),  # [sub_nb] f32
+    sub_wmsk: ti.types.ndarray(),  # [sub_nb] i32
+    sub_cap: ti.types.ndarray(),  # [sub_nb] f32
+    out_key: ti.types.ndarray(),  # [total] i64
+    out_ref: ti.types.ndarray(),  # [total] i32
+    out_ab: ti.types.ndarray(),  # [total, 2] f32
+    out_wgt: ti.types.ndarray(),  # [total] f32
+    out_wmsk: ti.types.ndarray(),  # [total] i32
+    out_cap: ti.types.ndarray(),  # [total] f32
+    sheet_offsets: ti.types.ndarray(),  # [nc + 1] i64 OUT -- all but the last
+):
+    """``_split_stroke_pixels``' six resolve fields, interleaved back into
+    pixel order in one pass over the covered pixels, with the output's CSR.
+
+    A pixel's sheets start where its fragments did, moved by how many more
+    sheets than fragments the triangle pixels before it made: with ``k`` of
+    them, ``sub_sheets[k] - sub_frags[k]``. A triangle pixel then copies its
+    sheets from the general path's result; a stroke pixel writes its
+    fragments one for one as ``_stroke_sheets`` does: the area as
+    ``(cov + 0.0).clamp_min_(0.0)`` and the mask with the sliver bit forced
+    on for an empty union. The area rule is spelled on the bits, so fast_math
+    has no float arithmetic to rewrite: a set sign bit (-0.0, a negative,
+    -inf) becomes +0.0, and a NaN comes back quieted, as the CPU's add
+    returns it. That is the torch arm bit for bit on the CPU, with two
+    exceptions no real area reaches: a GPU's add returns its one canonical
+    NaN, and under flush-to-zero (which Taichi's initialization turns on for
+    the CPU thread) the torch add turns a denormal into a zero of its sign,
+    where this keeps a positive one and zeroes a negative one like any other.
+    """
+    for p in range(nc):
+        hit = ti.cast(mixed[p], ti.i32)
+        k = ends[p, 0] - hit
+        s = ti.cast(run_offsets[p], ti.i32)
+        e = ti.cast(run_offsets[p + 1], ti.i32)
+        d = s + ti.cast(sub_sheets[k], ti.i32) - sub_frags[k]
+        sheet_offsets[p] = d
+        if hit != 0:
+            ss = ti.cast(sub_sheets[k], ti.i32)
+            se = ti.cast(sub_sheets[k + 1], ti.i32)
+            for i in range(ss, se):
+                o = d + i - ss
+                out_key[o] = sub_key[i]
+                out_ref[o] = sub_ref[i]
+                out_ab[o, 0] = sub_ab[i, 0]
+                out_ab[o, 1] = sub_ab[i, 1]
+                out_wgt[o] = sub_wgt[i]
+                out_wmsk[o] = sub_wmsk[i]
+                out_cap[o] = sub_cap[i]
+        else:
+            for i in range(s, e):
+                o = d + i - s
+                out_key[o] = frag_key[i]
+                out_ref[o] = frag_ref[i]
+                out_ab[o, 0] = frag_ab[i, 0]
+                out_ab[o, 1] = frag_ab[i, 1]
+                bits = ti.bit_cast(frag_cov[i], ti.u32)
+                if (bits & ti.u32(0x7FFFFFFF)) > ti.u32(0x7F800000):
+                    bits = bits | ti.u32(0x00400000)
+                elif (bits >> 31) != 0:
+                    bits = ti.u32(0)
+                out_wgt[o] = ti.bit_cast(bits, ti.f32)
+                m = frag_msk[i]
+                if (m & mask_all) == 0:
+                    m = m | sliver_bit
+                out_wmsk[o] = m
+                out_cap[o] = frag_cap[i]
+
+
+@ti.kernel
 def sheet_band_reduce(
     band: ti.types.ndarray(),  # [n] i64 -- band/sheet index of each fragment
     msk: ti.types.ndarray(),  # [n] i32 -- fragment mask word
@@ -450,78 +610,83 @@ def sheet_lane_first_owner(
                     ti.atomic_min(first_lane[base + lane], i)
 
 
+#: The shell ceiling's spend is summed in this fixed point: a fragment's
+#: coverage ``c`` (its exact area, in pixels) counts as the integer
+#: ``int(c * SHELL_SPEND_ONE)``, truncated toward zero. See
+#: ``solid_shell_ceiling``.
+SHELL_SPEND_ONE = 4294967296.0  # 2**32
+SHELL_SPEND_QUANTUM = 1.0 / SHELL_SPEND_ONE
+
+
 @ti.kernel
 def solid_shell_ceiling(
     key: ti.types.ndarray(),  # [n] i64 -- (pixel, surface) segment keys, sorted order
     o2: ti.types.ndarray(),  # [n] i64 -- permutation key order -> depth order
     back: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
-    excl: ti.types.ndarray(),  # [n] `acc_t` -- GLOBAL exclusive prefix of the areas
-    scratch: ti.types.ndarray(),  # [n] `acc_t` -- caller's spare [n] buffer
     n: ti.i32,
     cov: ti.types.ndarray(),  # [n] f32 INOUT -- clamped in place
-    acc_t: ti.template(),  # compile-time: `excl`/`scratch`'s element type
+    acc_t: ti.template(),  # compile-time: the accumulator width
 ):
     """One pass: the solid-shell opacity ceiling, applied to the fragments.
 
     The torch block this replaced walked its depth-ordered segments three
-    more times after the sort that orders them and the f64 ``cumsum`` that
-    prefixes them: a ``nonzero`` + ``scatter_`` for the segment starts, two
-    facing-split f64 ``scatter_add_``s routed through a whole-stream segment
-    map, and a clone + ``index_copy_`` to write the clamped areas back. Here
-    one thread per segment -- detected in-kernel as a change of ``key`` along
-    ``o2``, so neither the segment map nor the start indices exist -- walks
-    its run twice with everything else in registers: once to accumulate the
-    two shells' full-coverage sums (the cap), once to spend the allowance in
-    depth order and write each fragment's scaled coverage back through
-    ``cov[o2[j]]``.
+    more times after the sort that orders them: a ``nonzero`` + ``scatter_``
+    for the segment starts, two facing-split f64 ``scatter_add_``s routed
+    through a whole-stream segment map, and a clone + ``index_copy_`` to write
+    the clamped areas back. Here one thread per segment -- detected in-kernel
+    as a change of ``key`` along ``o2``, so neither the segment map nor the
+    start indices exist -- walks its run twice with everything else in
+    registers: once to accumulate the two shells' full-coverage sums (the
+    cap), once to spend the allowance in depth order and write each
+    fragment's scaled coverage back through ``cov[o2[j]]``.
 
-    Exactness, in three parts. The facing-split sums are plain f64 adds of a
+    Exactness, in two parts. The facing-split sums are plain f64 adds of a
     segment's own values: the torch arm's atomic ``scatter_add_`` had no
     summation order at all and the kernel adds serially in stream order, so
     agreement with the torch arm is the same measure-not-assume contract as
     ``one_mesh_pixel_reduce``'s (verified bitwise at 4K shapes AND on a real
-    captured stream). The SPEND -- what each fragment's predecessors have
-    already consumed -- is different twice over: torch computes it as a
-    difference of two rows of ONE GLOBAL cub scan, whose reassociation a
-    serial register walk cannot reproduce bitwise (measured: 61 of 3.13 M
-    spent values move, flipping 10 visible f32 outputs), so the prefix stays
-    in torch and the kernel only differences it at its own segment boundary.
-    And that difference must survive AS ITS OWN ROUNDING STEP: this kernel
-    compiles under Taichi's fast_math, whose reassociation pass folds
-    ``cap - (excl[j] - base)`` into ``(cap + base) - excl[j]`` -- harmless
-    while the prefix is small, and wrong by whole f32 ulps once it exceeds
-    the areas' own scale (measured: 1044 of 3.13 M PASS-THROUGH fragments --
-    where the answer is the input bit for bit -- came out one ulp low on the
-    real nn-scene frame). Storing ``spent`` to ``scratch`` and reading it
-    back is the barrier: the reload is opaque to the pass, so the subtraction
-    rounds alone, exactly as the torch arm's separate tensor op did.
-    ``scratch`` is the caller's now-dead f64 copy of the coverage stream,
-    which the torch arm needed only to build ``excl`` -- the barrier is free.
+    captured stream).
+
+    The SPEND -- what each fragment's in-segment predecessors have already
+    consumed -- is integer arithmetic, so it needs no such argument. Each
+    area counts as ``int(c * SHELL_SPEND_ONE)`` (Q32 fixed point, truncated),
+    the walk adds those integers, and the total converts back exactly
+    (``spent_q * SHELL_SPEND_QUANTUM``: below 2**53, times a power of two).
+    Integer addition is associative, so the torch arm reaches the same
+    integer by differencing a whole-stream ``cumsum`` at the segment's base,
+    and so does any other grouping of the stream: the clamp of one segment
+    is a function of that segment's fragments alone, never of how many
+    fragments, pixels or frames precede it in the chunk. That is what lets
+    ``compact_sheets`` compact a stream's triangle pixels apart from its
+    stroke pixels (``_split_stroke_pixels``) whatever the scene declares.
+    (The spend used to be a difference of two rows of a GLOBAL f64 cub scan,
+    which made every fragment's low bits depend on the whole chunk and kept
+    any stream with a closed solid in it off that split -- about half the
+    compaction's time on such scenes.) The quantum, 2.3e-10, is below what
+    that difference rounded to once the prefix passed ~1e6, and far below the
+    f32 output's spacing; the bound is the stream's total coverage under
+    2**31, which an arena-limited fragment count never approaches.
+
     Every remaining step is the same arithmetic on the same values in the
-    same order: clamp/div/clamp chain, the f64 -> f32 -> f64 rounding of the
-    cap, and the ``1e-12`` denominator floor -- which the torch side clamps
-    INTO ITS OWN COPY, so the closing multiply writes the floored value, not
-    the raw area. Each output slot is written by exactly one walk because
-    ``o2`` is a permutation, which is what made the torch side's clone +
-    ``index_copy_`` equivalent to in-place.
+    same order in both arms: clamp/div/clamp chain, the f64 -> f32 -> f64
+    rounding of the cap, and the ``1e-12`` denominator floor -- which the
+    torch side clamps INTO ITS OWN COPY, so the closing multiply writes the
+    floored value, not the raw area. Each output slot is written by exactly
+    one walk because ``o2`` is a permutation, which is what made the torch
+    side's clone + ``index_copy_`` equivalent to in-place.
 
     A fragment count never approaches 2**31, so rows narrow to i32 for
     indexing.
 
-    ``acc_t`` is the accumulator width and must match ``excl``/``scratch``'s
-    dtype. MPS-friendly mode passes ``ti.f32``, because Metal has no f64
-    (``mps_compat``), and there the exactness argument above lapses: the cap's
-    round through f32 is a no-op and nothing can be bitwise anyway. Worse, the
-    global prefix cannot be used at all. It runs over the whole stream, so on
-    a 1080p frame it reaches about 1e6, where the f32 spacing is 0.06-0.125,
-    and differencing two of its entries rounds ``spent`` at that scale. On a
-    synthetic 3.2M-fragment stream (prefix ending at 1.6e6) that put clamped
-    coverage off the f64 arm's by up to 0.24 (p99 0.11), worse the later a
-    pixel sits in the stream. So the f32 arm uses neither ``excl`` nor
-    ``scratch``: it adds each segment's areas up in the same serial walk that
-    spends them, which rounds at the scale of one pixel's coverage (4e-7 off
-    the f64 arm on that stream). The torch arm does the same with a segmented
-    scan (``sheets._segment_exclusive_prefix``).
+    ``acc_t`` is the accumulator width. MPS-friendly mode passes ``ti.f32``,
+    because Metal has no f64 (``mps_compat``), and there the exactness
+    argument above lapses: the cap's round through f32 is a no-op and nothing
+    can be bitwise anyway. That arm keeps the float spend Metal has always
+    run: it adds each segment's areas up in the same serial walk that spends
+    them, which rounds at the scale of one pixel's coverage (4e-7 off the f64
+    arm on a synthetic 3.2M-fragment stream) and, like the fixed point, never
+    reads another segment. The torch arm does the same with a segmented scan
+    (``sheets._segment_exclusive_prefix``).
     """
     for i in range(n):
         ii = ti.cast(o2[i], ti.i32)
@@ -545,12 +710,9 @@ def solid_shell_ceiling(
             # clipped. The f64 value came from an f32 array, but the SUM did
             # not -- only the round makes it well-defined.
             cap = ti.cast(ti.cast(ti.max(front, bk), ti.f32), acc_t)
-            # ``excl`` is indexed by position along ``o2`` -- the space the
-            # cumsum ran in -- not by the main-order rows the other arrays
-            # use.
-            base = excl[i]
-            # The f32 arm's spend, accumulated over this segment alone (see
-            # the docstring's last paragraph). Unused at f64.
+            # The spend so far: Q32 integers at f64 (see the docstring), the
+            # plain running sum in the f32 arm. Only one of them is used.
+            spent_q = ti.cast(0, ti.i64)
             spent = ti.cast(0.0, acc_t)
             j = i
             while j < n:
@@ -569,10 +731,13 @@ def solid_shell_ceiling(
                 # inside one is out of scope after it.
                 scale = ti.cast(0.0, acc_t)
                 if ti.static(acc_t != ti.f32):
-                    # Store-and-reload: the barrier documented above. Do not
-                    # "simplify" it back into register arithmetic.
-                    scratch[j] = excl[j] - base
-                    scale = ti.max(cap - scratch[j], ti.cast(0.0, acc_t))
+                    scale = ti.max(
+                        cap
+                        - ti.cast(spent_q, acc_t)
+                        * ti.cast(SHELL_SPEND_QUANTUM, acc_t),
+                        ti.cast(0.0, acc_t),
+                    )
+                    spent_q += ti.cast(c * ti.cast(SHELL_SPEND_ONE, acc_t), ti.i64)
                 else:
                     scale = ti.max(cap - spent, ti.cast(0.0, acc_t))
                     spent += c
@@ -702,6 +867,13 @@ def _span_mode(mask_e, bw, bh, span_min_area, screen: ti.template(), fr, prim,
                spans: ti.template()):
     """Whether candidate ``e`` expands row by row: on, box at least
     ``span_min_area`` pixels, and a valid screen projection to follow.
+
+    ``> 0.5`` is the exact-path flag (``raster_pipeline.
+    precompute_triangle_projection`` lists the values), deliberately not the
+    ``> 0.25`` all-front test: a triangle demoted to the ray cast (0.5) can
+    have coordinates far past ``raster_taichi._AA_LATTICE_MAX_COORD``, where
+    these f32 row extents are no longer good to their 1-pixel margin, so it
+    walks its whole clipped box instead (a superset, so exact either way).
     """
     use_span = 0
     if ti.static(spans):
@@ -958,92 +1130,89 @@ def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
 
 
 @ti.func
-def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
-                        aa_min_half_width, cam_origin: ti.template(),
-                        screen_point: ti.template(), pixel_basis_x: ti.template(),
-                        pixel_basis_y: ti.template(), cam_proj: ti.template(),
-                        circuit_meta: ti.template(),
-                        edges_2d: ti.template(), edge_accel: ti.template()):
-    """``(use_span, e0, e1, reach)`` for candidate circuit ``c`` of frame ``f``.
-
-    Row by row only for a box of at least ``span_min_area`` pixels whose
-    outline has edges and lies wholly in front of the camera; anything else
-    keeps its box.
-    """
-    use_span = 0
-    e0 = 0
-    e1 = 0
-    reach = 0.0
-    if (mask_e != 0) and (bw * bh >= span_min_area):
-        tm = f % circuit_meta.shape[0]
-        te = f % edges_2d.shape[0]
-        header = (te * circuit_meta.shape[1] + c) * BEZIER_ACCEL_HEADER_SIZE
-        e0 = edge_accel[header + BEZIER_EDGE_START]
-        e1 = edge_accel[header + BEZIER_EDGE_END]
-        if e1 > e0:
-            ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
-                f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
-            center, bu, bv = _circuit_plane(tm, c, circuit_meta)
-            front = 1
-            for k in range(e0, e1):
-                for end in ti.static(range(2)):
-                    w = (center + edges_2d[te, k, 2 * end] * bu
-                         + edges_2d[te, k, 2 * end + 1] * bv)
-                    ok, _px, _py = _screen_point_of(w, ro, sp, pbx, pby, nvec,
-                                                    big_d, dsq, 0.0, 0.0, f,
-                                                    cam_proj)
-                    front = ti.min(front, ok)
-            if front == 1:
-                use_span = 1
-                reach = _circuit_reach(f, tm, c, half_w, half_h,
-                                       aa_min_half_width, cam_origin,
-                                       screen_point, pixel_basis_x,
-                                       pixel_basis_y, cam_proj, circuit_meta)
-    return use_span, e0, e1, reach
-
-
-@ti.func
-def _circuit_span_chunks(f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
+def _circuit_row_extents(base, by0, by1, f, c, e0, e1, reach, half_w, half_h,
                          cam_origin: ti.template(), screen_point: ti.template(),
                          pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
-                         cam_proj: ti.template(),
-                         circuit_meta: ti.template(), edges_2d: ti.template()):
-    """Chunks the row ``y`` of a circuit span candidate expands to, and the span."""
+                         cam_proj: ti.template(), circuit_meta: ti.template(),
+                         edges_2d: ti.template(), span_x: ti.template()):
+    """Each box row's extent along circuit ``c``'s projected outline.
+
+    Row ``y`` of rows ``by0 .. by1`` gets, in ``span_x[base + y - by0]``, the
+    x range its centre line widened by ``reach`` cuts from the projected
+    edges -- each edge clipped to the widened line, its clipped ends bounding
+    the row -- or the empty range ``(1e30, -1e30)`` where no edge reaches it.
+    Edge by edge: each is projected once and visits only the rows within a
+    row and its reach of its own y range, so a candidate costs its edges plus
+    the rows they cross rather than every row times every edge. A visited row
+    still takes the exact per-row test, so the extents are the ones a row by
+    row walk over every edge finds (``min`` and ``max`` do not care in which
+    order the edges come).
+
+    Returns 1 when every edge end lies in front of the camera, which a row
+    span needs; otherwise the extents are meaningless and the box stands.
+    """
     tm = f % circuit_meta.shape[0]
     te = f % edges_2d.shape[0]
     ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
         f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     center, bu, bv = _circuit_plane(tm, c, circuit_meta)
-    ylo = ti.cast(y, ti.f32) + 0.5 - reach
-    yhi = ti.cast(y, ti.f32) + 0.5 + reach
-    ok = 0
-    xmin = 1e30
-    xmax = -1e30
+    for i in range(by1 - by0 + 1):
+        span_x[base + i, 0] = 1e30
+        span_x[base + i, 1] = -1e30
+    lo_row = ti.cast(by0, ti.f32)
+    hi_row = ti.cast(by1, ti.f32)
+    front = 1
     for k in range(e0, e1):
         wa = center + edges_2d[te, k, 0] * bu + edges_2d[te, k, 1] * bv
         wb = center + edges_2d[te, k, 2] * bu + edges_2d[te, k, 3] * bv
-        _fa, ax, ay = _screen_point_of(wa, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       half_w, half_h, f, cam_proj)
-        _fb, bx, by = _screen_point_of(wb, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       half_w, half_h, f, cam_proj)
-        if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
-            t0 = 0.0
-            t1 = 1.0
-            dy = by - ay
-            if ti.abs(dy) > 1e-12:
-                ta = (ylo - ay) / dy
-                tb = (yhi - ay) / dy
-                t0 = ti.max(0.0, ti.min(ta, tb))
-                t1 = ti.min(1.0, ti.max(ta, tb))
-            xa = ax + (bx - ax) * t0
-            xb = ax + (bx - ax) * t1
-            xmin = ti.min(xmin, ti.min(xa, xb))
-            xmax = ti.max(xmax, ti.max(xa, xb))
-            ok = 1
+        fa, ax, ay = _screen_point_of(wa, ro, sp, pbx, pby, nvec, big_d, dsq,
+                                      half_w, half_h, f, cam_proj)
+        fb, bx, by = _screen_point_of(wb, ro, sp, pbx, pby, nvec, big_d, dsq,
+                                      half_w, half_h, f, cam_proj)
+        front = ti.min(front, ti.min(fa, fb))
+        # The rows whose widened centre line can meet the edge, with a row to
+        # spare at each end for rounding (a few f32 roundings, far under a
+        # row while the reach is under millions of pixels); the exact test
+        # below decides. A comparison that fails (NaN included) keeps the
+        # box's own end.
+        r0 = by0
+        r1 = by1
+        lo = ti.min(ay, by) - 0.5 - reach
+        hi = ti.max(ay, by) - 0.5 + reach
+        if lo > lo_row:
+            r0 = ti.max(ti.cast(ti.floor(ti.min(lo, hi_row)), ti.i32) - 1, by0)
+        if hi < hi_row:
+            r1 = ti.min(ti.cast(ti.floor(ti.max(hi, lo_row)), ti.i32) + 1, by1)
+        for y in range(r0, r1 + 1):
+            ylo = ti.cast(y, ti.f32) + 0.5 - reach
+            yhi = ti.cast(y, ti.f32) + 0.5 + reach
+            if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
+                t0 = 0.0
+                t1 = 1.0
+                dy = by - ay
+                if ti.abs(dy) > 1e-12:
+                    ta = (ylo - ay) / dy
+                    tb = (yhi - ay) / dy
+                    t0 = ti.max(0.0, ti.min(ta, tb))
+                    t1 = ti.min(1.0, ti.max(ta, tb))
+                xa = ax + (bx - ax) * t0
+                xb = ax + (bx - ax) * t1
+                r = base + y - by0
+                span_x[r, 0] = ti.min(span_x[r, 0], ti.min(xa, xb))
+                span_x[r, 1] = ti.max(span_x[r, 1], ti.max(xa, xb))
+    return front
+
+
+@ti.func
+def _circuit_row_span(xmin, xmax, reach, bx0, bx1, chunk):
+    """``(chunks, xs, xe)`` of a row whose outline extent is ``[xmin, xmax]``:
+    the extent widened by the reach and a pixel each side, clamped to the
+    box. An empty extent (``xmin > xmax``) is an empty row, ``xe < xs``.
+    """
     xs = bx0
     xe = bx0 - 1
     nch = 0
-    if ok == 1:
+    if xmin <= xmax:
         lo = ti.max(xmin - reach, -1e6)
         hi = ti.min(xmax + reach, 1e6)
         xs = ti.max(ti.cast(ti.floor(lo), ti.i32) - 1, bx0)
@@ -1063,6 +1232,9 @@ def pair_expand_count_circuits(
     n: ti.i32,
     chunk: ti.i32,
     counts: ti.types.ndarray(),  # [N] i64 OUT
+    spans: ti.types.ndarray(),  # [N] i32 OUT -- 1 where the rows replace the box
+    row_offs: ti.types.ndarray(),  # [N] i64 -- EXCLUSIVE prefix of the span rows
+    span_x: ti.types.ndarray(),  # [R, 2] f32 OUT -- each span row's (xs, xe)
     f_abs: ti.types.ndarray(),  # [Ft]
     ncirc: ti.i32,
     span_min_area: ti.i32,
@@ -1081,10 +1253,18 @@ def pair_expand_count_circuits(
 ):
     """:func:`pair_expand_count` for circuits: each candidate's chunk count,
     row by row along its projected outline where it qualifies.
+
+    Rows replace the box only for a box of at least ``span_min_area`` pixels
+    whose outline has edges and lies wholly in front of the camera. Such a
+    box's rows, ``by0 .. by1``, are its ``row_offs[e]`` onward in ``span_x``,
+    which the host sized for every masked box that large; each gets its
+    span's ``(xs, xe)`` there (small integers, exact in f32), which is all
+    ``pair_expand_write_circuits`` needs, and ``spans[e]`` says it did.
     """
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for e in range(n):
         cnt = ti.i64(0)
+        use_span = 0
         if mask[e] != 0:
             bx0 = ti.cast(x0f[e], ti.i32)
             bx1 = ti.cast(x1f[e], ti.i32)
@@ -1094,20 +1274,36 @@ def pair_expand_count_circuits(
             bh = by1 - by0 + 1
             c = e % ncirc
             f = ti.cast(f_abs[e // ncirc], ti.i32)
-            use_span, e0, e1, reach = _circuit_span_setup(
-                mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
-                aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel)
-            if use_span == 1:
-                for y in range(by0, by1 + 1):
-                    nch, _xs, _xe = _circuit_span_chunks(
-                        f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
+            # In i64, as the host tests it when it reserves the rows (an
+            # inverted box reserves none, and visits none here either).
+            if ti.cast(bw, ti.i64) * bh >= span_min_area:
+                tm = f % circuit_meta.shape[0]
+                te = f % edges_2d.shape[0]
+                header = (te * circuit_meta.shape[1] + c) * BEZIER_ACCEL_HEADER_SIZE
+                e0 = edge_accel[header + BEZIER_EDGE_START]
+                e1 = edge_accel[header + BEZIER_EDGE_END]
+                if e1 > e0:
+                    reach = _circuit_reach(f, tm, c, half_w, half_h,
+                                           aa_min_half_width, cam_origin,
+                                           screen_point, pixel_basis_x,
+                                           pixel_basis_y, cam_proj, circuit_meta)
+                    base = row_offs[e]
+                    use_span = _circuit_row_extents(
+                        base, by0, by1, f, c, e0, e1, reach, half_w, half_h,
                         cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                        cam_proj, circuit_meta, edges_2d)
-                    cnt += nch
-            else:
+                        cam_proj, circuit_meta, edges_2d, span_x)
+                    if use_span == 1:
+                        for i in range(bh):
+                            nch, xs, xe = _circuit_row_span(
+                                span_x[base + i, 0], span_x[base + i, 1], reach,
+                                bx0, bx1, chunk)
+                            span_x[base + i, 0] = ti.cast(xs, ti.f32)
+                            span_x[base + i, 1] = ti.cast(xe, ti.f32)
+                            cnt += nch
+            if use_span == 0:
                 cnt = (ti.cast(bw, ti.i64) * bh + chunk - 1) // chunk
         counts[e] = cnt
+        spans[e] = use_span
 
 
 @ti.kernel
@@ -1123,25 +1319,15 @@ def pair_expand_write_circuits(
     ncirc: ti.i32,
     chunk: ti.i32,
     rows: ti.types.ndarray(),  # [total, 8] i32 OUT
-    span_min_area: ti.i32,
-    cam_origin: ti.types.ndarray(),
-    screen_point: ti.types.ndarray(),
-    pixel_basis_x: ti.types.ndarray(),
-    pixel_basis_y: ti.types.ndarray(),
-    cam_proj_table: ti.types.ndarray(),
-    projected: ti.template(),
-    circuit_meta: ti.types.ndarray(),
-    edges_2d: ti.types.ndarray(),
-    edge_accel: ti.types.ndarray(),
-    half_w: ti.f32,
-    half_h: ti.f32,
-    aa_min_half_width: ti.f32,
+    spans: ti.types.ndarray(),  # [N] i32
+    row_offs: ti.types.ndarray(),  # [N] i64
+    span_x: ti.types.ndarray(),  # [R, 2] f32
 ):
     """:func:`pair_expand_write` for circuits, in the same row layout: each
     row's span a one-row-high box, so ``raster_bez_count`` decodes it unchanged,
-    and rows ascending within a candidate, as its box's chunks were.
+    and rows ascending within a candidate, as its box's chunks were. The spans
+    are the ones ``pair_expand_count_circuits`` left in ``span_x``.
     """
-    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for e in range(n):
         if mask[e] != 0:
             bx0 = ti.cast(x0f[e], ti.i32)
@@ -1153,21 +1339,19 @@ def pair_expand_write_circuits(
             c = e % ncirc
             f = ti.cast(f_abs[e // ncirc], ti.i32)
             j = offs[e]
-            use_span, e0, e1, reach = _circuit_span_setup(
-                mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
-                aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel)
-            if use_span == 1:
-                for y in range(by0, by1 + 1):
-                    nch, xs, xe = _circuit_span_chunks(
-                        f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
-                        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                        cam_proj, circuit_meta, edges_2d)
+            if spans[e] == 1:
+                base = row_offs[e]
+                for i in range(bh):
+                    xs = ti.cast(span_x[base + i, 0], ti.i32)
+                    xe = ti.cast(span_x[base + i, 1], ti.i32)
+                    nch = 0
+                    if xe >= xs:
+                        nch = (xe - xs + 1 + chunk - 1) // chunk
                     for k in range(nch):
                         rows[j, 0] = c
                         rows[j, 1] = f
                         rows[j, 2] = xs
-                        rows[j, 3] = y
+                        rows[j, 3] = by0 + i
                         rows[j, 4] = xe - xs + 1
                         rows[j, 5] = 1
                         rows[j, 6] = k * chunk

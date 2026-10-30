@@ -210,6 +210,18 @@ sheet_packed_sort = env_flag("ALGAN_SHEET_PACKED_SORT", True)
 # Direct group diagnostics and CSR construction; independent of sheet sorting.
 sheet_metadata_kernel = env_flag("ALGAN_SHEET_METADATA_KERNEL", False)
 
+# ``_split_stroke_pixels``' classification, gather and interleave as three
+# kernel passes over the covered pixels instead of some twenty torch passes
+# over the fragments (a per-fragment pixel map, an index_select and an
+# index_copy_ per array). Captured HD explainer streams, one thread: the
+# split's own work 320 -> 62 ms, the whole compaction 597 -> 353 ms. Copies,
+# so bit-identical; the torch arm stays as the A/B and serves launches that
+# would stage. Off on an Apple GPU unless ``ALGAN_SHEET_SPLIT_KERNEL_MPS``
+# asks: nobody has timed it there, and the one compaction kernel that was
+# (``sheet_sibling_weights_kernel``) made the whole render slower on MPS.
+sheet_split_kernel = env_flag("ALGAN_SHEET_SPLIT_KERNEL", True)
+sheet_split_kernel_mps = env_flag("ALGAN_SHEET_SPLIT_KERNEL_MPS", False)
+
 # Reuse established group IDs where another grouping cannot subdivide them.
 sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
 
@@ -498,11 +510,15 @@ def _lexsort(*keys):
 
 
 def _local_sheet_sort(tensor):
+    return sheet_pixel_sort and _launches_locally(tensor)
+
+
+def _launches_locally(tensor):
+    """Whether a Taichi kernel can take ``tensor`` without staging a copy."""
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
     return (
-        sheet_pixel_sort
-        and tensor.numel() > 0
+        tensor.numel() > 0
         and _live_arch() is not None
         and taichi_launch_is_local(tensor.device)
     )
@@ -557,11 +573,23 @@ def _pixel_group_order(pix, group, depth, offsets, *, key_bounds=None):
     return _lexsort(pix, group, depth)
 
 
-def _key_depth_order(key, depth):
-    """Stable key/depth order, with packed and per-run sorting alternatives."""
+def _key_depth_order(key, depth, runs=None):
+    """Stable key/depth order, with packed and per-run sorting alternatives.
+
+    ``runs``, when given, is a nondecreasing run id that no stretch of equal
+    ``key`` crosses (the shell ceiling's keys carry their pixel). The local
+    arm then sorts each run on its own instead of argsorting the whole
+    stream: the keys come out grouped and depth-ordered exactly as before,
+    only the order in which the groups follow one another differs, which a
+    consumer that reads each key's rows on their own never sees.
+    """
     if _local_sheet_sort(key):
         from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
 
+        if runs is not None:
+            order = torch.empty_like(key)
+            key_run_order(runs, key, depth, order, key.numel(), True, True)
+            return order
         order = torch.argsort(key, stable=True)
         run_key = key.index_select(0, order)
         key_run_order(run_key, key, depth, order, key.numel(), False, True)
@@ -833,6 +861,23 @@ def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
 
 def _sheet_offsets(covered_idx, sheet_pix):
     """Build CSR for sorted sheets over the same ordered set of covered pixels."""
+    if sheet_pix.device.type == "cpu" and sheet_pix.numel():
+        # The two pixel sets coincide (``compact_sheets`` says why) and both
+        # ascend, so covered pixel i's sheets start where the i-th run of
+        # equal ``sheet_pix`` does: one compare per sheet instead of a binary
+        # search per sheet and a scatter (on an HD frame, one thread, 1.0
+        # against 11.4 ms). A GPU keeps the searches, which need no sync to
+        # size their output as ``nonzero`` does; a run count that disagrees
+        # with the pixel count falls back to them here too.
+        starts = torch.nonzero(sheet_pix[1:] != sheet_pix[:-1]).view(-1)
+        if starts.numel() == covered_idx.numel() - 1:
+            offsets = torch.empty(
+                covered_idx.numel() + 1, dtype=torch.int64, device=sheet_pix.device
+            )
+            offsets[0] = 0
+            torch.add(starts, 1, out=offsets[1:-1])
+            offsets[-1] = sheet_pix.numel()
+            return offsets
     covered = covered_idx.to(torch.int64)
     if sheet_metadata_kernel:
         # Every covered pixel has sheets, so its lower bound is its CSR start.
@@ -854,11 +899,28 @@ def _sheet_offsets(covered_idx, sheet_pix):
     return offsets
 
 
-def _rows(arr, frame_rel, time_start):
+def _rows(arr, frame_rel, time_start, cache=None):
     """The row of a per-frame array for a fragment's batch-relative frame —
     the same ``(f_rel + time_start) % rows`` convention as ``_tri_obj_row``.
+
+    ``cache`` is a dict the caller keeps for one ``frame_rel``: each table
+    height is then reduced once, however many tables of that height are
+    read (``compact_sheets`` reads five, of two heights). A broadcast table's
+    rows are all 0, handed back as an expanded scalar rather than computed.
+    Read-only: the result may be shared or a stride-0 view.
     """
-    return (frame_rel + int(time_start)) % arr.shape[0]
+    height = int(arr.shape[0])
+    rows = cache.get(height) if cache is not None else None
+    if rows is None:
+        if height == 1:
+            rows = torch.zeros(
+                (), dtype=frame_rel.dtype, device=frame_rel.device
+            ).expand(frame_rel.shape)
+        else:
+            rows = (frame_rel + int(time_start)) % height
+        if cache is not None:
+            cache[height] = rows
+    return rows
 
 
 #: (frame, triangle) pairs one block of a per-(frame, triangle) table may carry.
@@ -1009,7 +1071,14 @@ def _shade_class_table(merged, num_frames, device):
 
 
 def _shade_class(
-    merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None, num_frames=None
+    merged,
+    frame_rel,
+    time_start,
+    safe_ref,
+    is_tri,
+    tri_present=None,
+    num_frames=None,
+    row_cache=None,
 ):
     """Per-fragment shading class for ``shade_split`` (see ``compact_sheets``).
 
@@ -1050,7 +1119,7 @@ def _shade_class(
     _check_frame_table("sheets._shade_class", num_frames, num_tri, n, frame_rel)
     table = _shade_class_table(merged, num_frames, device)
     zero = torch.zeros((), dtype=torch.int64, device=device)
-    cls = table[_rows(table, frame_rel, time_start), safe_ref]
+    cls = table[_rows(table, frame_rel, time_start, row_cache), safe_ref]
     return torch.where(is_tri, cls, zero)
 
 
@@ -1248,6 +1317,7 @@ def _prim_split_after(
     band_c,
     num_frames=None,
     cam_proj=None,
+    row_cache=None,
 ):
     """The ``prim`` band rule: ``True`` where a sorted fragment's depth gap to
     its predecessor exceeds the pair's own per-pixel scale (``compact_sheets``
@@ -1317,8 +1387,10 @@ def _prim_split_after(
         # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
         # differ by about one pixel's worth of the surface's depth gradient,
         # not by the triangle's whole extent. Where the projection table is
-        # valid, divide by the projected size in pixels; a camera-plane
-        # straddler keeps the conservative raw extent.
+        # valid -- every vertex in front (flag > 0.25), which includes a
+        # triangle demoted off the exact lattice to the ray cast (0.5) --
+        # divide by the projected size in pixels; a camera-plane straddler
+        # keeps the conservative raw extent.
         block_slope = ext
         if tri_screen is not None and tri_screen.shape[2] >= 10:
             scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
@@ -1327,7 +1399,7 @@ def _prim_split_after(
             sy = scr[..., 3:6]
             span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
             proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
-            valid = scr[..., 9] > 0.5
+            valid = scr[..., 9] > 0.25
             block_slope = torch.where(valid, ext / proj, ext)
             del scr, sx, sy, span_x, span_y, proj, valid
         del ext
@@ -1335,10 +1407,12 @@ def _prim_split_after(
         del block_slope
     slope_f = slope[frame_rel, safe_ref]
     del slope
-    pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
+    pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start, row_cache)]
     footprint = pws * t
     if cam_proj is not None:
-        footprint = footprint + cam_proj[_rows(cam_proj, frame_rel, time_start), 2]
+        footprint = (
+            footprint + cam_proj[_rows(cam_proj, frame_rel, time_start, row_cache), 2]
+        )
     scale = torch.where(is_tri, slope_f + footprint, torch.zeros_like(t))
     del pws, slope_f, footprint
     scale_o = scale.index_select(0, order)
@@ -1510,7 +1584,9 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     """
     nb = sheet_band.numel()
     device = cov.device
-    if rt_settings.sheet_sibling_weights_kernel:
+    if rt_settings.sheet_sibling_weights_kernel and (
+        device.type != "mps" or rt_settings.sheet_sibling_weights_kernel_mps
+    ):
         if nb < 2:
             return cov, msk
         from algan.rendering.raytracing.sheet_sibling_taichi import (
@@ -1871,7 +1947,6 @@ def _stroke_sheets(coverage, n, num_covered, band_rule, band_c, resolve_only):
     )
     msk = frag_msk | sliver
     del sliver
-    zero = torch.zeros((), dtype=torch.int64, device=device)
     out = {
         "sheet_key": frag_key,
         "sheet_ref": coverage["frag_ref"][:n],
@@ -1880,13 +1955,14 @@ def _stroke_sheets(coverage, n, num_covered, band_rule, band_c, resolve_only):
         "sheet_wmsk": msk,
         "sheet_cap": coverage["frag_cap"][:n],
         "num_sheets": n,
-        "num_groups": zero,
-        "num_split_groups": zero.clone(),
         "band_rule": band_rule,
         "band_c": float(band_c),
         "sheet_offsets": coverage["run_offsets"][: num_covered + 1].to(torch.int64),
     }
     if not resolve_only:
+        zero = torch.zeros((), dtype=torch.int64, device=device)
+        out["num_groups"] = zero
+        out["num_split_groups"] = zero.clone()
         out["sheet_pix"] = frag_key >> 32
         out["sheet_cov"] = area
         out["sheet_msk"] = msk
@@ -1901,80 +1977,99 @@ def _stroke_sheets(coverage, n, num_covered, band_rule, band_c, resolve_only):
 _STROKE_SPLIT_MAX_MIXED = 0.6
 
 
-def _batch_has_closed_shell(merged):
-    """Does any triangle of this batch carry a closed-shell ceiling?
-
-    Read once per batch (cached on ``merged``). The ceiling's spend is keyed
-    off a GLOBAL float64 prefix over the whole stream (see ``compact_sheets``),
-    so its low bits depend on every other fragment in the chunk -- a pixel
-    split would move them. Streams that can reach it keep the general path.
-    """
-    cached = merged.get("_algan_any_closed_shell")
-    if cached is None:
-        closed = merged.get("tri_closed") if rt_settings.solid_shell_alpha else None
-        cached = bool(
-            closed is not None and closed.numel() and bool((closed > 0.5).any())
-        )
-        merged["_algan_any_closed_shell"] = cached
-    return cached
-
-
 def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only):
     """``compact_sheets`` of a mixed stream, compacting only its triangle pixels.
 
     Every stage of the compaction is per pixel: groups, bands, conflict ranks,
-    pooling, the shading-class split, the walk order and the sibling chains
-    never cross a pixel boundary, and the sample-depth rule compares sheets of
-    one pixel. (The closed-shell ceiling is the exception -- its spend reads a
-    global prefix -- and ``_batch_has_closed_shell`` keeps such streams out.)
+    pooling, the closed-shell ceiling (whose spend never leaves its (pixel,
+    surface) segment -- ``sheet_compact_taichi.solid_shell_ceiling``), the
+    shading-class split, the walk order and the sibling chains never cross a
+    pixel boundary, and the sample-depth rule compares sheets of one pixel.
     So a pixel holding no triangle fragment compacts to its fragments one for
     one, exactly as ``_stroke_sheets`` writes them, and only the pixels
     holding a triangle need the general path. This runs it on those pixels'
     fragments alone and interleaves the two sheet streams back into pixel
     order.
 
+    Under ``sheet_split_kernel`` the classification, the gather of the
+    triangle pixels and, for ``resolve_only``, the interleave are one kernel
+    pass each over the covered pixels (``sheet_compact_taichi``'s
+    ``split_mixed_pixels``, ``split_gather_pixels``, ``split_merge_sheets``),
+    copying run by run. The torch arm maps every fragment to its pixel and
+    moves each array through an ``index_select`` and an ``index_copy_``: on
+    an HD frame of mostly strokes those passes took longer than compacting
+    the triangle pixels did. The kernels stay off on MPS unless
+    ``sheet_split_kernel_mps`` asks for them.
+
     Returns ``None`` (the caller then compacts the whole stream) when more
     than ``_STROKE_SPLIT_MAX_MIXED`` of the fragments sit in triangle pixels.
     """
     frag_ref = coverage["frag_ref"][:n]
     device = frag_ref.device
-    run_offsets = coverage["run_offsets"][: num_covered + 1].to(torch.int64)
-    counts = run_offsets[1:] - run_offsets[:-1]
-    tri_prefix = torch.zeros(n + 1, dtype=torch.int32, device=device)
-    torch.cumsum((frag_ref >= 0).to(torch.int32), 0, out=tri_prefix[1:])
-    mixed_pix = (
-        tri_prefix.index_select(0, run_offsets[1:])
-        - tri_prefix.index_select(0, run_offsets[:-1])
-    ) > 0
-    del tri_prefix
-    mixed_counts = torch.where(mixed_pix, counts, torch.zeros_like(counts))
-    n_mixed, n_mpix = torch.stack([mixed_counts.sum(), mixed_pix.sum()]).tolist()
+    names = ("frag_key", "frag_ref", "frag_ab", "frag_cov", "frag_msk", "frag_cap")
+    frags = [coverage[name][:n].contiguous() for name in names]
+    run_offsets = coverage["run_offsets"][: num_covered + 1].contiguous()
+    kernel = (
+        sheet_split_kernel
+        and (device.type != "mps" or sheet_split_kernel_mps)
+        and _launches_locally(frag_ref)
+    )
+    counts = seg = sidx = None
+    if kernel:
+        from algan.rendering.raytracing.sheet_compact_taichi import (
+            split_gather_pixels,
+            split_mixed_pixels,
+        )
+
+        mixed = torch.empty(num_covered, dtype=torch.uint8, device=device)
+        # Per pixel: (is a triangle pixel, its fragments if so). The prefix
+        # is each pixel's triangle-pixel rank and its run's end among the
+        # triangle pixels' fragments; the last row holds both totals.
+        ends = torch.empty((num_covered, 2), dtype=torch.int32, device=device)
+        split_mixed_pixels(run_offsets, frags[1], num_covered, mixed, ends)
+        ends.cumsum_(0)
+        n_mpix, n_mixed = ends[-1].tolist()
+        mixed_pix = mixed.view(torch.bool)
+    else:
+        run64 = run_offsets.to(torch.int64)
+        counts = run64[1:] - run64[:-1]
+        tri_prefix = torch.zeros(n + 1, dtype=torch.int32, device=device)
+        torch.cumsum((frag_ref >= 0).to(torch.int32), 0, out=tri_prefix[1:])
+        mixed_pix = (
+            tri_prefix.index_select(0, run64[1:])
+            - tri_prefix.index_select(0, run64[:-1])
+        ) > 0
+        del tri_prefix
+        mixed_counts = torch.where(mixed_pix, counts, torch.zeros_like(counts))
+        n_mixed, n_mpix = torch.stack([mixed_counts.sum(), mixed_pix.sum()]).tolist()
+        del mixed_counts
     if n_mixed > _STROKE_SPLIT_MAX_MIXED * n or n_mixed == 0:
         return None
-    seg = torch.repeat_interleave(
-        torch.arange(num_covered, dtype=torch.int64, device=device),
-        counts,
-        output_size=n,
-    )
-    in_mixed = mixed_pix.index_select(0, seg)
-    midx = in_mixed.nonzero().squeeze(1)
-    sidx = (~in_mixed).nonzero().squeeze(1)
-    del in_mixed
 
     # The triangle pixels, compacted by the general path.
     sub_offsets = torch.zeros(n_mpix + 1, dtype=torch.int32, device=device)
-    torch.cumsum(counts[mixed_pix].to(torch.int32), 0, out=sub_offsets[1:])
-    sub_cov = {
-        name: coverage[name][:n].index_select(0, midx)
-        for name in (
-            "frag_key",
-            "frag_ref",
-            "frag_ab",
-            "frag_cov",
-            "frag_msk",
-            "frag_cap",
+    if kernel:
+        sub_offsets[1:] = ends[:, 1][mixed_pix]
+        sub_frags = [
+            torch.empty((n_mixed, *f.shape[1:]), dtype=f.dtype, device=device)
+            for f in frags
+        ]
+        split_gather_pixels(mixed, ends, run_offsets, num_covered, *frags, *sub_frags)
+    else:
+        torch.cumsum(counts[mixed_pix].to(torch.int32), 0, out=sub_offsets[1:])
+        seg = torch.repeat_interleave(
+            torch.arange(num_covered, dtype=torch.int64, device=device),
+            counts,
+            output_size=n,
         )
-    }
+        in_mixed = mixed_pix.index_select(0, seg)
+        midx = in_mixed.nonzero().squeeze(1)
+        sidx = (~in_mixed).nonzero().squeeze(1)
+        del in_mixed
+        sub_frags = [f.index_select(0, midx) for f in frags]
+        del midx
+    sub_cov = dict(zip(names, sub_frags))
+    del sub_frags
     sub_cov.update(
         covered_idx=coverage["covered_idx"][:num_covered][mixed_pix],
         run_offsets=sub_offsets,
@@ -1990,15 +2085,122 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
     n_stroke = n - n_mixed
     total = n_stroke + sub_nb
 
-    # Sheets per covered pixel: its fragments for a stroke pixel, the general
-    # path's count for a triangle pixel. Their prefix is the output CSR.
-    sheet_counts = counts.clone()
-    if sub is not None:
-        sub_sheet_offsets = sub["sheet_offsets"].to(torch.int64)
-        sheet_counts[mixed_pix] = sub_sheet_offsets[1:] - sub_sheet_offsets[:-1]
-    sheet_offsets = torch.zeros(num_covered + 1, dtype=torch.int64, device=device)
-    torch.cumsum(sheet_counts, 0, out=sheet_offsets[1:])
-    del sheet_counts
+    fields = [
+        "sheet_key",
+        "sheet_ref",
+        "sheet_ab",
+        "sheet_wgt",
+        "sheet_wmsk",
+        "sheet_cap",
+    ]
+    if kernel and resolve_only and sub is not None:
+        from algan.rendering.raytracing.sheet_compact_taichi import (
+            split_merge_sheets,
+        )
+
+        sheet_offsets = torch.empty(num_covered + 1, dtype=torch.int64, device=device)
+        out = {
+            name: torch.empty((total, *f.shape[1:]), dtype=f.dtype, device=device)
+            for name, f in zip(fields, frags)
+        }
+        split_merge_sheets(
+            mixed,
+            ends,
+            run_offsets,
+            sub_offsets,
+            sub["sheet_offsets"].to(torch.int64).contiguous(),
+            num_covered,
+            int(AA_MASK_ALL),
+            int(AA_SLIVER_BIT),
+            *frags,
+            *(sub[name] for name in fields),
+            *out.values(),
+            sheet_offsets,
+        )
+        sheet_offsets[-1] = total
+    else:
+        run64 = run_offsets.to(torch.int64)
+        if counts is None:
+            counts = run64[1:] - run64[:-1]
+        # Sheets per covered pixel: its fragments for a stroke pixel, the
+        # general path's count for a triangle pixel. Their prefix is the
+        # output CSR.
+        sheet_counts = counts.clone()
+        if sub is not None:
+            sub_sheet_offsets = sub["sheet_offsets"].to(torch.int64)
+            sheet_counts[mixed_pix] = sub_sheet_offsets[1:] - sub_sheet_offsets[:-1]
+        sheet_offsets = torch.zeros(num_covered + 1, dtype=torch.int64, device=device)
+        torch.cumsum(sheet_counts, 0, out=sheet_offsets[1:])
+        del sheet_counts
+        out = _interleave_split(
+            frags,
+            sub,
+            seg,
+            sidx,
+            mixed_pix,
+            counts,
+            run64,
+            sheet_offsets,
+            n_stroke,
+            total,
+            fields if resolve_only else fields + _RECORD_FIELDS,
+            compact_kwargs,
+            resolve_only,
+        )
+    out.update(
+        num_sheets=total,
+        band_rule=compact_kwargs["band_rule"],
+        band_c=float(compact_kwargs["band_c"]),
+        sheet_offsets=sheet_offsets,
+    )
+    if not resolve_only:
+        zero = torch.zeros((), dtype=torch.int64, device=device)
+        out.update(
+            num_groups=sub["num_groups"] if sub is not None else zero,
+            num_split_groups=sub["num_split_groups"]
+            if sub is not None
+            else zero.clone(),
+        )
+    return out
+
+
+#: The record fields ``compact_sheets`` returns besides the resolve's own
+#: unless asked for ``resolve_only``.
+_RECORD_FIELDS = ["sheet_pix", "sheet_cov", "sheet_msk", "sheet_nfrag", "sheet_fused"]
+
+
+def _interleave_split(
+    frags,
+    sub,
+    seg,
+    sidx,
+    mixed_pix,
+    counts,
+    run_offsets,
+    sheet_offsets,
+    n_stroke,
+    total,
+    fields,
+    compact_kwargs,
+    resolve_only,
+):
+    """``_split_stroke_pixels``' torch interleave: the stroke pixels' sheets
+    (``_stroke_sheets`` of their fragments) and the general path's ``sub``
+    scattered into one pixel-ordered stream of ``total`` rows.
+
+    ``seg`` / ``sidx`` -- each fragment's covered pixel and the stroke
+    fragments' rows -- are rebuilt when the caller gathered without them.
+    """
+    device = frags[0].device
+    n = frags[0].shape[0]
+    num_covered = counts.numel()
+    if seg is None:
+        seg = torch.repeat_interleave(
+            torch.arange(num_covered, dtype=torch.int64, device=device),
+            counts,
+            output_size=n,
+        )
+        sidx = (~mixed_pix.index_select(0, seg)).nonzero().squeeze(1)
 
     # Destinations: a stroke fragment keeps its place within its pixel; a
     # triangle pixel's sheets keep the general path's walk order.
@@ -2008,9 +2210,11 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
     )
     del seg_s, seg
     if sub is not None:
+        sub_nb = int(sub["num_sheets"])
+        sub_sheet_offsets = sub["sheet_offsets"].to(torch.int64)
         sub_counts = sub_sheet_offsets[1:] - sub_sheet_offsets[:-1]
         sheet_q = torch.repeat_interleave(
-            torch.arange(n_mpix, dtype=torch.int64, device=device),
+            torch.arange(sub_counts.numel(), dtype=torch.int64, device=device),
             sub_counts,
             output_size=sub_nb,
         )
@@ -2023,13 +2227,13 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
 
     stroke = _stroke_sheets(
         {
-            "frag_key": coverage["frag_key"][:n].index_select(0, sidx),
-            "frag_ref": frag_ref.index_select(0, sidx),
-            "frag_ab": coverage["frag_ab"][:n].index_select(0, sidx),
-            "frag_cov": coverage["frag_cov"][:n].index_select(0, sidx),
-            "frag_msk": coverage["frag_msk"][:n].index_select(0, sidx),
-            "frag_cap": coverage["frag_cap"][:n].index_select(0, sidx),
-            # Unread: the merged CSR is built above.
+            "frag_key": frags[0].index_select(0, sidx),
+            "frag_ref": frags[1].index_select(0, sidx),
+            "frag_ab": frags[2].index_select(0, sidx),
+            "frag_cov": frags[3].index_select(0, sidx),
+            "frag_msk": frags[4].index_select(0, sidx),
+            "frag_cap": frags[5].index_select(0, sidx),
+            # Unread: the merged CSR is built by the caller.
             "run_offsets": torch.zeros(1, dtype=torch.int32, device=device),
         },
         n_stroke,
@@ -2051,27 +2255,7 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
             out.index_copy_(0, dst_m, b)
         return out
 
-    fields = [
-        "sheet_key",
-        "sheet_ref",
-        "sheet_ab",
-        "sheet_wgt",
-        "sheet_wmsk",
-        "sheet_cap",
-    ]
-    if not resolve_only:
-        fields += ["sheet_pix", "sheet_cov", "sheet_msk", "sheet_nfrag", "sheet_fused"]
-    out = {name: interleave(name) for name in fields}
-    zero = torch.zeros((), dtype=torch.int64, device=device)
-    out.update(
-        num_sheets=total,
-        num_groups=sub["num_groups"] if sub is not None else zero,
-        num_split_groups=sub["num_split_groups"] if sub is not None else zero.clone(),
-        band_rule=compact_kwargs["band_rule"],
-        band_c=float(compact_kwargs["band_c"]),
-        sheet_offsets=sheet_offsets,
-    )
-    return out
+    return {name: interleave(name) for name in fields}
 
 
 def compact_sheets(
@@ -2165,12 +2349,13 @@ def compact_sheets(
 
     ``resolve_only`` returns just what the resolve consumes -- ``sheet_key``,
     ``sheet_ref``, ``sheet_ab``, ``sheet_wgt``, ``sheet_wmsk``, ``sheet_cap``,
-    ``sheet_offsets`` and the counts -- and releases every other per-sheet
+    ``sheet_offsets`` and ``num_sheets`` -- and releases every other per-sheet
     array as soon as it has been read, instead of carrying the record fields
     below (``sheet_pix``, ``sheet_cov``, ``sheet_msk``, ``sheet_nfrag``,
     ``sheet_fused``) to the return. The compaction is the frame's memory peak,
     and on a stream of strokes -- one sheet per fragment -- each of those is a
-    full fragment-length array. Values are identical either way.
+    full fragment-length array. Values are identical either way. The two
+    diagnostic group counters are not computed at all.
 
     Returns a dict of per-sheet arrays, ordered by ``(pixel, classic order of
     the sheet's nearest fragment)`` so a walk over them front-to-back matches
@@ -2214,9 +2399,8 @@ def compact_sheets(
     ``num_sheets``, ``num_groups``, ``num_split_groups``
         Totals; a *group* is one ``(pixel, mesh, facing)`` (triangles only),
         and a split group produced more than one band. ``num_sheets`` is an
-        int; the two group counters are DIAGNOSTIC and stay 0-d device
-        tensors (evaluated only when read), so the render path never pays
-        their device syncs.
+        int; the two group counters are DIAGNOSTIC 0-d device tensors
+        (evaluated only when read), absent under ``resolve_only``.
     """
     if band_rule not in BAND_RULES:
         raise ValueError(f"unknown band rule {band_rule!r}; one of {BAND_RULES}")
@@ -2241,7 +2425,6 @@ def compact_sheets(
         and not persist_output
         and coverage.get("num_tri_fragments")
         and not _opt_disabled_sheets("strokepixels")
-        and not _batch_has_closed_shell(merged)
     ):
         out = _split_stroke_pixels(
             coverage,
@@ -2276,11 +2459,15 @@ def compact_sheets(
     t = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
     ppf = int(width) * int(height)
     frame_rel = pix // ppf
+    # Each per-frame table's rows, reduced once per table height (``_rows``).
+    row_cache = {}
 
     tri_obj = merged["tri_obj"]
     is_tri = frag_ref >= 0
     safe_ref = frag_ref.clamp_min(0).to(torch.int64)
-    sid = tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref].to(torch.int64)
+    sid = tri_obj[_rows(tri_obj, frame_rel, time_start, row_cache), safe_ref].to(
+        torch.int64
+    )
     facing = ((frag_msk & AA_BACKFACE_BIT) != 0).to(torch.int64)
     # One arange, shared by the bezier group key here and the conflict-rank
     # scan's torch arm below (_conflict_rank) -- they were two identical
@@ -2344,7 +2531,14 @@ def compact_sheets(
     cls = None
     if shade_split:
         cls = _shade_class(
-            merged, frame_rel, time_start, safe_ref, is_tri, tri_present, num_frames
+            merged,
+            frame_rel,
+            time_start,
+            safe_ref,
+            is_tri,
+            tri_present,
+            num_frames,
+            row_cache,
         )
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
@@ -2388,6 +2582,7 @@ def compact_sheets(
             band_c,
             num_frames,
             cam_proj,
+            row_cache,
         )
         band_start[1:] |= (~new_group[1:]) & split_after
         del split_after
@@ -2438,7 +2633,7 @@ def compact_sheets(
     if tri_closed_arr is not None and tri_present:
         closed_flag = (
             tri_closed_arr[
-                _rows(tri_closed_arr, frame_rel, time_start), safe_ref
+                _rows(tri_closed_arr, frame_rel, time_start, row_cache), safe_ref
             ].reshape(-1)
             > 0.5
         ) & is_tri
@@ -2522,7 +2717,7 @@ def compact_sheets(
         # it needs -- which surface, which shell -- through with it. Only
         # scenes with something declared pay for these.
         shell_sid = (
-            tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref]
+            tri_obj[_rows(tri_obj, frame_rel, time_start, row_cache), safe_ref]
             .to(torch.int64)
             .index_select(0, order)
         )
@@ -2531,7 +2726,7 @@ def compact_sheets(
     # ``t_o`` (the sorted exact depths) stays live past this point: the
     # sheet_sample_depth block below reads it to find each sheet's nearest
     # owner per sample. It is one [n] f32 array, freed at that block.
-    del frame_rel, safe_ref
+    del frame_rel, safe_ref, row_cache
     band_id, cid_band, rank_of_cid = _sheet_rank_groups(
         band_id, rank, parents=parents, deepest=deepest
     )
@@ -2586,57 +2781,38 @@ def compact_sheets(
         # the sample-depth block below keeps live anyway -- so this used to
         # rebuild it: the same mask-shift-view over [n] plus the same gather,
         # for a bit-identical copy of a tensor already in hand.
-        o2 = _key_depth_order(key, t_o)
-        # Both arms need the f64 areas and their GLOBAL exclusive prefix: the
-        # prefix comes out of a cub scan, and a serial register walk cannot
-        # reproduce its reassociation bitwise (measured on the real nn-scene
-        # 3840x2160 frame: a serial spend moved 61 of 3.13 M values and flipped
-        # 10 visible f32 outputs, all sliver areas below 1e-4 -- against the
-        # byte-identity contract). The kernel takes the prefix as input and
-        # does everything else per segment in registers; the torch arm below
-        # stays as the A/B arm.
-        # ``copy=True`` because ``cov_o`` is already float32: at
-        # ``accumulate_dtype() is torch.float32`` -- MPS-friendly mode --
-        # ``.to`` is the identity, and the kernel arm below hands this same
-        # buffer to the kernel as its reassociation-barrier ``scratch`` while
-        # ``cov_o`` is its INOUT coverage. Aliased, the barrier store
-        # overwrites the coverage mid-walk and the stream comes back with
-        # negative areas in it.
-        cov64 = cov_o.to(accumulate_dtype(), copy=True)
-        c2 = cov64.index_select(0, o2)
-        # Only at float64. In float32 (MPS-friendly mode) a whole-stream
-        # prefix reaches ~1e6 on a 1080p frame and differencing two of its
-        # entries loses a pixel's coverage to rounding, so both arms spend
-        # segment by segment there instead (``solid_shell_ceiling``'s
-        # docstring, ``_segment_exclusive_prefix``).
-        excl_global = None
-        if c2.dtype != torch.float32:
-            csum = torch.cumsum(c2, 0)
-            excl_global = csum.sub_(c2)
+        # A segment never leaves its pixel and its spend never leaves the
+        # segment, so the segments need ordering only within each pixel's
+        # run of the (pixel-sorted) stream, not by a whole-stream argsort.
+        o2 = _key_depth_order(key, t_o, runs=pix_o)
+        # Every segment spends on its own: the f64 arms count the spend in
+        # Q32 fixed point and the f32 (MPS-friendly) arms add each segment
+        # serially, so no fragment's clamp reads anything outside its own
+        # (pixel, surface) segment (``solid_shell_ceiling``'s docstring). The
+        # kernel does it in registers; the torch arm below stays as the A/B.
         if rt_settings.sheet_shell_ceiling_kernel and n:
             from algan.rendering.raytracing.sheet_compact_taichi import (
                 solid_shell_ceiling,
             )
 
-            # ``cov64`` doubles as the kernel's reassociation-barrier scratch
-            # (see the kernel docstring); the torch arm needed it only to
-            # build ``excl`` either way. The float32 variant uses neither, so
-            # ``c2`` stands in for the prefix it does not use.
             solid_shell_ceiling(
                 key.contiguous(),
                 kernel_index(o2.contiguous()),
                 shell_back.contiguous().view(torch.uint8),
-                c2 if excl_global is None else excl_global,
-                cov64,
                 n,
                 cov_o,
                 taichi_accumulate_dtype(),
             )
-            del key, o2, shell_back, excl_global, c2, cov64
+            del key, o2, shell_back
         else:
-            # Dead past the prefix in this arm; the kernel arm reuses it as
-            # its reassociation-barrier scratch instead.
-            del cov64
+            from algan.rendering.raytracing.sheet_compact_taichi import (
+                SHELL_SPEND_ONE,
+                SHELL_SPEND_QUANTUM,
+            )
+
+            # ``index_select`` copies, so the in-place floor below never
+            # touches ``cov_o``.
+            c2 = cov_o.index_select(0, o2).to(accumulate_dtype())
             k2 = key.index_select(0, o2)
             del key
             seg_start = torch.ones(n, dtype=torch.bool, device=device)
@@ -2646,18 +2822,25 @@ def compact_sheets(
             seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
             nseg = int(seg[-1].item()) + 1
             # The running total each fragment's in-segment predecessors have
-            # already spent: the global exclusive prefix minus its value at the
-            # segment's first row (the same construction ``_conflict_rank``'s
-            # torch arm uses, and deterministic for the same reason).
+            # already spent: the kernel's Q32 integers, reached here by
+            # differencing a whole-stream integer prefix at the segment's
+            # first row (exact, so the same integer the kernel's walk adds up;
+            # the construction ``_conflict_rank``'s torch arm uses).
             first = torch.zeros(nseg, dtype=torch.int64, device=device)
             first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
-            if excl_global is not None:
-                spent = excl_global - excl_global.index_select(0, first).index_select(
-                    0, seg
+            if c2.dtype != torch.float32:
+                q2 = (c2 * SHELL_SPEND_ONE).to(torch.int64)
+                excl_q = torch.cumsum(q2, 0).sub_(q2)
+                del q2
+                spent = (
+                    (excl_q - excl_q.index_select(0, first).index_select(0, seg))
+                    .to(c2.dtype)
+                    .mul_(SHELL_SPEND_QUANTUM)
                 )
+                del excl_q
             else:
                 spent = _segment_exclusive_prefix(c2, seg, first)
-            del excl_global, first, seg_start
+            del first, seg_start
             # The segment's cap: its surface's two shells' own footprint areas,
             # accumulated float64 and rounded through float32 -- §6.6.4, because a
             # ceiling that wobbles in its low bits flips borderline fragments in
@@ -2965,14 +3148,15 @@ def compact_sheets(
     # (group ids are < the true group count <= nb) and the two counters stay
     # 0-d tensors, evaluated only when something reads them -- because this
     # block used to cost three device syncs per compaction for numbers
-    # nothing on the render path consumes.
-    metadata_ids = band_id if sheet_metadata_kernel else None
-    del band_id
-    num_tri_groups, num_split_groups = _sheet_group_counts(
-        new_group, metadata_ids, order, is_tri, first_sorted, nb
-    )
-    del metadata_ids
-    del new_group
+    # nothing on the render path consumes. Under ``resolve_only`` -- the
+    # render path -- it does not run at all (2-3% of the call).
+    if not resolve_only:
+        metadata_ids = band_id if sheet_metadata_kernel else None
+        num_tri_groups, num_split_groups = _sheet_group_counts(
+            new_group, metadata_ids, order, is_tri, first_sorted, nb
+        )
+        del metadata_ids
+    del band_id, new_group
     # Last read of the sorted stream: from here the function works only in
     # per-sheet arrays, so the per-fragment ones go now rather than at the
     # return (they are 28 MB apiece on a 4K frame).
@@ -3177,8 +3361,6 @@ def compact_sheets(
             "sheet_wmsk": sheet_wmsk,
             "sheet_cap": frag_cap.index_select(0, rep_final),
             "num_sheets": nb,
-            "num_groups": num_tri_groups,
-            "num_split_groups": num_split_groups,
             "band_rule": band_rule,
             "band_c": float(band_c),
             "sheet_offsets": sheet_offsets,
@@ -3234,10 +3416,11 @@ def compact_sheets(
         if final_records is not None
         else fused.index_select(0, final),
         "num_sheets": nb,
-        "num_groups": num_tri_groups,
-        "num_split_groups": num_split_groups,
         "band_rule": band_rule,
         "band_c": float(band_c),
         "sheet_offsets": sheet_offsets,
     }
+    if not resolve_only:
+        out["num_groups"] = num_tri_groups
+        out["num_split_groups"] = num_split_groups
     return out

@@ -411,17 +411,41 @@ A batch falls back when any of the following holds:
      - The environment prefill would fill the alpha the background owes.
    * - The batch contains no triangles and no Bezier circuits
      - Nothing for the rasterizer to emit.
-   * - Any of the analytic-AA or sparse-coverage experimental switches off
+   * - ``SETTINGS.raytracing.analytic_aa`` off, or one of the analytic path's
+       experimental switches off: ``hybrid_raster``, ``sheet_resolve``,
+       ``analytic_aa_run``, ``raster_sparse_coverage``, ``raster_empty_skip``
+       or ``raster_covered_shade``; ``analytic_aa_tri`` or ``raster_ss`` in a
+       batch with triangles; ``analytic_aa_bez`` in one with Bezier circuits
      - They are preconditions of the analytic path, not independent options.
+       They exist to compare the two paths. With ``raster_ss`` off, triangles
+       would emit sampled coverage instead of the exact coverage the analytic
+       path needs.
+   * - The experimental memory trim (``ALGAN_WF_MEM_TRIM``, off by default)
+       engages for the batch
+     - Only the ray-traversal path reads the trimmed arrays.
+
+A render says when one of its batches falls back to the supersampled path. The
+first batch to fall back for a given reason logs one ``INFO`` line, naming the
+reason and the ``supersampling`` the batch renders at instead. Each batch's
+:class:`~.RenderPlan` also records the outcome: ``route`` is ``"analytic"``,
+``"supersampled"`` or ``"path_tracer"``, and ``route_veto`` names the condition,
+or is ``None`` on the analytic path. A file render's plan describes its last
+batch::
+
+    result = Scene.save_video("scene")
+    print(result.render_plan.route, result.render_plan.route_veto)
 
 The fallback is a genuine quality *and* cost change, so it is worth knowing when
 you are on it:
 
-* Analytic coverage is off. Edge quality is whatever
-  ``supersampling`` (default ``2``) buys.
+* Analytic coverage is off. Edge quality is whatever ``supersampling`` buys,
+  and the presets differ. ``LD`` (the default), ``MD``, ``HD``, ``PRODUCTION``
+  and ``UHD`` use ``2``, as does a :class:`~.VideoSettings` built without
+  one. ``THUMBNAIL`` uses ``4``. ``PREVIEW`` and ``SMOKE_TEST`` use ``1``,
+  which on the fallback means **no anti-aliasing at all**.
 * The frame buffer is ``supersampling ** 2`` times larger, so
   batches shrink by the same factor and the render takes correspondingly longer.
-  At the default that is 4x.
+  That is 4x at ``2``, 16x at ``THUMBNAIL``'s ``4``, and nothing at ``1``.
 * Per-fragment shading, shadows, reflection and refraction all still work. Only
   the way primary visibility and coverage are resolved changes.
 
@@ -1095,7 +1119,11 @@ Camera
 * ``camera.near > 0`` forces the supersampled fallback path for the whole batch.
   Leave it at ``0`` unless you specifically need near clipping.
 * Geometry crossing the camera plane is handled **exactly** -- such a primitive
-  is intersected by ray casting per sub-pixel sample rather than projected --
+  is intersected by ray casting per sub-pixel sample rather than projected.
+  So is a large triangle lying a hair in front of the plane, which would
+  project too far off-screen for the projected path's fixed-point coverage
+  arithmetic. Ray-cast edges get eight-sample coverage rather than the exact
+  area the projected path computes, and cost a few times more per pixel --
   but a primitive whose bounding box *contains the camera origin* cannot be
   bounded on screen at all and is tested against the whole frame. A camera
   flying through the middle of a scene puts many primitives in that state at

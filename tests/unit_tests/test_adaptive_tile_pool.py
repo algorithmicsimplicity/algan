@@ -13,8 +13,8 @@ ratio and needs fewer out-of-memory retries. (With the drain's ray sort pinned
 off: see ``_render_arm``. Any change of tile size moves a splitting pixel's
 last bits through it, and on a GPU those bits race anyway.)
 
-Outside the fast suite: only a change to the sheet route's tile driver can
-break it.
+Outside the fast suite: only a change to the sheet route's tile driver, or to
+what a chunk holds while its tiles run (``_BUDGET``), can break it.
 """
 
 import json
@@ -221,8 +221,13 @@ def _render(disabled, budget):
 
 
 #: The arena the render gets (``cpu_render_memory_budget``): small enough
-#: that the estimate's tiles run out of it, large enough for one frame.
-_BUDGET = 20 << 20
+#: that the estimate's tiles run out of it, large enough for one frame. The
+#: tiles get what the chunk leaves free, so a change to what a chunk holds
+#: moves this: once the fragment stream stopped being held through the
+#: resolve, 20 MB left the tiles 0.3 MB more, the estimate's tiles fit after
+#: one halving, and both arms retried four times. 17, 18 and 19 MB each show
+#: the record saving retries.
+_BUDGET = 18 << 20
 
 
 def _render_arm(arm, out_path):

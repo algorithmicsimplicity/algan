@@ -25,6 +25,8 @@ from algan.rendering.raytracing.raster_pipeline import (
 )
 from algan.rendering.raytracing.raster_taichi import _AA_MASK_ALL as MASK_ALL
 from algan.rendering.raytracing.sheet_compact_taichi import (
+    SHELL_SPEND_ONE,
+    SHELL_SPEND_QUANTUM,
     band_stats_reduce,
     band_stats_rep_orig,
     pair_expand_count,
@@ -73,7 +75,7 @@ def _shell_stream(n, seed, zero_areas=False):
     return key.contiguous(), o2.contiguous(), back, cov.contiguous()
 
 
-def _torch_shell_ceiling(key, o2, back, excl, c2, cov_src):
+def _torch_shell_ceiling(key, o2, back, c2, cov_src):
     """The verbatim torch block from compact_sheets (toggle-off arm)."""
     n = int(key.numel())
     device = key.device
@@ -85,7 +87,13 @@ def _torch_shell_ceiling(key, o2, back, excl, c2, cov_src):
     nseg = int(seg[-1].item()) + 1
     first = torch.zeros(nseg, dtype=torch.int64, device=device)
     first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
-    spent = excl - excl.index_select(0, first).index_select(0, seg)
+    q2 = (c2 * SHELL_SPEND_ONE).to(torch.int64)
+    excl_q = torch.cumsum(q2, 0).sub_(q2)
+    spent = (
+        (excl_q - excl_q.index_select(0, first).index_select(0, seg))
+        .to(torch.float64)
+        .mul_(SHELL_SPEND_QUANTUM)
+    )
     backf2 = back.index_select(0, o2)
     z64 = torch.zeros((), dtype=torch.float64, device=device)
     front = torch.zeros(nseg, dtype=torch.float64, device=device)
@@ -109,26 +117,19 @@ def _torch_shell_ceiling(key, o2, back, excl, c2, cov_src):
 def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas, wide_kernel_arms):
     n = 4096
     key, o2, back, cov = _shell_stream(n, seed=11, zero_areas=zero_areas)
-    cov64 = cov.to(torch.float64)
-    c2 = cov64.index_select(0, o2)
-    excl = torch.cumsum(c2, 0).sub_(c2)
+    c2 = cov.to(torch.float64).index_select(0, o2)
 
-    want = _torch_shell_ceiling(key, o2, back, excl, c2.clone(), cov)
+    want = _torch_shell_ceiling(key, o2, back, c2, cov)
 
     got = cov.clone()
-    scratch = cov.to(torch.float64)
-    solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, got, ACC_F64
-    )
+    solid_shell_ceiling(key, o2, back.contiguous().view(torch.uint8), n, got, ACC_F64)
     assert _bits_equal(want, got), (
         f"max abs diff {(want - got).abs().max().item()}, "
         f"{int((want.view(torch.int32) != got.view(torch.int32)).sum())} bits-differing rows"
     )
 
     again = cov.clone()
-    solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, again, ACC_F64
-    )
+    solid_shell_ceiling(key, o2, back.contiguous().view(torch.uint8), n, again, ACC_F64)
     assert _bits_equal(got, again), "kernel is not deterministic across runs"
 
 
@@ -142,20 +143,11 @@ def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments(
         if n > 1:
             back[::3] = True
         cov = torch.linspace(0.01, 0.9, n)
-        cov64 = cov.to(torch.float64)
-        c2 = cov64.index_select(0, o2)
-        excl = torch.cumsum(c2, 0).sub_(c2)
-        want = _torch_shell_ceiling(key, o2, back, excl, c2.clone(), cov)
+        c2 = cov.to(torch.float64).index_select(0, o2)
+        want = _torch_shell_ceiling(key, o2, back, c2, cov)
         got = cov.clone()
         solid_shell_ceiling(
-            key,
-            o2,
-            back.contiguous().view(torch.uint8),
-            excl,
-            cov.to(torch.float64),
-            n,
-            got,
-            ACC_F64,
+            key, o2, back.contiguous().view(torch.uint8), n, got, ACC_F64
         )
         assert _bits_equal(want, got), f"n={n}"
 
@@ -194,7 +186,7 @@ def test_float32_shell_ceiling_spend_does_not_degrade_with_stream_length(
 
     The spend -- the coverage a fragment's in-segment predecessors already
     took -- used to be a difference of two entries of a global prefix over the
-    whole stream. Here that prefix ends near 1.5e6, where f32 spacing is
+    whole stream. Here that prefix would end near 1.5e6, where f32 spacing is
     0.125, so a fragment late in the stream had its spend, and with it the
     coverage it keeps, off by up to 0.24 (measured before the fix). The f64
     arm is the reference: what the f32 arm computes should differ from it
@@ -203,24 +195,56 @@ def test_float32_shell_ceiling_spend_does_not_degrade_with_stream_length(
     key, o2, back, cov, _seg, _first = _large_shell_stream(1_200_000, seed=5)
     n = int(key.numel())
     back_u8 = back.contiguous().view(torch.uint8)
+    assert float(cov.sum()) > 1e6, "the stream is too small to show the effect"
 
-    c64 = cov.to(torch.float64).index_select(0, o2)
-    excl64 = torch.cumsum(c64, 0).sub_(c64)
     want = cov.clone()
-    solid_shell_ceiling(
-        key, o2, back_u8, excl64, cov.to(torch.float64), n, want, ACC_F64
-    )
-
-    c32 = cov.index_select(0, o2)
-    excl32 = torch.cumsum(c32, 0).sub_(c32)
-    assert float(excl32[-1]) > 1e6, "the stream is too small to show the effect"
+    solid_shell_ceiling(key, o2, back_u8, n, want, ACC_F64)
     got = cov.clone()
-    # The global f32 prefix the f32 arm used to difference; it no longer reads
-    # it (nor ``scratch``).
-    solid_shell_ceiling(key, o2, back_u8, excl32, cov.clone(), n, got, ACC_F32)
+    solid_shell_ceiling(key, o2, back_u8, n, got, ACC_F32)
 
     err = (got - want).abs().max().item()
     assert err < 1e-5, f"f32 ceiling is off the f64 one by up to {err:.3g}"
+
+
+def test_shell_ceiling_clamp_reads_only_its_own_segment(wide_kernel_arms):
+    """A segment's clamp is a function of that segment alone, bit for bit.
+
+    ``compact_sheets`` compacts a stream's triangle pixels apart from its
+    stroke pixels (``_split_stroke_pixels``) and frames arrive in chunks of
+    any size, so the same (pixel, surface) segment can sit behind millions of
+    other fragments or none. The f64 spend is Q32 integer arithmetic, so it
+    must come out the same either way. (A difference of two rows of a global
+    float prefix did not: behind a prefix of ~1e6 its low bits moved.)
+    """
+    key, o2, back, cov, seg, first = _large_shell_stream(1_200_000, seed=7)
+    n = int(key.numel())
+    assert float(cov.sum()) > 1e6, "the stream is too small to show the effect"
+    whole = cov.clone()
+    solid_shell_ceiling(key, o2, back.contiguous().view(torch.uint8), n, whole, ACC_F64)
+    clamped = (whole.view(torch.int32) != cov.view(torch.int32)).sum()
+    assert int(clamped) > n // 10, "the stream exercises too few clamps"
+
+    # The last 5000 segments along ``o2``, alone: the rows they own, in the
+    # same relative order.
+    tail_rows = o2[int(first[-5000]) :]
+    sub_key = key.index_select(0, tail_rows)
+    sub_back = back.index_select(0, tail_rows)
+    sub_cov = cov.index_select(0, tail_rows)
+    m = int(tail_rows.numel())
+    alone = sub_cov.clone()
+    solid_shell_ceiling(
+        sub_key.contiguous(),
+        torch.arange(m, dtype=torch.int64),
+        sub_back.contiguous().view(torch.uint8),
+        m,
+        alone,
+        ACC_F64,
+    )
+    assert _bits_equal(alone, whole.index_select(0, tail_rows))
+
+    # And the torch arm reaches the same integers from the whole stream.
+    want = _torch_shell_ceiling(key, o2, back, cov.to(torch.float64)[o2], cov)
+    assert _bits_equal(want, whole)
 
 
 def test_float32_segment_prefix_matches_the_float64_global_difference():

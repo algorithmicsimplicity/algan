@@ -353,9 +353,12 @@ primitive is a convex combination of its vertices, so its plane projection is
 primitive fell back to the conservative full-row-band bbox and became a
 full-screen candidate scan (~8k pairs/frame at HD, per primitive — a real
 pathology when the camera moves past geometry). The projection table's flag
-is 3-state (1 = all-front, SS valid; 0 = straddling/degenerate, full-window
+was 3-state (1 = all-front, SS valid; 0 = straddling/degenerate, full-window
 ray-cast fallback; -1 = provably behind, culled at binning), and the bezier
-path culls on `front.any() == False` over the 8 AABB corners.
+path culls on `front.any() == False` over the 8 AABB corners. It has since
+gained 0.5 = all-front but too far off-screen for the exact int64 lattice, so
+ray-cast with its projected bbox; `precompute_triangle_projection` holds the
+current list.
 
 4.10 In-place bounce continuations
 ----------------------------------

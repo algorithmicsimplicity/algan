@@ -939,6 +939,10 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
 # occupancy-bound kernel; see benchmarks/_wf_mem_trim_ab.py). Byte-identical to
 # the baseline. Opt-in; only engaged for a no-shadow, non-refractive,
 # scatter-free triangle path (the common case). Default OFF.
+# Classic wavefront only: the trimmed arrays are built beside the untrimmed
+# ones, which is all the sheet route reads, so a batch the trim would engage
+# for is a sheet-route veto (tracer.ROUTE_VETOES["wf_mem_trim"]) and renders
+# through the classic supersampled wavefront instead.
 wf_mem_trim = env_flag("ALGAN_WF_MEM_TRIM", False)
 
 # Shared-topology binned-SAH refit BVH (raytracer-v2 design doc section 9;
@@ -1947,20 +1951,21 @@ def refit_bvh_active():
     return bvh_refit
 
 
-# Hybrid raster front-end for deterministic primary visibility.
-# Eligible flat-triangle/Bezier batches replace iteration zero with a typed
-# opaque visibility buffer, alpha-filtered ordered fragment runs, optional exact
-# sparse hard-shadow events, and a serial per-pixel resolve. Ordering matches the
-# classic transitive depth-bin/descending-layer relation. Surviving reflected or
-# refracted branches stay in the shared continuation pool and are traced by the
-# classic bounce loop (whose per-iteration surface-event batches replaced the
-# old per-slot K-buffers). Primary hard shadows and emitter-radius
-# soft shadows use a sparse any-hit event queue. PN geometry is preserved and
-# simply falls back to classic primary traversal. The straight-ray safety limit
-# is max_surfaces_per_ray (currently 256), not literally unbounded. Custom
-# scatter, mem-trim, in-place AA, near clipping and legacy routes still fall
-# back to classic. Default ON (ALGAN_HYBRID_RASTER=0 restores the classic
-# iteration-zero wavefront).
+# Hybrid raster front-end for deterministic primary visibility: the master
+# switch of the sheet route (DESIGN_sheet_resolve.md). An eligible batch's
+# flat triangles -- PN patches included, which are diced into flat triangles
+# at projection -- and Bezier circuits emit exact analytic-coverage fragments,
+# which are compacted into per-pixel depth-banded sheets that one kernel
+# resolves, builds primary shadow events for, and shades. Surviving reflected
+# or refracted branches stay in the shared continuation pool and are traced
+# by the classic bounce loop (whose per-iteration surface-event batches
+# replaced the old per-slot K-buffers). The straight-ray safety limit is
+# max_surfaces_per_ray (currently 256), not literally unbounded. Which
+# batches are eligible is tracer.analytic_raster_route_veto's decision:
+# tracer.ROUTE_VETOES lists every reason a batch falls back to the classic
+# supersampled wavefront, this switch among them. (In-place AA is not one --
+# it only changes how that fallback supersamples.) Default ON
+# (ALGAN_HYBRID_RASTER=0 restores the classic iteration-zero wavefront).
 hybrid_raster = env_flag("ALGAN_HYBRID_RASTER", True)
 
 
@@ -1978,6 +1983,11 @@ def set_hybrid_raster(enabled):
 # Invalid/camera-plane-straddling projections fall back to exact per-pixel
 # Moller-Trumbore ray casting. ALGAN_RASTER_SS=0 forces ray casting for all
 # triangle candidates; the optimal policy may eventually be selected per pair.
+# The ray-cast path's coverage is the sampled popcount of its sub-pixel mask,
+# not the exact clipped area the sheet resolve consumes, so off is a sheet-route
+# veto for any batch with triangles (tracer.ROUTE_VETOES["raster_ss_off"]): the
+# batch renders through the classic supersampled wavefront, like the route's
+# other kill switches, rather than through the route on sampled coverage.
 raster_ss = env_flag("ALGAN_RASTER_SS", True)
 
 
@@ -2627,21 +2637,19 @@ def set_sheet_band_stats_kernel(enabled):
 
 # Kernel application of the solid-shell opacity ceiling behind
 # ``compact_sheets`` (sheet_compact_taichi.solid_shell_ceiling). After the
-# block's own depth sort orders each (pixel, surface) segment -- and after the
-# f64 cumsum that prefixes it, which STAYS IN TORCH because a serial register
-# walk cannot reproduce a cub scan's reassociation bitwise (measured: 61 of
-# 3.13 M spend values move, flipping 10 visible f32 outputs on the real
-# nn-scene frame) -- torch walked the stream three more times to spend the
-# allowance: nonzero + scatter_ for segment starts, two facing-split f64
+# block's own depth sort orders each (pixel, surface) segment, torch walked
+# the stream four more times to spend the allowance: an integer cumsum for the
+# spend, nonzero + scatter_ for segment starts, two facing-split f64
 # scatter_add_s through a whole-stream segment map, and clone + index_copy_
 # for the write-back. One thread per segment (detected in-kernel along the
-# permutation) walks its run twice with the cap in registers and the caller's
-# prefix as data.
+# permutation) walks its run twice with the cap and the spend in registers.
 #
-# The float contract follows ss6.6.4 as before: front/back sums accumulate in
-# f64 registers serially in stream order (the atomic scatter_add_ had no
-# order), verified bitwise against the torch arm at 4K shapes and on the real
-# captured stream in benchmarks/_sheet_kernel_check.py rather than assumed.
+# The spend is Q32 fixed-point integer arithmetic, so the arms agree on it by
+# construction. The float contract follows ss6.6.4 as before: front/back sums
+# accumulate in f64 registers serially in stream order (the atomic
+# scatter_add_ had no order), verified bitwise against the torch arm at 4K
+# shapes and on the real captured stream in benchmarks/_sheet_kernel_check.py
+# rather than assumed.
 sheet_shell_ceiling_kernel = env_flag("ALGAN_SHEET_SHELL_CEILING_KERNEL", True)
 
 
@@ -2760,6 +2768,15 @@ analytic_aa_seam = env_flag("ALGAN_ANALYTIC_AA_SEAM", True)
 #             Kept only so the parity script can measure against it.
 #
 # See DESIGN_analytic_aa.md ss15/ss16 for the measurements behind the default.
+#
+# INERT (2026-10-30). The policy only ever reached the per-sample
+# representation, and the run-corrected one (analytic_aa_run, below) pins it to
+# ``drop`` (v2 ss4.1). The sheet resolve is the only analytic-coverage path and
+# analytic_aa_run off is one of its route vetoes, so no launchable render reads
+# this value any more: a write is refused (raytracing_settings._INERT_FIELDS)
+# and set_analytic_aa no longer takes ``sliver``. The field stays readable
+# because raster_pipeline still names analytic_aa_sliver_mode() in an arm the
+# route decision vetoes; it goes when that read does.
 ANALYTIC_AA_SLIVER_MODES = ("area", "exact", "drop", "exact_occ")
 analytic_aa_sliver = env_str("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 
@@ -2851,8 +2868,11 @@ def set_analytic_aa_bez_anisotropic(enabled):
 # edge levels 620/621, seam notches inside the documented band, trans
 # improves, thin gains its reachable share (0.857 -> 0.884; the 0.99 target
 # was calibrated on the rejected cells accounting -- see the ss8 Phase D
-# note). Worst-case cost is +6.6% frame device on sub-pixel-diced meshes;
-# RUN=0 is byte-identical to the pre-v2 renderer.
+# note). Worst-case cost is +6.6% frame device on sub-pixel-diced meshes.
+# RUN=0 no longer restores the pre-v2 renderer: the sheet resolve consumes the
+# run representation and is the only analytic-coverage path, so off is a
+# sheet-route veto (tracer.ROUTE_VETOES["analytic_aa_run_off"]) and the batch
+# renders through the classic supersampled wavefront.
 analytic_aa_run = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 
 # The corr > 1 accounting rule (v2 ss4.4), the design's one open empirical
@@ -2866,6 +2886,14 @@ analytic_aa_run = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 # tri L1 0.107 vs clamp's 0.110 with edge levels 620 against the aa=4
 # reference's own 621, seam notches 9 vs 12, trans/thin at parity. Exact
 # leftovers cost two registers and a run-end scale.
+#
+# INERT (2026-10-30). The rule moved into the sheet resolve, which always
+# redistributes (sheet_resolve_taichi calls _run_redistribute unconditionally),
+# and the template value this used to select no longer forks anything: the
+# emission maps the two values to aa_tri 3 and 4, and every reader of aa_tri
+# asks only ``>= 3``. A write is refused (raytracing_settings._INERT_FIELDS)
+# and set_analytic_aa no longer takes ``run_rule``; the field stays readable
+# until raster_pipeline's read of it goes.
 ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
 analytic_aa_run_rule = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 
@@ -3450,19 +3478,21 @@ def set_analytic_aa(
     bezier=None,
     triangles=None,
     seam=None,
-    sliver=None,
     secondary=None,
     exact=None,
     wedge=None,
     run=None,
-    run_rule=None,
     run_full=None,
     one_mesh=None,
 ):
-    """Toggle analytic anti-aliasing (see ``analytic_aa``)."""
+    """Toggle analytic anti-aliasing (see ``analytic_aa``).
+
+    The ``sliver`` and ``run_rule`` keywords are gone with what they chose:
+    ``analytic_aa_sliver`` and ``analytic_aa_run_rule`` are inert.
+    """
     global analytic_aa, analytic_aa_bez, analytic_aa_tri, analytic_aa_seam
-    global analytic_aa_sliver, analytic_aa_secondary_samples, analytic_aa_exact
-    global analytic_aa_run, analytic_aa_run_rule, analytic_aa_run_full
+    global analytic_aa_secondary_samples, analytic_aa_exact
+    global analytic_aa_run, analytic_aa_run_full
     global analytic_aa_one_mesh, analytic_aa_bez_wedge
     if secondary is not None:
         analytic_aa_secondary_samples = int(secondary)
@@ -3476,12 +3506,6 @@ def set_analytic_aa(
         analytic_aa_run_full = bool(run_full)
     if one_mesh is not None:
         analytic_aa_one_mesh = bool(one_mesh)
-    if run_rule is not None:
-        if run_rule not in ANALYTIC_AA_RUN_RULES:
-            raise AlganConfigurationError(
-                f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}"
-            )
-        analytic_aa_run_rule = run_rule
     analytic_aa = bool(enabled)
     if bezier is not None:
         analytic_aa_bez = bool(bezier)
@@ -3489,12 +3513,6 @@ def set_analytic_aa(
         analytic_aa_tri = bool(triangles)
     if seam is not None:
         analytic_aa_seam = bool(seam)
-    if sliver is not None:
-        if sliver not in ANALYTIC_AA_SLIVER_MODES:
-            raise AlganConfigurationError(
-                f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}"
-            )
-        analytic_aa_sliver = sliver
 
 
 def effective_analytic_aa_secondary_samples():
@@ -3555,9 +3573,11 @@ def analytic_aa_sliver_mode():
     """Index of the live sample-less-triangle policy in the mode tuple.
 
     Read at call time (never imported by value) and returned as an int, because
-    it reaches the kernels as part of the ``aa`` template value: the geometry
-    kernels see ``1 + mode``, so each policy compiles its own variant and the
-    offline cache cannot serve one policy's kernel for another.
+    it reached the kernels as part of the ``aa`` template value: the geometry
+    kernels saw ``1 + mode``, so each policy compiled its own variant and the
+    offline cache could not serve one policy's kernel for another. Its one
+    caller (raster_pipeline) now asks only in an arm the route vetoes, so the
+    policy is inert (see ``analytic_aa_sliver``).
     """
     try:
         return ANALYTIC_AA_SLIVER_MODES.index(analytic_aa_sliver)
@@ -4337,9 +4357,18 @@ sheet_depth_reduce_kernel = env_flag("ALGAN_SHEET_DEPTH_REDUCE_KERNEL", True)
 # end-to-end speedup. Keep the candidate opt-in until that is demonstrated.
 sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", False)
 
-# Two device passes replace the Torch sibling-weight graph and its host read.
-# Live A/B switch; opt-in until whole-render measurements justify enabling it.
-sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", False)
+# Two device passes replace the Torch sibling-weight graph and its host read,
+# with bit-identical weights (``tests/unit_tests/test_sheet_sibling_weights.py``).
+# On everywhere but MPS. On the CPU they take the helper from 7.6 to 2.0 ms on
+# an HD explainer frame (the whole compaction 5-7%). The Mac runner's A/B
+# (``benchmarks/performance/reports/mac_2026_09/SIBLING_WEIGHTS.md``) measured
+# the whole render 15% SLOWER with them, cause not isolated, so an MPS render
+# keeps the graph unless ``sheet_sibling_weights_kernel_mps`` is on too -- the
+# switch that A/B flips there.
+sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", True)
+sheet_sibling_weights_kernel_mps = env_flag(
+    "ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL_MPS", False
+)
 
 
 # UV texture anti-aliasing. Read at merge time; directories carried as DATA

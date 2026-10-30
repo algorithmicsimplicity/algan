@@ -158,7 +158,9 @@ def _install_pipeline_report():
     def reporting(merged, *args, **kwargs):
         if isinstance(merged, dict) and merged.get("tri_pos") is not None:
             _say(geometry_line, merged)
-        coverage = original(merged, *args, **kwargs)
+        # Kept for the frag_cov line below: the pipeline otherwise releases
+        # the raw stream once the sheets are made.
+        coverage = original(merged, *args, keep_fragment_stream=True, **kwargs)
         if coverage is None:
             print("  [pipeline] no coverage at all -- nothing rasterised")
             return coverage
@@ -258,7 +260,9 @@ def _install_pipeline_report():
 
     def reporting_compact(coverage, *args, **kwargs):
         _say(key_lines, coverage)
-        stream = original_compact(coverage, *args, **kwargs)
+        # The render asks for ``resolve_only``, which skips the group counters
+        # ``group_line`` reports; the full call returns the same resolve fields.
+        stream = original_compact(coverage, *args, **{**kwargs, "resolve_only": False})
         if stream is not None:
             _say(group_line, stream)
         _say(split_line, coverage, args, kwargs, stream)

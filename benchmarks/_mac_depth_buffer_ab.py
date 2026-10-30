@@ -344,6 +344,7 @@ def render(args):
         SETTINGS.raytracing.experimental.set(
             sheet_depth_buffer_reuse=reuse and args.target == "depth",
             sheet_sibling_weights_kernel=reuse and args.target == "sibling",
+            sheet_sibling_weights_kernel_mps=reuse and args.target == "sibling",
         )
         with Off():
             nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()

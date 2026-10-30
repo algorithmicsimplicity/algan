@@ -18,7 +18,9 @@ frames and these buffers would otherwise be the render's dominant allocation):
 in ONE launch (``ALGAN_OPT_DISABLE=glossfuse`` restores the separate ones), and
 ``gloss_clear`` is the reset alone. Every kernel here computes a texel or a
 pixel through the same ``ti.func``, so the fused launch does the same
-arithmetic, in the same order, as the launches it replaces.
+arithmetic, in the same order, as the launches it replaces. It does it only
+inside the frame's glossy bounding box (``gl_box``), on a pyramid that is zero
+everywhere else -- which is what the separate launches compute there.
 
 Nothing here runs unless ``glossy_reflection_mode() == 3``; the host does not
 allocate the buffers otherwise.
@@ -90,6 +92,17 @@ GL_MAIN_SIGMA = 7
 GL_MAIN_G = 8
 GL_MAIN_SCALE = 9
 GL_MAIN_WIDTH = 10
+
+# ``gl_box``: the bounding box of the pixels the frame's ``gloss_scatter``
+# wrote, inclusive, as four i32s. ``gloss_finish`` works inside it alone and
+# puts it back to empty: x0 and y0 at ``GL_BOX_EMPTY``, x1 and y1 at -1, so
+# every extent ``x1 - x0 + 1`` is negative at every pyramid level.
+GL_BOX_X0 = 0
+GL_BOX_Y0 = 1
+GL_BOX_X1 = 2
+GL_BOX_Y1 = 3
+GL_BOX_WIDTH = 4
+GL_BOX_EMPTY = 1 << 30
 
 # A ``gl_pyr`` texel holds two layers of the reflection, FAR then NEAR: each
 # has reflected radiance, reflected glow, the validity weight that normalises
@@ -446,6 +459,7 @@ def gloss_scatter(
         covered_idx: ti.types.ndarray(),
         pix_accum: ti.types.ndarray(),
         gl_main: ti.types.ndarray(), gl_pyr: ti.types.ndarray(),
+        gl_box: ti.types.ndarray(),
         out: ti.types.ndarray(), row_base: int,
         cam_proj_table: ti.types.ndarray(), projected: ti.template(),
         frame: int):
@@ -454,6 +468,12 @@ def gloss_scatter(
     Must run BEFORE ``wf_composite_accum_sparse`` for the same tile: both read
     the frame buffer's raw prefilled background, and the composite overwrites
     it with the finalized pixel.
+
+    Every pixel written here grows the frame's ``gl_box``, which is all of the
+    frame ``gloss_finish`` then touches. Each bound is read before its atomic
+    and the atomic skipped when the pixel is already inside: the bounds only
+    ever move outwards, so a stale read can cost a redundant atomic but never
+    a missed one, and the frame's pixels do not all queue on four words.
 
     ``row_base`` is where this call's pixels start in the tile's accumulator
     rows: a tile may span several frames while the buffers written here hold
@@ -488,6 +508,16 @@ def gloss_scatter(
             # covered pixel and the tile composite's value for it is final.
             continue
         p = covered_idx[ri] - frame_base
+        py = p // width
+        px = p - py * width
+        if px < gl_box[GL_BOX_X0]:
+            ti.atomic_min(gl_box[GL_BOX_X0], px)
+        if py < gl_box[GL_BOX_Y0]:
+            ti.atomic_min(gl_box[GL_BOX_Y0], py)
+        if px > gl_box[GL_BOX_X1]:
+            ti.atomic_max(gl_box[GL_BOX_X1], px)
+        if py > gl_box[GL_BOX_Y1]:
+            ti.atomic_max(gl_box[GL_BOX_Y1], py)
 
         # The pixel's own color, background folded in (wf_composite_accum
         # _sparse's expression, stopped before finalize_pixel_color).
@@ -571,9 +601,9 @@ def gloss_scatter(
 
 
 @ti.func
-def _gloss_reduce_texel(src, dst, i, level_meta: ti.template(),
+def _gloss_reduce_texel(src, dst, x, y, level_meta: ti.template(),
                         gl_pyr: ti.template()):
-    """Texel ``i`` of level ``dst``: the 2x2 weighted box of level ``src``.
+    """Texel ``(x, y)`` of level ``dst``: the 2x2 weighted box of level ``src``.
 
     Weighted, not plain: a texel's validity lane rides through the reduction
     with its radiance, so a level averages only the pixels that actually have a
@@ -588,10 +618,6 @@ def _gloss_reduce_texel(src, dst, i, level_meta: ti.template(),
     off_s = level_meta[src, 0]
     ws = level_meta[src, 1]
     hs = level_meta[src, 2]
-    off_d = level_meta[dst, 0]
-    wd = level_meta[dst, 1]
-    y = i // wd
-    x = i - y * wd
     acc = ti.Vector([0.0] * GL_PYR_WIDTH)
     for dy in ti.static(range(2)):
         for dx in ti.static(range(2)):
@@ -600,7 +626,7 @@ def _gloss_reduce_texel(src, dst, i, level_meta: ti.template(),
             s = off_s + sy * ws + sx
             for k in ti.static(range(GL_PYR_WIDTH)):
                 acc[k] += gl_pyr[s, k]
-    d = off_d + i
+    d = level_meta[dst, 0] + y * level_meta[dst, 1] + x
     for k in ti.static(range(GL_PYR_WIDTH)):
         gl_pyr[d, k] = acc[k] * 0.25
 
@@ -611,8 +637,10 @@ def gloss_pyramid_level(src: int, dst: int, level_meta: ti.types.ndarray(),
     """One 2x2 weighted box reduction of the reflection pyramid
     (``_gloss_reduce_texel``).
     """
-    for i in range(level_meta[dst, 1] * level_meta[dst, 2]):
-        _gloss_reduce_texel(src, dst, i, level_meta, gl_pyr)
+    wd = level_meta[dst, 1]
+    for i in range(wd * level_meta[dst, 2]):
+        y = i // wd
+        _gloss_reduce_texel(src, dst, i - y * wd, y, level_meta, gl_pyr)
 
 
 @ti.kernel
@@ -636,14 +664,39 @@ def gloss_composite(
                                level_meta, gl_main, gl_pyr, out)
 
 
+@ti.func
+def _box_extent(lo, hi, lvl):
+    """How many texels of pyramid level ``lvl`` the level-0 range
+    ``[lo, hi]`` reaches through the reduction, 0 for an empty range.
+
+    Texel ``x`` of a level is reduced from texels ``2x`` and ``2x + 1`` of
+    the one below (the clamp at an odd edge repeats ``2x``), so level-0
+    column ``c`` reaches exactly column ``c >> lvl``.
+    """
+    n = 0
+    if hi >= lo:
+        n = (hi >> lvl) - (lo >> lvl) + 1
+    return n
+
+
+@ti.func
+def _box_xy(i, lo_x, lo_y, box_w):
+    """Texel ``i`` of a ``box_w`` wide box at ``(lo_x, lo_y)``, counted
+    row-major, as its level's ``(x, y)``.
+    """
+    j = i // box_w
+    return lo_x + i - j * box_w, lo_y + j
+
+
 @ti.kernel
 def gloss_finish(
         levels: ti.template(),
-        num_pixels: int, width: int, height: int, num_levels: int,
+        width: int, height: int, num_levels: int,
         frame_rel: int,
         tonemapping: ti.template(), tonemap_exposure: ti.f32,
         level_meta: ti.types.ndarray(),
         gl_main: ti.types.ndarray(), gl_pyr: ti.types.ndarray(),
+        gl_box: ti.types.ndarray(),
         out: ti.types.ndarray()):
     """A finished frame's whole prefilter in one launch, and the reset.
 
@@ -652,24 +705,57 @@ def gloss_finish(
     -- a level reads the one below it complete, as it did when each level was
     a launch of ``gloss_pyramid_level``. Then ``gloss_composite``'s loop, then
     the reset ``gloss_clear`` would have done, cut to what the next frame
-    reads:
+    reads.
+
+    All of it inside ``gl_box``, the frame's glossy pixels' bounding box
+    (``gloss_scatter``): a frame with no glossy pixel does nothing, and one
+    with a small reflector does a small reflector's worth. Each level reduces
+    only the texels the box reaches (``_box_extent``), which is exact because
+    the pyramid is all zero when a frame starts but for the level-0 texels
+    the frame's scatter wrote: every texel outside the box's reach is then a
+    reduction of zeros, which is the zero already there, so the composite's
+    taps read what the full-frame launches would have given them. The
+    composite runs over the pixels from the box's first to its last in
+    row-major order rather than over the box itself, so that the pixel index
+    stays the loop's own, as in ``gloss_composite``: under ``fast_math`` the
+    composite's arithmetic is fused differently when the index is computed
+    from a box position, and measured that way it moved by an ulp or two on
+    a few pixels a frame. The reset keeps the pyramid zero:
 
     * ``gl_main``'s blur radius back to -1, written by the pixel that just
       read it. ``gloss_scatter`` writes every column of the rows it marks
       glossy and nothing reads an unmarked row past its radius, so the other
       columns need no reset.
-    * Level 0 of ``gl_pyr`` back to zero, after the composite has read it
-      everywhere. Every texel of every higher level is written by the next
-      frame's own reduction before anything reads it.
+    * Every level of ``gl_pyr`` back to zero inside the box's reach, after
+      the composite has read it; nothing outside it was written.
+      ``gloss_clear`` zeroes the whole pyramid before a chunk's first frame.
+      A texel to an iteration, all its lanes: a lane to an iteration put the
+      division by the box's width on every lane, and on the CPU that made
+      the reset of a frame glossy all over twenty times the full-frame
+      launches' reset of level 0 alone.
+    * ``gl_box`` back to empty.
 
     ``num_levels`` stays a runtime argument because the composite's
     arithmetic takes it as one in ``gloss_composite``.
     """
+    x0 = gl_box[GL_BOX_X0]
+    y0 = gl_box[GL_BOX_Y0]
+    x1 = gl_box[GL_BOX_X1]
+    y1 = gl_box[GL_BOX_Y1]
     for lvl in ti.static(range(1, levels)):
-        for i in range(level_meta[lvl, 1] * level_meta[lvl, 2]):
-            _gloss_reduce_texel(lvl - 1, lvl, i, level_meta, gl_pyr)
+        fw = _box_extent(x0, x1, lvl)
+        for i in range(fw * _box_extent(y0, y1, lvl)):
+            x, y = _box_xy(i, x0 >> lvl, y0 >> lvl, fw)
+            _gloss_reduce_texel(lvl - 1, lvl, x, y, level_meta, gl_pyr)
     sigma_max = _BOX_SIGMA * ti.cast(1 << (num_levels - 1), ti.f32)
-    for p in range(num_pixels):
+    # The box's first and last pixel (an empty box's sentinels would
+    # overflow the product).
+    p_lo = 0
+    p_hi = 0
+    if x1 >= x0:
+        p_lo = y0 * width + x0
+        p_hi = y1 * width + x1 + 1
+    for p in range(p_lo, p_hi):
         sigma = gl_main[p, GL_MAIN_SIGMA]
         if sigma < 0.0:
             continue
@@ -677,20 +763,29 @@ def gloss_finish(
                                frame_rel, tonemapping, tonemap_exposure,
                                level_meta, gl_main, gl_pyr, out)
         gl_main[p, GL_MAIN_SIGMA] = -1.0
-    for i in range(num_pixels * GL_PYR_WIDTH):
-        gl_pyr[i // GL_PYR_WIDTH, i % GL_PYR_WIDTH] = 0.0
+    for lvl in ti.static(range(levels)):
+        rw = _box_extent(x0, x1, lvl)
+        for i in range(rw * _box_extent(y0, y1, lvl)):
+            x, y = _box_xy(i, x0 >> lvl, y0 >> lvl, rw)
+            t = level_meta[lvl, 0] + y * level_meta[lvl, 1] + x
+            for k in ti.static(range(GL_PYR_WIDTH)):
+                gl_pyr[t, k] = 0.0
+    gl_box[GL_BOX_X0] = GL_BOX_EMPTY
+    gl_box[GL_BOX_Y0] = GL_BOX_EMPTY
+    gl_box[GL_BOX_X1] = -1
+    gl_box[GL_BOX_Y1] = -1
 
 
 @ti.kernel
 def gloss_clear(num_pixels: int, gl_main: ti.types.ndarray(),
-                gl_pyr: ti.types.ndarray()):
+                gl_pyr: ti.types.ndarray(), gl_box: ti.types.ndarray()):
     """Reset the per-frame reflection buffers (``tracer._gloss_clear``).
 
     Every ``gl_main`` element, flattened so each store is coalesced: zero,
     and -1 in the blur radius column. A strided write of that one column
-    rewrote only part of every DRAM sector it touched. ``gl_pyr`` level 0
-    only, which is its first ``num_pixels`` texels; ``gloss_finish``'s
-    docstring has why the higher levels need nothing.
+    rewrote only part of every DRAM sector it touched. Every level of
+    ``gl_pyr``, and ``gl_box`` empty: ``gloss_finish``'s docstring has why
+    the pyramid has to start a frame all zero, and how it stays that way.
     """
     for i in range(num_pixels * GL_MAIN_WIDTH):
         c = i % GL_MAIN_WIDTH
@@ -698,8 +793,12 @@ def gloss_clear(num_pixels: int, gl_main: ti.types.ndarray(),
         if c == GL_MAIN_SIGMA:
             v = -1.0
         gl_main[i // GL_MAIN_WIDTH, c] = v
-    for i in range(num_pixels * GL_PYR_WIDTH):
+    for i in range(gl_pyr.shape[0] * GL_PYR_WIDTH):
         gl_pyr[i // GL_PYR_WIDTH, i % GL_PYR_WIDTH] = 0.0
+    gl_box[GL_BOX_X0] = GL_BOX_EMPTY
+    gl_box[GL_BOX_Y0] = GL_BOX_EMPTY
+    gl_box[GL_BOX_X1] = -1
+    gl_box[GL_BOX_Y1] = -1
 
 
 @ti.func
