@@ -882,10 +882,20 @@ composite modes), and the settings `ANALYTIC_AA_RUN_EXACT` /
 inherent in per-sheet claim arithmetic). The route collapsed with it:
 `analytic_raster_route_active` now carries every sheet-route precondition
 (SHEET_RESOLVE, ANALYTIC_AA_RUN, the three sparse toggles, and the
-transparent-background relaxation — allowed except combined with an env map,
-§5's fallback), so `sheet_route == analytic_raster`, `sparse_coverage ==
+transparent-background relaxation — then allowed except combined with an env
+map, §5's fallback), so `sheet_route == analytic_raster`, `sparse_coverage ==
 use_raster`, and the raise pair (tracer's route check, prepare's emission
-check, the resolve's sheets check) guards drift. KEPT, per the inventory: the
+check, the resolve's sheets check) guards drift. Since 2026-10-30 neither that
+env-map exception nor positive near clipping is a gate: the env prefill writes
+the alpha column opaque (the map replaces the backdrop on every route), and
+the emission cuts geometry at the near plane — `tri_screen` flag 2 for an
+all-front triangle the plane crosses (exact per-sample and per-area cut in
+`_ss_pixel`), the per-sample near test on ray-cast straddlers, and a
+half-plane coverage factor on circuits. A near cut breaks the closed-shell
+ceiling's twice-crossed premise on the pixels it opens, so those pixels of an
+opaque solid skip the ceiling (`_AA_NEAR_CUT_BIT`, `compact_sheets`); pairs
+wholly nearer than the near plane or past the far clip are culled at
+emission. KEPT, per the inventory: the
 emission kernels and their exact-area lane, `_aa_group`/`_aa_run_full`
 (emission truncation), `ANALYTIC_AA_ONE_MESH` + the host cap reduction
 (feeds `sheet_cap`), `ANALYTIC_AA_RUN_FULL`, and `raster_shadow_trace`.

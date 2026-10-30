@@ -573,7 +573,18 @@ def sheet_resolve_shade_arena(
             # This sheet's contribution to its band's single occlusion write
             # (inert outside a band: there band_p IS the sheet's own factor).
             band_p += cfac * dens
-            if eff <= min_alpha:
+            # A band's CLOSING sibling owes the band's occlusion write even
+            # where its own claim is nothing -- a share the closed-shell
+            # ceiling spent to zero, or a sliver of the band -- so it is shaded
+            # rather than skipped wherever that write still matters: skipping
+            # it dropped the write for the whole band, and every earlier
+            # sibling's claim then occluded nothing behind it (measured: a
+            # translucent cube cut by the near plane let the background
+            # through on rim pixels whose last back-face sibling the ceiling
+            # had zeroed).
+            owes_band = ((not defer) and band_open
+                         and (vis * _AA_SAMPLE_WEIGHT * band_p > min_alpha))
+            if (eff <= min_alpha) and not owes_band:
                 if not defer:
                     # The band ends here with nothing left to claim -- its
                     # samples are already dark -- so drop the pending sum
@@ -1664,8 +1675,10 @@ def env_background_prefill(
     says the buffer is uint8 (post-process tonemapping off): a map brighter
     than 1 would otherwise wrap, 1.2 storing as 50. The float HDR buffer keeps
     the unclamped value for the tonemap. Column 3, when present, is the glow
-    lane and gets 0 (the sheet route excludes transparent backgrounds, so
-    there is no alpha column).
+    lane and gets 0. A transparent background's alpha column (4) is written
+    opaque: the map replaces the backdrop (``Scene.set_environment_map``),
+    which is what the dense path's env retire and the path tracer's escape
+    already give it.
 
     Every ray of an orthographic camera runs along the forward axis, so it
     sees the map in that one direction: a uniform backdrop, which is what
@@ -1695,3 +1708,9 @@ def env_background_prefill(
             # is also what the dense path's env retire deposits (acc[3] == 0,
             # weight zeroed). Writing 255 here bloomed every pixel white.
             out[f_rel, p, 3] = 0.0
+        if out.shape[2] > 4:
+            # Column 4 is the alpha a transparent background brings, and the
+            # map covers it: the composite's leftover weight then lands on an
+            # opaque backdrop, as the dense path's env retire makes every
+            # escaped ray (weight zeroed, so the coverage alpha is 255).
+            out[f_rel, p, 4] = 255.0

@@ -1112,10 +1112,14 @@ def analytic_raster_route_active(
     (DESIGN_sheet_resolve.md; the fragment walk that once served it is
     deleted), so the sheet resolve's own preconditions are route vetoes here:
     with any of them off the batch falls back to the classic wavefront at the
-    requested supersample level.  A transparent background composites fine
-    from sheet leftover weight, but not together with an environment map
-    (the env prefill would fill the alpha the background owes), so that one
-    combination also falls back.
+    requested supersample level.  A transparent background composites from
+    sheet leftover weight like any other; under an environment map the env
+    prefill writes its alpha column opaque, since the map replaces the
+    backdrop on every route (``Scene.set_environment_map``).  The camera's
+    clip planes are no veto either: the emission cuts geometry at the near
+    plane (``raster_pipeline.prepare_sparse_raster_coverage``) and the
+    resolve stops each pixel's walk at the far clip, so ``near_clip`` and
+    ``far_clip`` are accepted for the callers' sake and read by neither.
     """
     if (
         int(rt_settings.samples_per_pixel) > 1
@@ -1126,9 +1130,7 @@ def analytic_raster_route_active(
         or not rt_settings.raster_sparse_coverage
         or not rt_settings.raster_empty_skip
         or not rt_settings.raster_covered_shade
-        or (transparent_background and environment_map is not None)
         or merged.get("tri_frame_valid") is None
-        or float(near_clip) > 0.0
     ):
         return False
 
@@ -1730,6 +1732,8 @@ def _build_raster_tables(
     half_screen_h,
     width,
     projection=None,
+    near_clip=0.0,
+    far_clip=0.0,
 ):
     """Build the batch-wide raster projection / bounds tables, once per batch.
 
@@ -1737,7 +1741,8 @@ def _build_raster_tables(
     batch, every chunk of it reads the same rows, and the per-chunk reset only
     rewinds the forward pointer. See the call site for the lifetime contract.
     ``projection`` is ``None`` for a pinhole batch and its ``cam_proj``
-    otherwise (``raster_pipeline.precompute_triangle_projection``).
+    otherwise, and ``near_clip`` / ``far_clip`` the camera's clip planes
+    (``raster_pipeline.precompute_triangle_projection``).
     """
     from algan.rendering.raytracing.raster_pipeline import (
         precompute_circuit_screen_bounds,
@@ -1761,6 +1766,8 @@ def _build_raster_tables(
             memory,
             persist=True,
             projection=projection,
+            near_clip=near_clip,
+            far_clip=far_clip,
         )
         # Live reads (settings convention): each kill-switch falls back to
         # the per-frame pair emission inside prepare_sparse_raster_coverage.
@@ -1781,6 +1788,7 @@ def _build_raster_tables(
                 memory,
                 persist=True,
                 projection=projection,
+                near_clip=near_clip,
             )
         if rt_settings.raster_bez_precompute and int(merged.get("num_circuits", 0)) > 0:
             bez_bounds = precompute_circuit_screen_bounds(
@@ -1795,6 +1803,8 @@ def _build_raster_tables(
                 memory,
                 persist=True,
                 projection=projection,
+                near_clip=near_clip,
+                far_clip=far_clip,
             )
     return tri_screen, tri_bounds, bez_bounds
 
@@ -2161,10 +2171,10 @@ def render_batch_raytraced(
     # from sheet records, so no second walk exists. The sheet resolve is
     # the ONLY resolve for analytic coverage (the fragment walk is deleted),
     # so its preconditions — sheet_resolve, analytic_aa_run, the sparse
-    # toggles, samples <= 1, transparent background only without an env map
-    # — all live inside analytic_raster_route_active, and the route IS the
-    # analytic-raster decision. prepare_sparse_raster_coverage still raises
-    # on an emission-side disagreement rather than painting a wrong frame.
+    # toggles, samples <= 1 — all live inside analytic_raster_route_active,
+    # and the route IS the analytic-raster decision.
+    # prepare_sparse_raster_coverage still raises on an emission-side
+    # disagreement rather than painting a wrong frame.
     sheet_route = analytic_raster
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
@@ -3327,7 +3337,6 @@ def raytrace_render_wavefront(
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
         and mem_trim == 0
         and len(frag_scatters) == 0
-        and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
         and rt_settings.raster_sparse_coverage
         and rt_settings.raster_empty_skip
@@ -3372,9 +3381,8 @@ def raytrace_render_wavefront(
     if merged.get("bvh_deferred") and (shadow_flag != 0 or not use_raster):
         # Runtime routing needs the trees after all: primary shadows trace
         # them from the sheet resolve's event queue (raster_shadow_trace),
-        # and a batch that fell back to classic primary traversal (near
-        # clip, in-place AA, flipped toggles, ...) walks them for every
-        # primary ray.
+        # and a batch that fell back to classic primary traversal (in-place
+        # AA, flipped toggles, ...) walks them for every primary ray.
         _ensure_bvhs()
 
     gen_fused = (
@@ -3471,6 +3479,8 @@ def raytrace_render_wavefront(
                 half_screen_h,
                 width,
                 projection=cam_proj,
+                near_clip=near_clip,
+                far_clip=far_clip,
             )
             merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
             _retain_persistent(merged, memory)
@@ -4233,6 +4243,8 @@ def raytrace_render_wavefront(
                 layer_offset_triangles,
                 env_in_composite=env_active,
                 depth_order_eye=depth_order_eye,
+                near_clip=near_clip,
+                far_clip=far_clip,
             )
             if coverage is not None and coverage.get("depth_order") is not None:
                 merged.setdefault(DEPTH_ORDER_RECORDS, []).append(
