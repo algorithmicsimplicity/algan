@@ -2463,6 +2463,7 @@ def render_batch_raytraced(
                         int(eh),
                         float(ei),
                         merged["textures"],
+                        1 if out.dtype == torch.uint8 else 0,
                         out,
                     )
                 accum = accum_odd = None

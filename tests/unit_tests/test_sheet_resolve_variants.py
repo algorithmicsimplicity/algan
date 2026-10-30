@@ -22,6 +22,13 @@ same kind of waste (S2): only mode 2 reads the payload, yet every launch
 specialised on the batch's light bucket, so each bucket compiled its own
 identical mode-0 and mode-1 resolves.
 
+The same recorder shows which scenes reach the resolve at all, and with what:
+glass with the refraction template and the nested-IOR stack, an environment
+map through the background prefill, a transparent background like any other.
+Nothing else in the CI or pre-PR groups took any of the three down the sheet
+route, and a batch that falls off it renders with no anti-aliasing at
+PREVIEW, silently (test_sheet_route_vetoes.py).
+
 Not marked fast: a change elsewhere cannot break these without changing the
 resolve or its launch.
 """
@@ -30,11 +37,16 @@ from __future__ import annotations
 
 import ast
 import inspect
+from pathlib import Path
+from typing import NamedTuple
 
 import pytest
+import torch
+from PIL import Image
 
 from algan import (
     BLUE,
+    GLASS,
     GREEN,
     LEFT,
     MIRROR,
@@ -50,6 +62,7 @@ from algan import (
     Off,
     PointLight,
     Scene,
+    Sphere,
     Square,
     cosine_color,
 )
@@ -59,6 +72,11 @@ from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
 from algan.settings import SETTINGS
 
 PARAMS = sheet_resolve_taichi._SHEET_RESOLVE_SHADE_PARAMS
+PREFILL = inspect.signature(sheet_resolve_taichi.env_background_prefill)
+
+#: An 8-bit equirectangular map, height by width, and the intensity it is set at.
+ENV_MAP = torch.full((16, 32, 3), 128, dtype=torch.uint8)
+ENV_INTENSITY = 0.75
 
 
 def _fan_loops(tree):
@@ -116,24 +134,87 @@ def test_mode_1_unrolls_no_continuation_fan():
             assert eval(expr, {}, {"sec_aa": sec_aa, "mode": mode}) == sec_aa
 
 
-def _install_recorder(monkeypatch, launches):
-    """Record each resolve launch's arguments by name instead of launching.
+def _static_gates(tree, name):
+    """For each call to ``name``, the ``ti.static`` conditions of every ``if``
+    whose body (not its ``else``) holds the call, innermost first.
+    """
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    sites = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and ast.unparse(node.func) == name):
+            continue
+        gates = []
+        child, parent = node, parents.get(node)
+        while parent is not None:
+            if (
+                isinstance(parent, ast.If)
+                and any(child is stmt for stmt in parent.body)
+                and isinstance(parent.test, ast.Call)
+                and ast.unparse(parent.test.func) == "ti.static"
+            ):
+                gates.append(parent.test.args[0])
+            child, parent = parent, parents.get(parent)
+        sites.append(gates)
+    return sites
 
-    The launch site imports ``sheet_resolve_shade`` from its module at call
-    time, so patching the module attribute intercepts it. Not calling through
-    keeps the test from compiling the resolve at all; the frame is then empty,
-    which nothing here looks at.
+
+def test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe():
+    """Under the prefilter (glossy mode 3) no fan is spread over the GGX lobe.
+
+    Modes 1 and 2 spread a reflector's ``sec_aa`` continuations over its lobe
+    (``_glossy_reflect``). Mode 3 gives the lobe to the pixel's one claiming
+    sheet and keeps ``_mirror_share``'s throttle on every other reflective
+    sheet, yet still spread those sheets' fans too: rough glass and a weaker
+    second reflector drew stair-edged ghost copies of what they reflected on
+    top of the throttle. Every spread now sits behind a gate that compiles it
+    into modes 1 and 2 only, which also keeps it out of the default kernel.
+    ``test_glossy_prefilter`` renders the image this changed.
+    """
+    source = inspect.getsource(sheet_resolve_taichi.sheet_resolve_shade_arena)
+    sites = _static_gates(ast.parse(source.lstrip()), "_glossy_reflect")
+    assert len(sites) == 4, f"expected the four lobe-spread sites, found {len(sites)}"
+    for gates in sites:
+        modes = None
+        for gate in gates:
+            if {n.id for n in ast.walk(gate) if isinstance(n, ast.Name)} == {"glossy"}:
+                expr = compile(ast.Expression(gate), "<gate>", "eval")
+                modes = {g for g in range(4) if eval(expr, {}, {"glossy": g})}
+                break
+        assert modes == {1, 2}, (
+            f"a lobe spread compiles into glossy modes {modes}, not just the "
+            "tap-fan modes 1 and 2"
+        )
+
+
+def _install_recorder(monkeypatch, launches, prefills):
+    """Record each resolve launch's arguments by name instead of launching,
+    and each environment prefill's.
+
+    Both launch sites import their kernel from its module at call time, so
+    patching the module attribute intercepts it. Not calling through keeps the
+    test from compiling either kernel; the frame is then empty, which nothing
+    here looks at.
     """
 
     def record(*args):
         launches.append(dict(zip(PARAMS, args)))
 
+    def record_prefill(*args):
+        prefills.append(PREFILL.bind(*args).arguments)
+
     monkeypatch.setattr(sheet_resolve_taichi, "sheet_resolve_shade", record)
+    monkeypatch.setattr(sheet_resolve_taichi, "env_background_prefill", record_prefill)
 
 
-def _render(tmp_path, name, build, shadows):
+def _render(tmp_path, name, build, setup, shadows):
+    """Render one frame; return the image it wrote."""
     SETTINGS.raytracing.set(shadows=shadows)
     with Scene() as scene:
+        if setup is not None:
+            setup(scene)
         with Off():
             # Two lights, so the visibility payload's light bucket is not 1.
             DirectionalLight(location=RIGHT * 4 + UP * 5 + OUT * 4, color=WHITE).spawn(
@@ -144,7 +225,8 @@ def _render(tmp_path, name, build, shadows):
             )
             for mob in build():
                 mob.spawn(animate=False)
-        scene.save_frame(str(tmp_path / name), video_settings=SMOKE_TEST)
+        result = scene.save_frame(str(tmp_path / name), video_settings=SMOKE_TEST)
+    return Path(result.output_path)
 
 
 def _plain():
@@ -169,18 +251,47 @@ def _custom():
     ]
 
 
+def _glass():
+    return [
+        Sphere(radius=0.6).set_material(GLASS).move(LEFT),
+        Cube(size=0.8).set_material(MeshLambertMaterial(color=RED)).move(RIGHT),
+    ]
+
+
+def _env_map(scene):
+    scene.set_environment_map(ENV_MAP.clone(), intensity=ENV_INTENSITY)
+
+
+def _transparent(scene):
+    scene.set_background((0.1, 0.2, 0.3, 0.5))
+
+
+#: (scene, its mobs, what it sets on the Scene, shadows)
 RENDERS = (
-    ("plain", _plain, False),
-    ("plain", _plain, True),
-    ("mirror", _mirror, False),
-    ("mirror", _mirror, True),
-    ("custom", _custom, False),
+    ("plain", _plain, None, False),
+    ("plain", _plain, None, True),
+    ("mirror", _mirror, None, False),
+    ("mirror", _mirror, None, True),
+    ("custom", _custom, None, False),
+    ("glass", _glass, None, False),
+    ("glass", _glass, None, True),
+    ("env map", _plain, _env_map, False),
+    ("env map", _plain, _env_map, True),
+    ("transparent", _plain, _transparent, False),
 )
 
 
+class Render(NamedTuple):
+    """What one render handed the resolve and the prefill, and what it wrote."""
+
+    launches: dict
+    prefills: list
+    image: Path
+
+
 @pytest.fixture(scope="module")
-def launches(tmp_path_factory):
-    """Every resolve launch of five one-frame renders, by scene and shadows.
+def renders(tmp_path_factory):
+    """Each of the one-frame renders above, by scene and shadows.
 
     Module-scoped so the renders happen once. ``pytest.MonkeyPatch`` is used
     directly because the ``monkeypatch`` fixture is function-scoped.
@@ -190,21 +301,35 @@ def launches(tmp_path_factory):
     seen = {}
     try:
         with pytest.MonkeyPatch.context() as monkeypatch:
-            for name, build, shadows in RENDERS:
-                got = []
-                _install_recorder(monkeypatch, got)
-                _render(tmp_path, f"{name}_{int(shadows)}", build, shadows)
-                seen[name, shadows] = {int(a["mode"]): a for a in got}
+            for name, build, setup, shadows in RENDERS:
+                got, prefilled = [], []
+                _install_recorder(monkeypatch, got, prefilled)
+                stem = f"{name.replace(' ', '_')}_{int(shadows)}"
+                image = _render(tmp_path, stem, build, setup, shadows)
+                by_mode = {int(a["mode"]): a for a in got}
+                seen[name, shadows] = Render(by_mode, prefilled, image)
     finally:
         SETTINGS.restore(snapshot)
     return seen
+
+
+@pytest.fixture(scope="module")
+def launches(renders):
+    """Each render's resolve launches, their arguments by name, by mode."""
+    return {key: render.launches for key, render in renders.items()}
+
+
+@pytest.fixture(scope="module")
+def prefills(renders):
+    """Each render's environment prefills, their arguments by name."""
+    return {key: render.prefills for key, render in renders.items()}
 
 
 def test_the_renders_reached_every_resolve_mode(launches):
     assert rt_settings.effective_analytic_aa_secondary_samples() > 1, (
         "continuation fans are off at this setting, so nothing here is tested"
     )
-    for name, _build, shadows in RENDERS:
+    for name, _build, _setup, shadows in RENDERS:
         want = {1, 2} if shadows else {0}
         assert set(launches[name, shadows]) == want, launches[name, shadows].keys()
     for got in launches.values():
@@ -248,7 +373,7 @@ def test_only_the_shading_pass_of_a_shadowed_batch_specialises_on_lights(
     two identical copies of each -- the built-in ``3d`` and ``3d-default-light``
     resolve specs differed in nothing else.
     """
-    for name in ("plain", "mirror"):
+    for name in ("plain", "mirror", "glass", "env map"):
         assert launches[name, False][0]["vis_lights"] == 1
         assert launches[name, True][1]["vis_lights"] == 1
         mode2 = launches[name, True][2]
@@ -262,3 +387,49 @@ def test_a_user_pipeline_keeps_its_light_slots_without_shadows(launches):
     mode0 = launches["custom", False][0]
     assert mode0["frag_pipelines"], "the custom scene injected no pipeline"
     assert mode0["vis_lights"] == shadow_vis_slots(mode0["num_lights"])
+
+
+def test_a_batch_with_glass_refracts_on_the_sheet_route(launches):
+    """Glass takes the resolve, not the supersampled fallback, with the
+    refraction template and the nested-IOR stack in every launch, and its
+    shading launches keep their fans.
+    """
+    live = rt_settings.effective_analytic_aa_secondary_samples()
+    stack = 1 if rt_settings.nested_ior_mode() != 0 else 0
+    for shadows in (False, True):
+        for mode, launch in launches["glass", shadows].items():
+            assert launch["refraction"] == 1, mode
+            assert launch["ior_stack"] == stack, mode
+            if mode != 1:
+                assert launch["sec_aa"] == live, mode
+
+
+def test_an_environment_map_is_prefilled_as_the_background_sheet(launches, prefills):
+    """Background-as-final-sheet (DESIGN_sheet_resolve.md §4.5): an
+    env-mapped batch prefills the frame buffer with the map, once per chunk,
+    and the composite multiplies each covered pixel's leftover weight by it.
+    Empty pixels get no resolve launch at all, so without the prefill they
+    show the flat background; and the prefill must read the map from the
+    texture buffer the resolve reads, at the size and intensity it was set at.
+    No other scene prefills.
+    """
+    for (name, shadows), calls in prefills.items():
+        assert len(calls) == (1 if name == "env map" else 0), (name, shadows)
+    height, width, _ = ENV_MAP.shape
+    for shadows in (False, True):
+        (call,) = prefills["env map", shadows]
+        assert (call["env_w"], call["env_h"]) == (width, height)
+        assert call["env_intensity"] == pytest.approx(ENV_INTENSITY)
+        for launch in launches["env map", shadows].values():
+            assert launch["textures"] is call["textures"]
+
+
+def test_a_transparent_background_keeps_the_route(renders):
+    """A transparent background composites from the sheets' leftover weight
+    like an opaque one, so it takes the resolve -- as this render did, whose
+    frame really was transparent.
+    """
+    render = renders["transparent", False]
+    assert set(render.launches) == {0}
+    with Image.open(render.image) as image:
+        assert image.mode == "RGBA", "the background came out opaque"
