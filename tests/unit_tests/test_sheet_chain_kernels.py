@@ -592,6 +592,43 @@ def test_class_pairs_flat_routes_by_toggle_and_agrees():
     assert _bits_equal(want, got)
 
 
+@pytest.mark.parametrize("refused", ["window", "rows", None])
+def test_class_pairs_flat_past_the_extent_limit_expands_in_torch(monkeypatch, refused):
+    # Quadrants addresses an array in int32, so the kernel arm needs the window
+    # (candidates) and the write pass's [total, 8] rows under the limit. The
+    # window is asked before the count pass, the rows only after it; either
+    # refusal hands the window to the torch expansion, which gives the same
+    # rows.
+    import algan.rendering.raytracing.sheet_compact_taichi as sct
+    from algan.rendering.raytracing import sheet_stream
+
+    g = torch.Generator().manual_seed(41)
+    ft, ncirc = 2, 64
+    mask = torch.rand(ft, ncirc, generator=g) < 0.4
+    x0 = torch.randint(0, 800, (ft, ncirc), generator=g)
+    x1 = x0 + torch.randint(1, 90, (ft, ncirc), generator=g)
+    y0 = torch.randint(0, 450, (ft, ncirc), generator=g)
+    y1 = y0 + torch.randint(1, 60, (ft, ncirc), generator=g)
+    f_abs = torch.arange(ft) + 4
+    cpu = torch.device("cpu")
+    want = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, cpu)
+    assert mask.numel() < want.numel()
+    limit = {"window": mask.numel(), "rows": want.numel(), None: want.numel() + 1}
+    launched = []
+    for name in ("pair_expand_count", "pair_expand_write"):
+
+        def spy(*args, _kernel=getattr(sct, name), _name=name):
+            launched.append(_name)
+            return _kernel(*args)
+
+        monkeypatch.setattr(sct, name, spy)
+    monkeypatch.setattr(sheet_stream, "KERNEL_EXTENT_LIMIT", limit[refused])
+    got = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, cpu)
+    assert ("pair_expand_count" in launched) == (refused != "window")
+    assert ("pair_expand_write" in launched) == (refused is None)
+    assert _bits_equal(want, got)
+
+
 def _candidate_pixels(rows):
     """Set of (frame, prim, px, py) a pair table names."""
     out = set()

@@ -312,3 +312,24 @@ def test_kernel_gate_rejects_uninitialized_or_oversized_inputs(monkeypatch):
     monkeypatch.setattr(taichi_runtime, "taichi_launch_is_local", lambda _: True)
     # Exercise the integer capacity bound without allocating enormous tensors.
     assert not stream.stream_kernel_available(SimpleNamespace(shape=(2**31,)))
+
+
+def test_kernel_extents_stop_below_2_31_on_each_extent():
+    # Quadrants addresses an ndarray in int32 and wraps a ti.i32 argument, so
+    # an extent of 2**31 is refused whichever argument it is.
+    assert stream.kernel_extents_fit()
+    assert stream.kernel_extents_fit(0, 2**31 - 1)
+    assert not stream.kernel_extents_fit(2**31)
+    assert not stream.kernel_extents_fit(1, 2**31, 1)
+
+
+def test_a_chunk_past_the_int32_run_offsets_is_refused():
+    # The coverage record's CSR is int32 by format and has no wider arm, so the
+    # emission refuses 2**31 fragments instead of letting the cumsum wrap.
+    from algan.rendering.raytracing.raster_pipeline import (
+        _check_run_offsets_capacity,
+    )
+
+    _check_run_offsets_capacity(2**31 - 1)
+    with pytest.raises(OverflowError, match=r"2\*\*31"):
+        _check_run_offsets_capacity(2**31)
