@@ -96,7 +96,7 @@ ALWAYS_CI = (
     "tests/unit_tests/test_raster_lattice_bound.py::test_lattice_demotion_keeps_safe_triangles_and_sends_the_rest_to_half",
     # An extent past int32 takes the torch arm, or is refused, instead of wrapping.
     "tests/unit_tests/test_sheet_stream.py::test_kernel_extents_stop_below_2_31_on_each_extent",
-    "tests/unit_tests/test_sheet_stream.py::test_a_chunk_past_the_int32_run_offsets_is_refused",
+    "tests/unit_tests/test_sheet_stream.py::test_a_chunk_past_the_emissions_int32_extents_is_refused",
     "tests/unit_tests/test_sheet_compaction.py::test_the_lane_owner_table_bounds_its_entries_not_its_rows",
     "tests/unit_tests/test_sheet_compaction.py::test_a_lane_table_at_the_extent_limit_takes_the_torch_arm",
     "tests/unit_tests/test_sheet_compaction.py::test_a_stream_past_every_kernel_extent_compacts_in_torch",

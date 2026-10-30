@@ -1529,20 +1529,25 @@ def _check_circuit_ref_capacity(merged):
         )
 
 
-def _check_run_offsets_capacity(num_frags):
-    """Guard the int32 pixel-run CSR a coverage record carries.
+def _check_raster_chunk_capacity(num_frags):
+    """Guard the int32 extents of one raster chunk's fragment arrays.
 
-    ``run_offsets`` is int32 by the record's format and ends at the fragment
-    count. The host builds it with an int32 ``cumsum``, which wraps rather than
-    fails, and there is no wider arm to fall back to -- so a chunk of 2**31 or
-    more fragments is refused where the emission sizes it, before anything is
-    allocated.
+    The emission's write kernels fill ``[num_frags, 2]`` barycentrics, which
+    Quadrants addresses by an int32 flat offset, so they run out at 2**30
+    fragments. ``run_offsets``, the pixel-run CSR a coverage record carries, is
+    int32 by the record's format and ends at the fragment count, and the host
+    builds it with an int32 ``cumsum``, which wraps rather than fails. Neither
+    has a wider arm to fall back to, so a chunk of 2**30 or more fragments is
+    refused where the emission sizes it, before anything is allocated. (A
+    literal, not :func:`kernel_extents_fit`, so a test that lowers the kernels'
+    limit to reach their torch arms still renders.)
     """
-    if num_frags >= 2**31:
+    if num_frags >= 2**30:
         raise OverflowError(
-            f"{num_frags} fragments in one raster chunk exceeds the 2**31 - 1 "
-            f"an int32 pixel-run CSR can address; reduce the frame batch size "
-            f"(SETTINGS.computing) or split the scene."
+            f"{num_frags} fragments in one raster chunk exceeds the 2**30 - 1 "
+            f"the emission's int32-addressed [n, 2] barycentrics can hold; "
+            f"reduce the frame batch size (SETTINGS.computing) or split the "
+            f"scene."
         )
 
 
@@ -2798,7 +2803,7 @@ def prepare_sparse_raster_coverage(
         num_frags = int(frag_bounds[-1])
         if num_frags == 0:
             return None
-        _check_run_offsets_capacity(num_frags)
+        _check_raster_chunk_capacity(num_frags)
         # Pre-truncation emitted-fragment count: this sizes the discovery
         # scratch (frag_*_u) and, for an opaque-heavy pixel, exceeds the final
         # kept count. The arena footprint recorded before the return reserves

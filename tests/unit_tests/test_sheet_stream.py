@@ -323,13 +323,15 @@ def test_kernel_extents_stop_below_2_31_on_each_extent():
     assert not stream.kernel_extents_fit(1, 2**31, 1)
 
 
-def test_a_chunk_past_the_int32_run_offsets_is_refused():
-    # The coverage record's CSR is int32 by format and has no wider arm, so the
-    # emission refuses 2**31 fragments instead of letting the cumsum wrap.
+def test_a_chunk_past_the_emissions_int32_extents_is_refused():
+    # The emission's [n, 2] barycentrics are addressed in int32 and the
+    # coverage record's CSR is int32 by format. Neither has a wider arm, so the
+    # emission refuses 2**30 fragments instead of writing past the first or
+    # letting the second's cumsum wrap.
     from algan.rendering.raytracing.raster_pipeline import (
-        _check_run_offsets_capacity,
+        _check_raster_chunk_capacity,
     )
 
-    _check_run_offsets_capacity(2**31 - 1)
-    with pytest.raises(OverflowError, match=r"2\*\*31"):
-        _check_run_offsets_capacity(2**31)
+    _check_raster_chunk_capacity(2**30 - 1)
+    with pytest.raises(OverflowError, match=r"2\*\*30"):
+        _check_raster_chunk_capacity(2**30)
