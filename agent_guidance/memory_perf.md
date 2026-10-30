@@ -795,6 +795,24 @@ Wall, second render: explainer PREVIEW 1.70-1.75 -> 1.46-1.49 s (two pairs),
 HD 6.46-8.01 -> 6.21-6.61 s (four), graphics PREVIEW 68.0 -> 64.7 s (one, with
 the final reset).
 
+On a Kaggle T4, two sessions, master and branch in their own processes, warm
+passes read: the explainer at HD (30 and 60 frames) and graphics at PREVIEW
+(30) encode to the same video bytes as master's. Explainer HD, 60 frames:
+`gloss_finish` 164 -> 16-21 ms, the two circuit span kernels 104-105 -> 11-15
+ms, the ray-traced render 0.84-0.87 -> 0.67-0.68 s, end to end 2.27-2.30 ->
+2.16-2.21 s. Graphics is flat (3.91-4.00 s master, 3.77-4.05 s branch, over
+two processes each); its `gloss_finish` is 26 ms on both. The counting sort
+lost to the radix sort at every density tried on the T4, dense windows too:
+8M fragments at 0.125-4 bins each 40-49 ms against 12 ms, 2M at 1-128 bins
+11-44 ms against 3-4 ms, 12M at 4-32 bins 75-120 ms against 18 ms. So the
+cutoff only ever hands a T4 window to the faster sort: at HD, 30 frames, one
+of the explainer's two discoveries now declines it and the fragment sort went
+49 -> 21 ms.
+
 Not done: `note_sparse_discovery_footprint` still records a footprint for
 `sparse_discovery_bytes_for_frames`, which nothing calls, so the
-`sparse_discovery_safety` setting does nothing.
+`sparse_discovery_safety` setting does nothing. The binned order's 77-83 -> 44
+ms (`binfragsort`, above) was against the classic path's two radix sorts; the
+default tie-gap path sorts once, and against that one sort the binned arm lost
+on the T4, with no timing on another card noted here. Time it on the next card
+before keeping it in that path.
