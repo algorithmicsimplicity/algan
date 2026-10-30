@@ -86,6 +86,10 @@ ALWAYS_CI = (
     "tests/unit_tests/test_stroke_sheets.py::test_stroke_pixel_split_kernels_match_the_torch_arm",
     # Which batches the sheet route takes, and which fall back.
     "tests/unit_tests/test_sheet_route_vetoes.py::",
+    # The sheet route's tile out-of-memory retry: a stand-in arena, no kernel.
+    "tests/unit_tests/test_sparse_tile_oom_retry.py::",
+    # A setting that no longer changes anything refuses a write.
+    "tests/unit_tests/test_settings_api.py::test_an_inert_field_is_readable_but_refuses_a_write",
     # The closed-shell coverage ceiling, on synthetic streams: tensors only.
     "tests/unit_tests/test_closed_shell_ceiling.py::",
 )
