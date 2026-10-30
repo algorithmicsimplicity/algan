@@ -1354,8 +1354,10 @@ def _prim_split_after(
         # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
         # differ by about one pixel's worth of the surface's depth gradient,
         # not by the triangle's whole extent. Where the projection table is
-        # valid, divide by the projected size in pixels; a camera-plane
-        # straddler keeps the conservative raw extent.
+        # valid -- every vertex in front (flag > 0.25), which includes a
+        # triangle demoted off the exact lattice to the ray cast (0.5) --
+        # divide by the projected size in pixels; a camera-plane straddler
+        # keeps the conservative raw extent.
         block_slope = ext
         if tri_screen is not None and tri_screen.shape[2] >= 10:
             scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
@@ -1364,7 +1366,7 @@ def _prim_split_after(
             sy = scr[..., 3:6]
             span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
             proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
-            valid = scr[..., 9] > 0.5
+            valid = scr[..., 9] > 0.25
             block_slope = torch.where(valid, ext / proj, ext)
             del scr, sx, sy, span_x, span_y, proj, valid
         del ext

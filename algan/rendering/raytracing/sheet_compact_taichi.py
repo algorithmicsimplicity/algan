@@ -867,6 +867,13 @@ def _span_mode(mask_e, bw, bh, span_min_area, screen: ti.template(), fr, prim,
                spans: ti.template()):
     """Whether candidate ``e`` expands row by row: on, box at least
     ``span_min_area`` pixels, and a valid screen projection to follow.
+
+    ``> 0.5`` is the exact-path flag (``raster_pipeline.
+    precompute_triangle_projection`` lists the values), deliberately not the
+    ``> 0.25`` all-front test: a triangle demoted to the ray cast (0.5) can
+    have coordinates far past ``raster_taichi._AA_LATTICE_MAX_COORD``, where
+    these f32 row extents are no longer good to their 1-pixel margin, so it
+    walks its whole clipped box instead (a superset, so exact either way).
     """
     use_span = 0
     if ti.static(spans):

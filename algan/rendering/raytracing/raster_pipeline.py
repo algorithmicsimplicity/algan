@@ -59,6 +59,20 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_DUMP_COLS as AA_DUMP_COLS,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_LATTICE_MAX_COORD,
+    _AA_LATTICE_MAX_EXTENT,
+    _BEZ_BORDER_BITS,
+    _WRITE_MISS_T_BITS,
+    AA_FULL_COVERAGE,
+    Z_SENTINEL,
+    _aa_run_full,
+    raster_bez_count,
+    raster_bez_write,
+    raster_chunk,
+    raster_tri_count,
+    raster_tri_write,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -69,17 +83,6 @@ from algan.rendering.raytracing.raster_taichi import (
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
-)
-from algan.rendering.raytracing.raster_taichi import (
-    _BEZ_BORDER_BITS,
-    AA_FULL_COVERAGE,
-    Z_SENTINEL,
-    _aa_run_full,
-    raster_bez_count,
-    raster_bez_write,
-    raster_chunk,
-    raster_tri_count,
-    raster_tri_write,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
@@ -239,6 +242,35 @@ def _floor(tensor, floor):
     return torch.where(tensor < floor, floor, tensor)
 
 
+#: Projection-table column 9 for an all-front triangle the exact coverage
+#: lattice cannot hold (:func:`_lattice_demote`): ray-cast, but with its
+#: projected bbox and band scale (:func:`precompute_triangle_projection`).
+FLAG_FRONT_RAYCAST = 0.5
+
+
+def _lattice_demote(flag, sx, sy, half_w, half_h):
+    """``flag`` with every exact-path value (above 0.5) whose triangle the
+    int64 coverage lattice cannot hold replaced by :data:`FLAG_FRONT_RAYCAST`.
+
+    The bound is ``raster_taichi._AA_LATTICE_MAX_EXTENT`` on
+    ``(max|sx| + W) * (max|sy| + H)`` and ``_AA_LATTICE_MAX_COORD`` on the
+    largest coordinate, both documented there. It reads the same f32 ``sx`` /
+    ``sy`` the kernels will, and uses only abs, max, add, multiply and
+    compare, so a compiled region evaluates it exactly as eager does. A NaN
+    coordinate fails both comparisons and demotes. Applied to every value
+    above 0.5 rather than to 1 alone, so any later exact-path flag passes
+    through the same bound.
+    """
+    mx = sx.abs().amax(-1)
+    my = sy.abs().amax(-1)
+    fits = (torch.maximum(mx, my) <= _AA_LATTICE_MAX_COORD) & (
+        (mx + 2.0 * half_w) * (my + 2.0 * half_h) <= _AA_LATTICE_MAX_EXTENT
+    )
+    return torch.where(
+        (flag > 0.5) & ~fits, torch.full_like(flag, FLAG_FRONT_RAYCAST), flag
+    )
+
+
 @compiled(dynamic=True)
 def _triangle_projection_fused(
     verts, ro, sp, pbx, pby, half_w, half_h, wide, proj=None
@@ -276,12 +308,10 @@ def _triangle_projection_fused(
     # A triangle with NO vertex in front of the camera-origin plane cannot be
     # hit by any forward primary ray (every point of the triangle is a convex
     # combination of its vertices, so its plane projection is <= 0, while any
-    # ray point at t > 0 projects > 0). Column 9 therefore carries a
-    # three-state flag: 1 = all-front (screen-space rasterization valid),
-    # 0 = straddling/degenerate (full-window ray-cast fallback), -1 = provably
-    # behind (the host culls the primitive from candidate emission entirely,
-    # instead of the old full-window fallback that made every behind-camera
-    # primitive a full-screen candidate scan).
+    # ray point at t > 0 projects > 0), so it gets -1 and the host culls it
+    # from candidate emission entirely, instead of the old full-window fallback
+    # that made every behind-camera primitive a full-screen candidate scan.
+    # The full list of column 9 values is in precompute_triangle_projection.
     behind = ~cam_ok | (cam_ok & ~vert_front.any(-1))
 
     safe_n2 = _floor(n2, 1e-30)
@@ -315,7 +345,9 @@ def _triangle_projection_fused(
     inv_d = torch.where(
         valid[..., None], 1.0 / safe_denom, torch.zeros_like(safe_denom)
     )
-    flag = valid.to(sx.dtype) - behind.to(sx.dtype)
+    flag = _lattice_demote(
+        valid.to(sx.dtype) - behind.to(sx.dtype), sx, sy, half_w, half_h
+    )
     parts = [sx, sy, inv_d, flag.unsqueeze(-1)]
     if wide:
         # Edge i faces vertex i: edge 0 is V1->V2, edge 1 is V2->V0, edge 2 is
@@ -349,11 +381,29 @@ def precompute_triangle_projection(
     """Prepare one compact projection record per frame and flat triangle.
 
     Columns 0:3 are continuous screen x, 3:6 screen y, 6:9 reciprocal
-    perspective divisors, and 9 is one when all vertices are safely in front of
-    the camera plane.  Invalid/straddling triangles retain zeros and use the
-    exact ray-cast fallback in the kernels.  The result is camera-specific and
-    is built once per render batch, rather than once per primitive chunk and
-    raster phase.
+    perspective divisors, and 9 is the triangle's path flag:
+
+    * ``-1``: every vertex is behind the camera plane. No primary ray can hit
+      it, so candidate emission culls it.
+    * ``0``: straddling the camera plane, or degenerate. The projection is
+      invalid (columns 6:9 and 10:13 stay zero): the bbox comes from the
+      camera-plane clip or the whole window, the band scale is the raw depth
+      extent, and the kernels ray-cast every candidate pixel.
+    * ``0.5`` (:data:`FLAG_FRONT_RAYCAST`): all-front, so the projection is
+      valid and gives the bbox and band scale, but its coordinates are too
+      large for the exact int64 coverage lattice (:func:`_lattice_demote`),
+      so the kernels ray-cast it too.
+    * ``1``: all-front and lattice-safe: the exact projected path
+      (``raster_taichi._ss_pixel``).
+    * Larger values are reserved for further exact-path variants; every
+      value above 0.5 passes through the same lattice bound.
+
+    So readers test ``> 0.5`` for "exact projected path", ``> 0.25`` for
+    "every vertex in front, projection valid" and ``> -0.5`` for "not behind".
+    Span-row candidates (``sheet_compact_taichi._span_mode``) keep ``> 0.5``:
+    a demoted triangle walks its whole clipped box. The result is
+    camera-specific and is built once per render batch, rather than once per
+    primitive chunk and raster phase.
 
     Under triangle analytic anti-aliasing the table is widened to 13 columns,
     10:13 holding the reciprocal SCREEN lengths of the three edges (edge ``i``
@@ -754,7 +804,10 @@ def _frame_pairs(
     screen = tri_screen[f % tri_screen.shape[0]]
     px = screen[:, 0:3]
     py = screen[:, 3:6]
-    front = (screen[:, 9] > 0.5).unsqueeze(-1).expand(-1, 3)
+    # Every vertex in front, so the projected bbox is valid -- including a
+    # triangle demoted to the ray cast (flag 0.5; see
+    # precompute_triangle_projection for the values).
+    front = (screen[:, 9] > 0.25).unsqueeze(-1).expand(-1, 3)
     tri_pos = merged["tri_pos"]
     clip = None
     if _straddle_clip_wanted((screen[:, 9] > -0.5) & ~front[:, 0]):
@@ -1015,11 +1068,12 @@ def precompute_triangle_screen_bounds(
     ``_frame_pairs`` derived the same bboxes and class masks per
     (tile, frame); only the row-band clamp is tile-dependent, so the rest is
     batched here over all frames into the same three-table schema consumed by
-    ``_window_pairs``.  ``tri_screen`` column 9 is the three-state front flag
-    (1 all-front / 0 straddling / -1 behind); all three vertices share it, so
-    ``all_front`` is the flag itself and the behind-cull folds into the
-    straddler reach base.  Byte-identical to the per-frame path by
-    construction.
+    ``_window_pairs``.  ``tri_screen`` column 9 is the path flag
+    (:func:`precompute_triangle_projection` lists its values); all three
+    vertices share it, so ``all_front`` is ``flag > 0.25`` -- every vertex in
+    front, which includes a triangle demoted to the ray cast (0.5) -- and the
+    behind-cull folds into the straddler reach base.  Byte-identical to the
+    per-frame path by construction.
 
     Straddlers get the camera-plane clip of :func:`_clipped_screen_extents`
     rather than the whole window; the camera arguments (``projection`` as
@@ -1042,7 +1096,7 @@ def precompute_triangle_screen_bounds(
     px = screen[..., 0:3]
     py = screen[..., 3:6]
     flag = screen[..., 9]
-    all_front = flag > 0.5
+    all_front = flag > 0.25
     not_behind = flag > -0.5
 
     ntri = int(screen.shape[1])
@@ -2161,11 +2215,24 @@ def _check_emitted_keys(frag_key_u, tile_pixels, num_frags):
     emitted fewer than the count pass promised) or are scattered (a gather or
     an ordering problem upstream of them).
 
-    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is two reductions and a
+    It also counts the write pass's MISS records (depth bits
+    ``_WRITE_MISS_T_BITS``): pixels the count pass accepted whose geometry the
+    write pass's own evaluation then rejected. Those keys are in range and
+    the records are inert, so only this count can show that the two passes
+    disagreed.
+
+    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is three reductions and a
     host readback over the whole fragment stream.
     """
     if not env_flag("ALGAN_RASTER_KEY_CHECK", False) or num_frags <= 0:
         return
+    n_miss = int(((frag_key_u[:num_frags] & 0xFFFFFFFF) == _WRITE_MISS_T_BITS).sum())
+    if n_miss:
+        print(
+            f"[raster-key-check] {n_miss} of {num_frags} slots hold the write "
+            f"pass's miss record: pixels the COUNT pass accepted and the WRITE "
+            f"pass's geometry evaluation rejected (count/write divergence)."
+        )
     pix = frag_key_u[:num_frags] >> 32
     bad = (pix < 0) | (pix >= tile_pixels)
     n_bad = int(bad.sum())

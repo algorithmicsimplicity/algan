@@ -92,6 +92,8 @@ ALWAYS_CI = (
     "tests/unit_tests/test_settings_api.py::test_an_inert_field_is_readable_but_refuses_a_write",
     # The closed-shell coverage ceiling, on synthetic streams: tensors only.
     "tests/unit_tests/test_closed_shell_ceiling.py::",
+    # A triangle too big for the coverage lattice is sent to the ray cast.
+    "tests/unit_tests/test_raster_lattice_bound.py::test_lattice_demotion_keeps_safe_triangles_and_sends_the_rest_to_half",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
@@ -105,6 +107,11 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_display_referred_coverage.py::",
     # The resolve kernel against its sequential oracle.
     "tests/unit_tests/test_sheet_resolve_parity.py::",
+    # Big triangles just in front of the camera plane, and the emission's
+    # write-pass miss and chunk cap.
+    "tests/unit_tests/test_raster_lattice_bound.py::",
+    "tests/unit_tests/test_near_camera_plane_render.py::",
+    "tests/unit_tests/test_emission_write_miss.py::",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")

@@ -785,6 +785,9 @@ Cost/risks: int64 accumulators (a 4096-wide screen at 1/256 sub-pixel needs
 ~2^40 for a cross product), a fixed-point conversion in
 `precompute_triangle_projection`, and care that the snapped coordinates are
 shared between adjacent triangles (they are — both read the same vertex rows).
+[Later correction: the size that matters is the triangle's projected extent,
+not the screen's, and a vertex near the camera plane makes that unbounded —
+see the range note in §15.1.]
 
 Only after that is it worth revisiting the translucent case, where scalar
 transmittance still treats a mesh's two sheets as independently overlapping
@@ -831,6 +834,20 @@ whole gap, and the reason is now understood and specific.
     to be the cause of EVERY double-claimed sample.
   * The claim set and the occlusion set are now the same set, since the
     partition is exact.
+  * **Range** (added 2026-10). What the int64 must hold is set by the
+    triangle's projected VERTICES, not by the screen: a vertex just in front
+    of the camera plane projects arbitrarily far off it. With M_x, M_y the
+    largest |sx|, |sy| and W x H the screen, every product is at most
+    2^25 (M_x + W)(M_y + H) lattice units and every edge function, sample test
+    and area sum at most twice that; the wrapped arithmetic is exact while
+    those true values fit. Unbounded, a 60-wide floor slab with its near edge
+    0.01 in front of the camera lost 81% of its pixels for that frame (the
+    flipped orientation first appeared near (M_x + W)(M_y + H) = 2^38). The
+    projection now demotes an all-front triangle past 2^36 there, or past
+    2^21 px in either coordinate (where f32 coordinates resolve 1/4 px), to
+    the per-pixel ray cast: column-9 flag 0.5, which keeps its projected bbox
+    and band scale (`raster_taichi._AA_LATTICE_MAX_EXTENT`,
+    `raster_pipeline._lattice_demote`).
 
 Verified independently of the renderer: a standalone harness rasterizes random
 quads split into two triangles and checks the masks. On consistently-wound
