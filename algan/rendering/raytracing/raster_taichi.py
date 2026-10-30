@@ -242,6 +242,14 @@ _AA_MAT_OPAQUE_BIT = 8 << _AA_FLAG_SHIFT  # bit 19, set per fragment
 # reader of them) before widening the pattern.
 _AA_LOSE_SHIFT = 20  # bits 20..27, per sheet
 
+# §4.4 band continuation, set by the compaction (sheets._sibling_weights) on
+# every sibling of a subdivided band but the one that closes it in walk order:
+# the resolve claims such a sheet against the visibility the band met and
+# leaves the band's occlusion write to the sheet that closes it. It used to
+# ride in the sign of the sheet's coverage, which a sibling of zero area could
+# not carry -- -0.0 is not below zero -- so its band closed early.
+_AA_BAND_CONT_BIT = 1 << 28
+
 # Sample-less-triangle policies, matching ``settings.ANALYTIC_AA_SLIVER_MODES``.
 # The live mode reaches ``_ss_pixel`` inside the ``aa`` template value (the
 # geometry kernels are launched with ``1 + mode``) so that each policy gets its

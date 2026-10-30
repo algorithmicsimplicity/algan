@@ -471,7 +471,11 @@ def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight(computing_settin
     Torch refuses outright, ahead of any guard -- through a ``clamp_min`` the
     hardware would not have honoured anyway.
     """
-    from algan.rendering.raytracing.sheets import AA_MASK_ALL, _sibling_weights
+    from algan.rendering.raytracing.sheets import (
+        AA_BAND_CONT_BIT,
+        AA_MASK_ALL,
+        _sibling_weights,
+    )
 
     computing_settings.set(mps_friendly=True)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -492,10 +496,11 @@ def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight(computing_settin
         "coverage composites a sheet the resolve should have dropped"
     )
     # Zero area means zero share means zero weight -- the answer the guard was
-    # always meant to give, sign included: every sibling but a band's last
-    # carries the continuation flag as a negative.
-    assert torch.equal(wgt.abs().cpu(), torch.zeros(5))
-    assert torch.equal(wmsk.cpu(), torch.full((5,), AA_MASK_ALL, dtype=torch.int64))
+    # always meant to give -- and every sibling but a band's last still carries
+    # the continuation flag, which a zero weight could not.
+    assert torch.equal(wgt.cpu(), torch.zeros(5))
+    cont = AA_MASK_ALL | AA_BAND_CONT_BIT
+    assert wmsk.cpu().tolist() == [cont, AA_MASK_ALL, cont, cont, AA_MASK_ALL]
 
 
 @pytest.mark.fast

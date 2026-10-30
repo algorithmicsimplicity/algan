@@ -41,6 +41,9 @@ from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing import sheet_resolve_taichi
 from algan.rendering.raytracing.glossy_prefilter_taichi import ACC_GEO
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BAND_CONT_BIT as BAND_CONT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_LOSE_SHIFT as LOSE_SHIFT,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -92,11 +95,10 @@ class S(NamedTuple):
 
 
 def _record(sheet):
-    """(area, mask word) as the compaction writes them. A band that continues
-    is a negative area (``sheets._sibling_weights``): change it here if that
-    flag moves.
+    """(area, mask word) as the compaction writes them: a band that continues
+    carries ``_AA_BAND_CONT_BIT`` (``sheets._sibling_weights``).
     """
-    return (-sheet.area if sheet.continues else sheet.area), sheet.msk
+    return sheet.area, sheet.msk | (BAND_CONT if sheet.continues else 0)
 
 
 def _ceded(samples):
@@ -172,26 +174,35 @@ CASES = {
         S("R", 0.6, 0b00001111 | _ceded(0b00001100)),
         S("G", 0.5, 0b00111100),
     ],
+    "band of mixed alphas over a floor": [
+        S("w", 0.5, continues=True),
+        S("R", 0.3, continues=True),
+        S("g", 0.2),
+        S("B", 1.0),
+    ],
+    "band split over a corr > 1 silhouette": [
+        S("R", 0.625, 0b11111000),
+        S("G", 0.27, 0b00000111, continues=True),
+        S("B", 0.18, 0b00000111),
+    ],
+    "a band the list ends inside": [
+        S("R", 0.3, 0b00000111),
+        S("G", 0.0),
+        S("B", 0.0),
+        S("g", 0.0),
+        S("veil", 0.0),
+        S("w", 0.6, continues=True),
+    ],
 }
 
 #: Cases where the two are known to disagree, with why.
-KNOWN_DIVERGENCES = {
-    "ceded samples on a corr > 1 sheet": (
-        "Sheet Resolve Review W5: the kernel pushes a sheet's clamped residue "
-        "onto the samples outside its mask, the oracle onto every sample it "
-        "does not claim, ceded ones included (0.475 against 0.4667 here)"
-    ),
-}
+KNOWN_DIVERGENCES = {}
 
 
 def _random_list(rng):
     """One to six sheets drawn over every rule the walk has: full and partial
     unions, the dust band, corr above 1, areal slivers, bands, the one-mesh
     ceiling and ceded samples.
-
-    Except W5's case: samples are only ceded on a sheet that redistributes no
-    residue -- outside a band, where the summed factor can pass 1, and at
-    corr <= 1. Drop that condition with the xfail above.
     """
     n = rng.randint(1, SLOTS)
     sheets = []
@@ -220,9 +231,7 @@ def _random_list(rng):
             msk |= ONE_MESH
             cap = rng.uniform(0.2, 1.0)
         continues = i < n - 1 and rng.random() < 0.25
-        in_band = continues or (i > 0 and sheets[-1].continues)
-        corr_at_most_1 = area <= low.bit_count() / N
-        if low and not in_band and corr_at_most_1 and rng.random() < 0.3:
+        if low and rng.random() < 0.3:
             msk |= _ceded(low & rng.randint(1, FULL))
         sheets.append(S(role, area, msk, cap, continues))
     return sheets

@@ -6,7 +6,9 @@ asserts on the frame:
 * a clear glass sphere on a white background lost the light passing beside it
   at its silhouette, a dark one-pixel outline;
 * a NaN sheet area painted its pixel opaque;
-* an environment map brighter than 1 wrapped round in the byte frame buffer.
+* an environment map brighter than 1 wrapped round in the byte frame buffer;
+* a coloured transmitter over part of a pixel tinted some of what it did not
+  cover.
 
 Feature tests of the resolve, which nothing outside it can break, so none is
 marked fast.
@@ -18,8 +20,21 @@ import numpy as np
 import torch
 from PIL import Image
 
-from algan import BLACK, OUT, RED, WHITE, Scene, Sphere, Square, VideoSettings
-from algan.rendering.shaders.materials import MeshPhysicalMaterial
+from algan import (
+    BLACK,
+    OUT,
+    PURE_GREEN,
+    PURE_RED,
+    RED,
+    WHITE,
+    Off,
+    Scene,
+    Sphere,
+    Square,
+    VideoSettings,
+)
+from algan.mobs.shapes_2d import TriangleTriangulated
+from algan.rendering.shaders.materials import MeshBasicMaterial, MeshPhysicalMaterial
 from algan.settings import SETTINGS
 
 
@@ -117,4 +132,55 @@ def test_a_bright_environment_saturates_the_byte_buffer(tmp_path):
     assert (corners == 255).all(), (
         f"the sky's corners read {corners.tolist()}, not white: the "
         "environment prefill wrapped in the byte buffer"
+    )
+
+
+def test_a_tinted_transmitter_tints_only_what_it_covers(tmp_path):
+    """Over part of a pixel, a coloured transmitter leaves the rest untinted.
+
+    A pure green triangle that passes half its light, over a pure red
+    background: no red gets through the green, so the red in the frame is the
+    part of each pixel the triangle leaves uncovered, exactly as behind an
+    opaque black triangle of the same shape. The walk keeps one visibility per
+    sample and carries the tint in the throughput, and it used to blend the
+    tint in linearly with the sheet's coverage, which darkened the uncovered
+    part too: 82 of the 94 silhouette pixels passed less red than behind black
+    by more than 2 levels, by up to 27, before; none after.
+
+    Index 1 keeps the triangle off the glass branch, which refracts through a
+    ray of its own instead.
+    """
+    SETTINGS.raytracing.set(shadows=False)
+    corners = torch.tensor([[-2.3, -1.4, 0.0], [2.1, -1.9, 0.0], [0.3, 1.7, 0.0]])
+    frames = {}
+    for name, material in (
+        (
+            "tinted",
+            MeshPhysicalMaterial(
+                color=PURE_GREEN, transmission=0.5, ior=1.0, metalness=0.0
+            ),
+        ),
+        ("black", MeshBasicMaterial(color=BLACK)),
+    ):
+        out = tmp_path / f"{name}.png"
+        with Scene() as scene:
+            with Off():
+                Scene.clear_lights()
+                tri = TriangleTriangulated(corners, color=PURE_GREEN)
+                tri.set_material(material)
+                tri.spawn(animate=False)
+            scene.save_frame(
+                str(out),
+                VideoSettings((96, 54), 1, supersampling=1),
+                background=PURE_RED,
+            )
+        frames[name] = np.asarray(Image.open(out).convert("RGB")).astype(np.int64)
+    red = frames["black"][..., 0]
+    silhouette = (red > 5) & (red < 250)
+    assert int(silhouette.sum()) > 50, "the triangle's edges are not in frame"
+    off = np.abs(frames["tinted"][..., 0] - red)[silhouette]
+    assert int((off > 2).sum()) == 0, (
+        f"{int((off > 2).sum())} silhouette pixels pass red unlike an opaque "
+        f"black twin, by up to {int(off.max())}: the tint reaches past the "
+        "sheet's coverage"
     )
