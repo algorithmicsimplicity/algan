@@ -27,7 +27,7 @@ glass with the refraction template and the nested-IOR stack, an environment
 map through the background prefill, a transparent background like any other.
 Nothing else in the CI or pre-PR groups took any of the three down the sheet
 route, and a batch that falls off it renders with no anti-aliasing at
-PREVIEW, silently (test_sheet_route_vetoes.py).
+PREVIEW (test_sheet_route_vetoes.py).
 
 Not marked fast: a change elsewhere cannot break these without changing the
 resolve or its launch.

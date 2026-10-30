@@ -4215,7 +4215,11 @@ class RenderLoopMixin:
             # inheriting the first one's totals and its already-spent warnings.
             # A camera-view pass does not reset them, or the job's plan would
             # report only its last window and every window would warn again.
+            # The route-veto INFO line is scoped the same way.
+            from algan.rendering.raytracing.tracer import reset_route_veto_log
+
             reset_truncations()
+            reset_route_veto_log()
         # So is the float32 rounding warning's: a camera-view pass finds this
         # job's record already open and adds to it, so the render warns once.
         owns_rounding_job = getattr(self, "_float32_rounding_job", None) is None

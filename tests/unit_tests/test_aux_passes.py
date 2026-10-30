@@ -339,14 +339,14 @@ def test_a_skipped_panel_does_not_expose_a_surface_hidden_behind_it():
 
 def test_the_supersampled_route_records_what_the_analytic_route_records(monkeypatch):
     decisions = []
-    real_decision = tracer.analytic_raster_route_active
+    real_decision = tracer.analytic_raster_route_veto
 
     def spy(*args, **kwargs):
-        active = real_decision(*args, **kwargs)
-        decisions.append(active)
-        return active
+        veto = real_decision(*args, **kwargs)
+        decisions.append(veto is None)
+        return veto
 
-    monkeypatch.setattr(tracer, "analytic_raster_route_active", spy)
+    monkeypatch.setattr(tracer, "analytic_raster_route_veto", spy)
     video = TINY.set(supersampling=2)
     _f, analytic, _ = _render(_square_and_cube, video=video)
     assert set(decisions) == {True}

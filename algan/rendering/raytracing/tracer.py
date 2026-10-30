@@ -34,7 +34,7 @@ from __future__ import annotations
 import math
 import sys
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import torch
@@ -199,6 +199,19 @@ class RenderPlan:
     #: stop at ``pt_min_samples``. **Zero means the path tracer did not run**,
     #: so it is 0.0 on every deterministic render.
     path_samples_mean: float = 0.0
+    #: How the batch resolved primary visibility: ``"analytic"`` (the sheet
+    #: route, exact analytic coverage at output resolution), ``"supersampled"``
+    #: (the classic wavefront at the requested ``supersampling``, which at 1
+    #: means no anti-aliasing at all) or ``"path_tracer"``. A property of one
+    #: batch, unlike ``truncations``: a file render's plan describes its last
+    #: batch. ``None`` only on the plan built during validation, before the
+    #: route is decided.
+    route: Literal["analytic", "supersampled", "path_tracer"] | None = None
+    #: Why the batch is not on the analytic route: the first reason
+    #: :func:`analytic_raster_route_veto` found, one of the keys of
+    #: :data:`ROUTE_VETOES`. ``None`` exactly when ``route`` is ``"analytic"``
+    #: (and on the validation-time plan).
+    route_veto: str | None = None
 
     @property
     def is_supported(self) -> bool:
@@ -218,7 +231,7 @@ class RenderPlan:
             ``unsupported_features`` (as lists), ``truncations`` (as
             :meth:`TruncationCounts.as_dict
             <algan.rendering.raytracing.truncation.TruncationCounts.as_dict>`
-            gives it) and ``path_samples_mean``.
+            gives it), ``path_samples_mean``, ``route`` and ``route_veto``.
         """
         return {
             "backend": self.backend,
@@ -227,6 +240,8 @@ class RenderPlan:
             "unsupported_features": list(self.unsupported_features),
             "truncations": self.truncations.as_dict(),
             "path_samples_mean": self.path_samples_mean,
+            "route": self.route,
+            "route_veto": self.route_veto,
         }
 
 
@@ -1022,6 +1037,72 @@ def _note_scratch_overrun(demand, tile_peak, memory, attempt_primary, planned, p
         demand.observe_scratch(len(memory) - tile_peak.base, pool)
 
 
+def _halve_after_oom(
+    exc,
+    memory,
+    state_ptrs,
+    what,
+    *,
+    attempt_primary,
+    pool,
+    pool_ratio,
+    shared_pool_capacity,
+    halve_shared_pool,
+    demand,
+    tile_peak,
+    sparse_primary,
+):
+    """Set up the retry of a sparse tile attempt that ran out of memory.
+
+    The recovery the sheet route's three out-of-memory sites share -- the
+    state block and resolve, the overflow poll's compaction, and the bounce
+    drain: give the attempt's arena back, refuse to go below one covered
+    pixel (``what`` names what did not fit), record the scratch lower bound
+    (:func:`_note_scratch_overrun`), count the retry and halve the primaries.
+
+    Returns ``(next_primary, pool, shared_pool_capacity)`` for the retry.
+
+    A batch that does not split (``pool_ratio == 1``) has no spare slots: its
+    pool IS its primaries, so it halves with them at every site. Left at the
+    failed attempt's size, the retry's tile would hold spare slots a fresh
+    tile of that size never has, and a continuation that has to drop there
+    (``dropped_continuations``) would instead survive or not by atomic
+    reservation order -- the image depending on the retry history.
+
+    A splitting batch keeps its shared pool across the retry, as across the
+    overflow retry (the shrunken tile inherits the spare slots), except where
+    the state block itself may be what failed (``halve_shared_pool``, the
+    resolve site): the pool is the tile's dominant allocation, so halving only
+    the primaries would re-attempt a state block of very nearly the same size,
+    fail identically, and ride all the way down to the one-pixel diagnostic
+    without ever having freed anything. There the pool halves with them,
+    keeping the primaries' own slots (the shared allocator starts at
+    ``attempt_primary``); an under-sized pool overflows, and the overflow
+    retry is exact and terminating. The poll and the drain fail after the
+    state block fit, in scratch that follows the active rays, so halving the
+    primaries alone shrinks what failed.
+    """
+    memory.set_pointers(state_ptrs)
+    release_torch_memory(force_gc=False)
+    if attempt_primary <= 1:
+        raise OutOfRenderMemory(
+            f"Sparse raster {what} did not fit for one covered pixel. Lower "
+            "the resolution or transparency complexity." + path_tracer_fallback_hint()
+        ) from exc
+    _note_scratch_overrun(
+        demand, tile_peak, memory, attempt_primary, sparse_primary, pool
+    )
+    next_primary = max(1, attempt_primary // 2)
+    _WAVEFRONT_POOL_RETRIES[0] += 1
+    _WAVEFRONT_TILE_STATS["oom_retries"] += 1
+    if pool_ratio <= 1:
+        return next_primary, next_primary, shared_pool_capacity
+    if halve_shared_pool:
+        shared_pool_capacity = max(next_primary, shared_pool_capacity // 2)
+        return next_primary, shared_pool_capacity, shared_pool_capacity
+    return next_primary, pool, shared_pool_capacity
+
+
 def _plans_like(attempt_primary, planned_primary):
     """Whether a tile attempt speaks for the tiles a plan makes.
 
@@ -1092,7 +1173,50 @@ class _TileScratchPeak:
         return self.peak - self.base
 
 
-def analytic_raster_route_active(
+#: Every reason :func:`analytic_raster_route_veto` can give for keeping a batch
+#: off the sheet route, in the order it checks them, with what each means.
+#: The keys are stable strings: ``RenderPlan.route_veto`` carries one, the
+#: render logs each once at INFO, and renderer_limitations.rst lists them.
+#: The ``*_off`` entries are the route's kill switches -- deliberate A/B levers
+#: for judging a sheet-route change against the classic path, each a
+#: precondition of the route rather than an independent option.
+ROUTE_VETOES = {
+    "path_tracer": "samples_per_pixel > 1 selects the path tracer",
+    "hybrid_raster_off": "the experimental switch hybrid_raster is off",
+    "analytic_aa_off": "SETTINGS.raytracing.analytic_aa is off",
+    "sheet_resolve_off": "the experimental switch sheet_resolve is off",
+    "analytic_aa_run_off": "the experimental switch analytic_aa_run is off",
+    "raster_sparse_coverage_off": (
+        "the experimental switch raster_sparse_coverage is off"
+    ),
+    "raster_empty_skip_off": "the experimental switch raster_empty_skip is off",
+    "raster_covered_shade_off": "the experimental switch raster_covered_shade is off",
+    "transparent_background_env_map": (
+        "a transparent background together with an environment map"
+    ),
+    "near_clip": "camera.near > 0, which only the ray-traversal path clips at",
+    "no_geometry": "the batch has no triangles and no Bezier circuits",
+    "analytic_aa_tri_off": (
+        "the batch has triangles and the experimental switch analytic_aa_tri is off"
+    ),
+    "raster_ss_off": (
+        "the batch has triangles and the experimental switch raster_ss "
+        "(ALGAN_RASTER_SS) is off, so they would emit sampled rather than "
+        "exact coverage"
+    ),
+    "analytic_aa_bez_off": (
+        "the batch has Bezier circuits and the experimental switch "
+        "analytic_aa_bez is off"
+    ),
+    "custom_scatter": "a fragment shader in the batch overrides ray bouncing",
+    "wf_mem_trim": (
+        "ALGAN_WF_MEM_TRIM engaged the memory-trimmed triangle path, which "
+        "only the classic wavefront implements"
+    ),
+}
+
+
+def analytic_raster_route_veto(
     merged,
     *,
     light_sources=(),
@@ -1101,10 +1225,15 @@ def analytic_raster_route_active(
     far_clip=0.0,
     transparent_background=False,
 ):
-    """Whether this batch can use analytic coverage at output resolution.
+    """Why this batch cannot use analytic coverage at output resolution.
+
+    Returns ``None`` when it can -- the batch takes the sheet route -- and
+    otherwise the first reason that applies, a key of :data:`ROUTE_VETOES`,
+    checked in that table's order.
 
     This is the single host-side route decision shared by allocation planning
-    and rendering.  A requested supersample level is therefore retained for
+    and rendering (:func:`analytic_raster_route_active` is the same question
+    as a bool).  A requested supersample level is therefore retained for
     every route that the raster frontend cannot honor; only a batch whose
     complete primary geometry has analytic coverage selects AA=1.
 
@@ -1117,29 +1246,41 @@ def analytic_raster_route_active(
     (the env prefill would fill the alpha the background owes), so that one
     combination also falls back.
     """
-    if (
-        int(rt_settings.samples_per_pixel) > 1
-        or not rt_settings.hybrid_raster
-        or not rt_settings.analytic_aa
-        or not rt_settings.sheet_resolve
-        or not rt_settings.analytic_aa_run
-        or not rt_settings.raster_sparse_coverage
-        or not rt_settings.raster_empty_skip
-        or not rt_settings.raster_covered_shade
-        or (transparent_background and environment_map is not None)
-        or merged.get("tri_frame_valid") is None
-        or float(near_clip) > 0.0
-    ):
-        return False
+    if int(rt_settings.samples_per_pixel) > 1:
+        return "path_tracer"
+    if not rt_settings.hybrid_raster:
+        return "hybrid_raster_off"
+    if not rt_settings.analytic_aa:
+        return "analytic_aa_off"
+    if not rt_settings.sheet_resolve:
+        return "sheet_resolve_off"
+    if not rt_settings.analytic_aa_run:
+        return "analytic_aa_run_off"
+    if not rt_settings.raster_sparse_coverage:
+        return "raster_sparse_coverage_off"
+    if not rt_settings.raster_empty_skip:
+        return "raster_empty_skip_off"
+    if not rt_settings.raster_covered_shade:
+        return "raster_covered_shade_off"
+    if transparent_background and environment_map is not None:
+        return "transparent_background_env_map"
+    if float(near_clip) > 0.0:
+        return "near_clip"
 
     num_tri = int(merged.get("num_triangles", 0))
     num_bez = int(merged.get("num_circuits", 0))
     if num_tri <= 0 and num_bez <= 0:
-        return False
+        return "no_geometry"
     if num_tri > 0 and not rt_settings.analytic_aa_tri_active():
-        return False
+        return "analytic_aa_tri_off"
+    # Off, every triangle takes the per-pixel ray-cast path that otherwise
+    # serves only camera-plane straddlers (raster_taichi._raycast_pixel),
+    # whose coverage is the sampled popcount -- and the sheet resolve
+    # consumes exact areas. Circuits do not read the switch.
+    if num_tri > 0 and not rt_settings.raster_ss:
+        return "raster_ss_off"
     if num_bez > 0 and not rt_settings.analytic_aa_bez_active():
-        return False
+        return "analytic_aa_bez_off"
 
     shadow = bool(rt_settings.shadows)
     lights_extended = any(
@@ -1154,9 +1295,8 @@ def analytic_raster_route_active(
         or lights_extended
         or has_environment
     )
-    custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
-    if custom_scatter:
-        return False
+    if frag and _scene_has_custom_scatter(merged):
+        return "custom_scatter"
 
     analytic_split = _secondary_split_needed(merged, True)
     refraction = bool(
@@ -1164,13 +1304,121 @@ def analytic_raster_route_active(
         or merged.get("has_refl_transparent")
         or analytic_split
     )
-    mem_trim = bool(
+    # The trim arrays are built beside the untrimmed ones and only the classic
+    # wavefront's triangle traversal reads them (raytrace_render_wavefront,
+    # where ``use_raster`` requires ``mem_trim == 0``). Same predicate as the
+    # one that engages the trim there, minus its pass-time facts.
+    if (
         rt_settings.wf_mem_trim
         and merged.get("mem_trim_active")
         and not shadow
         and not refraction
+    ):
+        return "wf_mem_trim"
+    return None
+
+
+def analytic_raster_route_active(
+    merged,
+    *,
+    light_sources=(),
+    environment_map=None,
+    near_clip=0.0,
+    far_clip=0.0,
+    transparent_background=False,
+):
+    """Whether this batch can use analytic coverage at output resolution.
+
+    Exactly ``analytic_raster_route_veto(...) is None``: the same decision,
+    for callers that only need to know the route and not why.
+    """
+    return (
+        analytic_raster_route_veto(
+            merged,
+            light_sources=light_sources,
+            environment_map=environment_map,
+            near_clip=near_clip,
+            far_clip=far_clip,
+            transparent_background=transparent_background,
+        )
+        is None
     )
-    return not mem_trim
+
+
+#: The route vetoes this render job has logged (:func:`_report_route_veto`).
+_ROUTE_VETOES_REPORTED: set[str] = set()
+
+
+def reset_route_veto_log():
+    """Re-arm the once-per-reason route-veto INFO line for a new render job.
+
+    Called by ``RenderLoopMixin.get_frames`` beside ``reset_truncations``, at
+    the same boundary: a second ``save_video`` reports its own fallbacks, and
+    a camera-view pass, which does not own the job, does not repeat them.
+    """
+    _ROUTE_VETOES_REPORTED.clear()
+
+
+def _report_route_veto(veto, anti_alias_level):
+    """Say, once per reason per render job, that a batch left the sheet route.
+
+    INFO rather than WARNING: a veto is the renderer doing what it was told
+    (most are a switch the user flipped, or a camera they configured), but it
+    changes the image's edge quality and the render's cost, and nothing else
+    says so. Once per reason, because every batch of a scene that vetoes once
+    vetoes again.
+    """
+    if veto is None or veto in _ROUTE_VETOES_REPORTED:
+        return
+    _ROUTE_VETOES_REPORTED.add(veto)
+    level = max(1, int(anti_alias_level))
+    logger.info(
+        "A batch of this render is not using analytic anti-aliasing (%s: %s); "
+        "it renders through the supersampled fallback at supersampling=%d%s. "
+        "Logged once per reason; RenderPlan.route_veto names it per batch.",
+        veto,
+        ROUTE_VETOES[veto],
+        level,
+        ", which is no anti-aliasing at all" if level == 1 else "",
+    )
+
+
+def _choose_route(
+    plan,
+    merged,
+    anti_alias_level,
+    *,
+    light_sources=(),
+    environment_map=None,
+    near_clip=0.0,
+    far_clip=0.0,
+    transparent_background=False,
+):
+    """Decide the batch's primary-visibility route and record it on its plan.
+
+    Returns ``(plan, aa)``: the plan with ``route`` and ``route_veto`` grafted
+    on, and the supersample level the batch renders at -- 1 on the sheet route
+    and in the path tracer, whose jittered sub-pixel samples ARE the
+    anti-aliasing, and the requested ``anti_alias_level`` otherwise. A batch
+    that leaves the route at one sample per pixel says why
+    (:func:`_report_route_veto`).
+    """
+    veto = analytic_raster_route_veto(
+        merged,
+        light_sources=light_sources,
+        environment_map=environment_map,
+        near_clip=near_clip,
+        far_clip=far_clip,
+        transparent_background=transparent_background,
+    )
+    if int(rt_settings.samples_per_pixel) > 1:
+        route, aa = "path_tracer", 1
+    elif veto is None:
+        route, aa = "analytic", 1
+    else:
+        route, aa = "supersampled", max(1, int(anti_alias_level))
+        _report_route_veto(veto, aa)
+    return replace(plan, route=route, route_veto=veto), aa
 
 
 def effective_anti_alias_level(
@@ -1918,22 +2166,22 @@ def render_batch_raytraced(
     cam = getattr(scene, "camera", None)
     near_clip = float(getattr(cam, "near", 0.0) or 0.0)
     far_clip = float(getattr(cam, "far", 0.0) or 0.0)
-    analytic_raster = analytic_raster_route_active(
+    # The path tracer renders at output resolution: its jittered sub-pixel
+    # samples ARE the anti-aliasing, so a supersample level would multiply the
+    # pixel count for nothing (render_loop._effective_anti_alias_level makes
+    # the same call for the host-side buffer planning).
+    plan, aa = _choose_route(
+        plan,
         merged,
+        anti_alias_level,
         light_sources=light_sources,
         environment_map=env_map,
         near_clip=near_clip,
         far_clip=far_clip,
         transparent_background=transparent_background,
     )
-    # The path tracer renders at output resolution: its jittered sub-pixel
-    # samples ARE the anti-aliasing, so a supersample level would multiply the
-    # pixel count for nothing (render_loop._effective_anti_alias_level makes
-    # the same call for the host-side buffer planning).
-    if analytic_raster or int(samples_per_pixel) > 1:
-        aa = 1
-    else:
-        aa = max(1, int(anti_alias_level))
+    scene.last_render_plan = plan
+    analytic_raster = plan.route == "analytic"
 
     # Anti-aliasing strategy. Analytic raster coverage always renders at output
     # resolution (aa == 1). Every route it cannot cover keeps the requested
@@ -2160,11 +2408,10 @@ def render_batch_raytraced(
     # Phase 4a — the resolve kernel's event pass builds the shadow queue
     # from sheet records, so no second walk exists. The sheet resolve is
     # the ONLY resolve for analytic coverage (the fragment walk is deleted),
-    # so its preconditions — sheet_resolve, analytic_aa_run, the sparse
-    # toggles, samples <= 1, transparent background only without an env map
-    # — all live inside analytic_raster_route_active, and the route IS the
-    # analytic-raster decision. prepare_sparse_raster_coverage still raises
-    # on an emission-side disagreement rather than painting a wrong frame.
+    # so its preconditions — every entry of ROUTE_VETOES — all live inside
+    # analytic_raster_route_veto, and the route IS the analytic-raster
+    # decision. prepare_sparse_raster_coverage still raises on an
+    # emission-side disagreement rather than painting a wrong frame.
     sheet_route = analytic_raster
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
@@ -3315,15 +3562,15 @@ def raytrace_render_wavefront(
     # (DESIGN_sheet_resolve.md) — the sparse emission compacts exact analytic
     # coverage into per-pixel sheets and one kernel resolves, builds shadow
     # events for, and shades them; only bounced continuations enter the
-    # classic wavefront loop. PN patches are conservatively routed to the
-    # classic path without altering their geometry. This re-derives the route
-    # from the live toggles and the merged batch facts so drift against the
-    # allocation-time decision (analytic_raster, which IS the sheet route) is
-    # caught below rather than rendered wrong.
+    # classic wavefront loop. PN patches reach it as the flat triangles they
+    # are diced into at projection (primitives._dice_logical_pn), so they take
+    # the route like any other mesh. This re-derives the route from the live
+    # toggles and the merged batch facts so drift against the allocation-time
+    # decision (analytic_raster, which IS the sheet route) is caught below
+    # rather than rendered wrong.
     use_raster = (
         rt_settings.hybrid_raster
         and analytic_raster
-        and merged.get("tri_frame_valid") is not None
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
         and mem_trim == 0
         and len(frag_scatters) == 0
@@ -3372,9 +3619,9 @@ def raytrace_render_wavefront(
     if merged.get("bvh_deferred") and (shadow_flag != 0 or not use_raster):
         # Runtime routing needs the trees after all: primary shadows trace
         # them from the sheet resolve's event queue (raster_shadow_trace),
-        # and a batch that fell back to classic primary traversal (near
-        # clip, in-place AA, flipped toggles, ...) walks them for every
-        # primary ray.
+        # and a batch that fell back to classic primary traversal (a
+        # ROUTE_VETOES reason: near clip, a toggle flipped after the merge,
+        # ...) walks them for every primary ray.
         _ensure_bvhs()
 
     gen_fused = (
@@ -4545,46 +4792,24 @@ def raytrace_render_wavefront(
                             exc, InsufficientMemoryException
                         ) and not is_cuda_oom(exc):
                             raise
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster state did not fit for one "
-                                "covered pixel. Lower the resolution or "
-                                "transparency complexity." + path_tracer_fallback_hint()
-                            ) from exc
-                        _note_scratch_overrun(
-                            demand,
-                            tile_peak,
+                        # The state block itself may be what failed, so a
+                        # splitting batch's pool halves too (see the helper).
+                        next_primary, pool, shared_pool_capacity = _halve_after_oom(
+                            exc,
                             memory,
-                            attempt_primary,
-                            sparse_primary,
-                            pool,
+                            state_ptrs,
+                            "state",
+                            attempt_primary=attempt_primary,
+                            pool=pool,
+                            pool_ratio=pool_ratio,
+                            shared_pool_capacity=shared_pool_capacity,
+                            halve_shared_pool=True,
+                            demand=demand,
+                            tile_peak=tile_peak,
+                            sparse_primary=sparse_primary,
                         )
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
-                        # A splitting batch holds the pool fixed across the
-                        # OVERFLOW retry on purpose (the shrunken tile inherits
-                        # the spare slots), but the pool is also the tile's
-                        # dominant allocation -- so halving only the primaries
-                        # after a MEMORY failure re-attempts a state block of
-                        # very nearly the same size, fails identically, and
-                        # rides all the way down to the one-pixel diagnostic
-                        # without ever having freed anything. Halve the pool
-                        # with it, keeping the primaries' own slots (the shared
-                        # allocator starts at ``attempt_primary``); an
-                        # under-sized pool overflows, and the overflow retry
-                        # above is exact and terminating.
-                        if pool_ratio > 1:
-                            shared_pool_capacity = max(
-                                next_primary, shared_pool_capacity // 2
-                            )
-                            pool = shared_pool_capacity
-                        else:
-                            pool = attempt_primary
                         continue
 
                     # The resolve's own overflow, checked before the bounce
@@ -4621,25 +4846,20 @@ def raytrace_render_wavefront(
                                     raise
                                 poll_oom = exc
                     if poll_oom is not None:
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster bounce scratch did not fit for "
-                                "one covered pixel. Lower the resolution or "
-                                "transparency complexity." + path_tracer_fallback_hint()
-                            ) from poll_oom
-                        _note_scratch_overrun(
-                            demand,
-                            tile_peak,
+                        next_primary, pool, shared_pool_capacity = _halve_after_oom(
+                            poll_oom,
                             memory,
-                            attempt_primary,
-                            sparse_primary,
-                            pool,
+                            state_ptrs,
+                            "bounce scratch",
+                            attempt_primary=attempt_primary,
+                            pool=pool,
+                            pool_ratio=pool_ratio,
+                            shared_pool_capacity=shared_pool_capacity,
+                            halve_shared_pool=False,
+                            demand=demand,
+                            tile_peak=tile_peak,
+                            sparse_primary=sparse_primary,
                         )
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
@@ -4709,25 +4929,20 @@ def raytrace_render_wavefront(
                             exc, InsufficientMemoryException
                         ) and not is_cuda_oom(exc):
                             raise
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster bounce scratch did not fit for "
-                                "one covered pixel. Lower the resolution or "
-                                "transparency complexity." + path_tracer_fallback_hint()
-                            ) from exc
-                        _note_scratch_overrun(
-                            demand,
-                            tile_peak,
+                        next_primary, pool, shared_pool_capacity = _halve_after_oom(
+                            exc,
                             memory,
-                            attempt_primary,
-                            sparse_primary,
-                            pool,
+                            state_ptrs,
+                            "bounce scratch",
+                            attempt_primary=attempt_primary,
+                            pool=pool,
+                            pool_ratio=pool_ratio,
+                            shared_pool_capacity=shared_pool_capacity,
+                            halve_shared_pool=False,
+                            demand=demand,
+                            tile_peak=tile_peak,
+                            sparse_primary=sparse_primary,
                         )
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue

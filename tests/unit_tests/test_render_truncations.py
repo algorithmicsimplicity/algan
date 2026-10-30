@@ -246,7 +246,9 @@ def test_every_deterministic_oom_raise_names_the_path_tracer_switch():
                 "without the path-tracer hint"
             )
             checked += 1
-    assert checked >= 10, f"only {checked} raises found; did the call sites move?"
+    # Nine today: the sheet route's three tile out-of-memory handlers share
+    # one raise (tracer._halve_after_oom).
+    assert checked >= 8, f"only {checked} raises found; did the call sites move?"
 
 
 def test_reset_zeroes_the_counts_and_rearms_the_warning(recorder, algan_logs):

@@ -534,7 +534,7 @@ def test_a_bad_raytracing_value_is_refused_and_changes_nothing(field, bad):
         ("merge_gpu_peak_factor", 0),  # a multiplier the memory model scales by
         ("analytic_aa_chord_tolerance", 0),  # 0 asks for infinite subdivision
         ("shadow_eps_relative", float("nan")),  # NaN reaches a kernel silently
-        ("analytic_aa_sliver", "nonsense"),  # an enumerated mode
+        ("denoise_precision", "nonsense"),  # an enumerated mode
         ("bvh_refit", "yes"),  # a flag, written raw before
     ],
 )
@@ -818,6 +818,28 @@ def test_an_import_frozen_field_is_readable_but_refuses_a_write():
             SETTINGS.raytracing.experimental.set(
                 **{field: SETTINGS.raytracing.bvh_arity}
             )
+    SETTINGS.restore(SETTINGS.snapshot())
+
+
+def test_an_inert_field_is_readable_but_refuses_a_write():
+    """A setting nothing reads to any effect says so instead of doing nothing.
+
+    Even its own current value is refused -- the write is the mistake, not the
+    value -- while a snapshot still round-trips it, because replaying a
+    captured configuration is not a request to tune anything.
+    """
+    from algan.settings.raytracing_settings import _INERT_FIELDS
+
+    if not _INERT_FIELDS:
+        pytest.skip("no field is inert at the moment")
+    for field, message in _INERT_FIELDS.items():
+        assert field in SETTINGS.raytracing.field_names()
+        value = getattr(SETTINGS.raytracing, field)
+        with pytest.raises(AlganConfigurationError) as excinfo:
+            SETTINGS.raytracing.experimental.set(**{field: value})
+        assert str(excinfo.value) == message
+        assert message.startswith(f"'{field}'"), "the message must name the setting"
+        assert getattr(SETTINGS.raytracing, field) == value
     SETTINGS.restore(SETTINGS.snapshot())
 
 

@@ -264,14 +264,30 @@ def _experimental_fields() -> frozenset[str]:
     return _field_names() - _PUBLIC_FIELDS
 
 
-# Settings no renderer this package can actually launch reads: writing one is
-# refused with a "do this instead" message rather than silently doing nothing,
-# while reads and snapshot round-trips keep working. Empty since the unwired
-# physical-mode Monte Carlo kernel (the only reader of the last two entries,
-# ``light_intensity`` and ``ambient_light``) was deleted along with its
-# fields; the refusal machinery stays for the next field that ends up in this
-# position.
-_INERT_FIELDS: dict[str, str] = {}
+# Settings no renderer this package can actually launch reads to any effect:
+# writing one is refused with a "do this instead" message rather than silently
+# doing nothing, while reads and snapshot round-trips keep working. A field
+# here is on its way out -- it stays declared only while some code still names
+# it. The two current entries are analytic-AA policies the sheet route settled
+# (their comments in algan/rendering/raytracing/settings.py give the
+# evidence); raster_pipeline still reads both, to the same effect whatever
+# they hold, and they can be deleted once it does not. The physical-mode
+# fields that were here before (``light_intensity``, ``ambient_light``) went
+# with the unwired Monte Carlo kernel that was their only reader.
+_INERT_FIELDS: dict[str, str] = {
+    "analytic_aa_sliver": (
+        "'analytic_aa_sliver' no longer changes anything: the run-corrected "
+        "coverage the sheet route renders with fixes the sample-less-triangle "
+        "policy at 'drop', and that route is the only analytic-coverage path. "
+        "There is nothing to set instead."
+    ),
+    "analytic_aa_run_rule": (
+        "'analytic_aa_run_rule' no longer changes anything: the sheet resolve "
+        "always redistributes the clamped residue ('redistribute', the rule "
+        "the harness chose), and both values compile the same emission. There "
+        "is nothing to set instead."
+    ),
+}
 
 
 #: Fields the renderer freezes when it is imported, and what to set instead.
@@ -373,7 +389,9 @@ _MINIMUMS = {
 
 #: String fields whose accepted values are enumerated in the storage module.
 #: Named by the tuple that holds them so the two cannot drift apart. The other
-#: four string fields validate inside their own setter.
+#: string fields validate inside their own setter, or not at all. Both of these
+#: are inert (:data:`_INERT_FIELDS`), so only a replayed configuration -- whose
+#: value came from the environment -- still reaches this check.
 _CHOICES = {
     "analytic_aa_sliver": "ANALYTIC_AA_SLIVER_MODES",
     "analytic_aa_run_rule": "ANALYTIC_AA_RUN_RULES",
