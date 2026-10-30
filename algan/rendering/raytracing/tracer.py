@@ -1037,6 +1037,72 @@ def _note_scratch_overrun(demand, tile_peak, memory, attempt_primary, planned, p
         demand.observe_scratch(len(memory) - tile_peak.base, pool)
 
 
+def _halve_after_oom(
+    exc,
+    memory,
+    state_ptrs,
+    what,
+    *,
+    attempt_primary,
+    pool,
+    pool_ratio,
+    shared_pool_capacity,
+    halve_shared_pool,
+    demand,
+    tile_peak,
+    sparse_primary,
+):
+    """Set up the retry of a sparse tile attempt that ran out of memory.
+
+    The recovery the sheet route's three out-of-memory sites share -- the
+    state block and resolve, the overflow poll's compaction, and the bounce
+    drain: give the attempt's arena back, refuse to go below one covered
+    pixel (``what`` names what did not fit), record the scratch lower bound
+    (:func:`_note_scratch_overrun`), count the retry and halve the primaries.
+
+    Returns ``(next_primary, pool, shared_pool_capacity)`` for the retry.
+
+    A batch that does not split (``pool_ratio == 1``) has no spare slots: its
+    pool IS its primaries, so it halves with them at every site. Left at the
+    failed attempt's size, the retry's tile would hold spare slots a fresh
+    tile of that size never has, and a continuation that has to drop there
+    (``dropped_continuations``) would instead survive or not by atomic
+    reservation order -- the image depending on the retry history.
+
+    A splitting batch keeps its shared pool across the retry, as across the
+    overflow retry (the shrunken tile inherits the spare slots), except where
+    the state block itself may be what failed (``halve_shared_pool``, the
+    resolve site): the pool is the tile's dominant allocation, so halving only
+    the primaries would re-attempt a state block of very nearly the same size,
+    fail identically, and ride all the way down to the one-pixel diagnostic
+    without ever having freed anything. There the pool halves with them,
+    keeping the primaries' own slots (the shared allocator starts at
+    ``attempt_primary``); an under-sized pool overflows, and the overflow
+    retry is exact and terminating. The poll and the drain fail after the
+    state block fit, in scratch that follows the active rays, so halving the
+    primaries alone shrinks what failed.
+    """
+    memory.set_pointers(state_ptrs)
+    release_torch_memory(force_gc=False)
+    if attempt_primary <= 1:
+        raise OutOfRenderMemory(
+            f"Sparse raster {what} did not fit for one covered pixel. Lower "
+            "the resolution or transparency complexity." + path_tracer_fallback_hint()
+        ) from exc
+    _note_scratch_overrun(
+        demand, tile_peak, memory, attempt_primary, sparse_primary, pool
+    )
+    next_primary = max(1, attempt_primary // 2)
+    _WAVEFRONT_POOL_RETRIES[0] += 1
+    _WAVEFRONT_TILE_STATS["oom_retries"] += 1
+    if pool_ratio <= 1:
+        return next_primary, next_primary, shared_pool_capacity
+    if halve_shared_pool:
+        shared_pool_capacity = max(next_primary, shared_pool_capacity // 2)
+        return next_primary, shared_pool_capacity, shared_pool_capacity
+    return next_primary, pool, shared_pool_capacity
+
+
 def _plans_like(attempt_primary, planned_primary):
     """Whether a tile attempt speaks for the tiles a plan makes.
 
@@ -4725,46 +4791,24 @@ def raytrace_render_wavefront(
                             exc, InsufficientMemoryException
                         ) and not is_cuda_oom(exc):
                             raise
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster state did not fit for one "
-                                "covered pixel. Lower the resolution or "
-                                "transparency complexity." + path_tracer_fallback_hint()
-                            ) from exc
-                        _note_scratch_overrun(
-                            demand,
-                            tile_peak,
+                        # The state block itself may be what failed, so a
+                        # splitting batch's pool halves too (see the helper).
+                        next_primary, pool, shared_pool_capacity = _halve_after_oom(
+                            exc,
                             memory,
-                            attempt_primary,
-                            sparse_primary,
-                            pool,
+                            state_ptrs,
+                            "state",
+                            attempt_primary=attempt_primary,
+                            pool=pool,
+                            pool_ratio=pool_ratio,
+                            shared_pool_capacity=shared_pool_capacity,
+                            halve_shared_pool=True,
+                            demand=demand,
+                            tile_peak=tile_peak,
+                            sparse_primary=sparse_primary,
                         )
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
-                        # A splitting batch holds the pool fixed across the
-                        # OVERFLOW retry on purpose (the shrunken tile inherits
-                        # the spare slots), but the pool is also the tile's
-                        # dominant allocation -- so halving only the primaries
-                        # after a MEMORY failure re-attempts a state block of
-                        # very nearly the same size, fails identically, and
-                        # rides all the way down to the one-pixel diagnostic
-                        # without ever having freed anything. Halve the pool
-                        # with it, keeping the primaries' own slots (the shared
-                        # allocator starts at ``attempt_primary``); an
-                        # under-sized pool overflows, and the overflow retry
-                        # above is exact and terminating.
-                        if pool_ratio > 1:
-                            shared_pool_capacity = max(
-                                next_primary, shared_pool_capacity // 2
-                            )
-                            pool = shared_pool_capacity
-                        else:
-                            pool = attempt_primary
                         continue
 
                     # The resolve's own overflow, checked before the bounce
@@ -4801,25 +4845,20 @@ def raytrace_render_wavefront(
                                     raise
                                 poll_oom = exc
                     if poll_oom is not None:
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster bounce scratch did not fit for "
-                                "one covered pixel. Lower the resolution or "
-                                "transparency complexity." + path_tracer_fallback_hint()
-                            ) from poll_oom
-                        _note_scratch_overrun(
-                            demand,
-                            tile_peak,
+                        next_primary, pool, shared_pool_capacity = _halve_after_oom(
+                            poll_oom,
                             memory,
-                            attempt_primary,
-                            sparse_primary,
-                            pool,
+                            state_ptrs,
+                            "bounce scratch",
+                            attempt_primary=attempt_primary,
+                            pool=pool,
+                            pool_ratio=pool_ratio,
+                            shared_pool_capacity=shared_pool_capacity,
+                            halve_shared_pool=False,
+                            demand=demand,
+                            tile_peak=tile_peak,
+                            sparse_primary=sparse_primary,
                         )
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
@@ -4889,25 +4928,20 @@ def raytrace_render_wavefront(
                             exc, InsufficientMemoryException
                         ) and not is_cuda_oom(exc):
                             raise
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster bounce scratch did not fit for "
-                                "one covered pixel. Lower the resolution or "
-                                "transparency complexity." + path_tracer_fallback_hint()
-                            ) from exc
-                        _note_scratch_overrun(
-                            demand,
-                            tile_peak,
+                        next_primary, pool, shared_pool_capacity = _halve_after_oom(
+                            exc,
                             memory,
-                            attempt_primary,
-                            sparse_primary,
-                            pool,
+                            state_ptrs,
+                            "bounce scratch",
+                            attempt_primary=attempt_primary,
+                            pool=pool,
+                            pool_ratio=pool_ratio,
+                            shared_pool_capacity=shared_pool_capacity,
+                            halve_shared_pool=False,
+                            demand=demand,
+                            tile_peak=tile_peak,
+                            sparse_primary=sparse_primary,
                         )
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        _WAVEFRONT_TILE_STATS["oom_retries"] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
