@@ -37,10 +37,11 @@ Important implementation properties:
 
 Emission covers the whole prepared frame window at once; each pair covers up
 to ``raster_chunk`` pixels.  Future work should benchmark square block bins
-and candidate-parallel block kernels. Custom scatter, positive near clipping
-and other route gates can select the classic frontend. PN surfaces are diced
-into flat triangles during geometry preparation, not rejected merely for their
-PN origin.
+and candidate-parallel block kernels. Custom scatter and the other route gates
+can select the classic frontend; the camera's near clip plane cuts geometry
+here instead (``_near_line``, ``_past_near``, ``_circuit_near_cover``). PN
+surfaces are diced into flat triangles during geometry preparation, not
+rejected merely for their PN origin.
 """
 import warnings
 
@@ -250,6 +251,16 @@ _AA_LOSE_SHIFT = 20  # bits 20..27, per sheet
 # not carry -- -0.0 is not below zero -- so its band closed early.
 _AA_BAND_CONT_BIT = 1 << 28
 
+# Marks a fragment the camera's near clip plane cut in this pixel: the cut took
+# exact area from it (more than _NEAR_TRIM_AREA, decided by the write kernel's
+# exact lanes), or, on the ray-cast path, a sample hit the triangle short of the
+# plane. A ray that starts inside a solid crosses its shell once, not twice, so
+# the closed-shell opacity ceiling must not spend this pixel's allowance as if
+# the near shell were whole (sheets.compact_sheets). Set per fragment at
+# emission; inert for every other reader. Bit 29, because 28 is the band
+# continuation above and bit 31 stays clear.
+_AA_NEAR_CUT_BIT = 1 << 29
+
 # Sample-less-triangle policies, matching ``settings.ANALYTIC_AA_SLIVER_MODES``.
 # The live mode reaches ``_ss_pixel`` inside the ``aa`` template value (the
 # geometry kernels are launched with ``1 + mode``) so that each policy gets its
@@ -344,6 +355,16 @@ _AA_SAMPLES = tuple(
 _AA_NUM_SAMPLES = len(_AA_SAMPLES)
 _AA_MASK_ALL = (1 << _AA_NUM_SAMPLES) - 1
 _AA_SAMPLE_WEIGHT = 1.0 / _AA_NUM_SAMPLES
+
+# The near-cut line (``_near_line``) of a triangle the near clip plane does not
+# cross: every pixel is this far inside it, so it keeps everything and never
+# reaches the per-sample test. Its negation keeps nothing.
+_NEAR_CLEAR = 1e30
+
+# The area (in pixels) the near cut must take from a fragment before the
+# fragment counts as cut (_AA_NEAR_CUT_BIT): above the clip helpers' float
+# noise, and below any coverage error the shell ceiling would make visible.
+_NEAR_TRIM_AREA = 1e-4
 
 
 # Compare-swap network that sorts four values with five comparisons.
@@ -807,6 +828,128 @@ def _two_halfplane_area(n1x, n1y, d1, n2x, n2y, d2, a1, a2):
 
 
 @ti.func
+def _near_cut_area(vx, vy, nx, ny, c, centroid: ti.template()):
+    """Exact area of (triangle n kept side of a line n pixel square), the pixel
+    centre at the origin; with ``centroid``, also that region's centroid.
+
+    The line is the near clip plane's cut (:func:`_near_line`): ``nx * x + ny
+    * y + c >= 0`` is the side it keeps, ``c`` the pixel centre's signed
+    distance. Clipping a triangle by one half-plane leaves a triangle (one
+    vertex kept) or a quad (two), so the region is at most two triangles,
+    each measured by the exact clip of :func:`_pixel_clip_area` /
+    :func:`_pixel_clip_centroid`. Returns ``(area, cx, cy)``; the centroid is
+    the pixel centre when the region is empty or ``centroid`` is off.
+    """
+    g = ti.math.vec3(nx * vx[0] + ny * vy[0] + c,
+                     nx * vx[1] + ny * vy[1] + c,
+                     nx * vx[2] + ny * vy[2] + c)
+    k0 = 0
+    if g[0] >= 0.0:
+        k0 = 1
+    k1 = 0
+    if g[1] >= 0.0:
+        k1 = 1
+    k2 = 0
+    if g[2] >= 0.0:
+        k2 = 1
+    kept = k0 + k1 + k2
+    # Rotate the vertex whose side differs from the other two's to the front.
+    ax = vx[0]
+    ay = vy[0]
+    ga = g[0]
+    bx = vx[1]
+    by = vy[1]
+    gb = g[1]
+    cx = vx[2]
+    cy = vy[2]
+    gcc = g[2]
+    if (k1 != k0) and (k1 != k2):
+        ax = vx[1]
+        ay = vy[1]
+        ga = g[1]
+        bx = vx[2]
+        by = vy[2]
+        gb = g[2]
+        cx = vx[0]
+        cy = vy[0]
+        gcc = g[0]
+    elif (k2 != k0) and (k2 != k1):
+        ax = vx[2]
+        ay = vy[2]
+        ga = g[2]
+        bx = vx[0]
+        by = vy[0]
+        gb = g[0]
+        cx = vx[1]
+        cy = vy[1]
+        gcc = g[1]
+    # The line's crossings of the two edges at the odd vertex (unused when
+    # every vertex is on one side).
+    sab = ga / ti.select(ga != gb, ga - gb, 1.0)
+    sac = ga / ti.select(ga != gcc, ga - gcc, 1.0)
+    pabx = ax + sab * (bx - ax)
+    paby = ay + sab * (by - ay)
+    pacx = ax + sac * (cx - ax)
+    pacy = ay + sac * (cy - ay)
+    # First triangle: the whole one, the kept corner, or half the kept quad.
+    t1x = ti.math.vec3(ax, bx, cx)
+    t1y = ti.math.vec3(ay, by, cy)
+    if kept == 1:
+        t1x = ti.math.vec3(ax, pabx, pacx)
+        t1y = ti.math.vec3(ay, paby, pacy)
+    elif kept == 2:
+        t1x = ti.math.vec3(bx, cx, pacx)
+        t1y = ti.math.vec3(by, cy, pacy)
+    area = 0.0
+    mx = 0.0
+    my = 0.0
+    if kept > 0:
+        if ti.static(centroid):
+            a1, ox1, oy1 = _pixel_clip_centroid(t1x, t1y)
+            area = a1
+            mx = a1 * ox1
+            my = a1 * oy1
+        else:
+            area = _pixel_clip_area(t1x, t1y)
+    if kept == 2:
+        t2x = ti.math.vec3(bx, pacx, pabx)
+        t2y = ti.math.vec3(by, pacy, paby)
+        if ti.static(centroid):
+            a2, ox2, oy2 = _pixel_clip_centroid(t2x, t2y)
+            area += a2
+            mx += a2 * ox2
+            my += a2 * oy2
+        else:
+            area += _pixel_clip_area(t2x, t2y)
+    ox = 0.0
+    oy = 0.0
+    if ti.static(centroid):
+        if area > 1e-9:
+            ox = mx / area
+            oy = my / area
+    return ti.min(area, 1.0), ox, oy
+
+
+@ti.func
+def _near_clipped_pixel_area(ax, ay, bx, by, cx, cy, clear, nl, gc):
+    """:func:`_near_cut_area` for :func:`_ss_pixel`'s exact lane.
+
+    The vertices are relative to the pixel centre, ``gc`` that centre's
+    distance from the cut. ``clear`` says no triangle edge reaches the pixel,
+    which leaves the cut's own half-plane in closed form -- the common case,
+    the cut running through a large triangle's interior.
+    """
+    ca = 0.0
+    if clear:
+        ca = _halfplane_clip_area(nl[0], nl[1], gc)
+    else:
+        ca, _cx, _cy = _near_cut_area(
+            ti.math.vec3(ax, bx, cx), ti.math.vec3(ay, by, cy),
+            nl[0], nl[1], gc, False)
+    return ca
+
+
+@ti.func
 def _boundary_coverage(nx, ny, d, aa: ti.template()):
     """Pixel coverage by the drawn side of one boundary, at signed distance ``d``.
 
@@ -1083,9 +1226,96 @@ def _decode_bez_ref(ref):
 
 
 @ti.func
+def _near_line(sm, vm, cam_o, fwd, near_clip):
+    """The near clip plane across a projected triangle, as a line on screen.
+
+    Returns ``(nx, ny, c)``: ``nx * x + ny * y + c`` is the signed distance in
+    pixels from the screen point ``(x, y)`` to where the plane cuts the
+    triangle, positive on the side the plane keeps. Meaningful inside the
+    triangle only, which is all :func:`_ss_pixel` asks of it.
+
+    Depth along the forward axis is affine in world space, so across the
+    triangle it is the perspective-correct blend of its vertices' depths
+    ``z_i``, weighted by the screen barycentrics over the divisors ``d_i``
+    (``sm[2]`` holds ``1 / d_i``). The plane therefore crosses edge ``i -> j``
+    at screen parameter ``a_i / (a_i - a_j)``, with ``a_i = (z_i - near) /
+    |d_i|``, and projection keeps the cut straight: the line through the two
+    edge crossings. A triangle the plane only touches at a vertex keeps no
+    area, and gets a line that keeps nothing.
+    """
+    a = ti.math.vec3(0.0, 0.0, 0.0)
+    for i in ti.static(range(3)):
+        v = ti.math.vec3(vm[i, 0], vm[i, 1], vm[i, 2])
+        a[i] = ti.abs(sm[2, i]) * ((v - cam_o).dot(fwd) - near_clip)
+    c1x = 0.0
+    c1y = 0.0
+    c2x = 0.0
+    c2y = 0.0
+    cuts = 0
+    for e in ti.static(range(3)):
+        i = ti.static(e)
+        j = ti.static((e + 1) % 3)
+        if (a[i] >= 0.0) != (a[j] >= 0.0):
+            s = a[i] / (a[i] - a[j])
+            x = sm[0, i] + s * (sm[0, j] - sm[0, i])
+            y = sm[1, i] + s * (sm[1, j] - sm[1, i])
+            if cuts == 0:
+                c1x = x
+                c1y = y
+            else:
+                c2x = x
+                c2y = y
+            cuts += 1
+    # The vertex the plane keeps most clearly orients the line.
+    kx = sm[0, 0]
+    ky = sm[1, 0]
+    best = a[0]
+    for i in ti.static(range(1, 3)):
+        if a[i] > best:
+            best = a[i]
+            kx = sm[0, i]
+            ky = sm[1, i]
+    nl = ti.math.vec3(0.0, 0.0, -_NEAR_CLEAR)
+    dx = c2x - c1x
+    dy = c2y - c1y
+    ln = ti.sqrt(dx * dx + dy * dy)
+    if (cuts == 2) and (ln > 0.0):
+        nx = -dy / ln
+        ny = dx / ln
+        if nx * (kx - c1x) + ny * (ky - c1y) < 0.0:
+            nx = -nx
+            ny = -ny
+        nl = ti.math.vec3(nx, ny, -(nx * c1x + ny * c1y))
+    elif (cuts == 0) and (best >= 0.0):
+        # No edge crosses (the host's flag and these depths disagree by a
+        # rounding): keep the triangle whole.
+        nl = ti.math.vec3(0.0, 0.0, _NEAR_CLEAR)
+    return nl
+
+
+@ti.func
+def _past_near(ro, rd, t, f, cam_origin: ti.template(), fwd, near_clip):
+    """Whether the point ``t`` along a primary ray lies past the near clip
+    plane -- always, without one. The plane sits ``near_clip`` along the
+    forward axis ``fwd`` from the eye, as ``wavefront_generate_rays`` places it.
+    """
+    eye = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
+    return (near_clip <= 0.0) or ((ro + t * rd - eye).dot(fwd) >= near_clip)
+
+
+@ti.func
+def _forward_axis(f, cam_origin: ti.template(), screen_point: ti.template()):
+    """The camera's unit forward axis, the one its near plane is measured on."""
+    return (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                         screen_point[f, 2])
+            - ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1],
+                           cam_origin[f, 2])).normalized()
+
+
+@ti.func
 def _ss_setup(f, prim, ss_enabled: ti.template(), tri_pos: ti.template(),
               tri_screen: ti.template(), cam_origin: ti.template(),
-              aa: ti.template()):
+              screen_point: ti.template(), near_clip, aa: ti.template()):
     """Load the per-(frame, triangle) projection prepared once by the host.
 
     ``tri_screen[..., 0:3]`` are sx, ``3:6`` sy, ``6:9`` reciprocal
@@ -1101,6 +1331,10 @@ def _ss_setup(f, prim, ss_enabled: ti.template(), tri_pos: ti.template(),
     reciprocal screen edge lengths, returned as ``il``; the host only allocates
     them when the feature is on, so ``aa`` must be derived from the table width
     the host produced rather than the live setting.
+
+    ``nl`` is the near clip plane's cut across the triangle
+    (:func:`_near_line`) when the host flagged it 2, an all-front triangle the
+    plane crosses; otherwise a line that keeps everything.
     """
     tp = f % tri_pos.shape[0]
     ts = f % tri_screen.shape[0]
@@ -1116,6 +1350,7 @@ def _ss_setup(f, prim, ss_enabled: ti.template(), tri_pos: ti.template(),
                     [v2[0], v2[1], v2[2]]])
     sm = ti.Matrix.zero(ti.f32, 3, 3)
     il = ti.math.vec3(0.0, 0.0, 0.0)
+    nl = ti.math.vec3(0.0, 0.0, _NEAR_CLEAR)
     use_ss = 0
     if ti.static(ss_enabled):
         if tri_screen[ts, prim, 9] > 0.5:
@@ -1127,11 +1362,15 @@ def _ss_setup(f, prim, ss_enabled: ti.template(), tri_pos: ti.template(),
             if ti.static(aa):
                 for i in ti.static(range(3)):
                     il[i] = tri_screen[ts, prim, 10 + i]
-    return use_ss, sm, vm, cam_o, il
+            if tri_screen[ts, prim, 9] > 1.5:
+                nl = _near_line(sm, vm, cam_o,
+                                _forward_axis(f, cam_origin, screen_point),
+                                near_clip)
+    return use_ss, sm, vm, cam_o, il, nl
 
 
 @ti.func
-def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
+def _ss_pixel(px, py, sm, vm, cam_o, il, nl, aa: ti.template(),
               store_exact: ti.template(), f, cam_origin: ti.template(),
               cam_proj: ti.template()):
     """Screen-space test of one pixel against the pre-projected triangle.
@@ -1169,9 +1408,17 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
     partially covering ones move.  The returned barycentrics are still projected
     onto the simplex, because they go on to index colors, normals and UVs and
     must not sample outside the triangle.
+
+    ``nl`` is the near clip plane's cut across the triangle
+    (:func:`_ss_setup`): what lies on its far side is all the triangle there
+    is. A sample past the line is no sample of it, and on the pixels the line
+    crosses the exact areas are those of the clipped triangle. The kept part
+    is convex, so the owned-sample centroid argument above still holds.
     """
     qx = ti.cast(px, ti.f32) + 0.5
     qy = ti.cast(py, ti.f32) + 0.5
+    # The pixel centre's signed distance from the near cut, in pixels.
+    gc = nl[0] * qx + nl[1] * qy + nl[2]
     sx0, sx1, sx2 = sm[0, 0], sm[0, 1], sm[0, 2]
     sy0, sy1, sy2 = sm[1, 0], sm[1, 1], sm[1, 2]
     e0 = (sx2 - sx1) * (qy - sy1) - (sy2 - sy1) * (qx - sx1)
@@ -1193,7 +1440,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
         b1 = n1 * inv
         b2 = n2 * inv
         accept = ((b1 >= -BARYCENTRIC_EPSILON) and (b2 >= -BARYCENTRIC_EPSILON)
-                  and (b0 >= -BARYCENTRIC_EPSILON))
+                  and (b0 >= -BARYCENTRIC_EPSILON) and (gc >= 0.0))
         c = 1.0
         m = _AA_MASK_ALL
         if ti.static(aa):
@@ -1210,6 +1457,22 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
             accept = (
                 ((d0 > -0.7072) and (d1 > -0.7072) and (d2 > -0.7072))
                 or ((d0 < 0.7072) and (d1 < 0.7072) and (d2 < 0.7072)))
+            # A pixel wholly past the near cut has nothing of the triangle.
+            accept = accept and (gc > -0.7072)
+            # Whether the near cut crosses the pixel at all; when it does,
+            # ``nmask`` holds the samples it keeps.
+            near_live = gc < 0.7072
+            nmask = _AA_MASK_ALL
+            # Whether the cut took area from this fragment (the WRITE kernel's
+            # exact lanes decide; see _AA_NEAR_CUT_BIT).
+            trimmed = 0
+            if near_live:
+                nmask = 0
+                for k in ti.static(range(_AA_NUM_SAMPLES)):
+                    if (gc + nl[0] * ti.static(_AA_SAMPLES[k][0] / _AA_FIXED_SCALE)
+                            + nl[1] * ti.static(_AA_SAMPLES[k][1]
+                                                / _AA_FIXED_SCALE)) >= 0.0:
+                        nmask |= 1 << k
             if accept:
                 # Keep the exact path for every accepted candidate. A
                 # full-interior branch adds enough edge-support arithmetic to
@@ -1317,7 +1580,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                         q1 = ec1 + gx1 * oy - gy1 * ox + tl1
                         q2 = ec2 + gx2 * oy - gy2 * ox + tl2
                         qq = ti.min(q0, ti.min(q1, q2))
-                        if qq > 0:
+                        if (qq > 0) and ((nmask & ti.static(1 << k)) != 0):
                             m |= 1 << k
                             sox += ti.static(float(ox))
                             soy += ti.static(float(oy))
@@ -1325,7 +1588,8 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                     # Only the sliver policies need to know which sample the
                     # triangle came closest to.
                         if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP):
-                            if qq > best_q:
+                            if (qq > best_q) and (
+                                    (nmask & ti.static(1 << k)) != 0):
                                 best_q = qq
                                 best_k = k
                     if area2 == 0:
@@ -1376,19 +1640,28 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                             ffl = 1.0
                             if oi < 0:
                                 ffl = -1.0
-                            if ((ffl * d0 >= 0.7072)
-                                    and (ffl * d1 >= 0.7072)
-                                    and (ffl * d2 >= 0.7072)):
+                            clear = ((ffl * d0 >= 0.7072)
+                                     and (ffl * d1 >= 0.7072)
+                                     and (ffl * d2 >= 0.7072))
+                            if clear:
                                 c = 1.0
                             else:
-                                ca = _pixel_clip_area(
+                                c = _pixel_clip_area(
                                     ti.math.vec3(
                                         sx0 - qx, sx1 - qx, sx2 - qx),
                                     ti.math.vec3(
                                         sy0 - qy, sy1 - qy, sy2 - qy))
-                                c = ca
-                                if (c >= 0.9999) or (c <= 0.0):
-                                    c = 1.0
+                            if near_live:
+                                # Every sample kept, but the cut still
+                                # crosses the square somewhere.
+                                kept = _near_clipped_pixel_area(
+                                    sx0 - qx, sy0 - qy, sx1 - qx, sy1 - qy,
+                                    sx2 - qx, sy2 - qy, clear, nl, gc)
+                                if c - kept > _NEAR_TRIM_AREA:
+                                    trimmed = 1
+                                c = kept
+                            if (c >= 0.9999) or (c <= 0.0):
+                                c = 1.0
                         elif (m != 0) and ti.static(store_exact):
                             # Exact area of (triangle n pixel), stored for the
                             # sheet claims, cheapest-first: a microtriangle FULLY
@@ -1438,6 +1711,14 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                                 ca = _pixel_clip_area(
                                     ti.math.vec3(ax_, bx_, cx2),
                                     ti.math.vec3(ay_, by_, cy2))
+                            if near_live:
+                                kept = _near_clipped_pixel_area(
+                                    ax_, ay_, bx_, by_, cx2, cy2,
+                                    (od0 >= 0.7072) and (od1 >= 0.7072)
+                                    and (od2 >= 0.7072), nl, gc)
+                                if ca - kept > _NEAR_TRIM_AREA:
+                                    trimmed = 1
+                                ca = kept
                             if ca > 0.0:
                                 c = ca
                         elif m == 0:
@@ -1469,11 +1750,23 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                                 # UNINITIALIZED fragment rows (the
                                 # text_and_media CUDA_ERROR_ILLEGAL_ADDRESS:
                                 # a float bit-pattern walked as a prim id).
-                                ca, cx_, cy_ = _pixel_clip_centroid(
-                                    ti.math.vec3(
-                                        sx0 - qx, sx1 - qx, sx2 - qx),
-                                    ti.math.vec3(
-                                        sy0 - qy, sy1 - qy, sy2 - qy))
+                                dvx = ti.math.vec3(
+                                    sx0 - qx, sx1 - qx, sx2 - qx)
+                                dvy = ti.math.vec3(
+                                    sy0 - qy, sy1 - qy, sy2 - qy)
+                                ca = 0.0
+                                cx_ = 0.0
+                                cy_ = 0.0
+                                if near_live:
+                                    ca, cx_, cy_ = _near_cut_area(
+                                        dvx, dvy, nl[0], nl[1], gc, True)
+                                    if ti.static(store_exact):
+                                        if (_pixel_clip_area(dvx, dvy) - ca
+                                                > _NEAR_TRIM_AREA):
+                                            trimmed = 1
+                                else:
+                                    ca, cx_, cy_ = _pixel_clip_centroid(
+                                        dvx, dvy)
                                 if ca > 0.0:
                                     c = ca
                                     nsm = 1
@@ -1541,6 +1834,8 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                         accept = ((m & _AA_MASK_ALL) != 0) and (c > 0.0)
                         if oi < 0:
                             m |= _AA_BACKFACE_BIT
+                    if trimmed != 0:
+                        m |= _AA_NEAR_CUT_BIT
                 # Re-evaluate the fragment AT THE CENTROID OF THE SAMPLES IT
                 # OWNS rather than at the pixel centre, which is the only point
                 # the fragment is known to be visible at.
@@ -1619,7 +1914,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
 def _raycast_pixel(px, py, f, vm, half_w, half_h,
                    cam_origin: ti.template(), screen_point: ti.template(),
                    pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
-                   cam_proj: ti.template(),
+                   cam_proj: ti.template(), near_clip,
                    aa: ti.template()):
     """Per-pixel ray-cast fallback (Moller-Trumbore), used when a triangle
     straddles the camera plane so screen-space projection is invalid, and for
@@ -1627,6 +1922,11 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
     (projection flag 0.5, see ``_AA_LATTICE_MAX_EXTENT``). Returns
     ``(ok, t, w1, w2, cov, msk)``; under analytic coverage ``msk`` carries the
     facing bit exactly as :func:`_ss_pixel` sets it.
+
+    Each ray's hit also has to lie past the near clip plane (``near_clip``,
+    0 for none), as the classic route's rays start on it. The part of the
+    triangle past the plane is convex and in front of the camera, so the
+    centroid re-cast below lands inside it.
 
     Under analytic coverage this does NOT report full coverage. It cannot use the
     screen-space edge functions -- the projection that would supply them is the
@@ -1658,6 +1958,7 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
     w2 = 0.0
     cov = 1.0
     msk = _AA_MASK_ALL
+    fwd = _forward_axis(f, cam_origin, screen_point)
     ro, rd = _generate_ray(f, px, py, 0.5, 0.5, half_w, half_h,
                            cam_origin, screen_point,
                            pixel_basis_x, pixel_basis_y, cam_proj)
@@ -1678,6 +1979,8 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
             sox = 0.0
             soy = 0.0
             nsm = 0
+            # Whether the near plane took a sample the triangle holds.
+            cut = 0
             for k in ti.static(range(_AA_NUM_SAMPLES)):
                 jx = ti.static(0.5 + _AA_SAMPLES[k][0] / _AA_FIXED_SCALE)
                 jy = ti.static(0.5 + _AA_SAMPLES[k][1] / _AA_FIXED_SCALE)
@@ -1709,10 +2012,13 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                 # precisely what straddling the camera plane invalidates.
                 hit_s, _c1, _c2, ts = _tri_hit(ros, rds, v0, v1, v2)
                 if hit_s and (ts > min_hit_distance):
-                    m |= 1 << k
-                    sox += ti.static(float(_AA_SAMPLES[k][0]))
-                    soy += ti.static(float(_AA_SAMPLES[k][1]))
-                    nsm += 1
+                    if _past_near(ros, rds, ts, f, cam_origin, fwd, near_clip):
+                        m |= 1 << k
+                        sox += ti.static(float(_AA_SAMPLES[k][0]))
+                        soy += ti.static(float(_AA_SAMPLES[k][1]))
+                        nsm += 1
+                    else:
+                        cut = 1
             # Same rule as the projected path: a partially covering fragment is
             # re-cast through the CENTROID OF THE SAMPLES IT OWNS, so its depth
             # is a real intersection with the triangle rather than the centre
@@ -1763,6 +2069,8 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                         pixel_basis_y[f, 2]))
                 if det_hit * rd.dot(nvec) > 0.0:
                     msk |= _AA_BACKFACE_BIT
+                if cut != 0:
+                    msk |= _AA_NEAR_CUT_BIT
                 # The centre may lie outside the triangle when only some samples
                 # are inside, so project its barycentrics onto the simplex
                 # before they index colors, normals and UVs (as _ss_pixel does).
@@ -1775,7 +2083,8 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                     w1 = cb1 * inv_b
                     w2 = cb2 * inv_b
         else:
-            if inside and (th > min_hit_distance):
+            if inside and (th > min_hit_distance) and _past_near(
+                    ro, rd, th, f, cam_origin, fwd, near_clip):
                 ok = 1
                 t = th
                 w1 = b1
@@ -1786,7 +2095,7 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
 @ti.func
 def _pair_pixel(prim, f, x0, y0, bw, bh, off, j,
                 time_start, width, height, tile_start, tile_pixels,
-                half_w, half_h, use_ss, sm, vm, cam_o, il,
+                half_w, half_h, use_ss, sm, vm, cam_o, il, nl, near_clip,
                 cam_origin: ti.template(), screen_point: ti.template(),
                 pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
                 cam_proj: ti.template(),
@@ -1822,12 +2131,12 @@ def _pair_pixel(prim, f, x0, y0, bw, bh, off, j,
             mk = _AA_MASK_ALL
             if use_ss != 0:
                 hit, th, b1, b2, cv, mk = _ss_pixel(
-                    px, py, sm, vm, cam_o, il, aa, store_exact, f,
+                    px, py, sm, vm, cam_o, il, nl, aa, store_exact, f,
                     cam_origin, cam_proj)
             else:
                 hit, th, b1, b2, cv, mk = _raycast_pixel(
                     px, py, f, vm, half_w, half_h, cam_origin, screen_point,
-                    pixel_basis_x, pixel_basis_y, cam_proj, aa)
+                    pixel_basis_x, pixel_basis_y, cam_proj, near_clip, aa)
             if hit != 0:
                 ok = 1
                 t = th
@@ -1839,6 +2148,66 @@ def _pair_pixel(prim, f, x0, y0, bw, bh, off, j,
 
 
 @ti.func
+def _circuit_near_cover(f, px, py, n, center, half_w, half_h,
+                        cam_origin: ti.template(), screen_point: ti.template(),
+                        pixel_basis_x: ti.template(),
+                        pixel_basis_y: ti.template(),
+                        cam_proj: ti.template(), near_clip,
+                        aa: ti.template()):
+    """How much of a pixel's view of a circuit's plane the near clip keeps.
+
+    A camera ray through screen offset ``L`` (``screen_point + L`` on the
+    screen) meets the plane ``(p - center) . n = 0`` at the parameter
+    ``N / M`` along its unnormalized direction, with ``N = (center - eye) . n
+    - spread * (L . n)`` and ``M = (screen_point - eye) . n + persp * (L .
+    n)`` (``_generate_ray``; a pinhole is ``persp = 1, spread = 0``), and at a
+    depth of ``D * N / M`` along the forward axis, ``D`` the eye's distance
+    from the screen. Both are affine on screen, so the plane is kept where
+    ``D * N - near * M`` has the sign of ``M``: a half-plane, whose exact
+    share of the pixel the box filter of :func:`_boundary_coverage` measures
+    under ``aa`` (the circuit's own boundary filter). Without ``aa`` the
+    centre alone decides.
+    """
+    eye = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
+    sp = ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                      screen_point[f, 2])
+    bx = ti.math.vec3(pixel_basis_x[f, 0], pixel_basis_x[f, 1],
+                      pixel_basis_x[f, 2])
+    by = ti.math.vec3(pixel_basis_y[f, 0], pixel_basis_y[f, 1],
+                      pixel_basis_y[f, 2])
+    persp = 1.0
+    spread = 0.0
+    if ti.static(_projected(cam_proj)):
+        if cam_proj[f, 1] != 0.0:
+            persp = cam_proj[f, 0]
+            spread = cam_proj[f, 1]
+    u = (ti.cast(px, ti.f32) + 0.5 - half_w) / half_h
+    v = (ti.cast(py, ti.f32) + 0.5 - half_h) / half_h
+    bxn = bx.dot(n)
+    byn = by.dot(n)
+    ln = u * bxn + v * byn
+    big_d = (sp - eye).norm()
+    mm = (sp - eye).dot(n) + persp * ln
+    h = big_d * ((center - eye).dot(n) - spread * ln) - near_clip * mm
+    sgn = 1.0
+    if mm < 0.0:
+        sgn = -1.0
+    # Gradient of the kept-side function per screen pixel.
+    k = -sgn * (big_d * spread + near_clip * persp) / half_h
+    gx = k * bxn
+    gy = k * byn
+    gl = ti.sqrt(gx * gx + gy * gy)
+    hc = sgn * h
+    c = 0.0
+    if hc >= 0.0:
+        c = 1.0
+    if ti.static(aa):
+        if gl > 0.0:
+            c = _boundary_coverage(gx, gy, hc / gl, aa)
+    return c
+
+
+@ti.func
 def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                    cam_origin: ti.template(), screen_point: ti.template(),
                    pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
@@ -1847,7 +2216,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                    circuit_meta: ti.template(), circuit_colors: ti.template(),
                    edges_2d: ti.template(), edge_accel: ti.template(),
                    aa: ti.template(), aa_min_half_width: ti.f32,
-                   border_aa: ti.template()):
+                   border_aa: ti.template(), near_clip):
     """Exact primary camera-ray/circuit hit for one known pixel.
 
     Returns ``(ok, t, u, v, border_frac, cov)``.  ``cov`` is 1.0 unless the
@@ -1890,6 +2259,11 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
     silhouette resolves continuously while the border/fill edge -- which can be
     the only visible edge, e.g. an outlined glyph over an invisible fill --
     stays a hard per-pixel classification.
+
+    The near clip plane (``near_clip``, 0 for none) cuts the plane along a
+    straight line on screen (:func:`_circuit_near_cover`); its share of the
+    pixel multiplies the coverage, which is exact wherever only one of the
+    two boundaries crosses the pixel.
     """
     ok = 0
     t = 0.0
@@ -2180,6 +2554,15 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                             (c - fill_c) / ti.max(c, 1e-6), 0.0, 1.0)
                     else:
                         bf = 1.0
+            if near_clip > 0.0:
+                kept = _circuit_near_cover(
+                    f, px, py, n, center, half_w, half_h, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, cam_proj,
+                    near_clip, aa)
+                if ti.static(not aa):
+                    inside = inside and (kept > 0.5)
+                else:
+                    c *= kept
             if ti.static(not aa):
                 if inside:
                     ok = 1
@@ -2208,7 +2591,7 @@ def _bez_pair_pixel(circuit, f, x0, y0, bw, bh, off, j,
                     pixel_world_scale: ti.template(),
                     circuit_meta: ti.template(), circuit_colors: ti.template(),
                     edges_2d: ti.template(), edge_accel: ti.template(),
-                    aa: ti.template(), aa_min_half_width: ti.f32):
+                    aa: ti.template(), aa_min_half_width: ti.f32, near_clip):
     """Pair wrapper around :func:`_bez_pixel_hit`. ``lp`` is the candidate's
     pixel whenever it lies in the tile, hit or not, as in :func:`_pair_pixel`.
     """
@@ -2231,7 +2614,7 @@ def _bez_pair_pixel(circuit, f, x0, y0, bw, bh, off, j,
                 circuit, f, px, py, half_w, half_h, cam_origin, screen_point,
                 pixel_basis_x, pixel_basis_y, cam_proj, pixel_world_scale, circuit_meta,
                 circuit_colors, edges_2d, edge_accel, aa, aa_min_half_width,
-                aa)
+                aa, near_clip)
             if hit != 0:
                 ok = 1
                 t = th
@@ -2261,6 +2644,7 @@ def raster_tri_count(
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
         ss_enabled: ti.template(), layer_offset_triangles: ti.f32,
+        near_clip: ti.f32,
         z_cull: ti.template(), zbuf: ti.types.ndarray(),
         aa: ti.template(), partial_only: ti.template(),
         pair_count: ti.types.ndarray(),
@@ -2288,8 +2672,9 @@ def raster_tri_count(
         bw = pairs[p, 4]
         bh = pairs[p, 5]
         off = pairs[p, 6]
-        use_ss, sm, vm, cam_o, il = _ss_setup(
-            f, prim, ss_enabled, tri_pos, tri_screen, cam_origin, aa)
+        use_ss, sm, vm, cam_o, il, nl = _ss_setup(
+            f, prim, ss_enabled, tri_pos, tri_screen, cam_origin,
+            screen_point, near_clip, aa)
         layer = ti.cast(layer_offset_triangles, ti.i32) + prim
         cnt = 0
         bits = 0
@@ -2297,8 +2682,8 @@ def raster_tri_count(
             ok, lp, t, w1, w2, cov, msk = _pair_pixel(
                 prim, f, x0, y0, bw, bh, off, j, time_start, width, height,
                 tile_start, tile_pixels, half_w, half_h, use_ss, sm, vm, cam_o,
-                il, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                cam_proj, aa,
+                il, nl, near_clip, cam_origin, screen_point, pixel_basis_x,
+                pixel_basis_y, cam_proj, aa,
                 0)
             if ok != 0:
                 keep = True
@@ -2343,6 +2728,7 @@ def raster_tri_write(
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
         ss_enabled: ti.template(), layer_offset_triangles: ti.f32,
+        near_clip: ti.f32,
         z_cull: ti.template(), zbuf: ti.types.ndarray(),
         aa: ti.template(), partial_only: ti.template(),
         frag_key: ti.types.ndarray(),
@@ -2372,8 +2758,9 @@ def raster_tri_write(
         bw = pairs[p, 4]
         bh = pairs[p, 5]
         off = pairs[p, 6]
-        use_ss, sm, vm, cam_o, il = _ss_setup(
-            f, prim, ss_enabled, tri_pos, tri_screen, cam_origin, aa)
+        use_ss, sm, vm, cam_o, il, nl = _ss_setup(
+            f, prim, ss_enabled, tri_pos, tri_screen, cam_origin,
+            screen_point, near_clip, aa)
         w = pair_offset[p]
         bits = pair_accept[p]
         for j in range(raster_chunk):
@@ -2381,8 +2768,9 @@ def raster_tri_write(
                 ok, lp, t, w1, w2, cov, msk = _pair_pixel(
                     prim, f, x0, y0, bw, bh, off, j, time_start, width,
                     height, tile_start, tile_pixels, half_w, half_h, use_ss,
-                    sm, vm, cam_o, il, cam_origin, screen_point,
-                    pixel_basis_x, pixel_basis_y, cam_proj, aa, 1)
+                    sm, vm, cam_o, il, nl, near_clip, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, cam_proj, aa,
+                    1)
                 tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
                 if ok == 0:
                     tb = ti.i64(_WRITE_MISS_T_BITS)
@@ -2416,6 +2804,7 @@ def raster_bez_count(
         tile_start: int, tile_pixels: int,
         z_cull: ti.template(), zbuf: ti.types.ndarray(),
         aa: ti.template(), aa_min_half_width: ti.f32,
+        near_clip: ti.f32,
         partial_only: ti.template(),
         pair_count: ti.types.ndarray(),
         pair_accept: ti.types.ndarray()):
@@ -2446,7 +2835,7 @@ def raster_bez_count(
                 tile_start, tile_pixels, half_w, half_h, cam_origin,
                 screen_point, pixel_basis_x, pixel_basis_y, cam_proj, pixel_world_scale,
                 circuit_meta, circuit_colors, edges_2d, edge_accel,
-                aa, aa_min_half_width)
+                aa, aa_min_half_width, near_clip)
             if ok != 0:
                 keep = True
                 if ti.static(partial_only):
@@ -2484,6 +2873,7 @@ def raster_bez_write(
         tile_start: int, tile_pixels: int,
         z_cull: ti.template(), zbuf: ti.types.ndarray(),
         aa: ti.template(), aa_min_half_width: ti.f32,
+        near_clip: ti.f32,
         partial_only: ti.template(),
         frag_key: ti.types.ndarray(),
         frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray(),
@@ -2518,7 +2908,7 @@ def raster_bez_write(
                     height, tile_start, tile_pixels, half_w, half_h,
                     cam_origin, screen_point, pixel_basis_x, pixel_basis_y, cam_proj,
                     pixel_world_scale, circuit_meta, circuit_colors,
-                    edges_2d, edge_accel, aa, aa_min_half_width)
+                    edges_2d, edge_accel, aa, aa_min_half_width, near_clip)
                 tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
                 if ok == 0:
                     # See _WRITE_MISS_T_BITS (raster_tri_write).

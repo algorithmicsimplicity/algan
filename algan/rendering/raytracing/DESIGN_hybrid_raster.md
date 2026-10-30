@@ -876,10 +876,11 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
 
 Gate for engaging the front-end (`use_raster` in tracer.py): HYBRID_RASTER on,
 merged visibility masks present, (num_triangles > 0 or num_circuits > 0), not
-textured/sorted-legacy, no mem-trim, no custom scatter, near_clip <= 0,
-aa_level <= 1, and RASTER_SPARSE_COVERAGE / RASTER_EMPTY_SKIP /
-RASTER_COVERED_SHADE all on (the sheet route needs the compacted chain). The
-old `num_pn == 0` condition is gone with PN itself.
+textured/sorted-legacy, no mem-trim, no custom scatter, aa_level <= 1, and
+RASTER_SPARSE_COVERAGE / RASTER_EMPTY_SKIP / RASTER_COVERED_SHADE all on (the
+sheet route needs the compacted chain). The old `num_pn == 0` condition is
+gone with PN itself, and `near_clip <= 0` since the emission cuts at the near
+plane (2026-10-30, DESIGN_sheet_resolve.md Phase 4).
 
 SUPPORTED through the front-end: fragment shading, refraction and
 refl-transparent splits, environment maps, far clip, hard AND soft shadows

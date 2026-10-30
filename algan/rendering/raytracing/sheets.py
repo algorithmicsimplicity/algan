@@ -100,6 +100,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_MAT_OPAQUE_BIT as AA_MAT_OPAQUE_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_NEAR_CUT_BIT as AA_NEAR_CUT_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_NUM_SAMPLES as AA_NUM_SAMPLES,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -603,6 +606,23 @@ def _key_depth_order(key, depth, runs=None):
         if order is not None:
             return order
     return _lexsort(key, depth)
+
+
+def _segment_any(key, flag):
+    """Whether any row of each row's ``key`` segment has ``flag`` set.
+
+    A segment's rows are consecutive (the compaction's stream sorts each
+    pixel's fragments by surface), so this is a run boundary scan and an
+    integer segment sum: no sync, and deterministic.
+    """
+    n = int(key.numel())
+    start = torch.ones(n, dtype=torch.bool, device=key.device)
+    if n > 1:
+        start[1:] = key[1:] != key[:-1]
+    seg = torch.cumsum(start.to(torch.int64), 0).sub_(1)
+    hits = torch.zeros(n, dtype=torch.int32, device=key.device)
+    hits.scatter_add_(0, seg, flag.to(torch.int32))
+    return hits.index_select(0, seg) > 0
 
 
 def _segment_exclusive_prefix(values, seg, first):
@@ -2311,6 +2331,7 @@ def compact_sheets(
     persist_output=False,
     resolve_only=False,
     cam_proj=None,
+    near_clip=0.0,
     _split=True,
 ):
     """Compact one emission's fragment stream into its sheet stream.
@@ -2321,7 +2342,9 @@ def compact_sheets(
     ``pixel_world_scale`` the per-frame camera rows the band rule's relative
     scale reads, and ``cam_proj`` the batch's projection table for a camera
     that is not a pinhole (``None`` for one; see
-    ``algan.rendering.projection``).
+    ``algan.rendering.projection``). ``near_clip`` is the camera's near clip
+    plane the emission cut geometry at (0 for none): the closed-shell ceiling
+    reads it to exempt the pixels that cut opens (see that block).
 
     ``shade_split`` (``sheet_shade_split``) adds a SHADING CLASS to the
     triangle group key, so a sheet never spans a hard shading discontinuity.
@@ -2480,6 +2503,7 @@ def compact_sheets(
                 "memory": memory,
                 "persist_output": persist_output,
                 "cam_proj": cam_proj,
+                "near_clip": near_clip,
             },
             resolve_only,
         )
@@ -2666,8 +2690,22 @@ def compact_sheets(
     # out at the resolve's ``eff <= min_alpha`` branch, claiming nothing and
     # occluding nothing. Determinism follows the §6.6.4 pattern (float64
     # accumulate, float32 round) because the cap feeds a threshold.
+    #
+    # A near clip plane breaks the premise. Where it cuts a solid, rays start
+    # INSIDE it and cross the shell once, so a pixel the cut runs through holds
+    # a near shell smaller than the far one, and spending the far shell's area
+    # after the near one's hands the far sheet the difference as a coverage
+    # FRACTION, which the resolve then applies to only the light the near sheet
+    # left -- measured on an opaque sphere cut by the near plane, its rim
+    # pixels let up to 15% of the background through. So a (pixel, surface)
+    # segment holding a fragment the cut trimmed (``AA_NEAR_CUT_BIT``, which
+    # the emission keeps on material-opaque fragments only) is left
+    # unceilinged: exact for an opaque solid, whose near sheet hides the far
+    # one wherever it lies. A translucent solid keeps the ceiling, which there
+    # errs less than attenuating at both crossings would (see where the
+    # emission clears the bit, raster_pipeline.prepare_sparse_raster_coverage).
     closed_s = None
-    shell_sid = shell_back = None
+    shell_sid = shell_back = shell_cut = None
     closed_flag = None
     tri_closed_arr = merged.get("tri_closed") if rt_settings.solid_shell_alpha else None
     if tri_closed_arr is not None and tri_present:
@@ -2762,6 +2800,8 @@ def compact_sheets(
             .index_select(0, order)
         )
         shell_back = ((frag_msk & AA_BACKFACE_BIT) != 0).index_select(0, order)
+        if near_clip > 0.0:
+            shell_cut = ((frag_msk & AA_NEAR_CUT_BIT) != 0).index_select(0, order)
     del closed_flag
     # ``t_o`` (the sorted exact depths) stays live past this point: the
     # sheet_sample_depth block below reads it to find each sheet's nearest
@@ -2806,6 +2846,11 @@ def compact_sheets(
         K = surface_bound + 2
         key = torch.where(closed_s, pix_o * K + shell_sid, -(positions + 1))
         del shell_sid
+        if shell_cut is not None:
+            # The near-cut exemption (see the block's header): such a segment's
+            # fragments take pass-through keys like an undeclared surface's.
+            key = torch.where(_segment_any(key, shell_cut), -(positions + 1), key)
+        del shell_cut
         # Stable within a key -- but the stream's own within-segment order is
         # FACING-major (``gkey = sid * 2 + facing`` sorts both facings into
         # consecutive runs), and the backface bit does not mean "far": measured
