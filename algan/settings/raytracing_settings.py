@@ -382,7 +382,6 @@ _MINIMUMS = {
     # transient peak to nothing, or asks for infinite subdivision
     "merge_gpu_peak_factor": (0, True),
     "project_gpu_peak_factor": (0, True),
-    "sparse_discovery_safety": (0, True),
     "wavefront_tile_safety": (0, True),
     "analytic_aa_chord_tolerance": (0, True),
 }

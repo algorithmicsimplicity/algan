@@ -3239,28 +3239,6 @@ def prepare_sparse_raster_coverage(
             pixels=int(width) * int(height),
         )
 
-    # The discovery's arena peak, amortized per output frame for a render-chunk
-    # preflight to reserve against (``sparse_discovery_bytes_for_frames``,
-    # which no planner reads yet): the pre-truncation scratch (frag_*_u:
-    # 8+4+8+4+4+1 B/frag), the compact stream (frag_key/ref/ab/cov/msk/cap:
-    # 8+4+8+4+4+4 B/frag; covered_idx/run_offsets: 4+4 B/covered), and 32 B of
-    # sheet record per sheet plus the sheet CSR. Of these only covered_idx and
-    # the sheets outlive this function unless the stream is kept. The
-    # torch-side sort and scatter intermediates are allocator-owned, like the
-    # fragment sort's.
-    per_frag = 32
-    discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
-    discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
-    # New scratch is observed by ManualMemory's peak model too. Keep this
-    # explicit reserve conservative: the scan and sorted-stream scratch have
-    # disjoint lifetimes, and final records are copied after scratch is freed.
-    if rt_settings.sheet_device_runs:
-        discovery_bytes += 8 * discovery_frags
-    if rt_settings.sheet_fused_stream:
-        discovery_bytes += 21 * num_frags + 8  # dtype alignment
-    rt_settings.note_sparse_discovery_footprint(
-        discovery_bytes, int(time_end) - int(time_start)
-    )
     if not stroke_only and not keep_fragment_stream:
         # Reclaimed with the scope above: no view of it may leave here.
         frag_key = frag_ref = frag_ab = frag_cov = frag_msk = frag_cap = None
