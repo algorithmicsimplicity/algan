@@ -43,6 +43,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
 from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
+from algan.rendering.raytracing.sheet_stream import kernel_extents_fit
 from algan.settings import SETTINGS
 from algan.utils.torch_compile import compiled
 
@@ -1182,6 +1183,12 @@ def _class_any_flags(pre_m):
     )
 
 
+#: What :func:`_pair_expand_rows` returns when the rows it counted are more
+#: than its write pass can address; ``_class_pairs_flat`` then builds them in
+#: torch. ``None`` already means "no rows".
+_PAIRS_TOO_MANY = object()
+
+
 def _pair_expand_rows(
     mask, x0, x1, y0, y1, f_abs, ncirc, device, screen=None, circuits=None
 ):
@@ -1245,6 +1252,8 @@ def _pair_expand_rows(
     total = int(counts.sum().item())
     if total == 0:
         return None
+    if not kernel_extents_fit(total * 8):
+        return _PAIRS_TOO_MANY
     rows = torch.empty((total, 8), dtype=torch.int32, device=device)
     pair_expand_write(
         mflat.view(torch.uint8),
@@ -1329,6 +1338,8 @@ def _circuit_pair_expand_rows(
     row_offs = torch.cumsum(span_rows, 0) - span_rows
     num_span_rows = int(span_rows.sum().item())
     del bh, span_rows
+    if not kernel_extents_fit(num_span_rows * 2):
+        return _PAIRS_TOO_MANY
     span_x = torch.empty((max(num_span_rows, 1), 2), dtype=torch.float32, device=device)
     spans = torch.empty(numel, dtype=torch.int32, device=device)
     counts = torch.empty(numel, dtype=torch.int64, device=device)
@@ -1353,6 +1364,8 @@ def _circuit_pair_expand_rows(
     total = int(counts.sum().item())
     if total == 0:
         return None
+    if not kernel_extents_fit(total * 8):
+        return _PAIRS_TOO_MANY
     rows = torch.empty((total, 8), dtype=torch.int32, device=device)
     pair_expand_write_circuits(
         mflat.view(torch.uint8),
@@ -1385,10 +1398,13 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None, circuits
         rt_settings.raster_pair_expand_kernel
         and mask.numel()
         and f_abs.numel() * ncirc == mask.numel()
+        and kernel_extents_fit(mask.numel())
     ):
-        return _pair_expand_rows(
+        rows = _pair_expand_rows(
             mask, x0, x1, y0, y1, f_abs, ncirc, device, screen, circuits
         )
+        if rows is not _PAIRS_TOO_MANY:
+            return rows
     idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
     if idx.numel() == 0:
         return None
@@ -1510,6 +1526,28 @@ def _check_circuit_ref_capacity(merged):
             f"{num_circuits} bezier circuits in one render batch exceeds the "
             f"{limit} a packed fragment ref can address; reduce the frame "
             f"batch size (SETTINGS.computing) or split the scene."
+        )
+
+
+def _check_raster_chunk_capacity(num_frags):
+    """Guard the int32 extents of one raster chunk's fragment arrays.
+
+    The emission's write kernels fill ``[num_frags, 2]`` barycentrics, which
+    Quadrants addresses by an int32 flat offset, so they run out at 2**30
+    fragments. ``run_offsets``, the pixel-run CSR a coverage record carries, is
+    int32 by the record's format and ends at the fragment count, and the host
+    builds it with an int32 ``cumsum``, which wraps rather than fails. Neither
+    has a wider arm to fall back to, so a chunk of 2**30 or more fragments is
+    refused where the emission sizes it, before anything is allocated. (A
+    literal, not :func:`kernel_extents_fit`, so a test that lowers the kernels'
+    limit to reach their torch arms still renders.)
+    """
+    if num_frags >= 2**30:
+        raise OverflowError(
+            f"{num_frags} fragments in one raster chunk exceeds the 2**30 - 1 "
+            f"the emission's int32-addressed [n, 2] barycentrics can hold; "
+            f"reduce the frame batch size (SETTINGS.computing) or split the "
+            f"scene."
         )
 
 
@@ -1925,7 +1963,13 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     is +53 MB of peak for 4 ms of gather, so that site stays sequential.
     """
     m = int(idx.shape[0])
-    if not rt_settings.raster_fused_gather or m == 0:
+    # The kernel narrows ``idx`` and addresses the [N, 2] and [m, 2]
+    # barycentrics, the widest arrays it takes.
+    if (
+        not rt_settings.raster_fused_gather
+        or m == 0
+        or not kernel_extents_fit(ab.numel(), 2 * m)
+    ):
         # ``key`` is the packed 64-bit fragment key and takes the split gather
         # (see ``gather_packed_key``); the other five are 32 bits or narrower
         # and go straight through. Off MPS-friendly mode both are
@@ -1977,7 +2021,12 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
     flag comparisons over identical ranges, so they agree by construction.
     """
     device = opaque_s.device
-    if not rt_settings.raster_opaque_trunc_kernel or num_frags == 0:
+    # The kernel narrows each pixel's CSR start and end, which reach ``num_frags``.
+    if (
+        not rt_settings.raster_opaque_trunc_kernel
+        or num_frags == 0
+        or not kernel_extents_fit(num_frags)
+    ):
         positions = torch.arange(num_frags, dtype=torch.int64, device=device)
         segments = torch.repeat_interleave(
             torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
@@ -2040,7 +2089,11 @@ def _one_mesh_pixel_caps(
     """
     device = key_s.device
     num_covered = int(counts.numel())
-    if rt_settings.sheet_one_mesh_kernel:
+    # The kernels narrow each pixel's CSR start and end, which reach the stream
+    # length, and the reduce takes ``ppf`` as i32 and addresses ``tri_obj``.
+    if rt_settings.sheet_one_mesh_kernel and kernel_extents_fit(
+        key_s.numel(), tri_obj.numel(), ppf
+    ):
         from algan.rendering.raytracing.sheet_compact_taichi import (
             one_mesh_pixel_apply,
             one_mesh_pixel_reduce,
@@ -2749,6 +2802,7 @@ def prepare_sparse_raster_coverage(
         num_frags = int(frag_bounds[-1])
         if num_frags == 0:
             return None
+        _check_raster_chunk_capacity(num_frags)
         # Pre-truncation emitted-fragment count: this sizes the discovery
         # scratch (frag_*_u) and, for an opaque-heavy pixel, exceeds the final
         # kept count. The arena footprint recorded before the return reserves

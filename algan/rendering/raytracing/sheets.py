@@ -108,6 +108,7 @@ from algan.rendering.raytracing.raster_taichi import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
 )
+from algan.rendering.raytracing.sheet_stream import kernel_extents_fit
 
 #: Band rules this module implements. "facing" is the no-depth-split fallback.
 BAND_RULES = ("facing", "prim")
@@ -481,11 +482,14 @@ def _local_sheet_sort(tensor):
 
 
 def _launches_locally(tensor):
-    """Whether a Taichi kernel can take ``tensor`` without staging a copy."""
+    """Whether a Taichi kernel can take ``tensor``: without staging a copy,
+    and small enough to address (``kernel_extents_fit``).
+    """
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
     return (
         tensor.numel() > 0
+        and kernel_extents_fit(tensor.numel())
         and _live_arch() is not None
         and taichi_launch_is_local(tensor.device)
     )
@@ -679,7 +683,8 @@ def _sheet_rank_groups(parent, rank, parents=None, deepest=None):
     n = parent.numel()
     if (
         sheet_rank_groups
-        and 0 < n < 2**31
+        and n > 0
+        and kernel_extents_fit(n)
         and _live_arch() is not None
         and taichi_launch_is_local(parent.device)
     ):
@@ -792,6 +797,7 @@ def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
         sheet_metadata_kernel
         and band_id is not None
         and n
+        and kernel_extents_fit(n)
         and _live_arch() is not None
         and taichi_launch_is_local(new_group.device)
     ):
@@ -1101,7 +1107,12 @@ def _popcount_lanes(bits):
     n = int(bits.numel())
     # The kernel walks one dimension; both callers pass a flat sheet array, and
     # anything else falls through to the loop rather than silently reshaping.
-    if rt_settings.sheet_mask_kernel and n and bits.dim() == 1:
+    if (
+        rt_settings.sheet_mask_kernel
+        and n
+        and bits.dim() == 1
+        and kernel_extents_fit(n)
+    ):
         from algan.rendering.raytracing.sheet_compact_taichi import mask_popcount
 
         pop = torch.empty(n, dtype=torch.int32, device=bits.device)
@@ -1147,7 +1158,8 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
     n = int(msk.numel())
     acc = accumulate_dtype()
     area64 = torch.zeros(nbands, dtype=acc, device=device)
-    if rt_settings.sheet_mask_kernel and n:
+    # The kernel narrows each band id to index the [nbands] tables.
+    if rt_settings.sheet_mask_kernel and n and kernel_extents_fit(n, nbands):
         from algan.rendering.raytracing.sheet_compact_taichi import (
             sheet_band_reduce,
         )
@@ -1235,7 +1247,12 @@ def _conflict_rank(band_start, order, msk, positions):
     """
     device = msk.device
     n = int(order.numel())
-    if not rt_settings.sheet_rank_kernel or n == 0:
+    # The kernel narrows ``order`` to index the unsorted ``msk``.
+    if (
+        not rt_settings.sheet_rank_kernel
+        or n == 0
+        or not kernel_extents_fit(n, msk.numel())
+    ):
         band_first = torch.where(band_start, positions, torch.zeros_like(positions))
         band_first = cummax_values(band_first, 0)
         bits_pre = (msk.index_select(0, order) & AA_MASK_ALL).to(torch.int32)
@@ -1550,8 +1567,10 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     """
     nb = sheet_band.numel()
     device = cov.device
-    if rt_settings.sheet_sibling_weights_kernel and (
-        device.type != "mps" or rt_settings.sheet_sibling_weights_kernel_mps
+    if (
+        rt_settings.sheet_sibling_weights_kernel
+        and (device.type != "mps" or rt_settings.sheet_sibling_weights_kernel_mps)
+        and kernel_extents_fit(nb, 2 * band_area.numel())
     ):
         if nb < 2:
             return cov, msk
@@ -1684,7 +1703,7 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
     """
     device = msk_o.device
     inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
-    if rt_settings.sheet_sample_depth_kernel and nb:
+    if rt_settings.sheet_sample_depth_kernel and nb and _lane_table_fits(n, nb):
         from algan.rendering.raytracing.sheet_compact_taichi import (
             sheet_lane_first_owner,
         )
@@ -1743,6 +1762,18 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
         del first_sorted, has, d_lane
     del big, positions, inf, target
     return sample_depths
+
+
+def _lane_table_fits(n, rows):
+    """Whether the lane-owner kernels can take a ``rows``-row table over ``n``
+    fragments.
+
+    They address lane ``lane`` of row ``b`` as ``b * AA_NUM_SAMPLES + lane``
+    in int32 and fill the table with ``n``, so the bound is on the table's
+    entries, not its rows: from 2**28 rows on the product wraps, however far
+    below 2**31 the row count itself is.
+    """
+    return kernel_extents_fit(n, rows * AA_NUM_SAMPLES)
 
 
 def _triangle_sheet_rows(band_id, tri_o, nb, bound):
@@ -1975,10 +2006,13 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
     names = ("frag_key", "frag_ref", "frag_ab", "frag_cov", "frag_msk", "frag_cap")
     frags = [coverage[name][:n].contiguous() for name in names]
     run_offsets = coverage["run_offsets"][: num_covered + 1].contiguous()
+    # ``frags[2]`` is the [n, 2] barycentrics, the widest array the split
+    # kernels index; every other count they take is at most ``n``.
     kernel = (
         sheet_split_kernel
         and (device.type != "mps" or sheet_split_kernel_mps)
         and _launches_locally(frag_ref)
+        and kernel_extents_fit(frags[2].numel())
     )
     counts = seg = sidx = None
     if kernel:
@@ -2419,7 +2453,13 @@ def compact_sheets(
             return out
     from algan.rendering.raytracing.sheet_stream import stream_kernel_available
 
-    fused_stream = rt_settings.sheet_fused_stream and stream_kernel_available(frag_key)
+    # ``gather_sheet_records`` reads the [n, 2] barycentrics, twice the
+    # elements the key's own length bounds.
+    fused_stream = (
+        rt_settings.sheet_fused_stream
+        and stream_kernel_available(frag_key)
+        and kernel_extents_fit(frag_ab.numel())
+    )
 
     pix = frag_key >> 32
     t = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
@@ -2756,7 +2796,7 @@ def compact_sheets(
         # serially, so no fragment's clamp reads anything outside its own
         # (pixel, surface) segment (``solid_shell_ceiling``'s docstring). The
         # kernel does it in registers; the torch arm below stays as the A/B.
-        if rt_settings.sheet_shell_ceiling_kernel and n:
+        if rt_settings.sheet_shell_ceiling_kernel and n and kernel_extents_fit(n):
             from algan.rendering.raytracing.sheet_compact_taichi import (
                 solid_shell_ceiling,
             )
@@ -2935,14 +2975,17 @@ def compact_sheets(
     # an f32 amax has no association, so the arms agree by construction; the
     # caller-side gathers and the positioned-depth fallback ``where`` below
     # are unchanged. The torch statements stay as the A/B arm.
-    if rt_settings.sheet_band_stats_kernel and nb:
+    band_stats_kernel = (
+        rt_settings.sheet_band_stats_kernel and nb and kernel_extents_fit(n)
+    )
+    if band_stats_kernel:
         from algan.rendering.raytracing.sheet_compact_taichi import (
             band_stats_reduce,
         )
         from algan.taichi_compat import template_dtype, ti
 
         # The five reduction outputs are stream positions and a count, all
-        # below ``n``, which the fused kernels already bound under 2**31. They
+        # below ``n``, which the gate above bounds under 2**31 (``nb <= n``). They
         # stay int32 on every backend -- MPS-friendly mode always narrowed them,
         # since Taichi's int64 atomics abort on Metal -- rather than widening
         # to int64: this is the compaction's peak, and on a stroke-heavy frame
@@ -3075,7 +3118,7 @@ def compact_sheets(
     # Dominant fragment: largest exact area, earliest original position on
     # ties (deterministic argmax). The fused path already built ``cmax`` and
     # ``nfrag``; only this resolution stays.
-    if rt_settings.sheet_band_stats_kernel and nb:
+    if band_stats_kernel:
         from algan.rendering.raytracing.sheet_compact_taichi import (
             band_stats_rep_orig,
         )
@@ -3271,7 +3314,9 @@ def compact_sheets(
         )
         subject = is_tri_sheet & nonareal_s & only_band & positive_wgt
 
-        if rt_settings.sheet_depth_reduce_kernel:
+        if rt_settings.sheet_depth_reduce_kernel and kernel_extents_fit(
+            nb, sample_depths.numel()
+        ):
             from algan.rendering.raytracing.sheet_depth_taichi import (
                 sheet_depth_lose_rows,
             )
