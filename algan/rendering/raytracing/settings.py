@@ -2769,6 +2769,15 @@ analytic_aa_seam = env_flag("ALGAN_ANALYTIC_AA_SEAM", True)
 #             Kept only so the parity script can measure against it.
 #
 # See DESIGN_analytic_aa.md ss15/ss16 for the measurements behind the default.
+#
+# INERT (2026-10-30). The policy only ever reached the per-sample
+# representation, and the run-corrected one (analytic_aa_run, below) pins it to
+# ``drop`` (v2 ss4.1). The sheet resolve is the only analytic-coverage path and
+# analytic_aa_run off is one of its route vetoes, so no launchable render reads
+# this value any more: a write is refused (raytracing_settings._INERT_FIELDS)
+# and set_analytic_aa no longer takes ``sliver``. The field stays readable
+# because raster_pipeline still names analytic_aa_sliver_mode() in an arm the
+# route decision vetoes; it goes when that read does.
 ANALYTIC_AA_SLIVER_MODES = ("area", "exact", "drop", "exact_occ")
 analytic_aa_sliver = env_str("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 
@@ -2875,6 +2884,14 @@ analytic_aa_run = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 # tri L1 0.107 vs clamp's 0.110 with edge levels 620 against the aa=4
 # reference's own 621, seam notches 9 vs 12, trans/thin at parity. Exact
 # leftovers cost two registers and a run-end scale.
+#
+# INERT (2026-10-30). The rule moved into the sheet resolve, which always
+# redistributes (sheet_resolve_taichi calls _run_redistribute unconditionally),
+# and the template value this used to select no longer forks anything: the
+# emission maps the two values to aa_tri 3 and 4, and every reader of aa_tri
+# asks only ``>= 3``. A write is refused (raytracing_settings._INERT_FIELDS)
+# and set_analytic_aa no longer takes ``run_rule``; the field stays readable
+# until raster_pipeline's read of it goes.
 ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
 analytic_aa_run_rule = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 
@@ -3459,19 +3476,21 @@ def set_analytic_aa(
     bezier=None,
     triangles=None,
     seam=None,
-    sliver=None,
     secondary=None,
     exact=None,
     wedge=None,
     run=None,
-    run_rule=None,
     run_full=None,
     one_mesh=None,
 ):
-    """Toggle analytic anti-aliasing (see ``analytic_aa``)."""
+    """Toggle analytic anti-aliasing (see ``analytic_aa``).
+
+    The ``sliver`` and ``run_rule`` keywords are gone with what they chose:
+    ``analytic_aa_sliver`` and ``analytic_aa_run_rule`` are inert.
+    """
     global analytic_aa, analytic_aa_bez, analytic_aa_tri, analytic_aa_seam
-    global analytic_aa_sliver, analytic_aa_secondary_samples, analytic_aa_exact
-    global analytic_aa_run, analytic_aa_run_rule, analytic_aa_run_full
+    global analytic_aa_secondary_samples, analytic_aa_exact
+    global analytic_aa_run, analytic_aa_run_full
     global analytic_aa_one_mesh, analytic_aa_bez_wedge
     if secondary is not None:
         analytic_aa_secondary_samples = int(secondary)
@@ -3485,12 +3504,6 @@ def set_analytic_aa(
         analytic_aa_run_full = bool(run_full)
     if one_mesh is not None:
         analytic_aa_one_mesh = bool(one_mesh)
-    if run_rule is not None:
-        if run_rule not in ANALYTIC_AA_RUN_RULES:
-            raise AlganConfigurationError(
-                f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}"
-            )
-        analytic_aa_run_rule = run_rule
     analytic_aa = bool(enabled)
     if bezier is not None:
         analytic_aa_bez = bool(bezier)
@@ -3498,12 +3511,6 @@ def set_analytic_aa(
         analytic_aa_tri = bool(triangles)
     if seam is not None:
         analytic_aa_seam = bool(seam)
-    if sliver is not None:
-        if sliver not in ANALYTIC_AA_SLIVER_MODES:
-            raise AlganConfigurationError(
-                f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}"
-            )
-        analytic_aa_sliver = sliver
 
 
 def effective_analytic_aa_secondary_samples():
@@ -3564,9 +3571,11 @@ def analytic_aa_sliver_mode():
     """Index of the live sample-less-triangle policy in the mode tuple.
 
     Read at call time (never imported by value) and returned as an int, because
-    it reaches the kernels as part of the ``aa`` template value: the geometry
-    kernels see ``1 + mode``, so each policy compiles its own variant and the
-    offline cache cannot serve one policy's kernel for another.
+    it reached the kernels as part of the ``aa`` template value: the geometry
+    kernels saw ``1 + mode``, so each policy compiled its own variant and the
+    offline cache could not serve one policy's kernel for another. Its one
+    caller (raster_pipeline) now asks only in an arm the route vetoes, so the
+    policy is inert (see ``analytic_aa_sliver``).
     """
     try:
         return ANALYTIC_AA_SLIVER_MODES.index(analytic_aa_sliver)

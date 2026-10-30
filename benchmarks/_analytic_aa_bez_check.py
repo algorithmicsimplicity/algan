@@ -85,12 +85,9 @@ DENSE = "--dense" in sys.argv
 # these are run with it forced on and reported rather than gated.
 TRI_CONFIGS = ("seam", "tri", "trans", "thin")
 
-# ``--sweep`` reports every sample-less-triangle policy side by side on the
-# triangle configs instead of just the shipped default: the choice there is a
-# genuine trade between silhouette dilation and interior notches, so it has to
-# be read off one table (DESIGN_analytic_aa.md ss16). Each policy compiles its
-# own _ss_pixel variant, so the first sweep of a cleared cache is slow.
-SWEEP = "--sweep" in sys.argv
+# The ``--sweep`` / ``--sliver=`` sample-less-triangle policy table is gone: the
+# run-corrected coverage the sheet route renders with fixes that policy, so
+# every arm of it drew the same frame (analytic_aa_sliver is inert).
 
 # ``--box`` measures the pre-exact box filter (analytic_aa_exact off) instead of
 # the shipped exact angle-aware area; ``--exact-ab`` reports both against the
@@ -98,9 +95,6 @@ SWEEP = "--sweep" in sys.argv
 # form is worth its cost (DESIGN_analytic_aa.md ss21).
 EXACT = "--box" not in sys.argv
 EXACT_AB = "--exact-ab" in sys.argv
-_SLIVER_ARG = next(
-    (a.split("=", 1)[1] for a in sys.argv if a.startswith("--sliver=")), None
-)
 
 # Small, few frames: this measures pixels, not throughput.
 BASE_W, BASE_H = 320, 180
@@ -285,7 +279,7 @@ def build_scene(cfg):
     raise SystemExit(f"unknown config {cfg}")
 
 
-def render_once(cfg, aa_level, analytic, tag, seam=True, sliver=None, exact=None):
+def render_once(cfg, aa_level, analytic, tag, seam=True, exact=None):
     SceneManager.reset()
     # Triangle coverage ships opt-in, so force it on for the configs that exist
     # to exercise it; everything else uses the shipped defaults.
@@ -293,7 +287,6 @@ def render_once(cfg, aa_level, analytic, tag, seam=True, sliver=None, exact=None
         analytic,
         seam=seam,
         triangles=cfg in TRI_CONFIGS,
-        sliver=sliver or _SLIVER_ARG,
         exact=EXACT if exact is None else exact,
     )
     # The dense tile path is a genuinely different pipeline for circuits: the
@@ -473,36 +466,6 @@ def main():
                 f"max channel delta {delta}",
                 flush=True,
             )
-            continue
-
-        if SWEEP and cfg in TRI_CONFIGS:
-            # Characterisation table: whole-frame L1 is the silhouette (a halo
-            # or an erosion shows up here and nowhere else), interior notches
-            # are the seam. A policy has to be read on both at once.
-            def _row(label, fr, cfg=cfg, f_ref=f_ref):
-                l1 = np.mean([np.abs(a - r).mean() for a, r in zip(fr, f_ref)])
-                e_i, n_i = interior_stats(fr, f_ref)
-                # Ink relative to the reference: >1 is dilation (the silhouette
-                # halo), <1 erosion (sub-pixel geometry lost).
-                ink = np.mean([f.mean() for f in fr]) / max(
-                    np.mean([f.mean() for f in f_ref]), 1e-9
-                )
-                print(
-                    f"[{cfg:7s}] {label:10s} L1 {l1:6.3f}   interior L1 "
-                    f"{e_i:6.3f}   notches {n_i:5d}   edge levels "
-                    f"{edge_levels(fr):5d}   ink {ink:5.3f}",
-                    flush=True,
-                )
-
-            print(
-                f"[{cfg:7s}] {'':10s} (aa=4 reference edge levels "
-                f"{edge_levels(f_ref)})",
-                flush=True,
-            )
-            _row("aliased", f_off)
-            for mode in rt_settings.ANALYTIC_AA_SLIVER_MODES:
-                p_m, _ = render_once(cfg, 1, True, f"aa1_{mode}", sliver=mode)
-                _row(mode, read_frames(p_m))
             continue
 
         # Engagement: analytic AA must actually compile into the resolve, and
