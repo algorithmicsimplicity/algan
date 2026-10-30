@@ -22,7 +22,10 @@ a statistic the renderer keeps: Algan otherwise holds no field (see
 ``taichi_runtime.ensure_taichi_for_render``), and a field read after a re-init
 of the program segfaults. :func:`on_program_start` therefore makes a fresh one
 every time ``taichi_runtime.start_program`` brings a program up, before any
-kernel of that program compiles, and nothing ever reads an older one. Each
+kernel of that program compiles, and nothing ever reads an older one: every
+teardown ``taichi_runtime`` does calls :func:`on_program_end` first, which
+carries the old field's counts over on the host. That includes the reset at
+the end of a render under host-memory pressure, so a reading spans it. Each
 counter is spread over :data:`LANES` slots indexed by the thread, so a GPU
 render does not serialize on a handful of addresses; walks accumulate in
 registers and add once at their end. Counting kernels reference the field, so
@@ -64,8 +67,13 @@ WALK_SHADOW_GATHER = 2
 WALK_TRACE_NEAREST = 3
 WALK_TRACE_GATHER = 4
 _WALK_BASE = 8
-_WALK_NAMES = ("shadow_nearest", "shadow_anyhit", "shadow_gather",
-               "trace_nearest", "trace_gather")
+_WALK_NAMES = (
+    "shadow_nearest",
+    "shadow_anyhit",
+    "shadow_gather",
+    "trace_nearest",
+    "trace_gather",
+)
 # Per walk class: walks, sibling-group (node) tests, triangle tests, circuit
 # tests.
 WALKS = 0
@@ -86,6 +94,8 @@ _STAT_NAMES = ("walks", "nodes", "tri_tests", "bez_tests")
 
 _COUNTS = None
 _BASELINE = None
+#: What the fields of programs since torn down counted, summed on the host.
+_CARRIED = None
 
 
 def counting():
@@ -112,8 +122,7 @@ def bump(slot: ti.template(), n):
     """Add ``n`` to counter ``slot``; nothing at all unless counting."""
     if ti.static(counting()):
         lane = ti.lang.expr.Expr(ti.global_thread_idx()) & (LANES - 1)
-        ti.atomic_add(ti.static(_field())[slot * LANES + lane],
-                      ti.cast(n, ti.i64))
+        ti.atomic_add(ti.static(_field())[slot * LANES + lane], ti.cast(n, ti.i64))
 
 
 @ti.func
@@ -145,21 +154,35 @@ def on_program_start():
     """Give a freshly initialized program its own counter field.
 
     Called by ``taichi_runtime.start_program`` right after ``ti.init``; a no-op
-    unless counting. The previous program's field is dropped, never read.
+    unless counting. The previous program's field is never read: what it
+    counted was carried over by :func:`on_program_end`, if anything ran it.
     """
-    global _COUNTS, _BASELINE
+    global _COUNTS
     _COUNTS = None
-    _BASELINE = None
     if counting():
         _COUNTS = ti.field(ti.i64, shape=(NUM_SLOTS * LANES,))
+
+
+def on_program_end():
+    """Carry the live field's counts over before its program is torn down.
+
+    Called by ``taichi_runtime`` before each ``ti.reset`` and re-init, while
+    the field can still be read; a no-op unless counting.
+    """
+    global _COUNTS, _CARRIED
+    if _COUNTS is None:
+        return
+    _CARRIED = _raw()
+    _COUNTS = None
 
 
 def _raw():
     import numpy as np
 
+    raw = np.zeros(NUM_SLOTS, dtype=np.int64) if _CARRIED is None else _CARRIED
     if _COUNTS is None:
-        return np.zeros(NUM_SLOTS, dtype=np.int64)
-    return _COUNTS.to_numpy().reshape(NUM_SLOTS, LANES).sum(axis=1)
+        return raw.copy()
+    return raw + _COUNTS.to_numpy().reshape(NUM_SLOTS, LANES).sum(axis=1)
 
 
 def reset():
@@ -192,8 +215,10 @@ def format_counts(counts):
     lines = []
     for name in _RAY_NAMES.values():
         lines.append(f"  {name:32s} {counts.get(name, 0):>16,d}")
-    lines.append(f"  {'walk class':16s} {'walks':>14s} {'nodes':>16s} "
-                 f"{'nodes/walk':>11s} {'tri tests':>15s} {'bez tests':>13s}")
+    lines.append(
+        f"  {'walk class':16s} {'walks':>14s} {'nodes':>16s} "
+        f"{'nodes/walk':>11s} {'tri tests':>15s} {'bez tests':>13s}"
+    )
     for wname in _WALK_NAMES:
         walks = counts.get(f"{wname}_walks", 0)
         nodes = counts.get(f"{wname}_nodes", 0)
@@ -201,5 +226,6 @@ def format_counts(counts):
         lines.append(
             f"  {wname:16s} {walks:>14,d} {nodes:>16,d} {per:>11.2f} "
             f"{counts.get(f'{wname}_tri_tests', 0):>15,d} "
-            f"{counts.get(f'{wname}_bez_tests', 0):>13,d}")
+            f"{counts.get(f'{wname}_bez_tests', 0):>13,d}"
+        )
     return "\n".join(lines)

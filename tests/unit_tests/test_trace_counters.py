@@ -104,3 +104,52 @@ def test_counts_add_up_verify_finds_no_mismatch_and_pixels_do_not_move(tmp_path)
     md5 = hashlib.md5(plain.tobytes()).hexdigest()
     assert result["on"]["md5"] == md5
     assert result["off"]["md5"] == md5
+
+
+def test_a_reading_spans_a_program_teardown(monkeypatch):
+    """Every teardown carries the live field's counts to the host first.
+
+    A field read after its program is reset segfaults, and a render under
+    host-memory pressure resets the program at its end: the counting child
+    above then crashed reading the first arm's counts.
+    """
+    import numpy as np
+
+    from algan.rendering import taichi_runtime
+
+    class Field:
+        def __init__(self, value):
+            self.value = value
+
+        def to_numpy(self):
+            out = np.zeros(tc.NUM_SLOTS * tc.LANES, dtype=np.int64)
+            out[tc.SHADOW_RAYS * tc.LANES] = self.value
+            return out
+
+    monkeypatch.setattr(tc, "_BASELINE", None)
+    monkeypatch.setattr(tc, "_CARRIED", None)
+    monkeypatch.setattr(tc, "_COUNTS", Field(5))
+    tc.reset()
+    tc._COUNTS.value = 7
+    order = []
+    real_end = tc.on_program_end
+    monkeypatch.setattr(
+        tc, "on_program_end", lambda: order.append("carry") or real_end()
+    )
+    monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: order.append("reset"))
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
+    # The reset's bookkeeping, restored afterwards.
+    for name in (
+        "_ARCH_READY_FOR",
+        "_BUILT_A_SPECIALIZATION",
+        "_UNSAVED_KERNELS",
+        "_PRESSURE_RESET_PENDING",
+        "_COMPILED_IN_SETTINGS",
+    ):
+        monkeypatch.setattr(taichi_runtime, name, getattr(taichi_runtime, name))
+    taichi_runtime._reset_after_interruption()
+    assert order == ["carry", "reset"]
+    assert tc._COUNTS is None
+    # The next program's field starts at zero and adds to what was carried.
+    monkeypatch.setattr(tc, "_COUNTS", Field(4))
+    assert tc._raw()[tc.SHADOW_RAYS] - tc._BASELINE[tc.SHADOW_RAYS] == 2 + 4

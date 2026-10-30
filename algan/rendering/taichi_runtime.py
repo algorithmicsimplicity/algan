@@ -1136,6 +1136,8 @@ def start_program(**overrides):
     """
     global _UNSAVED_KERNELS
     _remove_stale_offline_cache_locks(_TAICHI_CACHE_DIRECTORY)
+    if _already_initialized():
+        _end_program()
     ti.init(**{**taichi_init_kwargs(), **overrides})
     # ``init`` resets first, and finalizing the old program wrote its kernels.
     _UNSAVED_KERNELS = False
@@ -1147,6 +1149,18 @@ def start_program(**overrides):
     _forget_compiled_in_settings()
     _install_taichi_compile_logger()
     _register_kernel_cache_flush()
+
+
+def _end_program():
+    """What must happen while the live program can still be read, before a teardown.
+
+    The trace counters' field (``ALGAN_TRACE_COUNTERS``) is the one piece of
+    Taichi state Algan holds, and reading it after its program is gone
+    segfaults: their counts are carried over to the host here.
+    """
+    from algan.rendering.raytracing import trace_counters_taichi
+
+    trace_counters_taichi.on_program_end()
 
 
 def init_taichi():
@@ -1461,6 +1475,7 @@ def _reset_after_interruption():
     global _UNSAVED_KERNELS
     if render_is_active() or threading.current_thread() is not threading.main_thread():
         raise RuntimeError("Cannot recover the compiler while a render is active")
+    _end_program()
     ti.reset()
     _ARCH_READY_FOR = None
     _BUILT_A_SPECIALIZATION = False
@@ -1530,6 +1545,7 @@ def reset_quadrants_for_memory_pressure():
             return False
     started = time.perf_counter()
     try:
+        _end_program()
         ti.reset()
     except Exception as exc:
         get_logger().log(PERF, "Quadrants pressure reset failed: %r", exc)
@@ -1636,6 +1652,7 @@ def flush_kernel_cache(*, force=False):
         return False
     started = time.perf_counter()
     try:
+        _end_program()
         ti.reset()
     except Exception as exc:
         # Never the reason a process fails to exit, and not the end of the
