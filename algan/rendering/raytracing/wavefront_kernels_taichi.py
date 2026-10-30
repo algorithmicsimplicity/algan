@@ -1437,11 +1437,14 @@ def _mirror_share(roughness):
     reflected surroundings. A rough metal therefore reads as a rough metal
     rather than as a mirror with an aliased picture painted on it.
 
-    This is the stand-in for a properly sampled glossy lobe, not a rival to it:
-    with ``glossy_reflection`` on, the raster resolve's continuations spread
-    over the real GGX lobe (``raster_taichi._glossy_reflect``) and skip this
-    entirely, because the lobe is then being integrated rather than
-    approximated by its peak.
+    This is the stand-in for a properly sampled glossy lobe, not a rival to it.
+    A reflection whose lobe is being integrated rather than approximated by its
+    peak skips it: under the default split-sum prefilter (``glossy_prefilter``)
+    the one reflector per pixel that claims the prefiltered event, whose lobe
+    is the blurred reflection buffer, and in the tap-fan modes (prefilter off)
+    the raster resolve's continuations, which spread over the real GGX lobe
+    (``raster_taichi._glossy_reflect``). Every other reflection keeps the
+    throttle.
     """
     a = roughness * roughness
     return _MIRROR_SHARE_A2 / (_MIRROR_SHARE_A2 + a * a)
@@ -1614,14 +1617,16 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
 
     ``roughness`` does not reach the bounce HERE: this continuation is a single
     ray, and one deterministic sample of a glossy lobe is not a blur -- it is a
-    mirror pointing the wrong way. Blurring needs several rays, so it lives
-    where several already exist: the raster resolve's primary hit spreads its
-    ``analytic_aa_secondary_samples`` continuations over the material's GGX lobe
-    (``raster_taichi._glossy_reflect``, ``glossy_reflection``). The split happens
-    once, at that primary hit, so the deeper bounces this func drives stay
-    specular-perfect and the cost stays N x the secondary traversal rather than
-    N^depth. The Monte Carlo megakernel jitters every bounce, by a wider
-    normal-perturbation lobe rather than GGX.
+    mirror pointing the wrong way. Blurring needs several rays or a blurred
+    buffer, so it lives at the primary hit: by default the pixel's one
+    prefiltered glossy event is blurred in screen space (``glossy_prefilter``,
+    DESIGN_glossy_prefilter.md), and with the prefilter off the raster
+    resolve's primary hit spreads its ``analytic_aa_secondary_samples``
+    continuations over the material's GGX lobe (``raster_taichi._glossy_reflect``,
+    ``glossy_reflection``). That split happens once, at the primary hit, so the
+    deeper bounces this func drives stay specular-perfect and the cost stays
+    N x the secondary traversal rather than N^depth. The Monte Carlo megakernel
+    jitters every bounce, by a wider normal-perturbation lobe rather than GGX.
 
     Roughness does not fade the bounce here either. The callers that spawn a
     PRIMARY continuation scale ``R`` by ``_mirror_share(roughness)`` so a rough

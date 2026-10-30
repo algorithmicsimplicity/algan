@@ -2627,21 +2627,19 @@ def set_sheet_band_stats_kernel(enabled):
 
 # Kernel application of the solid-shell opacity ceiling behind
 # ``compact_sheets`` (sheet_compact_taichi.solid_shell_ceiling). After the
-# block's own depth sort orders each (pixel, surface) segment -- and after the
-# f64 cumsum that prefixes it, which STAYS IN TORCH because a serial register
-# walk cannot reproduce a cub scan's reassociation bitwise (measured: 61 of
-# 3.13 M spend values move, flipping 10 visible f32 outputs on the real
-# nn-scene frame) -- torch walked the stream three more times to spend the
-# allowance: nonzero + scatter_ for segment starts, two facing-split f64
+# block's own depth sort orders each (pixel, surface) segment, torch walked
+# the stream four more times to spend the allowance: an integer cumsum for the
+# spend, nonzero + scatter_ for segment starts, two facing-split f64
 # scatter_add_s through a whole-stream segment map, and clone + index_copy_
 # for the write-back. One thread per segment (detected in-kernel along the
-# permutation) walks its run twice with the cap in registers and the caller's
-# prefix as data.
+# permutation) walks its run twice with the cap and the spend in registers.
 #
-# The float contract follows ss6.6.4 as before: front/back sums accumulate in
-# f64 registers serially in stream order (the atomic scatter_add_ had no
-# order), verified bitwise against the torch arm at 4K shapes and on the real
-# captured stream in benchmarks/_sheet_kernel_check.py rather than assumed.
+# The spend is Q32 fixed-point integer arithmetic, so the arms agree on it by
+# construction. The float contract follows ss6.6.4 as before: front/back sums
+# accumulate in f64 registers serially in stream order (the atomic
+# scatter_add_ had no order), verified bitwise against the torch arm at 4K
+# shapes and on the real captured stream in benchmarks/_sheet_kernel_check.py
+# rather than assumed.
 sheet_shell_ceiling_kernel = env_flag("ALGAN_SHEET_SHELL_CEILING_KERNEL", True)
 
 
@@ -4337,9 +4335,18 @@ sheet_depth_reduce_kernel = env_flag("ALGAN_SHEET_DEPTH_REDUCE_KERNEL", True)
 # end-to-end speedup. Keep the candidate opt-in until that is demonstrated.
 sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", False)
 
-# Two device passes replace the Torch sibling-weight graph and its host read.
-# Live A/B switch; opt-in until whole-render measurements justify enabling it.
-sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", False)
+# Two device passes replace the Torch sibling-weight graph and its host read,
+# with bit-identical weights (``tests/unit_tests/test_sheet_sibling_weights.py``).
+# On everywhere but MPS. On the CPU they take the helper from 7.6 to 2.0 ms on
+# an HD explainer frame (the whole compaction 5-7%). The Mac runner's A/B
+# (``benchmarks/performance/reports/mac_2026_09/SIBLING_WEIGHTS.md``) measured
+# the whole render 15% SLOWER with them, cause not isolated, so an MPS render
+# keeps the graph unless ``sheet_sibling_weights_kernel_mps`` is on too -- the
+# switch that A/B flips there.
+sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", True)
+sheet_sibling_weights_kernel_mps = env_flag(
+    "ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL_MPS", False
+)
 
 
 # UV texture anti-aliasing. Read at merge time; directories carried as DATA

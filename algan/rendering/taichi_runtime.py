@@ -732,7 +732,9 @@ def taichi_launch_is_local(device):
     * ``ALGAN_SHEET_METADATA_KERNEL`` and ``ALGAN_DEVICE_RADIX_SORT`` ask
       this too, but are opt-in on every device, so their kernels stay off on
       Metal unless asked for; ``ALGAN_REFIT_PACK_KERNEL`` (on by default) is
-      gated off on MPS by ``refit_bvh`` itself.
+      gated off on MPS by ``refit_bvh`` itself, as ``ALGAN_SHEET_SPLIT_KERNEL``
+      (on by default) is by ``sheets._split_stroke_pixels`` unless
+      ``ALGAN_SHEET_SPLIT_KERNEL_MPS`` asks for it.
     * The PN level searches are decided first by
       ``pn_criterion_kernel_active``, which wants a CUDA render device or the
       CPU arch and so still answers no there; this function only vets their

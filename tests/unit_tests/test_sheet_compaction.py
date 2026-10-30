@@ -566,6 +566,25 @@ def test_oracle_one_mesh_ceiling_stops_the_far_sheet_reclaim():
     assert sentinel == free
 
 
+def test_oracle_drops_a_nan_area():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # A NaN area claims nothing and leaves the samples to the sheet behind,
+    # as in the resolve kernel. Propagated instead, it made every later claim
+    # and the leftover NaN (``test_sheet_resolve_shading`` pins the kernel).
+    nan = float("nan")
+    claims, T = resolve_pixel_reference(
+        [nan, 0.6], [MASK_ALL, MASK_ALL], [False, False]
+    )
+    assert claims[0] == 0.0
+    assert abs(claims[1] - 0.6) < 1e-12
+    assert abs(sum(T) / len(T) - 0.4) < 1e-12
+    for msk in (0b0011, SLIVER):
+        claims, T = resolve_pixel_reference([nan], [msk], [False])
+        assert claims == [0.0]
+        assert all(t == 1.0 for t in T)
+
+
 def _norms(rows):
     """[1, 8, 9] vertex-normal table from per-triangle ``(n0, n1, n2)``."""
     tn = torch.zeros(1, 8, 9)

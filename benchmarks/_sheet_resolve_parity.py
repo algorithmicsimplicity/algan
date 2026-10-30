@@ -1,27 +1,39 @@
-"""A/B the sheet resolve against the shipped fragment walk, lossless.
+"""A/B the sheet resolve against the supersampled fallback, lossless, and
+check its kernel against the sequential oracle.
 
 ``DESIGN_sheet_resolve.md`` Phase 2's parity harness. One scene carrying every
-feature the Phase-2 route supports -- flat and diced triangle meshes, a torus
-fold, text circuits, a translucent stack, a mirror and a glass sphere (both
+feature the route supports -- flat and diced triangle meshes, a torus fold,
+text circuits, a translucent stack, a mirror and a glass sphere (both
 continuation classes), moving -- rendered under ``ALGAN_SHEET_RESOLVE`` off
 and on, both lossless, plus an A/A of each arm for run-to-run determinism.
+The fragment walk the OFF arm was written against is deleted, so that arm now
+renders the classic wavefront at the quality's supersampling
+(``tracer.analytic_raster_route_active``).
 
 Engagement is asserted, not assumed (ss0.1 rule 1): the sheet kernel's launch
 count is printed per arm, and an ON arm that never launched it is reported as
 a FAILURE, not as byte-identity.
 
-Output is EXPECTED to move: the sheet resolve deletes the run-scan budget,
-the one-mesh cap and the engagement gate, and shades once per sheet at its
-dominant fragment. What this harness bounds is HOW MUCH and WHERE -- read the
-worst-frame panel (benchmarks/_diff_frame.py) before concluding anything.
+Output is EXPECTED to move: analytic coverage against a few samples per
+pixel, and one shade per sheet at its dominant fragment. What this harness
+bounds is HOW MUCH and WHERE -- read the worst-frame panel
+(benchmarks/_diff_frame.py) before concluding anything.
+
+``--verify N`` instead probes N pixels of a matte scene with ``ALGAN_AA_DUMP``
+and diffs the kernel's committed claims against
+``sheets.resolve_pixel_reference``. Finding nothing to compare is a FAILURE.
+The pre-PR group checks the same walk on synthetic sheet lists, claims,
+transmittance and leftover weight alike
+(tests/unit_tests/test_sheet_resolve_parity.py).
 
 Run:  <venv-python> benchmarks/_sheet_resolve_parity.py [--res ld|md]
-      [--scene basic|all]
+      [--scene basic|env|tm|shadow] [--verify N]
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -134,7 +146,7 @@ def build_scene(variant="basic"):
         ys = torch.linspace(0.15, 0.9, h).view(h, 1, 1).expand(h, w, 1)
         env = torch.cat([xs * ys, ys, (1.0 - xs) * ys], dim=2).contiguous()
         Scene.set_environment_map(env, intensity=1.0, ambient=True)
-    with Sync(duration=1.0):
+    with Sync(runtime=1.0):
         for i, mob in enumerate(movers):
             mob.rotate(10 + 3 * i, OUTV if i % 2 else UP)
 
@@ -149,6 +161,7 @@ def render_arm(tag, on, res, variant="basic"):
 
     quality = {"ld": LD, "md": MD}[res]
     SceneManager.reset()
+    snapshot = SETTINGS.snapshot()
     SETTINGS.computing.set(available_memory_override=1_400_000_000)
     SETTINGS.raytracing.experimental.set(sheet_resolve=bool(on))
     if variant == "tm":
@@ -179,11 +192,7 @@ def render_arm(tag, on, res, variant="basic"):
         )
     finally:
         srt.sheet_resolve_shade = orig
-        SETTINGS.raytracing.experimental.set(sheet_resolve=False)
-        if variant == "tm":
-            SETTINGS.raytracing.experimental.set(post_process_tonemap=True)
-        if variant == "shadow":
-            SETTINGS.raytracing.set(shadows=False)
+        SETTINGS.restore(snapshot)
     return launches["n"]
 
 
@@ -267,15 +276,19 @@ def _verify_frame(quality, probe=None):
 
     captured = {}
     original = rp.prepare_sparse_raster_coverage
+    signature = inspect.signature(original)
 
     def spy(*args, **kwargs):
         cov = original(*args, **kwargs)
         if cov is None or not cov.get("sheets"):
             return cov
-        width = int(kwargs.get("width", args[13]))
-        height = int(kwargs.get("height", args[14]))
+        # By name: reading positions went stale once already, when cam_proj
+        # was inserted, and the probes then landed on frames that do not exist.
+        bound = signature.bind(*args, **kwargs).arguments
+        width = int(bound["width"])
+        height = int(bound["height"])
         ppf = width * height
-        t_start = int(kwargs.get("time_start", args[11]))
+        t_start = int(bound["time_start"])
         offs = cov["sheet_offsets"].cpu().tolist()
         pix = cov["covered_idx"].cpu().tolist()
         refs = cov["sheet_ref"].cpu().tolist()
@@ -292,6 +305,7 @@ def _verify_frame(quality, probe=None):
         return cov
 
     SceneManager.reset()
+    snapshot = SETTINGS.snapshot()
     SETTINGS.raytracing.experimental.set(sheet_resolve=True)
     rp.prepare_sparse_raster_coverage = spy
     try:
@@ -303,7 +317,7 @@ def _verify_frame(quality, probe=None):
         )
     finally:
         rp.prepare_sparse_raster_coverage = original
-        SETTINGS.raytracing.experimental.set(sheet_resolve=False)
+        SETTINGS.restore(snapshot)
     return captured
 
 
@@ -375,11 +389,13 @@ def verify_oracle(res, n_probe):
             if d > worst:
                 worst = d
                 where = (px, py, f, q, claims[q], float(r[12]))
-    tag = "PASS" if worst < 2e-5 else "FAIL"
+    tag = "PASS" if worst < 2e-5 and rows_checked else "FAIL"
     print(
         f"[{tag}] oracle vs kernel: worst |claim| diff {worst:.2e} over "
         f"{rows_checked} committed sheet rows at {len(probes)} pixels"
     )
+    if not rows_checked:
+        print("      nothing was compared: no probed pixel dumped a committed row")
     if where and tag == "FAIL":
         px, py, f, q, oc, kc = where
         print(

@@ -2,7 +2,7 @@
  "entries": {
   "14c813e4eab2ac37cf99e8c9a4cdfa9f": {
    "requires": {},
-   "seconds": 12.41,
+   "seconds": 6.59,
    "spec": {
     "args": [
      [
@@ -319,7 +319,7 @@
   },
   "16ffc9d9c17ef9c2caa008cc0cadc7b6": {
    "requires": {},
-   "seconds": 0.74,
+   "seconds": 0.32,
    "spec": {
     "args": [
      [
@@ -431,7 +431,7 @@
   },
   "187acc5a08c912763115a61076bf9e0d": {
    "requires": {},
-   "seconds": 31.8,
+   "seconds": 26.39,
    "spec": {
     "args": [
      [
@@ -684,7 +684,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 11.66,
+   "seconds": 6.12,
    "spec": {
     "args": [
      [
@@ -1001,7 +1001,7 @@
   },
   "2a5476330b7d5d11a61d29925d9d94e9": {
    "requires": {},
-   "seconds": 0.83,
+   "seconds": 0.56,
    "spec": {
     "args": [
      [
@@ -1196,7 +1196,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 5.56,
+   "seconds": 5.75,
    "spec": {
     "args": [
      [
@@ -1447,7 +1447,7 @@
   },
   "2b339bbf55f53022e49200c315d50fc2": {
    "requires": {},
-   "seconds": 0.63,
+   "seconds": 0.32,
    "spec": {
     "args": [
      [
@@ -1558,7 +1558,7 @@
   },
   "320cdaff70656736fe08a922094c4533": {
    "requires": {},
-   "seconds": 0.26,
+   "seconds": 0.09,
    "spec": {
     "args": [
      [
@@ -1644,7 +1644,7 @@
   },
   "349b2a84ed1d3fa082efcbd7af53dc62": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -1687,7 +1687,7 @@
   },
   "3a51f1b4d759ebbc617f1fef931deb17": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.08,
    "spec": {
     "args": [
      [
@@ -1777,7 +1777,7 @@
   },
   "3d4b29ed8eea0e128c56cb27076a6dab": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -1860,7 +1860,7 @@
   },
   "437e5cca4ab20feb7eab51257311fe86": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -1901,7 +1901,7 @@
   },
   "48a46811026513dd762b150e531cacf7": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -1930,9 +1930,89 @@
     "glass"
    ]
   },
+  "54df2e94dedcd5928295107e79428c33": {
+   "requires": {},
+   "seconds": 0.05,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "T",
+      [
+       "dtype",
+       "f64"
+      ]
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_sibling_taichi:sibling_coverage_weights"
+   },
+   "variants": [
+    "3d",
+    "3d-default-light",
+    "shadows",
+    "glass"
+   ]
+  },
   "5776584a8995bf56e8b4152ba0f015df": {
    "requires": {},
-   "seconds": 2.77,
+   "seconds": 1.82,
    "spec": {
     "args": [
      [
@@ -2131,7 +2211,7 @@
   },
   "65263531ef3e007c706431aead1e8619": {
    "requires": {},
-   "seconds": 0.96,
+   "seconds": 0.68,
    "spec": {
     "args": [
      [
@@ -2300,7 +2380,7 @@
   },
   "69c444d4aa1df8ec59bf0fe1cee77594": {
    "requires": {},
-   "seconds": 1.78,
+   "seconds": 0.94,
    "spec": {
     "args": [
      [
@@ -2499,7 +2579,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 4.52,
+   "seconds": 3.57,
    "spec": {
     "args": [
      [
@@ -2705,71 +2785,9 @@
     "shadows"
    ]
   },
-  "72259646438f3aa3cbb37ae237efa3d0": {
-   "requires": {},
-   "seconds": 0.16,
-   "spec": {
-    "args": [
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "uint8",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float64",
-      1,
-      []
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "A",
-      "float32",
-      1,
-      []
-     ],
-     [
-      "T",
-      [
-       "dtype",
-       "f64"
-      ]
-     ]
-    ],
-    "kernel": "algan.rendering.raytracing.sheet_compact_taichi:solid_shell_ceiling"
-   },
-   "variants": [
-    "3d",
-    "3d-default-light",
-    "shadows",
-    "glass"
-   ]
-  },
   "76246c8d866cde01ddcb99c3a973fcec": {
    "requires": {},
-   "seconds": 0.09,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -2852,7 +2870,7 @@
   },
   "76f89507cbc42303d4e231fb2f6536bc": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -2883,7 +2901,7 @@
   },
   "7ddfd827b075660c8ccaed3ca3bf779d": {
    "requires": {},
-   "seconds": 0.16,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -2927,7 +2945,7 @@
   },
   "7e5667092e02b311d7c89bc721b5814c": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -2983,7 +3001,7 @@
   },
   "809fa45a1572b41cf1390260919aa936": {
    "requires": {},
-   "seconds": 0.11,
+   "seconds": 0.06,
    "spec": {
     "args": [
      [
@@ -3053,9 +3071,40 @@
     "glass"
    ]
   },
+  "853b40b277bc87a3c5fd062532bb14a5": {
+   "requires": {},
+   "seconds": 0.03,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_sibling_taichi:sibling_band_counts"
+   },
+   "variants": [
+    "3d",
+    "3d-default-light",
+    "shadows",
+    "glass"
+   ]
+  },
   "8622a1b18bff0cff7b09f39ef442299e": {
    "requires": {},
-   "seconds": 2.21,
+   "seconds": 1.43,
    "spec": {
     "args": [
      [
@@ -3269,66 +3318,9 @@
     "glass"
    ]
   },
-  "8ba98f143a3fb210c0e20fdaa3ba87a3": {
-   "requires": {},
-   "seconds": 0.17,
-   "spec": {
-    "args": [
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "A",
-      "float32",
-      1,
-      []
-     ],
-     [
-      "A",
-      "int64",
-      1,
-      []
-     ],
-     [
-      "S",
-      "int"
-     ],
-     [
-      "T",
-      [
-       "bool",
-       false
-      ]
-     ],
-     [
-      "T",
-      [
-       "bool",
-       true
-      ]
-     ]
-    ],
-    "kernel": "algan.rendering.raytracing.sheet_sort_taichi:key_run_order"
-   },
-   "variants": [
-    "3d",
-    "3d-default-light",
-    "shadows",
-    "glass"
-   ]
-  },
   "9145fb1b3375f853f9da4b08cf7b46a9": {
    "requires": {},
-   "seconds": 3.19,
+   "seconds": 2.0,
    "spec": {
     "args": [
      [
@@ -3514,7 +3506,7 @@
   },
   "99662f0b46624b6662612e07c7321bd7": {
    "requires": {},
-   "seconds": 0.2,
+   "seconds": 0.07,
    "spec": {
     "args": [
      [
@@ -3571,7 +3563,7 @@
   },
   "9abff45188bd2eeb4e7cae8edb81a5a5": {
    "requires": {},
-   "seconds": 0.14,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -3668,7 +3660,7 @@
   },
   "9aebfd8ff120e602766606cdef899193": {
    "requires": {},
-   "seconds": 0.49,
+   "seconds": 0.3,
    "spec": {
     "args": [
      [
@@ -3814,7 +3806,7 @@
   },
   "9c6a8ec057ab597e7e4603d70dc522e2": {
    "requires": {},
-   "seconds": 0.38,
+   "seconds": 0.22,
    "spec": {
     "args": [
      [
@@ -3914,7 +3906,7 @@
   },
   "9fd18930082054fab591e6f9f8c3d301": {
    "requires": {},
-   "seconds": 0.09,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -3973,7 +3965,7 @@
   },
   "a3ee59807576a8a009310a7e6454645a": {
    "requires": {},
-   "seconds": 0.55,
+   "seconds": 0.34,
    "spec": {
     "args": [
      [
@@ -4113,7 +4105,7 @@
   },
   "a4cd8299362737fdb84b6d40c9a1d34a": {
    "requires": {},
-   "seconds": 0.18,
+   "seconds": 0.12,
    "spec": {
     "args": [
      [
@@ -4138,9 +4130,66 @@
     "glass"
    ]
   },
+  "a910f1b2aa99c5729a0299c790c88374": {
+   "requires": {},
+   "seconds": 0.08,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "T",
+      [
+       "bool",
+       true
+      ]
+     ],
+     [
+      "T",
+      [
+       "bool",
+       true
+      ]
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_sort_taichi:key_run_order"
+   },
+   "variants": [
+    "3d",
+    "3d-default-light",
+    "shadows",
+    "glass"
+   ]
+  },
   "ae898ba6895813095c76fda89fd5af7f": {
    "requires": {},
-   "seconds": 47.3,
+   "seconds": 29.87,
    "spec": {
     "args": [
      [
@@ -4390,9 +4439,102 @@
     "3d-default-light"
    ]
   },
+  "b4bc30aa5a1a77875aa05cdd32655a77": {
+   "requires": {},
+   "seconds": 0.05,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int64",
+      1,
+      []
+     ],
+     [
+      "A",
+      "uint8",
+      1,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "float32",
+      1,
+      []
+     ],
+     [
+      "T",
+      [
+       "dtype",
+       "f64"
+      ]
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_compact_taichi:solid_shell_ceiling"
+   },
+   "variants": [
+    "3d",
+    "3d-default-light",
+    "shadows",
+    "glass"
+   ]
+  },
+  "b53b047df555b84c4fc3462da17dcce1": {
+   "requires": {},
+   "seconds": 0.04,
+   "spec": {
+    "args": [
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      1,
+      []
+     ],
+     [
+      "S",
+      "int"
+     ],
+     [
+      "A",
+      "uint8",
+      1,
+      []
+     ],
+     [
+      "A",
+      "int32",
+      2,
+      []
+     ]
+    ],
+    "kernel": "algan.rendering.raytracing.sheet_compact_taichi:split_mixed_pixels"
+   },
+   "variants": [
+    "3d",
+    "3d-default-light",
+    "shadows",
+    "glass"
+   ]
+  },
   "b5c5e0b51f55bac2489a0c47e8b9713a": {
    "requires": {},
-   "seconds": 0.21,
+   "seconds": 0.09,
    "spec": {
     "args": [
      [
@@ -4484,7 +4626,7 @@
   },
   "b6587aa489926967dc7a41ab6571da8f": {
    "requires": {},
-   "seconds": 0.21,
+   "seconds": 0.09,
    "spec": {
     "args": [
      [
@@ -4563,7 +4705,7 @@
   },
   "b8f1979d09e7292bd7e7ad5a063bc39b": {
    "requires": {},
-   "seconds": 0.43,
+   "seconds": 0.15,
    "spec": {
     "args": [
      [
@@ -4665,7 +4807,7 @@
   },
   "b941c36eddb12146e70527b623fbbbb6": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -4739,7 +4881,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 53.09,
+   "seconds": 27.84,
    "spec": {
     "args": [
      [
@@ -4990,7 +5132,7 @@
   },
   "c4648153df9190f14f4e38cd235f9428": {
    "requires": {},
-   "seconds": 0.07,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -5049,7 +5191,7 @@
   },
   "c73defcc9e8a5c00ab2fa6b94776260b": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -5163,7 +5305,7 @@
   },
   "caa4dfeb39d93ccc47afe4fc641ad81d": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -5206,7 +5348,7 @@
   },
   "cebb87ce6b3da4ec09930887ed75d168": {
    "requires": {},
-   "seconds": 0.49,
+   "seconds": 0.25,
    "spec": {
     "args": [
      [
@@ -5286,7 +5428,7 @@
   },
   "d006d04837a6fccd5fa198354cf96c60": {
    "requires": {},
-   "seconds": 0.06,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -5335,7 +5477,7 @@
   },
   "d234d7577202e0e7254398b87f118e08": {
    "requires": {},
-   "seconds": 0.25,
+   "seconds": 0.1,
    "spec": {
     "args": [
      [
@@ -5399,7 +5541,7 @@
   },
   "e0c3f33d4fa0eb6d8b6a38fd0476326b": {
    "requires": {},
-   "seconds": 13.98,
+   "seconds": 6.22,
    "spec": {
     "args": [
      [
@@ -5716,7 +5858,7 @@
   },
   "e6837dd971a968c75ae3c7dac6966ae2": {
    "requires": {},
-   "seconds": 0.08,
+   "seconds": 0.03,
    "spec": {
     "args": [
      [
@@ -5753,7 +5895,7 @@
   },
   "ead195edee0b6d723d54112f48ca31e1": {
    "requires": {},
-   "seconds": 11.86,
+   "seconds": 6.17,
    "spec": {
     "args": [
      [
@@ -6070,7 +6212,7 @@
   },
   "ec4e4ac1308918d8e7d8d9318f5ab347": {
    "requires": {},
-   "seconds": 11.63,
+   "seconds": 10.73,
    "spec": {
     "args": [
      [
@@ -6321,7 +6463,7 @@
   },
   "ee57917c78ee5ee2ab5a412758168673": {
    "requires": {},
-   "seconds": 0.23,
+   "seconds": 0.1,
    "spec": {
     "args": [
      [
@@ -6364,7 +6506,7 @@
   },
   "f21db71c8c91eef0c9471f33c387487a": {
    "requires": {},
-   "seconds": 3.31,
+   "seconds": 1.7,
    "spec": {
     "args": [
      [
@@ -6441,7 +6583,7 @@
   },
   "f850c38dc3b91d40a6a6b4ea6fb00208": {
    "requires": {},
-   "seconds": 0.14,
+   "seconds": 0.06,
    "spec": {
     "args": [
      [
@@ -6525,7 +6667,7 @@
   },
   "f8b0941f5382429798f443dd78c63c5c": {
    "requires": {},
-   "seconds": 0.12,
+   "seconds": 0.04,
    "spec": {
     "args": [
      [
@@ -6574,7 +6716,7 @@
    "requires": {
     "shadows": true
    },
-   "seconds": 2.8,
+   "seconds": 1.86,
    "spec": {
     "args": [
      [
@@ -6795,7 +6937,7 @@
  },
  "generated": {
   "by": "scripts/generate_kernel_specs.py",
-  "compiler": "quadrants 1.3.0",
+  "compiler": "quadrants 1.3.3 (algan-quadrants 1.3.3.post3)",
   "device": "cpu",
   "python": "3.13"
  },

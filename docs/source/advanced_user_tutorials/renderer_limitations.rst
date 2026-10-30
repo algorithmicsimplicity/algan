@@ -96,7 +96,7 @@ row links to the section that explains it.
      - Yes
      - `Reflection, refraction and transmission`_
    * - Blurred (glossy) reflection
-     - Opt-in, screen-space prefilter
+     - Yes, screen-space prefilter
      - **No** (the setting is inert here)
      - Yes
      - `Reflection, refraction and transmission`_
@@ -893,39 +893,43 @@ Reflection
 * ``SETTINGS.raytracing.max_bounces`` (default ``8``) caps reflection and
   refraction depth. Beyond it, a ray stops and contributes its remaining
   throughput to whatever is behind it.
-* **Roughness does not blur a reflection by default.** A single continuation
-  ray can only honestly stand for a narrow lobe, so a rough reflector's mirror
-  ray carries only the share of its specular lobe that fits inside a cone one
-  direction can represent -- 100% at roughness 0, about 83% at 0.10, 50% at
-  0.15, 3% at 0.35 -- and the remainder goes back to the material's own
-  roughness-correct highlight and ambient term. The result reads as a rough
-  metal; it is not a blurred mirror image.
-
-  ``SETTINGS.raytracing.set(glossy_reflection=True)`` replaces that throttle
-  with the **split-sum approximation**, which is what a real-time renderer uses
-  to get a wide lobe out of one deterministic ray. The lobe's energy becomes
-  analytic -- the environment-BRDF term, exact and ray-free -- and its shape
-  comes from tracing one mirror ray per pixel into a reflection buffer, blurring
-  that buffer by the lobe's screen footprint, and compositing. It is still
-  opt-in, and it has two limits of its own:
+* **Roughness blurs a reflection through a screen-space prefilter.** By
+  default (``glossy_reflection`` and ``glossy_prefilter``, both on) a rough
+  reflector uses the **split-sum approximation**, which is what a real-time
+  renderer uses to get a wide lobe out of one deterministic ray. The lobe's
+  energy becomes analytic -- the environment-BRDF term, exact and ray-free --
+  and its shape comes from tracing one mirror ray per pixel into a reflection
+  buffer, blurring that buffer by the lobe's screen footprint, and compositing.
+  It has three limits of its own:
 
   * **It is screen space.** The reflection can only show what the frame
     contains. A reflector pointed at something behind the camera, or off the
     edge of the frame, reflects the background instead. An environment map
     covers exactly that gap and is the right pairing.
-  * **A rough metal gets darker, correctly.** With the throttle, a metal keeps
-    its ambient fill in place of the reflection it declines to draw. With
-    split-sum that energy is spent on the reflection, which is as bright as the
-    surroundings actually are -- dark, in a dark room.
+  * **A rough metal gets darker, correctly.** With the throttle described
+    next, a metal keeps its ambient fill in place of the reflection it
+    declines to draw. With split-sum that energy is spent on the reflection,
+    which is as bright as the surroundings actually are -- dark, in a dark
+    room.
+  * **One blurred reflection per pixel.** The pixel's strongest opaque rough
+    reflector takes it. Rough glass, and a weaker second reflective surface in
+    the same pixel, keep a throttled mirror ray instead: a single continuation
+    ray can only honestly stand for a narrow lobe, so it carries only the
+    share of the specular lobe that fits inside a cone one direction can
+    represent -- 100% at roughness 0, about 83% at 0.10, 50% at 0.15, 3% at
+    0.35 -- and the remainder goes back to the material's own
+    roughness-correct highlight and ambient term. That reads as a rough
+    surface; it is not a blurred mirror image.
 
-  Blur radius, contact hardening and the mip prefilter are described in
+  ``SETTINGS.raytracing.set(glossy_reflection=False)`` puts every reflector on
+  the throttle, and the supersampled fallback always uses it. Blur radius,
+  contact hardening and the mip prefilter are described in
   ``algan/rendering/raytracing/DESIGN_glossy_prefilter.md``. The older four-tap
-  lobe fan remains reachable as
-  ``set(glossy_reflection=True, prefilter=False)``; it is **not** recommended,
-  because four taps cannot integrate a wide lobe -- with the screen-space
-  rotation on it resolves a glossy gradient into a handful of levels that crawl
-  as geometry moves, and with the rotation off the taps land as discrete ghost
-  copies of the reflected image.
+  lobe fan remains reachable as ``set(glossy_prefilter=False)``; it is **not**
+  recommended, because four taps cannot integrate a wide lobe -- with the
+  screen-space rotation on it resolves a glossy gradient into a handful of
+  levels that crawl as geometry moves, and with the rotation off the taps land
+  as discrete ghost copies of the reflected image.
 * **A reflected or refracted image is not analytically antialiased.** Coverage
   resolves a mirror's own outline exactly, but what the mirror shows is sampled
   by continuation rays -- four sub-pixel positions at best, and only when the
