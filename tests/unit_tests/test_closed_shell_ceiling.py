@@ -30,6 +30,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as BACKFACE,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BAND_CONT_BIT as BAND_CONT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -263,14 +266,15 @@ def test_a_band_whose_closing_sibling_was_spent_to_nothing_still_occludes():
     sheet per face (DESIGN_sheet_resolve.md §4.4), which claim side by side
     and occlude once, at the band's last sheet. Where the ceiling spends the
     shell's allowance on its first face and none on the last, that closing
-    sibling claims nothing -- and it was skipped, write and all, so the band
-    painted its first face and occluded nothing behind it. A translucent cube
-    cut by the near plane showed the background through on such pixels.
+    sibling claims nothing, and it still makes the band's write. Skipped,
+    write and all, it left the band painting its first face and occluding
+    nothing behind it: a translucent cube cut by the near plane showed the
+    background through on such pixels.
     """
     a = 0.75
     claims, T = resolve_pixel_reference(
-        [-0.75, 0.0, 1.0],
-        [MASK_ALL, MASK_ALL, MASK_ALL],
+        [0.75, 0.0, 1.0],
+        [MASK_ALL | BAND_CONT, MASK_ALL, MASK_ALL],
         [False, False, False],
         alphas=[a, a, 1.0],
         min_alpha=1e-3,
