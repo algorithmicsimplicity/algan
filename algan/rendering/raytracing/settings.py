@@ -2627,21 +2627,19 @@ def set_sheet_band_stats_kernel(enabled):
 
 # Kernel application of the solid-shell opacity ceiling behind
 # ``compact_sheets`` (sheet_compact_taichi.solid_shell_ceiling). After the
-# block's own depth sort orders each (pixel, surface) segment -- and after the
-# f64 cumsum that prefixes it, which STAYS IN TORCH because a serial register
-# walk cannot reproduce a cub scan's reassociation bitwise (measured: 61 of
-# 3.13 M spend values move, flipping 10 visible f32 outputs on the real
-# nn-scene frame) -- torch walked the stream three more times to spend the
-# allowance: nonzero + scatter_ for segment starts, two facing-split f64
+# block's own depth sort orders each (pixel, surface) segment, torch walked
+# the stream four more times to spend the allowance: an integer cumsum for the
+# spend, nonzero + scatter_ for segment starts, two facing-split f64
 # scatter_add_s through a whole-stream segment map, and clone + index_copy_
 # for the write-back. One thread per segment (detected in-kernel along the
-# permutation) walks its run twice with the cap in registers and the caller's
-# prefix as data.
+# permutation) walks its run twice with the cap and the spend in registers.
 #
-# The float contract follows ss6.6.4 as before: front/back sums accumulate in
-# f64 registers serially in stream order (the atomic scatter_add_ had no
-# order), verified bitwise against the torch arm at 4K shapes and on the real
-# captured stream in benchmarks/_sheet_kernel_check.py rather than assumed.
+# The spend is Q32 fixed-point integer arithmetic, so the arms agree on it by
+# construction. The float contract follows ss6.6.4 as before: front/back sums
+# accumulate in f64 registers serially in stream order (the atomic
+# scatter_add_ had no order), verified bitwise against the torch arm at 4K
+# shapes and on the real captured stream in benchmarks/_sheet_kernel_check.py
+# rather than assumed.
 sheet_shell_ceiling_kernel = env_flag("ALGAN_SHEET_SHELL_CEILING_KERNEL", True)
 
 

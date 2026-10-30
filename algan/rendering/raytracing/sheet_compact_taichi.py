@@ -450,78 +450,83 @@ def sheet_lane_first_owner(
                     ti.atomic_min(first_lane[base + lane], i)
 
 
+#: The shell ceiling's spend is summed in this fixed point: a fragment's
+#: coverage ``c`` (its exact area, in pixels) counts as the integer
+#: ``int(c * SHELL_SPEND_ONE)``, truncated toward zero. See
+#: ``solid_shell_ceiling``.
+SHELL_SPEND_ONE = 4294967296.0  # 2**32
+SHELL_SPEND_QUANTUM = 1.0 / SHELL_SPEND_ONE
+
+
 @ti.kernel
 def solid_shell_ceiling(
     key: ti.types.ndarray(),  # [n] i64 -- (pixel, surface) segment keys, sorted order
     o2: ti.types.ndarray(),  # [n] i64 -- permutation key order -> depth order
     back: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
-    excl: ti.types.ndarray(),  # [n] `acc_t` -- GLOBAL exclusive prefix of the areas
-    scratch: ti.types.ndarray(),  # [n] `acc_t` -- caller's spare [n] buffer
     n: ti.i32,
     cov: ti.types.ndarray(),  # [n] f32 INOUT -- clamped in place
-    acc_t: ti.template(),  # compile-time: `excl`/`scratch`'s element type
+    acc_t: ti.template(),  # compile-time: the accumulator width
 ):
     """One pass: the solid-shell opacity ceiling, applied to the fragments.
 
     The torch block this replaced walked its depth-ordered segments three
-    more times after the sort that orders them and the f64 ``cumsum`` that
-    prefixes them: a ``nonzero`` + ``scatter_`` for the segment starts, two
-    facing-split f64 ``scatter_add_``s routed through a whole-stream segment
-    map, and a clone + ``index_copy_`` to write the clamped areas back. Here
-    one thread per segment -- detected in-kernel as a change of ``key`` along
-    ``o2``, so neither the segment map nor the start indices exist -- walks
-    its run twice with everything else in registers: once to accumulate the
-    two shells' full-coverage sums (the cap), once to spend the allowance in
-    depth order and write each fragment's scaled coverage back through
-    ``cov[o2[j]]``.
+    more times after the sort that orders them: a ``nonzero`` + ``scatter_``
+    for the segment starts, two facing-split f64 ``scatter_add_``s routed
+    through a whole-stream segment map, and a clone + ``index_copy_`` to write
+    the clamped areas back. Here one thread per segment -- detected in-kernel
+    as a change of ``key`` along ``o2``, so neither the segment map nor the
+    start indices exist -- walks its run twice with everything else in
+    registers: once to accumulate the two shells' full-coverage sums (the
+    cap), once to spend the allowance in depth order and write each
+    fragment's scaled coverage back through ``cov[o2[j]]``.
 
-    Exactness, in three parts. The facing-split sums are plain f64 adds of a
+    Exactness, in two parts. The facing-split sums are plain f64 adds of a
     segment's own values: the torch arm's atomic ``scatter_add_`` had no
     summation order at all and the kernel adds serially in stream order, so
     agreement with the torch arm is the same measure-not-assume contract as
     ``one_mesh_pixel_reduce``'s (verified bitwise at 4K shapes AND on a real
-    captured stream). The SPEND -- what each fragment's predecessors have
-    already consumed -- is different twice over: torch computes it as a
-    difference of two rows of ONE GLOBAL cub scan, whose reassociation a
-    serial register walk cannot reproduce bitwise (measured: 61 of 3.13 M
-    spent values move, flipping 10 visible f32 outputs), so the prefix stays
-    in torch and the kernel only differences it at its own segment boundary.
-    And that difference must survive AS ITS OWN ROUNDING STEP: this kernel
-    compiles under Taichi's fast_math, whose reassociation pass folds
-    ``cap - (excl[j] - base)`` into ``(cap + base) - excl[j]`` -- harmless
-    while the prefix is small, and wrong by whole f32 ulps once it exceeds
-    the areas' own scale (measured: 1044 of 3.13 M PASS-THROUGH fragments --
-    where the answer is the input bit for bit -- came out one ulp low on the
-    real nn-scene frame). Storing ``spent`` to ``scratch`` and reading it
-    back is the barrier: the reload is opaque to the pass, so the subtraction
-    rounds alone, exactly as the torch arm's separate tensor op did.
-    ``scratch`` is the caller's now-dead f64 copy of the coverage stream,
-    which the torch arm needed only to build ``excl`` -- the barrier is free.
+    captured stream).
+
+    The SPEND -- what each fragment's in-segment predecessors have already
+    consumed -- is integer arithmetic, so it needs no such argument. Each
+    area counts as ``int(c * SHELL_SPEND_ONE)`` (Q32 fixed point, truncated),
+    the walk adds those integers, and the total converts back exactly
+    (``spent_q * SHELL_SPEND_QUANTUM``: below 2**53, times a power of two).
+    Integer addition is associative, so the torch arm reaches the same
+    integer by differencing a whole-stream ``cumsum`` at the segment's base,
+    and so does any other grouping of the stream: the clamp of one segment
+    is a function of that segment's fragments alone, never of how many
+    fragments, pixels or frames precede it in the chunk. That is what lets
+    ``compact_sheets`` compact a stream's triangle pixels apart from its
+    stroke pixels (``_split_stroke_pixels``) whatever the scene declares.
+    (The spend used to be a difference of two rows of a GLOBAL f64 cub scan,
+    which made every fragment's low bits depend on the whole chunk and kept
+    any stream with a closed solid in it off that split -- about half the
+    compaction's time on such scenes.) The quantum, 2.3e-10, is below what
+    that difference rounded to once the prefix passed ~1e6, and far below the
+    f32 output's spacing; the bound is the stream's total coverage under
+    2**31, which an arena-limited fragment count never approaches.
+
     Every remaining step is the same arithmetic on the same values in the
-    same order: clamp/div/clamp chain, the f64 -> f32 -> f64 rounding of the
-    cap, and the ``1e-12`` denominator floor -- which the torch side clamps
-    INTO ITS OWN COPY, so the closing multiply writes the floored value, not
-    the raw area. Each output slot is written by exactly one walk because
-    ``o2`` is a permutation, which is what made the torch side's clone +
-    ``index_copy_`` equivalent to in-place.
+    same order in both arms: clamp/div/clamp chain, the f64 -> f32 -> f64
+    rounding of the cap, and the ``1e-12`` denominator floor -- which the
+    torch side clamps INTO ITS OWN COPY, so the closing multiply writes the
+    floored value, not the raw area. Each output slot is written by exactly
+    one walk because ``o2`` is a permutation, which is what made the torch
+    side's clone + ``index_copy_`` equivalent to in-place.
 
     A fragment count never approaches 2**31, so rows narrow to i32 for
     indexing.
 
-    ``acc_t`` is the accumulator width and must match ``excl``/``scratch``'s
-    dtype. MPS-friendly mode passes ``ti.f32``, because Metal has no f64
-    (``mps_compat``), and there the exactness argument above lapses: the cap's
-    round through f32 is a no-op and nothing can be bitwise anyway. Worse, the
-    global prefix cannot be used at all. It runs over the whole stream, so on
-    a 1080p frame it reaches about 1e6, where the f32 spacing is 0.06-0.125,
-    and differencing two of its entries rounds ``spent`` at that scale. On a
-    synthetic 3.2M-fragment stream (prefix ending at 1.6e6) that put clamped
-    coverage off the f64 arm's by up to 0.24 (p99 0.11), worse the later a
-    pixel sits in the stream. So the f32 arm uses neither ``excl`` nor
-    ``scratch``: it adds each segment's areas up in the same serial walk that
-    spends them, which rounds at the scale of one pixel's coverage (4e-7 off
-    the f64 arm on that stream). The torch arm does the same with a segmented
-    scan (``sheets._segment_exclusive_prefix``).
+    ``acc_t`` is the accumulator width. MPS-friendly mode passes ``ti.f32``,
+    because Metal has no f64 (``mps_compat``), and there the exactness
+    argument above lapses: the cap's round through f32 is a no-op and nothing
+    can be bitwise anyway. That arm keeps the float spend Metal has always
+    run: it adds each segment's areas up in the same serial walk that spends
+    them, which rounds at the scale of one pixel's coverage (4e-7 off the f64
+    arm on a synthetic 3.2M-fragment stream) and, like the fixed point, never
+    reads another segment. The torch arm does the same with a segmented scan
+    (``sheets._segment_exclusive_prefix``).
     """
     for i in range(n):
         ii = ti.cast(o2[i], ti.i32)
@@ -545,12 +550,9 @@ def solid_shell_ceiling(
             # clipped. The f64 value came from an f32 array, but the SUM did
             # not -- only the round makes it well-defined.
             cap = ti.cast(ti.cast(ti.max(front, bk), ti.f32), acc_t)
-            # ``excl`` is indexed by position along ``o2`` -- the space the
-            # cumsum ran in -- not by the main-order rows the other arrays
-            # use.
-            base = excl[i]
-            # The f32 arm's spend, accumulated over this segment alone (see
-            # the docstring's last paragraph). Unused at f64.
+            # The spend so far: Q32 integers at f64 (see the docstring), the
+            # plain running sum in the f32 arm. Only one of them is used.
+            spent_q = ti.cast(0, ti.i64)
             spent = ti.cast(0.0, acc_t)
             j = i
             while j < n:
@@ -569,10 +571,13 @@ def solid_shell_ceiling(
                 # inside one is out of scope after it.
                 scale = ti.cast(0.0, acc_t)
                 if ti.static(acc_t != ti.f32):
-                    # Store-and-reload: the barrier documented above. Do not
-                    # "simplify" it back into register arithmetic.
-                    scratch[j] = excl[j] - base
-                    scale = ti.max(cap - scratch[j], ti.cast(0.0, acc_t))
+                    scale = ti.max(
+                        cap
+                        - ti.cast(spent_q, acc_t)
+                        * ti.cast(SHELL_SPEND_QUANTUM, acc_t),
+                        ti.cast(0.0, acc_t),
+                    )
+                    spent_q += ti.cast(c * ti.cast(SHELL_SPEND_ONE, acc_t), ti.i64)
                 else:
                     scale = ti.max(cap - spent, ti.cast(0.0, acc_t))
                     spent += c

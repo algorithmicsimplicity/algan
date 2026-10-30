@@ -1862,32 +1862,14 @@ def _stroke_sheets(coverage, n, num_covered, band_rule, band_c, resolve_only):
 _STROKE_SPLIT_MAX_MIXED = 0.6
 
 
-def _batch_has_closed_shell(merged):
-    """Does any triangle of this batch carry a closed-shell ceiling?
-
-    Read once per batch (cached on ``merged``). The ceiling's spend is keyed
-    off a GLOBAL float64 prefix over the whole stream (see ``compact_sheets``),
-    so its low bits depend on every other fragment in the chunk -- a pixel
-    split would move them. Streams that can reach it keep the general path.
-    """
-    cached = merged.get("_algan_any_closed_shell")
-    if cached is None:
-        closed = merged.get("tri_closed") if rt_settings.solid_shell_alpha else None
-        cached = bool(
-            closed is not None and closed.numel() and bool((closed > 0.5).any())
-        )
-        merged["_algan_any_closed_shell"] = cached
-    return cached
-
-
 def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only):
     """``compact_sheets`` of a mixed stream, compacting only its triangle pixels.
 
     Every stage of the compaction is per pixel: groups, bands, conflict ranks,
-    pooling, the shading-class split, the walk order and the sibling chains
-    never cross a pixel boundary, and the sample-depth rule compares sheets of
-    one pixel. (The closed-shell ceiling is the exception -- its spend reads a
-    global prefix -- and ``_batch_has_closed_shell`` keeps such streams out.)
+    pooling, the closed-shell ceiling (whose spend never leaves its (pixel,
+    surface) segment -- ``sheet_compact_taichi.solid_shell_ceiling``), the
+    shading-class split, the walk order and the sibling chains never cross a
+    pixel boundary, and the sample-depth rule compares sheets of one pixel.
     So a pixel holding no triangle fragment compacts to its fragments one for
     one, exactly as ``_stroke_sheets`` writes them, and only the pixels
     holding a triangle need the general path. This runs it on those pixels'
@@ -2202,7 +2184,6 @@ def compact_sheets(
         and not persist_output
         and coverage.get("num_tri_fragments")
         and not _opt_disabled_sheets("strokepixels")
-        and not _batch_has_closed_shell(merged)
     ):
         out = _split_stroke_pixels(
             coverage,
@@ -2548,56 +2529,34 @@ def compact_sheets(
         # rebuild it: the same mask-shift-view over [n] plus the same gather,
         # for a bit-identical copy of a tensor already in hand.
         o2 = _key_depth_order(key, t_o)
-        # Both arms need the f64 areas and their GLOBAL exclusive prefix: the
-        # prefix comes out of a cub scan, and a serial register walk cannot
-        # reproduce its reassociation bitwise (measured on the real nn-scene
-        # 3840x2160 frame: a serial spend moved 61 of 3.13 M values and flipped
-        # 10 visible f32 outputs, all sliver areas below 1e-4 -- against the
-        # byte-identity contract). The kernel takes the prefix as input and
-        # does everything else per segment in registers; the torch arm below
-        # stays as the A/B arm.
-        # ``copy=True`` because ``cov_o`` is already float32: at
-        # ``accumulate_dtype() is torch.float32`` -- MPS-friendly mode --
-        # ``.to`` is the identity, and the kernel arm below hands this same
-        # buffer to the kernel as its reassociation-barrier ``scratch`` while
-        # ``cov_o`` is its INOUT coverage. Aliased, the barrier store
-        # overwrites the coverage mid-walk and the stream comes back with
-        # negative areas in it.
-        cov64 = cov_o.to(accumulate_dtype(), copy=True)
-        c2 = cov64.index_select(0, o2)
-        # Only at float64. In float32 (MPS-friendly mode) a whole-stream
-        # prefix reaches ~1e6 on a 1080p frame and differencing two of its
-        # entries loses a pixel's coverage to rounding, so both arms spend
-        # segment by segment there instead (``solid_shell_ceiling``'s
-        # docstring, ``_segment_exclusive_prefix``).
-        excl_global = None
-        if c2.dtype != torch.float32:
-            csum = torch.cumsum(c2, 0)
-            excl_global = csum.sub_(c2)
+        # Every segment spends on its own: the f64 arms count the spend in
+        # Q32 fixed point and the f32 (MPS-friendly) arms add each segment
+        # serially, so no fragment's clamp reads anything outside its own
+        # (pixel, surface) segment (``solid_shell_ceiling``'s docstring). The
+        # kernel does it in registers; the torch arm below stays as the A/B.
         if rt_settings.sheet_shell_ceiling_kernel and n:
             from algan.rendering.raytracing.sheet_compact_taichi import (
                 solid_shell_ceiling,
             )
 
-            # ``cov64`` doubles as the kernel's reassociation-barrier scratch
-            # (see the kernel docstring); the torch arm needed it only to
-            # build ``excl`` either way. The float32 variant uses neither, so
-            # ``c2`` stands in for the prefix it does not use.
             solid_shell_ceiling(
                 key.contiguous(),
                 kernel_index(o2.contiguous()),
                 shell_back.contiguous().view(torch.uint8),
-                c2 if excl_global is None else excl_global,
-                cov64,
                 n,
                 cov_o,
                 taichi_accumulate_dtype(),
             )
-            del key, o2, shell_back, excl_global, c2, cov64
+            del key, o2, shell_back
         else:
-            # Dead past the prefix in this arm; the kernel arm reuses it as
-            # its reassociation-barrier scratch instead.
-            del cov64
+            from algan.rendering.raytracing.sheet_compact_taichi import (
+                SHELL_SPEND_ONE,
+                SHELL_SPEND_QUANTUM,
+            )
+
+            # ``index_select`` copies, so the in-place floor below never
+            # touches ``cov_o``.
+            c2 = cov_o.index_select(0, o2).to(accumulate_dtype())
             k2 = key.index_select(0, o2)
             del key
             seg_start = torch.ones(n, dtype=torch.bool, device=device)
@@ -2607,18 +2566,25 @@ def compact_sheets(
             seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
             nseg = int(seg[-1].item()) + 1
             # The running total each fragment's in-segment predecessors have
-            # already spent: the global exclusive prefix minus its value at the
-            # segment's first row (the same construction ``_conflict_rank``'s
-            # torch arm uses, and deterministic for the same reason).
+            # already spent: the kernel's Q32 integers, reached here by
+            # differencing a whole-stream integer prefix at the segment's
+            # first row (exact, so the same integer the kernel's walk adds up;
+            # the construction ``_conflict_rank``'s torch arm uses).
             first = torch.zeros(nseg, dtype=torch.int64, device=device)
             first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
-            if excl_global is not None:
-                spent = excl_global - excl_global.index_select(0, first).index_select(
-                    0, seg
+            if c2.dtype != torch.float32:
+                q2 = (c2 * SHELL_SPEND_ONE).to(torch.int64)
+                excl_q = torch.cumsum(q2, 0).sub_(q2)
+                del q2
+                spent = (
+                    (excl_q - excl_q.index_select(0, first).index_select(0, seg))
+                    .to(c2.dtype)
+                    .mul_(SHELL_SPEND_QUANTUM)
                 )
+                del excl_q
             else:
                 spent = _segment_exclusive_prefix(c2, seg, first)
-            del excl_global, first, seg_start
+            del first, seg_start
             # The segment's cap: its surface's two shells' own footprint areas,
             # accumulated float64 and rounded through float32 -- §6.6.4, because a
             # ceiling that wobbles in its low bits flips borderline fragments in

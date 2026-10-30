@@ -14,6 +14,9 @@ import pytest
 import torch
 
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BACKFACE_BIT as BACKFACE,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -155,11 +158,14 @@ def _mixed_stream(
     height=16,
     num_tris=8,
     tri_share=0.6,
+    closed=False,
 ):
     """Triangle and circuit fragments sharing pixels; ``flat`` gives the
     triangles declared-flat normals (distinct shading classes per face), and
     ``disjoint`` gives each fragment of a pixel its own sample bit, so no band
-    is rank-split (and none pools).
+    is rank-split (and none pools). ``closed`` declares surface 0 a closed
+    shell and turns about half its fragments back-facing, so the solid-shell
+    ceiling clamps some of them.
     """
     g = torch.Generator().manual_seed(seed)
     ppf = width * height
@@ -185,6 +191,9 @@ def _mixed_stream(
     if disjoint:
         starts = torch.repeat_interleave(run_offsets[:-1].to(torch.int64), counts)
         msk = (1 << (torch.arange(n) - starts)).to(torch.int32)
+    if closed:
+        flip = tri & (torch.rand(n, generator=g) < 0.5)
+        msk = torch.where(flip, msk | BACKFACE, msk)
     coverage = {
         "frag_key": key,
         "frag_ref": ref,
@@ -215,6 +224,10 @@ def _mixed_stream(
         "tri_pos": tp.to(device),
         "tri_norm": tn.to(device),
     }
+    if closed:
+        merged["tri_closed"] = torch.tensor(
+            [[1.0, 1, 1, 1, 0, 0, 0, 0][:num_tris]], device=device
+        )
     cam = torch.zeros(1, 3, device=device)
     pws = torch.full((1,), 1e-3, device=device)
     return coverage, merged, cam, pws, width, height
@@ -282,6 +295,57 @@ def test_stroke_pixel_split_matches_general_path(
     monkeypatch.setattr(sheets_mod, "_split_stroke_pixels", spy)
     got = _run(stream, shortcut=False, resolve_only=resolve_only, **flags)
     assert calls == [True]  # the split was taken, not declined
+    assert set(got) == set(ref)
+    for name, want in ref.items():
+        if torch.is_tensor(want):
+            assert got[name].dtype == want.dtype, name
+            assert got[name].shape == want.shape, name
+            assert torch.equal(_bits(got[name]), _bits(want)), name
+        else:
+            assert got[name] == want, name
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("ceiling_kernel", [True, False])
+@pytest.mark.parametrize("sample_depth", [True, False])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_stroke_pixel_split_holds_with_a_closed_solid(
+    device, ceiling_kernel, sample_depth, seed, monkeypatch
+):
+    """A declared closed shell no longer keeps a stream off the split.
+
+    The shell ceiling's spend never leaves its (pixel, surface) segment
+    (``sheet_compact_taichi.solid_shell_ceiling``), so compacting the
+    triangle pixels apart from the stroke pixels must change no bit of it.
+    """
+    import algan.animation_timeline.timeline as tl
+    import algan.rendering.raytracing.settings as rt_settings
+    import algan.rendering.raytracing.sheets as sheets_mod
+
+    monkeypatch.setattr(rt_settings, "sheet_shell_ceiling_kernel", ceiling_kernel)
+    stream = _mixed_stream(seed, device, True, False, tri_share=0.2, closed=True)
+    flags = {
+        "shade_split": True,
+        "positioned_depth": True,
+        "sample_depth": sample_depth,
+    }
+    monkeypatch.setattr(tl, "_OPT_DISABLED", frozenset({"strokepixels"}))
+    ref = _run(stream, shortcut=False, resolve_only=False, **flags)
+    monkeypatch.setattr(tl, "_OPT_DISABLED", frozenset())
+    calls = []
+    real = sheets_mod._split_stroke_pixels
+
+    def spy(*a, **k):
+        out = real(*a, **k)
+        calls.append(out is not None)
+        return out
+
+    monkeypatch.setattr(sheets_mod, "_split_stroke_pixels", spy)
+    got = _run(stream, shortcut=False, resolve_only=False, **flags)
+    assert calls == [True]  # the split was taken, not declined
+    # The ceiling did clamp something, so the comparison is not vacuous.
+    raw = stream[0]["frag_cov"].sum().item()
+    assert got["sheet_cov"].double().sum().item() < raw - 1e-3
     assert set(got) == set(ref)
     for name, want in ref.items():
         if torch.is_tensor(want):
