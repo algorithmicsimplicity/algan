@@ -1201,10 +1201,6 @@ ROUTE_VETOES = {
     ),
     "raster_empty_skip_off": "the experimental switch raster_empty_skip is off",
     "raster_covered_shade_off": "the experimental switch raster_covered_shade is off",
-    "transparent_background_env_map": (
-        "a transparent background together with an environment map"
-    ),
-    "near_clip": "camera.near > 0, which only the ray-traversal path clips at",
     "no_geometry": "the batch has no triangles and no Bezier circuits",
     "analytic_aa_tri_off": (
         "the batch has triangles and the experimental switch analytic_aa_tri is off"
@@ -1251,10 +1247,14 @@ def analytic_raster_route_veto(
     (DESIGN_sheet_resolve.md; the fragment walk that once served it is
     deleted), so the sheet resolve's own preconditions are route vetoes here:
     with any of them off the batch falls back to the classic wavefront at the
-    requested supersample level.  A transparent background composites fine
-    from sheet leftover weight, but not together with an environment map
-    (the env prefill would fill the alpha the background owes), so that one
-    combination also falls back.
+    requested supersample level.  A transparent background composites from
+    sheet leftover weight like any other; under an environment map the env
+    prefill writes its alpha column opaque, since the map replaces the
+    backdrop on every route (``Scene.set_environment_map``).  The camera's
+    clip planes are no veto either: the emission cuts geometry at the near
+    plane (``raster_pipeline.prepare_sparse_raster_coverage``) and the
+    resolve stops each pixel's walk at the far clip, so ``near_clip`` and
+    ``far_clip`` are accepted for the callers' sake and read by neither.
     """
     if int(rt_settings.samples_per_pixel) > 1:
         return "path_tracer"
@@ -1272,10 +1272,6 @@ def analytic_raster_route_veto(
         return "raster_empty_skip_off"
     if not rt_settings.raster_covered_shade:
         return "raster_covered_shade_off"
-    if transparent_background and environment_map is not None:
-        return "transparent_background_env_map"
-    if float(near_clip) > 0.0:
-        return "near_clip"
 
     num_tri = int(merged.get("num_triangles", 0))
     num_bez = int(merged.get("num_circuits", 0))
@@ -1988,6 +1984,8 @@ def _build_raster_tables(
     half_screen_h,
     width,
     projection=None,
+    near_clip=0.0,
+    far_clip=0.0,
 ):
     """Build the batch-wide raster projection / bounds tables, once per batch.
 
@@ -1995,7 +1993,8 @@ def _build_raster_tables(
     batch, every chunk of it reads the same rows, and the per-chunk reset only
     rewinds the forward pointer. See the call site for the lifetime contract.
     ``projection`` is ``None`` for a pinhole batch and its ``cam_proj``
-    otherwise (``raster_pipeline.precompute_triangle_projection``).
+    otherwise, and ``near_clip`` / ``far_clip`` the camera's clip planes
+    (``raster_pipeline.precompute_triangle_projection``).
     """
     from algan.rendering.raytracing.raster_pipeline import (
         precompute_circuit_screen_bounds,
@@ -2019,6 +2018,8 @@ def _build_raster_tables(
             memory,
             persist=True,
             projection=projection,
+            near_clip=near_clip,
+            far_clip=far_clip,
         )
         # Live reads (settings convention): each kill-switch falls back to
         # the per-frame pair emission inside prepare_sparse_raster_coverage.
@@ -2039,6 +2040,7 @@ def _build_raster_tables(
                 memory,
                 persist=True,
                 projection=projection,
+                near_clip=near_clip,
             )
         if rt_settings.raster_bez_precompute and int(merged.get("num_circuits", 0)) > 0:
             bez_bounds = precompute_circuit_screen_bounds(
@@ -2053,6 +2055,8 @@ def _build_raster_tables(
                 memory,
                 persist=True,
                 projection=projection,
+                near_clip=near_clip,
+                far_clip=far_clip,
             )
     return tri_screen, tri_bounds, bez_bounds
 
@@ -3584,7 +3588,6 @@ def raytrace_render_wavefront(
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
         and mem_trim == 0
         and len(frag_scatters) == 0
-        and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
         and rt_settings.raster_sparse_coverage
         and rt_settings.raster_empty_skip
@@ -3629,8 +3632,8 @@ def raytrace_render_wavefront(
         # Runtime routing needs the trees after all: primary shadows trace
         # them from the sheet resolve's event queue (raster_shadow_trace),
         # and a batch that fell back to classic primary traversal (a
-        # ROUTE_VETOES reason: near clip, a toggle flipped after the merge,
-        # ...) walks them for every primary ray.
+        # ROUTE_VETOES reason: custom scatter, a toggle flipped after the
+        # merge, ...) walks them for every primary ray.
         _ensure_bvhs()
 
     gen_fused = (
@@ -3727,6 +3730,8 @@ def raytrace_render_wavefront(
                 half_screen_h,
                 width,
                 projection=cam_proj,
+                near_clip=near_clip,
+                far_clip=far_clip,
             )
             merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
             _retain_persistent(merged, memory)
@@ -4488,6 +4493,8 @@ def raytrace_render_wavefront(
                 half_screen_h,
                 layer_offset_triangles,
                 depth_order_eye=depth_order_eye,
+                near_clip=near_clip,
+                far_clip=far_clip,
                 # The resolve's refraction template and the primary's bounce
                 # budget: without both no sheet refracts, and the one-solid
                 # ceiling has nothing to bind behind.

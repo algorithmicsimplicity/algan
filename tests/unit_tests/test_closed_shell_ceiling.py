@@ -12,8 +12,9 @@ streams, the same way ``test_sheet_compaction`` pins the machinery it rides:
   more of the pixel) and a genuine self-overlap still attenuates twice;
 * every exemption holds: undeclared surfaces, transmissive ones (folded open
   at pack time, tested in ``test_closed_shell_declaration``), N independent
-  translucent solids composing to ``1 - (1 - a)^N``, and the view from inside
-  a solid where every crossing is back-facing.
+  translucent solids composing to ``1 - (1 - a)^N``, the view from inside
+  a solid where every crossing is back-facing, and the pixels where the near
+  clip plane cuts an opaque solid open.
 
 Pure tensor assertions; no render. Feature tests of the renderer's compositing
 semantics, not of anything the timeline can break: not ``fast``.
@@ -21,6 +22,7 @@ semantics, not of anything the timeline can break: not ``fast``.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from algan import SETTINGS
@@ -28,7 +30,13 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as BACKFACE,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BAND_CONT_BIT as BAND_CONT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_NEAR_CUT_BIT as NEAR_CUT,
 )
 from algan.rendering.raytracing.sheets import compact_sheets, resolve_pixel_reference
 
@@ -221,3 +229,58 @@ def test_silhouette_leftover_flows_to_the_sheet_that_owns_more():
         tri_closed=[1, 1, 1, 1, 0, 0, 0, 0],
     )
     assert torch.allclose(out["sheet_cov"], torch.tensor([0.25, 0.50]))
+
+
+def test_a_pixel_the_near_plane_cuts_open_skips_the_ceiling():
+    """The near plane cut an opaque solid open across this pixel: its near
+    shell lost three quarters of the pixel to the cut, and rays through the
+    opening start inside the solid and cross only its far shell. The ceiling
+    would spend the far shell after the near one and leave it the difference,
+    which the resolve then applies as a fraction of the light the near shell
+    left -- so the background showed through. A pixel holding a fragment the
+    cut trimmed (``_AA_NEAR_CUT_BIT``) keeps both shells whole; the solid's
+    uncut pixel, and the same pixel with no near clip, keep the ceiling.
+    """
+    near_shell = NEAR_CUT | 0b00000011
+    frags = [
+        (3, 18.7, 0, 0.25, near_shell),  # cut back to a quarter of the pixel
+        (3, 21.4, 1, 1.0, BACKFACE | MASK_ALL),  # the whole pixel
+        (5, 18.2, 2, 1.0, MASK_ALL),  # an uncut pixel of the same solid
+        (5, 21.9, 3, 1.0, BACKFACE | MASK_ALL),
+    ]
+    closed = [1, 1, 1, 1, 0, 0, 0, 0]
+    cut = _compact(frags, tri_closed=closed, near_clip=18.0)
+    assert torch.allclose(cut["sheet_cov"], torch.tensor([0.25, 1.0, 1.0, 0.0]))
+    unclipped = _compact(frags, tri_closed=closed)
+    assert torch.allclose(unclipped["sheet_cov"], torch.tensor([0.25, 0.75, 1.0, 0.0]))
+    # What the pixel paints: all of it, against nearly a fifth of it lost.
+    msks = [near_shell, BACKFACE | MASK_ALL]
+    claims, _T = resolve_pixel_reference([0.25, 1.0], msks, [False, False])
+    assert sum(claims) == pytest.approx(1.0)
+    claims, _T = resolve_pixel_reference([0.25, 0.75], msks, [False, False])
+    assert sum(claims) == pytest.approx(0.8125)
+
+
+def test_a_band_whose_closing_sibling_was_spent_to_nothing_still_occludes():
+    """REGRESSION. A flat-shaded solid's far shell splits into one sibling
+    sheet per face (DESIGN_sheet_resolve.md §4.4), which claim side by side
+    and occlude once, at the band's last sheet. Where the ceiling spends the
+    shell's allowance on its first face and none on the last, that closing
+    sibling claims nothing, and it still makes the band's write. Skipped,
+    write and all, it left the band painting its first face and occluding
+    nothing behind it: a translucent cube cut by the near plane showed the
+    background through on such pixels.
+    """
+    a = 0.75
+    claims, T = resolve_pixel_reference(
+        [0.75, 0.0, 1.0],
+        [MASK_ALL | BAND_CONT, MASK_ALL, MASK_ALL],
+        [False, False, False],
+        alphas=[a, a, 1.0],
+        min_alpha=1e-3,
+    )
+    assert claims[0] == pytest.approx(a * 0.75)
+    assert claims[1] == 0.0
+    # The sheet behind sees only what the band let through.
+    assert claims[2] == pytest.approx(1.0 - a * 0.75)
+    assert max(T) == pytest.approx(0.0)

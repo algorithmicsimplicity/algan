@@ -145,8 +145,8 @@ def _probe_kernel():
         for n, py, px in ti.ndrange(ntri, height, width):
             # 0-1: the emission's own dispatch on the projection flag, as the
             # write pass runs it (store_exact = 1).
-            use_ss, sm, vm, cam_o, il = rt._ss_setup(
-                0, n, 1, tri_pos, tri_screen, cam_origin, AA
+            use_ss, sm, vm, cam_o, il, nl = rt._ss_setup(
+                0, n, 1, tri_pos, tri_screen, cam_origin, screen_point, 0.0, AA
             )
             ok, _lp, _t, _w1, _w2, _cov, msk = rt._pair_pixel(
                 n,
@@ -169,6 +169,8 @@ def _probe_kernel():
                 vm,
                 cam_o,
                 il,
+                nl,
+                0.0,
                 cam_origin,
                 screen_point,
                 pbx,
@@ -189,7 +191,7 @@ def _probe_kernel():
                 tri_screen[0, n, 10], tri_screen[0, n, 11], tri_screen[0, n, 12]
             )
             ok2, _t2, _a2, _b2, _c2, msk2 = rt._ss_pixel(
-                px, py, sm2, vm, cam_o, il2, AA, 1, 0, cam_origin, cam_proj
+                px, py, sm2, vm, cam_o, il2, nl, AA, 1, 0, cam_origin, cam_proj
             )
             out[n, py, px, 2] = ok2
             out[n, py, px, 3] = msk2
@@ -206,6 +208,7 @@ def _probe_kernel():
                 pbx,
                 pby,
                 cam_proj,
+                0.0,
                 AA,
             )
             out[n, py, px, 4] = ok3

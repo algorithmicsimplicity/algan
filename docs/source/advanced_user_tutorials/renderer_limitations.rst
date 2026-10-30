@@ -131,7 +131,7 @@ row links to the section that explains it.
      - Yes, as a delta lobe
      - `Which renderer runs your scene`_
    * - Near clipping (``camera.near``)
-     - **Falls back**
+     - Yes
      - Yes
      - Yes
      - `Camera`_
@@ -141,7 +141,7 @@ row links to the section that explains it.
      - Yes
      - `Camera`_
    * - Transparent background
-     - Yes (not with an env map)
+     - Yes
      - Yes
      - Yes
      - `Which renderer runs your scene`_
@@ -403,12 +403,8 @@ A batch falls back when any of the following holds:
      - Why
    * - ``samples_per_pixel > 1``
      - A different renderer entirely.
-   * - ``camera.near > 0``
-     - Near clipping is only implemented in the ray-traversal path.
    * - A mob whose fragment shader overrides ray bouncing
      - Custom scatter is only implemented in the ray-traversal path.
-   * - A transparent background **together with** an environment map
-     - The environment prefill would fill the alpha the background owes.
    * - The batch contains no triangles and no Bezier circuits
      - Nothing for the rasterizer to emit.
    * - ``SETTINGS.raytracing.analytic_aa`` off, or one of the analytic path's
@@ -1116,8 +1112,13 @@ Camera
   background (a colour, image or callable) is not scenery and stays sharp.
 * **No motion blur.** Frames are instantaneous samples of the timeline.
 * **No lens distortion, no fisheye, no panoramic projection.**
-* ``camera.near > 0`` forces the supersampled fallback path for the whole batch.
-  Leave it at ``0`` unless you specifically need near clipping.
+* ``camera.near`` cuts geometry at the near plane on every path, so a camera
+  can pass into a solid and show its inside. On the analytic path the cut is
+  exact per pixel, with one approximation: where it opens a *translucent*
+  closed solid, the one-pixel rim along the cut can come out slightly lighter
+  than the supersampled path draws it. A closed solid attenuates the light
+  behind it once however many times a ray crosses it, and that rim mixes rays
+  that cross it twice with rays that start inside it and cross it once.
 * Geometry crossing the camera plane is handled **exactly** -- such a primitive
   is intersected by ray casting per sub-pixel sample rather than projected.
   So is a large triangle lying a hair in front of the plane, which would

@@ -80,6 +80,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_MAT_OPAQUE_BIT as AA_MAT_OPAQUE_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_NEAR_CUT_BIT as AA_NEAR_CUT_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -277,7 +280,7 @@ def _lattice_demote(flag, sx, sy, half_w, half_h):
 
 @compiled(dynamic=True)
 def _triangle_projection_fused(
-    verts, ro, sp, pbx, pby, half_w, half_h, wide, proj=None
+    verts, ro, sp, pbx, pby, half_w, half_h, wide, proj=None, clip=None
 ):
     """The projection record's arithmetic, from gathered inputs to the packed
     table (:func:`precompute_triangle_projection` documents what it means).
@@ -299,6 +302,9 @@ def _triangle_projection_fused(
     ``spread * D + persp * depth`` rather than by its depth, and that divisor
     is the one columns 6:9 carry -- one constant per frame for an orthographic
     camera, whose perspective-correct interpolation is then the affine one.
+
+    ``clip`` is ``None`` without camera clip planes, or a ``[2]`` tensor of
+    ``(near, far)``, either zero when off (see the flag below).
     """
     nvec = torch.linalg.cross(pbx, pby)
     n2 = (nvec * nvec).sum(-1)
@@ -349,9 +355,31 @@ def _triangle_projection_fused(
     inv_d = torch.where(
         valid[..., None], 1.0 / safe_denom, torch.zeros_like(safe_denom)
     )
-    flag = _lattice_demote(
-        valid.to(sx.dtype) - behind.to(sx.dtype), sx, sy, half_w, half_h
-    )
+    flag = valid.to(sx.dtype) - behind.to(sx.dtype)
+    if clip is not None:
+        # Camera clip planes, as the classic route applies them: the near
+        # plane cuts at a planar depth along the forward axis, the far clip
+        # at a ray travel, which a point's planar depth bounds from below. A
+        # triangle wholly nearer than the near plane, or wholly past the far
+        # clip, is culled like one behind the camera. An all-front triangle
+        # the near plane crosses is flagged 2: it keeps the exact
+        # screen-space path, which cuts it along the plane pixel by pixel
+        # (``raster_taichi._ss_setup``). A straddler keeps 0, and its
+        # ray-cast samples test the plane themselves.
+        fwd = sp - ro
+        fwd = fwd / torch.sqrt(_floor((fwd * fwd).sum(-1, keepdim=True), 1e-30))
+        depth = (d * fwd[:, None, None, :]).sum(-1)
+        near = clip[0]
+        far = clip[1]
+        lo = depth.amin(-1)
+        hi = depth.amax(-1)
+        culled = ((near > 0) & (hi < near)) | ((far > 0) & (lo > far))
+        cut = valid & (near > 0) & (lo < near)
+        flag = torch.where(cut, torch.full_like(flag, 2.0), flag)
+        flag = torch.where(culled, torch.full_like(flag, -1.0), flag)
+    # After the clip flags, so a cut triangle the lattice cannot hold is
+    # ray-cast too; its samples then test the near plane per ray.
+    flag = _lattice_demote(flag, sx, sy, half_w, half_h)
     parts = [sx, sy, inv_d, flag.unsqueeze(-1)]
     if wide:
         # Edge i faces vertex i: edge 0 is V1->V2, edge 1 is V2->V0, edge 2 is
@@ -381,6 +409,8 @@ def precompute_triangle_projection(
     memory,
     persist=False,
     projection=None,
+    near_clip=0.0,
+    far_clip=0.0,
 ):
     """Prepare one compact projection record per frame and flat triangle.
 
@@ -399,15 +429,25 @@ def precompute_triangle_projection(
       so the kernels ray-cast it too.
     * ``1``: all-front and lattice-safe: the exact projected path
       (``raster_taichi._ss_pixel``).
+    * ``2``: all-front and lattice-safe, but crossed by the near clip plane
+      (below): the exact path, cut along the plane's line on screen.
     * Larger values are reserved for further exact-path variants; every
-      value above 0.5 passes through the same lattice bound.
+      value above 0.5 passes through the same lattice bound, so a cut
+      triangle too large for the lattice is ray-cast (0.5), and its samples
+      test the near plane per ray.
 
     So readers test ``> 0.5`` for "exact projected path", ``> 0.25`` for
-    "every vertex in front, projection valid" and ``> -0.5`` for "not behind".
+    "every vertex in front, projection valid", ``> -0.5`` for "not behind" and
+    ``> 1.5`` for "cut by the near plane".
     Span-row candidates (``sheet_compact_taichi._span_mode``) keep ``> 0.5``:
     a demoted triangle walks its whole clipped box. The result is
     camera-specific and is built once per render batch, rather than once per
     primitive chunk and raster phase.
+
+    ``near_clip`` / ``far_clip`` are the camera's clip planes (``Camera.near``
+    / ``Camera.far``, 0 for off). Column 9 is then -1 for a triangle either
+    one removes entirely, and 2 for an all-front triangle the near plane
+    crosses.
 
     Under triangle analytic anti-aliasing the table is widened to 13 columns,
     10:13 holding the reciprocal SCREEN lengths of the three edges (edge ``i``
@@ -467,9 +507,25 @@ def precompute_triangle_projection(
         float(half_h),
         ncol >= 13,
         _frame_projection(projection, frame_ids),
+        _clip_planes(near_clip, far_clip, tri_pos.device),
     )
     out[:frames, :ntri].copy_(packed)
     return out
+
+
+def _clip_planes(near_clip, far_clip, device):
+    """The ``clip`` argument of :func:`_triangle_projection_fused`.
+
+    ``None`` without clip planes, so a batch without them compiles and runs
+    the projection it always did.
+    """
+    if float(near_clip) <= 0.0 and float(far_clip) <= 0.0:
+        return None
+    return torch.tensor(
+        [max(float(near_clip), 0.0), max(float(far_clip), 0.0)],
+        dtype=torch.float32,
+        device=device,
+    )
 
 
 def _class_pairs(mask, x0, x1, y0, y1, f, device):
@@ -586,7 +642,9 @@ def _straddle_clip_wanted(straddles):
     return rt_settings.raster_straddle_clip and bool(straddles.any().item())
 
 
-def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h, proj=None):
+def _clipped_screen_extents(
+    verts, edges, ro, sp, pbx, pby, half_w, half_h, proj=None, near=0.0
+):
     """Screen extent of the part of a convex hull a primary ray can reach.
 
     ``verts`` is ``[F, N, K, 3]`` world points whose convex hull bounds each
@@ -624,6 +682,12 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h, proj
     persp * depth`` is positive all the way down to it, so the clip sits on
     the camera plane itself: nothing is discarded that a ray could reach, and
     every primitive with a point in front of the plane is bounded.
+
+    ``near`` is the camera's near clip distance (0 for none). A ray reaches
+    nothing nearer than that plane, so the hull is clipped there instead,
+    whenever that is the farther of the two: nothing reachable is discarded
+    then either, and the primitive is bounded however close it passes to the
+    camera origin.
     """
     ro_b = ro[:, None, None, :]
     sp_b = sp[:, None, None, :]
@@ -644,6 +708,17 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h, proj
         clip_depth = clamp_floor(_CLIP_DEPTH_FRACTION * depth.amax(-1), 1e-30)
     else:
         clip_depth = torch.zeros_like(depth[..., 0])
+    at_near = None
+    if near > 0.0:
+        # ``depth`` is in units of |nvec|. A hair in front of the plane, so
+        # the extent stays a superset of what the kernels' own near test of
+        # the same plane accepts.
+        near_depth = (float(near) * (1.0 - 1e-4)) * torch.sqrt(
+            clamp_floor((nvec * nvec).sum(-1), 1e-30)
+        )
+        near_depth = near_depth[:, None].expand_as(clip_depth)
+        at_near = near_depth >= clip_depth
+        clip_depth = torch.maximum(clip_depth, near_depth)
     keep = depth >= clip_depth.unsqueeze(-1)
 
     lo_i, hi_i = _edge_index(edges, verts.device)
@@ -677,8 +752,11 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h, proj
         persp = proj[:, 0, None, None]
         spread = proj[:, 1, None, None]
         base = spread * front_d[:, None, None]
+        edge_base = base
+        if at_near is not None:
+            edge_base = base + persp * clip_depth.unsqueeze(-1)
         divisor = torch.cat(
-            (base + persp * depth.clamp_min(0.0), base.expand_as(step)), -1
+            (base + persp * depth.clamp_min(0.0), edge_base.expand_as(step)), -1
         )
         scale = front_d[:, None, None] / clamp_floor(divisor, 1e-30)
         across = (rel * nvec_b).sum(-1, keepdim=True) * inv_n2.unsqueeze(-1)
@@ -713,6 +791,9 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h, proj
     if proj is not None:
         # Nothing reachable was discarded (see the docstring).
         near_camera = torch.zeros_like(near_camera)
+    if at_near is not None:
+        # Clipped at the near plane: what it dropped is hidden anyway.
+        near_camera = near_camera & ~at_near
     bounded = keep.any(-1) & ~near_camera
     return xmin, xmax, ymin, ymax, bounded
 
@@ -766,6 +847,33 @@ def _project_points(verts, ro, sp, pbx, pby, half_w, half_h, proj=None):
     return u * half_h + half_w, v * half_h + half_h, front
 
 
+def _outside_clip_planes(points, ro, sp, near_clip, far_clip):
+    """Which primitives the camera's clip planes remove entirely.
+
+    ``points`` is ``[..., K, 3]`` world points whose convex hull bounds each
+    primitive, ``ro`` / ``sp`` the eye and screen centre broadcastable against
+    ``points[..., 0, :]``. The near plane sits at a planar depth along the
+    forward axis and the far clip at a ray travel, which a point's planar
+    depth bounds from below -- so a hull wholly nearer than the one or wholly
+    past the other holds nothing a primary ray can keep (the classic route
+    applies both planes the same way, ``wavefront_generate_rays`` and the
+    shade's far-clip retire). ``None`` when both clips are off.
+    """
+    near = float(near_clip)
+    far = float(far_clip)
+    if near <= 0.0 and far <= 0.0:
+        return None
+    fwd = sp - ro
+    fwd = fwd / clamp_floor(fwd.norm(dim=-1, keepdim=True), 1e-30)
+    depth = ((points - ro.unsqueeze(-2)) * fwd.unsqueeze(-2)).sum(-1)
+    outside = torch.zeros(depth.shape[:-1], dtype=torch.bool, device=depth.device)
+    if near > 0.0:
+        outside |= depth.amax(-1) < near
+    if far > 0.0:
+        outside |= depth.amin(-1) > far
+    return outside
+
+
 def _frame_one(value, f):
     """One frame of a possibly time-deduplicated input, keeping the axis."""
     return value[f % value.shape[0]].unsqueeze(0)
@@ -798,6 +906,7 @@ def _frame_pairs(
     half_h,
     device,
     projection=None,
+    near_clip=0.0,
 ):
     valid_all = merged["tri_frame_valid"]
     opaque_all = merged["tri_frame_opaque"]
@@ -827,12 +936,14 @@ def _frame_pairs(
                 half_w,
                 half_h,
                 _frame_projection(projection, torch.tensor([f], device=device)),
+                near_clip,
             )
         ]
     x0, x1, y0, y1, reach = _screen_bbox(px, py, front, width, row_lo, row_hi, clip)
-    # Flag -1 marks a triangle with every vertex behind the camera plane --
-    # provably unhittable by a primary ray, so drop it instead of emitting
-    # full-window candidate pairs (see precompute_triangle_projection).
+    # Flag -1 marks a triangle with every vertex behind the camera plane, or
+    # wholly outside the camera's clip planes -- provably unhittable by a
+    # primary ray, so drop it instead of emitting full-window candidate pairs
+    # (see precompute_triangle_projection).
     reach = reach & (screen[:, 9] > -0.5)
     return (
         _class_pairs(opaque & reach, x0, x1, y0, y1, f, device),
@@ -854,6 +965,8 @@ def _frame_bez_pairs(
     half_h,
     device,
     projection=None,
+    near_clip=0.0,
+    far_clip=0.0,
 ):
     valid_all = merged["bez_frame_valid"]
     opaque_all = merged["bez_frame_opaque"]
@@ -889,6 +1002,7 @@ def _frame_bez_pairs(
                 half_w,
                 half_h,
                 proj,
+                near_clip,
             )
         ]
     x0, x1, y0, y1, reach = _screen_bbox(px, py, front, width, row_lo, row_hi, clip)
@@ -896,6 +1010,15 @@ def _frame_bez_pairs(
     # primary-ray hit (the box is convex, forward ray points project > 0);
     # cull it instead of emitting full-window candidate pairs.
     reach = reach & front.any(-1)
+    outside = _outside_clip_planes(
+        corners,
+        cam_origin[f % cam_origin.shape[0]],
+        screen_point[f % screen_point.shape[0]],
+        near_clip,
+        far_clip,
+    )
+    if outside is not None:
+        reach = reach & ~outside
     return (
         _class_pairs(opaque & reach, x0, x1, y0, y1, f, device),
         _class_pairs(valid & ~opaque & reach, x0, x1, y0, y1, f, device),
@@ -914,6 +1037,8 @@ def precompute_circuit_screen_bounds(
     memory,
     persist=False,
     projection=None,
+    near_clip=0.0,
+    far_clip=0.0,
 ):
     """Batched once-per-window screen bounds for bezier circuits.
 
@@ -944,7 +1069,9 @@ def precompute_circuit_screen_bounds(
           masks.
 
     ``projection`` is ``None`` for a pinhole batch or the batch's ``cam_proj``
-    table, as :func:`precompute_triangle_projection` takes it.
+    table, and ``near_clip`` / ``far_clip`` the camera's clip planes, as
+    :func:`precompute_triangle_projection` takes them; a circuit whose box
+    the clip planes remove entirely has no reach.
     """
     lo_all = merged["bez_frame_lo"]
     hi_all = merged["bez_frame_hi"]
@@ -1014,7 +1141,7 @@ def precompute_circuit_screen_bounds(
     bounded = all_front
     if _straddle_clip_wanted(front_any & ~all_front):
         clip_x0, clip_x1, clip_y0, clip_y1, clip_ok = _clipped_screen_extents(
-            corners, _BOX_EDGES, ro, sp, pbx, pby, half_w, half_h, proj
+            corners, _BOX_EDGES, ro, sp, pbx, pby, half_w, half_h, proj, near_clip
         )
         # The behind-cull outranks the clip: a box with no corner in front
         # stays dropped rather than becoming an emittable bounded candidate.
@@ -1028,6 +1155,14 @@ def precompute_circuit_screen_bounds(
     x0 = torch.where(bounded, fx0, torch.zeros_like(fx0))
     x1 = torch.where(bounded, fx1, torch.full_like(fx1, width - 1))
     x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
+    outside = _outside_clip_planes(
+        corners, ro[:, None, :], sp[:, None, :], near_clip, far_clip
+    )
+    if outside is not None:
+        # Both reach bases, so neither the bounded box nor the full-window
+        # straddler fallback emits the circuit.
+        x_on = x_on & ~outside
+        front_any = front_any & ~outside
     valid = valid_all.index_select(0, frame_ids % valid_all.shape[0]).bool()
     opaque = valid & opaque_all.index_select(0, frame_ids % opaque_all.shape[0]).bool()
 
@@ -1064,6 +1199,7 @@ def precompute_triangle_screen_bounds(
     memory,
     persist=False,
     projection=None,
+    near_clip=0.0,
 ):
     """Batched once-per-window candidate screen bounds for flat triangles.
 
@@ -1080,9 +1216,10 @@ def precompute_triangle_screen_bounds(
     per-frame path by construction.
 
     Straddlers get the camera-plane clip of :func:`_clipped_screen_extents`
-    rather than the whole window; the camera arguments (``projection`` as
-    :func:`precompute_triangle_projection` takes it) are needed for that and
-    for nothing else.
+    rather than the whole window; the camera arguments (``projection`` and
+    ``near_clip`` as :func:`precompute_triangle_projection` takes them) are
+    needed for that and for nothing else -- the clip planes' culls already
+    ride in the flag.
     """
     valid_all = merged["tri_frame_valid"]
     opaque_all = merged["tri_frame_opaque"]
@@ -1122,6 +1259,7 @@ def precompute_triangle_screen_bounds(
             half_w,
             half_h,
             _frame_projection(projection, frame_ids),
+            near_clip,
         )
         # The behind-cull outranks the clip: a provably-behind triangle stays
         # dropped rather than becoming an emittable bounded candidate.
@@ -2552,6 +2690,8 @@ def prepare_sparse_raster_coverage(
     layer_offset_triangles,
     depth_order_eye=None,
     keep_fragment_stream=None,
+    near_clip=0.0,
+    far_clip=0.0,
     refracting_primaries=False,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
@@ -2593,6 +2733,13 @@ def prepare_sparse_raster_coverage(
     ``tracer.render_batch_raytraced``), or ``None`` for a pinhole batch,
     whose kernels and host-side bounds keep their historical arithmetic
     (``projection.kernel_projection``).
+
+    ``near_clip`` / ``far_clip`` are the camera's clip planes (0 for off).
+    The near plane is applied here, in emission, where the classic route
+    applies it to its primary rays: no fragment nearer than the plane is
+    emitted, so none can occlude, truncate or claim samples ahead of the
+    geometry behind it. The far clip only culls what lies wholly past it;
+    the resolve still stops each pixel's walk at it.
 
     ``refracting_primaries`` says the resolve this coverage feeds can refract
     a primary: its refraction template is on and its bounce budget is above
@@ -2637,6 +2784,7 @@ def prepare_sparse_raster_coverage(
                     half_h,
                     device,
                     projection=cam_proj,
+                    near_clip=near_clip,
                 )
                 if po is not None:
                     tri_opaque.append(po)
@@ -2657,6 +2805,8 @@ def prepare_sparse_raster_coverage(
                     half_h,
                     device,
                     projection=cam_proj,
+                    near_clip=near_clip,
+                    far_clip=far_clip,
                 )
                 if po is not None:
                     bez_opaque.append(po)
@@ -2769,6 +2919,7 @@ def prepare_sparse_raster_coverage(
             "settings (the route decision and the emission disagree)."
         )
     tri_pos = merged["tri_pos"]
+    near = max(float(near_clip), 0.0)
     cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
     cam_args = (
         cam_origin,
@@ -2839,6 +2990,7 @@ def prepare_sparse_raster_coverage(
                     dummy_z,
                     aa_bez,
                     aa_hw,
+                    near,
                     0,
                     counts,
                     accepts,
@@ -2854,6 +3006,7 @@ def prepare_sparse_raster_coverage(
                     *geo_args,
                     ss,
                     float(layer_offset_triangles),
+                    near,
                     0,
                     dummy_z,
                     aa_tri_ss,
@@ -2971,6 +3124,7 @@ def prepare_sparse_raster_coverage(
                     dummy_z,
                     aa_bez,
                     aa_hw,
+                    near,
                     0,
                     frag_key_u,
                     frag_ref_u,
@@ -2990,6 +3144,7 @@ def prepare_sparse_raster_coverage(
                     *geo_args,
                     ss,
                     float(layer_offset_triangles),
+                    near,
                     0,
                     dummy_z,
                     aa_tri_ss,
@@ -3206,6 +3361,16 @@ def prepare_sparse_raster_coverage(
             msk_s = msk_s | (
                 (mat_opaque_s & (ref_s >= 0)).to(torch.int32) * AA_MAT_OPAQUE_BIT
             )
+        # The near cut's mark is for MATERIAL-opaque fragments only: it exempts
+        # their pixel from the closed-shell ceiling (sheets.compact_sheets),
+        # which is exact for an opaque solid -- its near sheet hides the far
+        # one wherever it lies -- while a translucent one composites closer to
+        # the classic route with the ceiling kept, since the far sheet would
+        # otherwise attenuate a second time behind the near one on every rim
+        # pixel (measured on a 0.75 cube: 68 rim pixels off by more than 32
+        # levels exempted, 3 ceilinged).
+        if near > 0.0 and num_frags and not stroke_only:
+            msk_s = torch.where(mat_opaque_s, msk_s, msk_s & ~AA_NEAR_CUT_BIT)
 
         num_covered = int(covered.numel())
         if stroke_only:
@@ -3320,6 +3485,7 @@ def prepare_sparse_raster_coverage(
                     band_c=2.0,
                     tri_screen=tri_screen,
                     cam_proj=cam_proj,
+                    near_clip=near,
                     shade_split=bool(rt_settings.sheet_shade_split),
                     positioned_depth=bool(rt_settings.sheet_positioned_depth),
                     sample_depth=bool(rt_settings.sheet_sample_depth),

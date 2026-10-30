@@ -1717,8 +1717,10 @@ def env_background_prefill(
     says the buffer is uint8 (post-process tonemapping off): a map brighter
     than 1 would otherwise wrap, 1.2 storing as 50. The float HDR buffer keeps
     the unclamped value for the tonemap. Column 3, when present, is the glow
-    lane and gets 0 (the sheet route excludes transparent backgrounds, so
-    there is no alpha column).
+    lane and gets 0. A transparent background's alpha column (4) is written
+    opaque: the map replaces the backdrop (``Scene.set_environment_map``),
+    which is what the dense path's env retire and the path tracer's escape
+    already give it.
 
     Every ray of an orthographic camera runs along the forward axis, so it
     sees the map in that one direction: a uniform backdrop, which is what
@@ -1748,3 +1750,9 @@ def env_background_prefill(
             # is also what the dense path's env retire deposits (acc[3] == 0,
             # weight zeroed). Writing 255 here bloomed every pixel white.
             out[f_rel, p, 3] = 0.0
+        if out.shape[2] > 4:
+            # Column 4 is the alpha a transparent background brings, and the
+            # map covers it: the composite's leftover weight then lands on an
+            # opaque backdrop, as the dense path's env retire makes every
+            # escaped ray (weight zeroed, so the coverage alpha is 255).
+            out[f_rel, p, 4] = 255.0

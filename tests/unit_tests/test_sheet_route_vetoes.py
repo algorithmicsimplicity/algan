@@ -64,10 +64,6 @@ class Batch(NamedTuple):
 VETOES = {
     "path_tracer": Batch(settings={"samples_per_pixel": 2}),
     **{f"{name}_off": Batch(settings={name: False}) for name in PRECONDITIONS},
-    "transparent_background_env_map": Batch(
-        route={"transparent_background": True, "environment_map": ENV}
-    ),
-    "near_clip": Batch(route={"near_clip": 0.1}),
     "no_geometry": Batch(merged={"num_triangles": 0, "num_circuits": 0}),
     "analytic_aa_tri_off": Batch(settings={"analytic_aa_tri": False}),
     "raster_ss_off": Batch(settings={"raster_ss": False}),
@@ -85,9 +81,15 @@ VETOES = {
 #: One change short of a veto: these keep the route.
 NEAR_MISSES = {
     "camera.near == 0": Batch(route={"near_clip": 0.0}),
+    # The emission cuts geometry at the near plane.
+    "camera.near > 0": Batch(route={"near_clip": 0.1}),
     "a user pipeline that only shades": Batch(merged={"has_user_pipeline": True}),
     "a transparent background alone": Batch(route={"transparent_background": True}),
     "an environment map alone": Batch(route={"environment_map": ENV}),
+    # The env prefill writes the alpha opaque, as every route does.
+    "a transparent background with an environment map": Batch(
+        route={"transparent_background": True, "environment_map": ENV}
+    ),
     "circuits alone": Batch(merged={"num_triangles": 0, "num_circuits": 1}),
     "triangle coverage off, circuits alone": Batch(
         settings={"analytic_aa_tri": False},
