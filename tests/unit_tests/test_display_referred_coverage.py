@@ -26,6 +26,8 @@ can break, so they stay out of the fast suite.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import cv2
 import numpy as np
 import pytest
@@ -213,6 +215,17 @@ class _aa_display_resolve:  # noqa: N801 - a context manager, not a class API
         return False
 
 
+@contextmanager
+def _raytracing(**values):
+    """Raytracing settings for a render or two, restored afterwards."""
+    previous = {name: getattr(SETTINGS.raytracing, name) for name in values}
+    SETTINGS.raytracing.set(**values)
+    try:
+        yield
+    finally:
+        SETTINGS.raytracing.set(**previous)
+
+
 @pytest.mark.skipif(
     not SETTINGS.raytracing.is_post_process_tonemap_enabled(),
     reason="the in-kernel tonemap composites in display-referred values already",
@@ -274,3 +287,61 @@ def test_a_crease_matches_a_supersampled_render(tmp_path):
     over_background, over_geometry = _edge_deviations(tmp_path, "crease", _cube)
     assert over_geometry <= 6  # measured 0.9, and 25 before
     assert over_background <= 6  # measured 4.2, and 8.7 before
+
+
+@pytest.mark.skipif(
+    not SETTINGS.raytracing.is_post_process_tonemap_enabled(),
+    reason="the in-kernel tonemap composites in display-referred values already",
+)
+def test_inside_the_display_range_the_clamp_changes_nothing(tmp_path):
+    """REGRESSION. At an exposure that brings every colour inside the display
+    range there is nothing to clamp. The composite's ceiling still ended at 1,
+    whatever the exposure, and it applied to every covered pixel, not just
+    the ones with a background residual: at 0.4 the slab's red, 2.0, showed
+    as 0.4 instead of 0.8, inside it as well as along its edges.
+    """
+    with _raytracing(tonemap_exposure=0.4):
+        on = _render(tmp_path, "dim_on", _SIDE, _slab_before_a_board)
+        with _aa_display_resolve(False):
+            off = _render(tmp_path, "dim_off", _SIDE, _slab_before_a_board)
+    assert np.array_equal(on, off)
+
+
+@pytest.mark.skipif(
+    not SETTINGS.raytracing.is_post_process_tonemap_enabled(),
+    reason="the in-kernel tonemap composites in display-referred values already",
+)
+def test_the_display_range_follows_the_exposure(tmp_path):
+    """The display shows ``clamp(exposure * value)``, so its range ends at
+    ``1 / exposure``: at 2.0 both of the slab's edges clamp at half the
+    radiance they would at 1.
+    """
+    with _raytracing(tonemap_exposure=2.0):
+        over_background, over_geometry = _edge_deviations(
+            tmp_path, "bright", _slab_before_a_board
+        )
+    assert over_background <= 6
+    assert over_geometry <= 6
+
+
+@pytest.mark.skipif(
+    not SETTINGS.raytracing.is_post_process_tonemap_enabled(),
+    reason="the in-kernel tonemap composites in display-referred values already",
+)
+def test_a_glowing_sheet_keeps_its_radiance(tmp_path):
+    """Bloom reads a glowing pixel's radiance (``color * glow ** 3``), so the
+    resolve leaves a glowing sheet unclamped. With the board behind the whole
+    frame no pixel has a background residual and the composite clamps nothing,
+    so only the resolve could change this frame, and it does not.
+
+    REGRESSION: the composite clamped every covered pixel to 1, which halved
+    the radiance this slab's halo is drawn from.
+    """
+
+    def glowing():
+        _slab_before_a_board(width=30.0, x=0.0, glow=0.5)
+
+    on = _render(tmp_path, "glow_on", _SIDE, glowing)
+    with _aa_display_resolve(False):
+        off = _render(tmp_path, "glow_off", _SIDE, glowing)
+    assert np.array_equal(on, off)

@@ -2010,14 +2010,17 @@ def wf_composite_accum_sparse(
     which is the saturated rim on an over-range silhouette. What a
     supersampled render answers there is the area average of the *displayed*
     colour, and for the covered part that is at most its own area: clamping
-    the premultiplied geometry to ``area`` reproduces it exactly. Only the
+    the premultiplied geometry to ``area`` times the display's range, ``255 /
+    tonemap_exposure`` in this buffer, reproduces it exactly. Only the
     geometric residual (``ACC_GEO``) licenses that clamp -- it is an area, so
     the covered and uncovered parts are disjoint regions of the pixel and each
     may be clamped on its own. A pixel whose leftover is reflected or
     transmitted throughput deposits nothing there, keeps ``geo == 0`` and
     takes the plain blend, because those parts are superimposed on the same
     area and only their SUM may be clamped. A fully covered pixel has
-    ``geo == 0`` as well, so its over-range colour reaches bloom unclamped.
+    ``geo == 0`` as well, so its over-range colour reaches bloom unclamped;
+    where several sheets fill it between them, the resolve has already clamped
+    each one to its own claim (``sheet_resolve_taichi``'s ``display_cap``).
     """
     pixels_per_frame = width * height
     for r in range(pix_accum.shape[0]):
@@ -2029,13 +2032,18 @@ def wf_composite_accum_sparse(
             pix_accum[r, 4], pix_accum[r, 5], pix_accum[r, 6], 0.0)
         weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
         # The covered area, as a display-range ceiling on what the geometry
-        # may contribute. 255.0 (no ceiling) wherever the resolve deposited no
-        # geometric residual, which is every pixel on the plain route.
-        cap = 255.0
+        # may contribute: the display shows ``clamp(exposure * value)``, so
+        # its range ends at ``255 / exposure`` here. Only where the resolve
+        # deposited a geometric residual: anywhere else -- a pixel the sheets
+        # cover entirely, every pixel on the plain route -- keeps its HDR
+        # value, which is what bloom reads.
+        capped = False
+        cap = 0.0
         if ti.static(geo_cov):
             geo = pix_accum[r, _ACC_GEO]
             if geo > 0.0:
-                cap = (1.0 - geo) * 255.0
+                capped = True
+                cap = (1.0 - geo) * (255.0 / tonemap_exposure)
         csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
@@ -2044,7 +2052,8 @@ def wf_composite_accum_sparse(
                 # Colour only: channel 3 is the authored glow lane, not a
                 # radiance the display clips.
                 if ti.static(ci < 3):
-                    acc = ti.min(acc, cap)
+                    if capped:
+                        acc = ti.min(acc, cap)
             csum[ci] = acc + weight[ci] * bg
         color_final = finalize_pixel_color(
             csum, 1.0, tonemapping, tonemap_exposure)

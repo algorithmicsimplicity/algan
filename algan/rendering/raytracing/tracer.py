@@ -4512,10 +4512,14 @@ def raytrace_render_wavefront(
             # a bounced primary deposits no geometric residual, so those
             # pixels opt themselves out.) It also needs the linear frame
             # buffer -- under an in-kernel tonemap the composite's output is
-            # already display-referred and the clamp would be applied twice.
+            # already display-referred and the clamp would be applied twice --
+            # and an exposure to divide the display range by: at 0 the display
+            # shows black whatever the clamp.
+            exposure = float(rt_settings.tonemap_exposure)
             geo_cov_sparse = int(
                 bool(rt_settings.aa_display_resolve)
                 and t_val_sparse == 3
+                and exposure > 0.0
                 and not merged.get("has_any_translucent")
                 and not merged.get("has_transmissive")
                 and not merged.get("has_refractive")
@@ -4528,10 +4532,7 @@ def raytrace_render_wavefront(
             # ``display_cap``). The composite's clamp needs a residual to
             # clamp against, which a pixel the sheets cover entirely -- a
             # silhouette over other geometry, a crease -- does not have.
-            exposure = float(rt_settings.tonemap_exposure)
-            merged["display_cap"] = (
-                1.0 / exposure if geo_cov_sparse and exposure > 0.0 else 0.0
-            )
+            merged["display_cap"] = 1.0 / exposure if geo_cov_sparse else 0.0
             with _stage("wavefront:   - sparse setup"):
                 if t_val_sparse != 3:
                     # In-kernel tonemap on the sparse route (sheet unification,

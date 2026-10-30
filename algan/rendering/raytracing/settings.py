@@ -2713,7 +2713,9 @@ analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 # whole pixel. The composite limits the geometry's sum to the area the
 # background leaves it, which ``sheet_resolve_taichi`` deposits separately:
 # that still holds the edge of a glowing sheet, which the resolve leaves alone
-# because bloom reads its radiance. Both apply only when the batch is entirely
+# because bloom reads its radiance. Both end where the display's range does,
+# at ``1 / tonemap_exposure``, and a pixel either leaves unclamped keeps its
+# HDR value for bloom. Both apply only when the batch is entirely
 # opaque, because a transmissive leftover is superimposed on the covered area
 # rather than beside it and only the SUM of such parts may be clamped. A
 # reflection is superimposed too: the resolve leaves a sheet's reflected share

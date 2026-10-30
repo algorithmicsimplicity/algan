@@ -550,6 +550,15 @@ the clamp, so a reflector's edge can come out brighter than the area average
 but never darker. The tracer sets `display_cap` on exactly the batches whose
 composite it gives `geo_cov`.
 
+The composite's own ceiling had two faults, fixed the same day. It ended at
+1 whatever `tonemap_exposure` said, and it applied to every covered pixel, a
+fully covered one included: `cap` started at 255, which in the float buffer
+is the top of the display range, not "no ceiling". So the over-range colour
+the paragraph above says reaches bloom unclamped did not. A halo was drawn
+from at most 1, and at exposure 0.4 a red of 2.0 showed as 0.4 instead of
+0.8. The ceiling now ends at `255 / exposure` and applies only where the
+resolve deposited a residual.
+
 4.9 Continuations, shadows, and the identity items that stay live
 ------------------------------------------------------------------
 Reflective/refractive sheets spawn continuations weighted by their visible
