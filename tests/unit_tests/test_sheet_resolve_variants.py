@@ -515,3 +515,67 @@ def test_the_event_pass_compiles_one_variant_whatever_the_shading(launches):
     plain, mirror = launches["plain", True][1], launches["mirror", True][1]
     for axis in (*_EVENT_PASS_FIXED, "sec_aa", "vis_lights"):
         assert plain[axis] == mirror[axis], axis
+
+
+def test_a_resolve_launch_names_every_argument():
+    """The launch sites name each of the resolve's arguments, which
+    ``sheet_resolve_args`` puts in the kernel's order, refusing a missing name
+    or one the kernel does not have.
+
+    They listed them by position, and the templates ``mode``, ``shadow_term``,
+    ``sided_cull``, ``memo`` and ``det_sum`` sit side by side: two swapped
+    compiled and ran another variant, with no error.
+    """
+    named = {name: i for i, name in enumerate(PARAMS)}
+    args = sheet_resolve_taichi.sheet_resolve_args(**named)
+    assert args == tuple(range(len(PARAMS)))
+    del named["sided_cull"]
+    with pytest.raises(TypeError, match=r"missing arguments \['sided_cull'\]"):
+        sheet_resolve_taichi.sheet_resolve_args(**named)
+    named["sided_culling"] = 0
+    with pytest.raises(TypeError, match=r"unknown arguments \['sided_culling'\]"):
+        sheet_resolve_taichi.sheet_resolve_args(**named)
+
+
+def test_every_slice_traces_its_shadows_with_the_batchs_one_tracer(
+    tmp_path, monkeypatch
+):
+    """The tile loop builds the batch's shadow tracer once and hands it to each
+    covered-pixel slice. Each slice used to build its own, though nothing in it
+    depends on the slice.
+    """
+    from algan.rendering.raytracing import raster_pipeline, shadow_queue
+
+    built, handed, traced = [], [], []
+    make = shadow_queue.make_shadow_tracer
+    resolve = raster_pipeline.shade_sparse_raster_coverage
+
+    def counting_make(*args, **kwargs):
+        tracer = make(*args, **kwargs)
+
+        def trace(*call):
+            traced.append(trace)
+            return tracer(*call)
+
+        built.append(trace)
+        return trace
+
+    def recording(*args, **kwargs):
+        handed.append(kwargs.get("shadow_tracer"))
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(shadow_queue, "make_shadow_tracer", counting_make)
+    monkeypatch.setattr(raster_pipeline, "shade_sparse_raster_coverage", recording)
+    snapshot = SETTINGS.snapshot()
+    try:
+        # A fixed tile far smaller than the frame's covered pixels.
+        SETTINGS.raytracing.experimental.set(
+            wavefront_tile_auto=False, wavefront_tile_rays=16
+        )
+        _render(tmp_path, "tiles", _plain, None, True)
+    finally:
+        SETTINGS.restore(snapshot)
+    assert len(handed) > 1, "the frame took one slice, so nothing is shared"
+    (tracer,) = set(handed)
+    assert tracer in built
+    assert traced.count(tracer) == len(handed)

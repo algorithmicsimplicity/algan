@@ -4547,6 +4547,13 @@ def raytrace_render_wavefront(
             # clamp against, which a pixel the sheets cover entirely -- a
             # silhouette over other geometry, a crease -- does not have.
             merged["display_cap"] = 1.0 / exposure if geo_cov_sparse else 0.0
+            # What traces each slice's primary shadow events. It depends on the
+            # batch alone, so every slice of the tile loop below shares one.
+            resolve_shadow_tracer = None
+            if shadow_flag:
+                from algan.rendering.raytracing.shadow_queue import make_shadow_tracer
+
+                resolve_shadow_tracer = make_shadow_tracer(memory, merged=merged)
             with _stage("wavefront:   - sparse setup"):
                 if t_val_sparse != 3:
                     # In-kernel tonemap on the sparse route (sheet unification,
@@ -4820,6 +4827,7 @@ def raytrace_render_wavefront(
                                 bez_bvh,
                                 layer_offset_triangles,
                                 max_bounces,
+                                shadow_tracer=resolve_shadow_tracer,
                             )
                     except (InsufficientMemoryException, RuntimeError) as exc:
                         # Taichi launches OOM as a bare RuntimeError from their

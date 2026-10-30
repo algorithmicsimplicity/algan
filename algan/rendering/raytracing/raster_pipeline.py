@@ -20,6 +20,7 @@ cannot write directly into an arena view.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, fields, replace
 
 import numpy as np
 import torch
@@ -3621,6 +3622,72 @@ def _sheet_slice_bounds(coverage, c0, c1):
     return int(known[c0]), int(known[c1])
 
 
+@dataclass(frozen=True)
+class _ResolveTail:
+    """The arguments a resolve launch's mode decides: the mode, the shadow
+    templates beside it, and the event tables.
+
+    A shadowed slice launches the kernel twice over one set of tables (mode 1
+    writes them, mode 2 reads them back), so its two tails differ in three
+    fields, which :func:`dataclasses.replace` names. A shadow-free slice takes
+    :meth:`shadow_free`.
+    """
+
+    mode: int
+    shadow_term: int
+    sided_cull: int
+    memo: int
+    det_sum: int
+    sheet_memo: torch.Tensor
+    sheet_accept: torch.Tensor
+    event_pos: torch.Tensor
+    event_snrm: torch.Tensor
+    event_fnrm: torch.Tensor
+    event_frame: torch.Tensor
+    event_msk: torch.Tensor
+    event_dp: torch.Tensor
+    event_toff: torch.Tensor
+    sheet_event_id: torch.Tensor
+    shadow_vis: torch.Tensor
+
+    @classmethod
+    def shadow_free(cls, memory, det_sum):
+        """Mode 0's tail: no shadow logic, so one-element tables throughout.
+
+        The terminator gate is a ``ti.template()`` that mode 0 compiles out,
+        so it takes a literal 0 rather than the live setting, which would
+        compile a second variant per gate value for nothing; ``sided_cull``
+        likewise. The memo exists only to carry mode 1's fetches into mode 2,
+        and a one-launch resolve has nothing to carry.
+        """
+        i1 = _arena_tensor(memory, (1,), torch.int32, 0)
+        f3 = _arena_tensor(memory, (1, 3), torch.float32)
+        return cls(
+            mode=0,
+            shadow_term=0,
+            sided_cull=0,
+            memo=0,
+            det_sum=det_sum,
+            sheet_memo=_arena_tensor(memory, (1, 12), torch.float32),
+            sheet_accept=i1,
+            event_pos=f3,
+            event_snrm=f3,
+            event_fnrm=f3,
+            event_frame=i1,
+            event_msk=i1,
+            event_dp=_arena_tensor(memory, (1, 6), torch.float32),
+            event_toff=f3,
+            sheet_event_id=i1,
+            shadow_vis=_arena_tensor(memory, (1, 1, 3), torch.float32, 1.0),
+        )
+
+    def named(self):
+        """The fields by name. Not :func:`dataclasses.asdict`, which deep-copies
+        every tensor.
+        """
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+
 def shade_sparse_raster_coverage(
     coverage,
     covered_start,
@@ -3660,8 +3727,16 @@ def shade_sparse_raster_coverage(
     bez_bvh,
     layer_offset_triangles,
     max_bounces,
+    *,
+    shadow_tracer=None,
 ):
-    """Resolve one compact covered-pixel slice and seed its continuations."""
+    """Resolve one compact covered-pixel slice and seed its continuations.
+
+    ``shadow_tracer`` traces a shadowed slice's primary events: what
+    ``shadow_queue.make_shadow_tracer`` returns for this batch, which depends
+    on nothing per slice, so the tile loop builds it once and hands it to every
+    slice. Without one, the slice builds its own.
+    """
     (
         rs_ro,
         rs_rd,
@@ -3699,6 +3774,7 @@ def shade_sparse_raster_coverage(
     # host compacts + traces them, and mode 2 shades reading the traced
     # visibility. Shadow-free batches take mode 0 in one launch.
     from algan.rendering.raytracing.sheet_resolve_taichi import (
+        sheet_resolve_args,
         sheet_resolve_shade,
     )
 
@@ -3715,7 +3791,7 @@ def shade_sparse_raster_coverage(
     # CPU). The event pass (mode 1) compiles its fans out by itself (the
     # kernel's ``fan_taps``) and takes a fixed 2 for any live count above 1:
     # its ``event_dp`` footprint -- sized below, read by raster_shadow_trace
-    # -- only asks whether there is a fan (``event_args``).
+    # -- only asks whether there is a fan (``event_axes``).
     from algan.rendering.raytracing.tracer import _batch_can_spawn_continuations
 
     shade_taps = sec_aa if _batch_can_spawn_continuations(merged) else 1
@@ -3740,56 +3816,85 @@ def shade_sparse_raster_coverage(
     # Set by the tracer for a splitting batch: the commits this launch makes
     # go on the grid the batch's pool rays add to (``_det_deposit``).
     det_sum = 1 if merged.get("det_sum") else 0
-    pre_head = (
-        num_covered,
-        sheet_offsets,
-        coverage["sheet_key"][s_start:s_end],
-        coverage["sheet_ref"][s_start:s_end],
-        coverage["sheet_ab"][s_start:s_end],
-        coverage["sheet_cov"][s_start:s_end],
-        coverage["sheet_msk"][s_start:s_end],
-        coverage["sheet_cap"][s_start:s_end],
-        merged["tri_pos"],
-        merged["tri_norm"],
-        merged["tri_extra"],
-        merged["tri_colors"],
-        merged["tri_uvs"],
-        merged["tri_tex_meta"],
-        merged["textures"],
-        int(merged["num_colored_triangles"]),
-        col_row_arr,
-        merged["tri_mat_id"],
-        merged["tri_mat"],
-        merged["circuit_meta"],
-        merged["circuit_colors"],
-        merged["circuit_border_colors"],
-        light_pos,
-        light_col,
-        int(num_lights),
-    )
-    # ``vis_lights`` goes here, per launch (see ``shaded_slots``).
-    pre_mid = (
-        layer_offsets,
-        int(frag_flag),
-        frag_pipelines,
-        int(tri_pids),
-        int(refraction_flag),
-        int(ior_stack_flag),
-        int(skip_unlit_normal),
-        1 if int(merged.get("num_circuits", 0)) > 0 else 0,
-    )
-    # ``sec_aa`` goes here, per launch (see ``shade_taps``).
-    pre_tail = (
-        float(rt_settings.analytic_aa_secondary_min_energy),
+    # Each launch below names every one of the kernel's arguments, through
+    # ``sheet_resolve_args``, which raises on a missing or unknown name; a
+    # name given twice is Python's own TypeError. ``shared`` holds the ones
+    # all three launches pass alike; the shading axes and the tail
+    # (``_ResolveTail``) are the rest.
+    shared = {
+        "num_covered": num_covered,
+        "sheet_offsets": sheet_offsets,
+        "sheet_key": coverage["sheet_key"][s_start:s_end],
+        "sheet_ref": coverage["sheet_ref"][s_start:s_end],
+        "sheet_ab": coverage["sheet_ab"][s_start:s_end],
+        "sheet_cov": coverage["sheet_cov"][s_start:s_end],
+        "sheet_msk": coverage["sheet_msk"][s_start:s_end],
+        "sheet_cap": coverage["sheet_cap"][s_start:s_end],
+        "tri_pos": merged["tri_pos"],
+        "tri_norm": merged["tri_norm"],
+        "tri_extra": merged["tri_extra"],
+        "tri_colors": merged["tri_colors"],
+        "tri_uvs": merged["tri_uvs"],
+        "tri_tex_meta": merged["tri_tex_meta"],
+        "textures": merged["textures"],
+        "num_colored_triangles": int(merged["num_colored_triangles"]),
+        "col_row": col_row_arr,
+        "tri_mat_id": merged["tri_mat_id"],
+        "tri_mat": merged["tri_mat"],
+        "circuit_meta": merged["circuit_meta"],
+        "circuit_colors": merged["circuit_colors"],
+        "circuit_border_colors": merged["circuit_border_colors"],
+        "light_pos": light_pos,
+        "light_col": light_col,
+        "num_lights": int(num_lights),
+        "layer_offsets": layer_offsets,
+        "refraction": int(refraction_flag),
+        "ior_stack": int(ior_stack_flag),
+        "has_bez": 1 if int(merged.get("num_circuits", 0)) > 0 else 0,
+        "sec_min_energy": float(rt_settings.analytic_aa_secondary_min_energy),
         # The batch's mode (tracer._batch_glossy_mode), which sized the
         # accumulator rows this launch writes; the live mode where no batch
         # decision was made.
-        int(merged.get("glossy_mode", rt_settings.glossy_reflection_mode())),
-        int(rt_settings.direct_specular_lobe),
-    )
+        "glossy": int(merged.get("glossy_mode", rt_settings.glossy_reflection_mode())),
+        "covered_idx": covered_idx,
+        "time_start": int(time_start),
+        "width": int(width),
+        "height": int(height),
+        "cam_origin": cam_origin,
+        "screen_point": screen_point,
+        "pixel_basis_x": pixel_basis_x,
+        "pixel_basis_y": pixel_basis_y,
+        "gen_meta": gen_meta,
+        "rs_ro": rs_ro,
+        "rs_rd": rs_rd,
+        "rs_acc": rs_acc,
+        "rs_sca": rs_sca,
+        "rs_int": rs_int,
+        "rs_pix": rs_pix,
+        "pix_accum": pix_accum,
+        "rs_alloc": rs_alloc,
+        "dump": 1 if dump_req else 0,
+        "dump_out": sdump,
+        "cam_proj_table": cam_proj_table,
+        "projected": projected,
+        # Set by the tracer on a batch the display-referred resolve applies
+        # to, beside the composite's ``geo_cov``; 0 (no clamp) everywhere else.
+        "display_cap": float(merged.get("display_cap", 0.0)),
+    }
 
-    def pre_args(vis_slots, taps):
-        return (*pre_head, vis_slots, *pre_mid, taps, *pre_tail)
+    def shading_axes(vis_slots):
+        """The arguments the shading launches (modes 0 and 2) pass their own
+        values of.
+        """
+        return {
+            "vis_lights": vis_slots,
+            "frag_shading": int(frag_flag),
+            "frag_pipelines": frag_pipelines,
+            "tri_pids": int(tri_pids),
+            "skip_unlit_normal": int(skip_unlit_normal),
+            "sec_aa": shade_taps,
+            "direct_spec": int(rt_settings.direct_specular_lobe),
+        }
 
     # The event pass (mode 1) reads none of the shading axes -- frag_shading,
     # frag_pipelines, tri_pids, skip_unlit_normal and direct_spec reach only
@@ -3797,58 +3902,17 @@ def shade_sparse_raster_coverage(
     # ``sec_aa > 1`` (the ``event_dp`` footprint; its fans compile out). Fixed
     # values for them give every batch's event pass one compiled variant
     # instead of one per shading configuration, each about 5.6 s cold on a
-    # 4-vCPU CPU. ``vis_lights`` is already 1 here (``shaded_slots``).
-    layer_arg, _frag, _pipes, _pids, refr_arg, stack_arg, _skip, bez_arg = pre_mid
-    energy_arg, glossy_arg, _spec = pre_tail
-    event_args = (
-        *pre_head,
-        1,  # vis_lights
-        layer_arg,
-        0,  # frag_shading
-        (),  # frag_pipelines
-        0,  # tri_pids
-        refr_arg,
-        stack_arg,
-        0,  # skip_unlit_normal
-        bez_arg,
-        min(sec_aa, 2),
-        energy_arg,
-        glossy_arg,
-        0,  # direct_spec
-    )
-
-    post_args = (
-        covered_idx,
-        int(time_start),
-        int(width),
-        int(height),
-        cam_origin,
-        screen_point,
-        pixel_basis_x,
-        pixel_basis_y,
-        gen_meta,
-        rs_ro,
-        rs_rd,
-        rs_acc,
-        rs_sca,
-        rs_int,
-        rs_pix,
-        pix_accum,
-        rs_alloc,
-        1 if dump_req else 0,
-        sdump,
-        cam_proj_table,
-        projected,
-        # Set by the tracer on a batch the display-referred resolve applies
-        # to, beside the composite's ``geo_cov``; 0 (no clamp) everywhere else.
-        float(merged.get("display_cap", 0.0)),
-    )
-    dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
-    dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
-    dummy_f6 = _arena_tensor(memory, (1, 6), torch.float32)
-    dummy_f12 = _arena_tensor(memory, (1, 12), torch.float32)
-    # RGB visibility payload: one triple per (event, light), channel-last.
-    dummy_vis = _arena_tensor(memory, (1, 1, 3), torch.float32, 1.0)
+    # 4-vCPU CPU. It never reads the visibility payload either, so it takes
+    # one light slot (``shaded_slots``).
+    event_axes = {
+        "vis_lights": 1,
+        "frag_shading": 0,
+        "frag_pipelines": (),
+        "tri_pids": 0,
+        "skip_unlit_normal": 0,
+        "sec_aa": min(sec_aa, 2),
+        "direct_spec": 0,
+    }
     # Shadow terminator (RENDERER_WORK_QUEUE.md item 20), read live like the
     # other shadow gates. It is read before the mode split because all three
     # sheet_resolve_shade launches take it as a template and the shadow arm's
@@ -3885,26 +3949,30 @@ def shade_sparse_raster_coverage(
             else 0
         )
         sheet_memo = _arena_tensor(memory, (S if memo_on else 1, 12), torch.float32)
-        sheet_resolve_shade(
-            *event_args,
-            1,
-            term_mode,
-            sided_on,
-            memo_on,
+        dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
+        event_tail = _ResolveTail(
+            mode=1,
+            shadow_term=term_mode,
+            sided_cull=sided_on,
+            memo=memo_on,
             # The event pass commits no pixels, so it never needs the grid.
-            0,
-            sheet_memo,
-            sheet_accept,
-            event_pos,
-            event_snrm,
-            event_fnrm,
-            event_frame,
-            event_msk,
-            event_dp,
-            event_toff,
-            sheet_event_id,
-            dummy_vis,
-            *post_args,
+            det_sum=0,
+            sheet_memo=sheet_memo,
+            sheet_accept=sheet_accept,
+            event_pos=event_pos,
+            event_snrm=event_snrm,
+            event_fnrm=event_fnrm,
+            event_frame=event_frame,
+            event_msk=event_msk,
+            event_dp=event_dp,
+            event_toff=event_toff,
+            sheet_event_id=sheet_event_id,
+            # RGB visibility payload: one triple per (event, light),
+            # channel-last. Not traced yet, so one all-lit triple.
+            shadow_vis=_arena_tensor(memory, (1, 1, 3), torch.float32, 1.0),
+        )
+        sheet_resolve_shade(
+            *sheet_resolve_args(**shared, **event_axes, **event_tail.named())
         )
         acc_idx = sheet_accept[:num_slice_sheets].nonzero(as_tuple=True)[0]
         num_events = int(acc_idx.numel())
@@ -3960,8 +4028,9 @@ def shade_sparse_raster_coverage(
                 make_shadow_tracer,
             )
 
-            raster_shadow_trace = make_shadow_tracer(memory, merged=merged)
-            raster_shadow_trace(
+            if shadow_tracer is None:
+                shadow_tracer = make_shadow_tracer(memory, merged=merged)
+            shadow_tracer(
                 num_events,
                 ev_pos,
                 ev_snrm,
@@ -4025,55 +4094,22 @@ def shade_sparse_raster_coverage(
                 cam_proj_table,
                 projected,
             )
+        shading_tail = replace(
+            event_tail, mode=2, det_sum=det_sum, shadow_vis=shadow_vis
+        )
         sheet_resolve_shade(
-            *pre_args(shaded_slots, shade_taps),
-            2,
-            term_mode,
-            sided_on,
-            memo_on,
-            det_sum,
-            sheet_memo,
-            sheet_accept,
-            event_pos,
-            event_snrm,
-            event_fnrm,
-            event_frame,
-            event_msk,
-            event_dp,
-            event_toff,
-            sheet_event_id,
-            shadow_vis,
-            *post_args,
+            *sheet_resolve_args(
+                **shared, **shading_axes(shaded_slots), **shading_tail.named()
+            )
         )
     else:
-        # Shadow-free resolve: mode 0 compiles no shadow logic at all, so the
-        # terminator gate cannot change this launch's output -- but it is a
-        # ti.template(), and forwarding the live setting here would compile a
-        # second variant of this kernel per gate value for nothing. Pass a
-        # literal 0; only the mode 1 / mode 2 launches above take a meaningful
-        # gate.
+        # Shadow-free resolve: mode 0 compiles no shadow logic at all.
         sheet_resolve_shade(
-            *pre_args(unshadowed_slots, shade_taps),
-            0,
-            0,
-            0,
-            # The memo exists only to carry mode 1's fetches into mode 2;
-            # a one-launch shadow-free resolve has nothing to carry, so it
-            # compiles the whole thing out and passes the dummy.
-            0,
-            det_sum,
-            dummy_f12,
-            dummy_i,
-            dummy_f3,
-            dummy_f3,
-            dummy_f3,
-            dummy_i,
-            dummy_i,
-            dummy_f6,
-            dummy_f3,
-            dummy_i,
-            dummy_vis,
-            *post_args,
+            *sheet_resolve_args(
+                **shared,
+                **shading_axes(unshadowed_slots),
+                **_ResolveTail.shadow_free(memory, det_sum).named(),
+            )
         )
     if dump_req:
         _aa_dump_emit("sheet-resolve", sdump)
