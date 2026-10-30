@@ -699,6 +699,98 @@ def test_a_rough_metal_seen_in_a_mirror_reflects_as_itself(tmp_path):
     )
 
 
+# Rough glass under a thin white bar, seen at a grazing angle against black: the
+# bar's reflection in the floor is all a lobe fan has to smear or copy. Glass
+# never claims the prefiltered event (it is transmissive), so it keeps the
+# ``_mirror_share`` throttle in every glossy mode.
+_ROUGH_GLASS_SCENE = """
+import sys
+import torch
+from algan import BLACK, WHITE, Off, Prism, SETTINGS, Scene, VideoSettings
+from algan.rendering.shaders.materials import MeshPhysicalMaterial, UnlitMaterial
+
+SETTINGS.paths.set(output_root=sys.argv[1], output_directory=".")
+SETTINGS.raytracing.set(shadows=False)
+if sys.argv[2] == "off":
+    SETTINGS.raytracing.set(glossy_reflection=False)
+with Scene() as scene:
+    eye = scene.get_camera().location.reshape(-1).clone()
+    with Off():
+        floor = Prism(width=40.0, height=0.1, depth=40.0)
+        floor.move_to(eye + torch.tensor([0.0, -1.05, -20.5]))
+        floor.set_material(MeshPhysicalMaterial(
+            color=WHITE, roughness=0.12, transmission=1.0, ior=1.5))
+        floor.spawn()
+        bar = Prism(width=6.0, height=0.06, depth=0.06)
+        bar.move_to(eye + torch.tensor([0.0, -0.6, -8.0]))
+        bar.set_material(UnlitMaterial(color=WHITE))
+        bar.spawn()
+    scene.save_frame(
+        sys.argv[2],
+        VideoSettings(resolution=(192, 108), supersampling=1),
+        overwrite=True,
+        background=BLACK,
+    )
+"""
+
+
+def test_rough_glass_reflects_the_same_with_and_without_the_prefilter(tmp_path):
+    """A reflector that cannot claim the prefiltered event keeps the throttle.
+
+    Under the prefilter one sheet per pixel takes the glossy event, and every
+    other reflective sheet -- rough glass, a weaker second reflector -- keeps
+    the ``_mirror_share`` throttle that glossy reflections off applies
+    everywhere (§5). Its continuation fan was spread over the GGX lobe as
+    well, a leftover from the tap-fan modes, so on top of the throttle the
+    fan's taps drew stair-edged ghost copies of what the glass reflected.
+
+    On this scene the floor is the only reflector and it never claims, so the
+    two renders must agree. Before: up to 74 levels apart, on 1138 pixels by
+    more than 8. After: byte-identical. The bound leaves room for a backend
+    whose two compiles round differently.
+
+    One process per arm, for the reason the module docstring gives.
+    """
+    env = dict(os.environ)
+    for name in (
+        "ALGAN_GLOSSY_REFLECTION",
+        "ALGAN_GLOSSY_PREFILTER",
+        "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
+    ):
+        env.pop(name, None)
+    env["ALGAN_AUTO_DAEMON"] = "0"
+    frames = {}
+    for arm in ("default", "off"):
+        proc = subprocess.run(
+            [sys.executable, "-c", _ROUGH_GLASS_SCENE, str(tmp_path), arm],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=1200,
+            cwd=str(_REPO_ROOT),
+        )
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        frame = tmp_path / f"{arm}.png"
+        assert frame.exists(), proc.stdout[-2000:]
+        frames[arm] = frame
+
+    import numpy as np
+    from PIL import Image
+
+    default, off = (
+        np.asarray(Image.open(frames[arm]).convert("RGB")).astype(np.int32)
+        for arm in ("default", "off")
+    )
+    assert (off.max(-1) > 64).sum() > 100, "the bar's reflection is not in frame"
+    diff = np.abs(default - off).max(-1)
+    assert diff.max() <= 2, (
+        "rough glass reflects differently under the prefilter: "
+        f"{int((diff > 2).sum())} pixels differ by more than 2 levels "
+        f"(max {int(diff.max())})"
+    )
+
+
 # A rough white-metal mirror reflecting a striped environment, rendered bare and
 # then behind a nearly invisible veil: a smaller rough-metal panel at 2% opacity
 # floating 0.4 in front of it. The stripes give the mirror's blur something to

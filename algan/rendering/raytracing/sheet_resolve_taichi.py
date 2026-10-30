@@ -161,9 +161,17 @@ def sheet_resolve_shade_arena(
         # no spawns) into dense per-sheet tables — event identity is the
         # sheet index, so no counter and no atomics exist; 2 is the shading
         # resolve reading the traced per-event visibility. One kernel body
-        # for all three is what makes a resolve/shadow desync structurally
-        # impossible — the two fragment walks this replaces had to be kept
-        # in lockstep by hand and grew a harness just to check it.
+        # for all three means a resolve/shadow desync can no longer be
+        # written into the source -- the two fragment walks this replaces had
+        # to be kept in lockstep by hand and grew a harness just to check it.
+        # It is not bit-exact, though: modes 1 and 2 are separate fast-math
+        # compiles, so a value within rounding of a threshold (the
+        # ``eff <= min_alpha`` skip, the far clip, the ``min_weight`` cut) can
+        # land on different sides of it in the two walks. Only a sheet AT
+        # such a threshold can flip -- one claiming about ``min_alpha``, one
+        # reached with under ``min_weight`` left, or one at the far clip to
+        # within rounding -- and a sheet mode 2 shades without an event is
+        # lit unshadowed (``lvis`` keeps its 1.0).
         mode: ti.template(),
         # Shadow-terminator gate (rt_settings.shadow_terminator_mode()):
         # == 1 makes THIS pass compute the Hanika offset per accepted event
@@ -185,15 +193,17 @@ def sheet_resolve_shade_arena(
         # re-fetching -- twelve floats against three barycentric-interpolated
         # (and possibly texture-sampled) fetches per sheet.
         #
-        # Sound because the two walks process exactly the same sheets: every
+        # Sound because the two walks process the same sheets: every
         # ``mode != 1`` gate in this body wraps a spawn, a shade, the
         # truncation counter or a pixel commit, and none of them touches the
         # loop-carried transport state (``weight``, ``svis``, ``band_p``,
         # ``bounces_left``, ``processed``, ``done``) or any break/continue
         # condition. The two skips that precede the fetch -- the far-clip
         # break and the ``eff <= min_alpha`` continue -- are transport-only
-        # for the same reason. So a row read in mode 2 was written in mode 1.
-        # Values are copied verbatim through f32, hence byte-identical.
+        # for the same reason. So a row read in mode 2 was written in mode 1,
+        # except at the threshold flips the ``mode`` comment above describes:
+        # there mode 2 reads a row mode 1 never wrote, whatever the arena
+        # held. Values are copied verbatim through f32, hence byte-identical.
         memo: ti.template(),
         # 1 on a splitting batch: the pixel's first ``pix_accum`` deposits go
         # on the grid its pool rays add to later
@@ -320,6 +330,14 @@ def sheet_resolve_shade_arena(
         dmatch = False
         if ti.static(dump):
             dmatch = _aa_dump_match(dump_out, px, py, f)
+        # Only the tap-fan modes (1, 2) spread a ``sec_aa`` fan over the GGX
+        # lobe: the rotation here and the four ``_glossy_reflect`` sites
+        # below. Under the prefilter (3) the claiming sheet's one ray stands
+        # for its lobe, and every other reflective sheet keeps the plain
+        # throttled mirror fan its design promises (DESIGN_glossy_prefilter.md
+        # §5). Spread as well, that fan drew stair-edged ghost copies of what
+        # the sheet reflected, on top of the ``_mirror_share`` throttle that
+        # already stands in for the lobe.
         g_roff = 0.5
         g_aoff = 0.0
         if ti.static(glossy == 1 or glossy == 2):
@@ -455,6 +473,15 @@ def sheet_resolve_shade_arena(
             a = sheet_ab[idx, 0]
             b = sheet_ab[idx, 1]
             cov = sheet_cov[idx]
+            # A NaN area claims nothing. Left alone it would claim the whole
+            # pixel: ``ti.min(cov, 1.0)`` below returns 1.0 for a NaN on the
+            # CPU backend, so one bad sheet would paint opaque. The test reads
+            # the bits because fast math may fold ``cov != cov`` to false
+            # (radix_sort_taichi's canonicalization has the history). The
+            # oracle drops NaN areas the same way.
+            if (ti.bit_cast(cov, ti.u32) & ti.u32(0x7FFFFFFF)) \
+                    > ti.u32(0x7F800000):
+                cov = 0.0
             defer = cov < 0.0
             cov = ti.abs(cov)
             msk = sheet_msk[idx]
@@ -1043,7 +1070,15 @@ def sheet_resolve_shade_arena(
                                 bounces_left - 1, processed, pixel, r, r, 1,
                                 ior_stack, 1, ior,
                                 surf_rd.dot(face_normal) < 0.0)
-                if (refl_max > min_alpha) and (refl_max >= cover_pass):
+                # The primary becomes the reflection only when nothing passes
+                # beside the glass (``split_refl`` off, which for glass means
+                # ``cover_pass <= min_alpha``). A partially covering sheet --
+                # every silhouette pixel -- pools its reflection and keeps the
+                # primary as the pass-through, as the opaque branch below
+                # does. Choosing the stronger of the two here instead dropped
+                # the pass-through whenever ``alpha * R >= 1 - alpha``: a dark
+                # one-pixel rim round clear glass on a bright background.
+                if (refl_max > min_alpha) and (not split_refl):
                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     hit_point = surf_pos
                     if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
@@ -1065,7 +1100,7 @@ def sheet_resolve_shade_arena(
                                         cam_origin, screen_point,
                                         pixel_basis_x, pixel_basis_y, cam_proj)
                                 rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                                if ti.static(glossy != 0):
+                                if ti.static(glossy == 1 or glossy == 2):
                                     if rough > _GLOSSY_MIN_ROUGHNESS:
                                         rdr = _glossy_reflect(
                                             rdj, nj, rough, jtap, sec_n,
@@ -1128,7 +1163,7 @@ def sheet_resolve_shade_arena(
                                             pixel_basis_x, pixel_basis_y, cam_proj)
                                     rdr, nj = _reflect_frame(rdj, nj,
                                                              geo_normal)
-                                    if ti.static(glossy != 0):
+                                    if ti.static(glossy == 1 or glossy == 2):
                                         if rough > _GLOSSY_MIN_ROUGHNESS:
                                             rdr = _glossy_reflect(
                                                 rdj, nj, rough, jtap, sec_n,
@@ -1265,7 +1300,7 @@ def sheet_resolve_shade_arena(
                                         cam_origin, screen_point,
                                         pixel_basis_x, pixel_basis_y, cam_proj)
                                 rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                                if ti.static(glossy != 0):
+                                if ti.static(glossy == 1 or glossy == 2):
                                     if rough > _GLOSSY_MIN_ROUGHNESS:
                                         rdr = _glossy_reflect(
                                             rdj, nj, rough, jtap, sec_n,
@@ -1322,7 +1357,7 @@ def sheet_resolve_shade_arena(
                                 cam_origin, screen_point,
                                 pixel_basis_x, pixel_basis_y, cam_proj)
                             rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                            if ti.static(glossy != 0):
+                            if ti.static(glossy == 1 or glossy == 2):
                                 if rough > _GLOSSY_MIN_ROUGHNESS:
                                     rdr = _glossy_reflect(
                                         rdj, nj, rough, jtap, sec_n,
@@ -1615,6 +1650,7 @@ def env_background_prefill(
         projected: ti.template(),
         env_off: int, env_w: int, env_h: int, env_intensity: ti.f32,
         textures: ti.types.ndarray(),
+        byte_out: ti.template(),
         out: ti.types.ndarray()):
     """Prefill the frame buffer with the environment map, per (frame, pixel).
 
@@ -1623,9 +1659,13 @@ def env_background_prefill(
     by whatever the buffer holds — a flat color, an image plate, or this. An
     empty pixel is then already final with no resolve launch at all, which is
     what lets an env-mapped scene take the sparse covered-pixel route instead
-    of forcing the dense one. Byte-scale to match ``_prefill_background``;
-    the alpha channel is opaque (the sheet route excludes transparent
-    backgrounds).
+    of forcing the dense one. Byte-scale to match ``_prefill_background``,
+    which also means rounded and clamped to ``[0, 255]`` when ``byte_out``
+    says the buffer is uint8 (post-process tonemapping off): a map brighter
+    than 1 would otherwise wrap, 1.2 storing as 50. The float HDR buffer keeps
+    the unclamped value for the tonemap. Column 3, when present, is the glow
+    lane and gets 0 (the sheet route excludes transparent backgrounds, so
+    there is no alpha column).
 
     Every ray of an orthographic camera runs along the forward axis, so it
     sees the map in that one direction: a uniform backdrop, which is what
@@ -1645,7 +1685,11 @@ def env_background_prefill(
         ec = _sample_env_map(f, rd, env_off, env_w, env_h,
                              env_intensity, textures)
         for k in ti.static(range(3)):
-            out[f_rel, p, k] = ec[k] * 255.0
+            if ti.static(byte_out):
+                out[f_rel, p, k] = ti.cast(
+                    ti.math.clamp(ec[k] * 255.0 + 0.5, 0.0, 255.0), ti.u8)
+            else:
+                out[f_rel, p, k] = ec[k] * 255.0
         if out.shape[2] > 3:
             # Column 3 is the GLOW lane, not alpha: the sky emits none, which
             # is also what the dense path's env retire deposits (acc[3] == 0,

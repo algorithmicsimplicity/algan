@@ -349,8 +349,13 @@ def resolve_pixel_reference(
         # one: it claims against the same incoming T and defers the band's
         # single occlusion write to the band's last sheet, which makes it with
         # the summed coverage factor (``sheets._sibling_weights``).
-        defer = covs[i] < 0.0
-        raw = abs(covs[i])
+        cov = covs[i]
+        if cov != cov:
+            # A NaN area claims nothing, as in the resolve kernel (whose CPU
+            # ``min`` would otherwise make it a full claim).
+            cov = 0.0
+        defer = cov < 0.0
+        raw = abs(cov)
         area = min(raw, 1.0)
         # Per-sample coverage BEFORE material alpha, which is what the walk's
         # ``eff`` is and what the one-mesh ceiling bounds.
