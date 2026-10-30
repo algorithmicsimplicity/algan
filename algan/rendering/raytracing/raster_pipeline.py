@@ -1488,6 +1488,16 @@ def _fragment_layer(frag_ref, layer_offset_triangles):
     return torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
 
 
+#: The most pixel bins per fragment the counting sort takes on. Its bins cost
+#: about 8 B each live (the counts, then the offsets beside the scatter
+#: cursor), torch allocations outside the arena that the batch planner never
+#: sees, against about 32 B a fragment for the radix sort it replaces. Past
+#: this a mostly empty window -- a 30-frame 4K chunk is 249M bins, 2 GB --
+#: spends several times the radix sort's memory, and more time than it takes,
+#: on clearing and scanning empty bins.
+_BINNED_MAX_BINS_PER_FRAGMENT = 16
+
+
 def _binned_fragment_order(
     frag_key,
     frag_ref,
@@ -1496,6 +1506,7 @@ def _binned_fragment_order(
     *,
     exact_depth=False,
     min_fragments=65536,
+    max_bins_per_fragment=_BINNED_MAX_BINS_PER_FRAGMENT,
     devices=("cuda",),
 ):
     """The same order as the two stable sorts, by counting sort, or None.
@@ -1524,10 +1535,11 @@ def _binned_fragment_order(
     :func:`_tie_grouped_fragment_order`. The bits sit above the layer at
     ``<< 31``, so the key stays non-negative for every 32-bit pattern.
 
-    Declines (None) below ``min_fragments``, off ``devices``, where a launch
-    would stage its arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and
-    when any key's pixel lies outside ``[0, num_bins)`` -- a bug upstream,
-    which the comparison sort would at least keep in order.
+    Declines (None) below ``min_fragments``, above ``max_bins_per_fragment``
+    bins per fragment, off ``devices``, where a launch would stage its
+    arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and when any key's
+    pixel lies outside ``[0, num_bins)`` -- a bug upstream, which the
+    comparison sort would at least keep in order.
     """
     from algan.animation_timeline.timeline import _opt_disabled
     from algan.rendering.raytracing.sheet_stream import stream_kernel_available
@@ -1536,6 +1548,7 @@ def _binned_fragment_order(
     num_bins = int(num_bins)
     if (
         n < min_fragments
+        or num_bins > max_bins_per_fragment * n
         or frag_key.device.type not in devices
         or not 0 < num_bins < 2**31 - 1
         or _opt_disabled("binfragsort")
