@@ -10,11 +10,19 @@ class -- which is cheap enough to run in the CI group itself.
 The pre-PR group is a superset of the CI group by construction (see
 scripts/select_test_groups.py); that is checked too, since a hand edit to one
 list could break it.
+
+So are the script's pins. ``ALWAYS_CI`` and ``ALWAYS_PRE_PR`` name the tests
+the greedy pass would never pick -- source guards, and the regression tests of
+a fix, which add no lines of their own -- and ``--group`` runs every test they
+name, listed or not (a regeneration that predates the pins dropped the sheet
+resolve's regression tests, and nothing noticed for a week). A pin left behind
+by a rename names nothing and runs nothing, just as silently.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 from functools import cache
 from pathlib import Path
 
@@ -66,4 +74,33 @@ def test_the_pre_pr_group_contains_the_ci_group():
         f"{len(missing)} test(s) in the CI group are not in the pre-PR group, "
         f"e.g. {missing[:5]}; a pull request that passed pre-PR could then "
         f"fail CI on a test nobody ran."
+    )
+
+
+@cache
+def _selector():
+    """scripts/select_test_groups.py, loaded by path: scripts/ is no package."""
+    path = ROOT / "scripts" / "select_test_groups.py"
+    spec = importlib.util.spec_from_file_location("select_test_groups", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _names_a_test(pin):
+    """Whether a pin, a node-id prefix, names any test function."""
+    file, _, rest = pin.partition("::")
+    path = ROOT / file
+    return path.is_file() and any(
+        name.startswith(rest) and name.split("::")[-1].startswith("test")
+        for name in _definitions(path)
+    )
+
+
+@pytest.mark.parametrize("pins", ["ALWAYS_CI", "ALWAYS_PRE_PR"])
+def test_every_pin_still_names_a_test(pins):
+    stale = [p for p in getattr(_selector(), pins) if not _names_a_test(p)]
+    assert not stale, (
+        f"{stale} in {pins} (scripts/select_test_groups.py) match no test "
+        f"function any more; point them at the test's new name, or drop them."
     )

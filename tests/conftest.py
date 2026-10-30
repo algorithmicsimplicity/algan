@@ -387,7 +387,9 @@ def pytest_addoption(parser):
             "Run only one test group: 'ci' (what CI runs on every pull "
             "request and push, a couple of minutes) or 'pre-pr' (run before "
             "opening a pull request, up to ten minutes). The members are "
-            "listed in tests/groups/. See tests/README.md, 'Test groups'."
+            "listed in tests/groups/, plus every test "
+            "scripts/select_test_groups.py pins. See tests/README.md, "
+            "'Test groups'."
         ),
     )
 
@@ -406,6 +408,27 @@ def _test_group_members(name: str) -> set[str]:
         if line and not line.startswith("#"):
             members.add(line)
     return members
+
+
+def _test_group_pins(name: str) -> tuple[str, ...]:
+    """The node-id prefixes ``scripts/select_test_groups.py`` pins into a group.
+
+    A group runs these whatever its list says. A pin names a guard or a fix's
+    regression test, which the greedy pass would never choose, and a list holds
+    it only as of its last regeneration: a case or a test added since -- a new
+    kernel spec for an arity guard, a new sheet list for the resolve's oracle
+    test -- would otherwise sit out of the group until the next one. Loaded by
+    path, like ``_known_mps_failures``: ``scripts/`` is no package either.
+    """
+    import importlib.util
+
+    path = TESTS_ROOT.parent / "scripts" / "select_test_groups.py"
+    spec = importlib.util.spec_from_file_location("algan_select_test_groups", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if name == "ci":
+        return module.ALWAYS_CI
+    return module.ALWAYS_CI + module.ALWAYS_PRE_PR
 
 
 def _known_mps_failures():
@@ -473,9 +496,11 @@ def pytest_collection_modifyitems(config, items):
         # By node id, so the group is the same whatever paths were given;
         # with none, ``testpaths`` collects everything a list can name.
         members = _test_group_members(group)
+        pins = _test_group_pins(group)
         selected, deselected = [], []
         for item in items:
-            (selected if item.nodeid in members else deselected).append(item)
+            keep = item.nodeid in members or item.nodeid.startswith(pins)
+            (selected if keep else deselected).append(item)
         if deselected:
             config.hook.pytest_deselected(items=deselected)
             items[:] = selected

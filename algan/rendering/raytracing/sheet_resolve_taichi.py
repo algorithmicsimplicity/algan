@@ -11,8 +11,8 @@ four-way split (shade / reflect / transmit / miss) with its continuations,
 inherited from the fragment walk's ``raster_first_shade`` -- deleted in
 Phase 4, so this kernel is the only copy.
 
-Per-sheet semantics (kept in lockstep with ``sheets.resolve_pixel_reference``,
-the sequential oracle, and pinned by the parity harness):
+Per-sheet semantics (in lockstep with ``sheets.resolve_pixel_reference``, the
+sequential oracle; tests/unit_tests/test_sheet_resolve_parity.py pins them):
 
 * AREAL sheets -- circuits, and donor-only sheets (empty sample union) --
   claim ``alpha * min(area, 1)`` uniformly over every sample.
