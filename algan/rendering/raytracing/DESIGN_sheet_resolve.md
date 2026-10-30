@@ -207,6 +207,24 @@ per-fragment shading and divergent walk they delete. Radix sorts of
 million-scale keys are milliseconds on this class of GPU, and the memory
 model measures whatever the truth is (`memory_model.py` needs no annotation).
 
+**CORRECTED 2026-10-30.** P3–P7 did not ship as five passes. The compaction
+(`sheets.compact_sheets`, P1–P2) hands each pixel's sheets over already in
+depth order, which is all P3 was for. ONE kernel then walks them front to
+back: `sheet_resolve_taichi.sheet_resolve_shade`, one thread per covered
+pixel. That single walk does all of the following:
+
+* the transmittance (P4)
+* one material evaluation per sheet at its dominant fragment (P5)
+* the deposit into `pix_accum` (P6), which `wf_composite_accum_sparse`
+  composites afterwards
+* the continuation spawns (P7)
+
+The shading is inline and unsorted, so §4.7's sort by material pipeline id
+was never built either. P6 and P7 are atomics, not scans, and §4.9 says what
+keeps them deterministic. A shadowed batch launches the same body twice,
+with `raster_shadow_trace` between the launches (§4.9). The lockstep hazard
+is therefore retired by sharing one body, not by a scan pipeline.
+
 
 ================================================================================
 4. SEMANTICS
@@ -393,6 +411,16 @@ nearest depth kept) and COUNTS it; the count is reported per batch like the
 pool retries are today. Never a silent truncation — §Y's "an instrument that
 reports zero may not be looking" applies to overflow policies too.
 
+**CORRECTED 2026-10-30.** Neither the K cap nor the overflow merge was built.
+The compaction keeps every sheet a pixel has: Phase 1 measured at most 6
+against K = 24 (§8), and no K-sized buffer exists. The only bound is the
+resolve's walk, which stops after `max_surfaces_per_ray` sheets (256,
+`ALGAN_MAX_SURFACES_PER_RAY`). Whatever weight is left then goes to the
+background, as at the end of any walk (§4.5). The never-silent rule does
+survive. Each ray that stops this way is counted as a `surfaces_per_ray`
+truncation (`rs_alloc[ALLOC_TRUNC_SURFACES]`, `truncation.py`), and the
+render warns about it.
+
 4.7 Shading per sheet
 ----------------------
 One material evaluation per sheet at its dominant fragment's geometry
@@ -478,6 +506,18 @@ structurally gone. The two live items from the old queue port directly:
   only at near-zero t" replaces the absolute `MIN_HIT_DISTANCE` epsilon —
   now easier, because the source mesh id is already on the sheet record the
   event is built from.
+
+**CORRECTED 2026-10-30.** No prefix sum assigns the continuation slots. Each
+spawn reserves one with an atomic increment of `rs_alloc[ALLOC_NEXT]`
+(`_reserve_continuation_slot`, through `_spawn_pool_ray`), so slot ids
+follow thread order. The image is deterministic through the accumulation
+instead. A continuation deposits into its own pixel's `pix_accum` row, and on
+a splitting batch every deposit is rounded to a fixed grid (`_det_deposit`),
+so the sums do not depend on the order they arrive in. A batch that does not
+split has one ray per row and deposits serially. The resolve's own deposits
+are `ti.atomic_add` too, so §7's "every atomic reduction in the resolve" was
+not retired either. The shadow half of this section did ship as written:
+event identity is the sheet index, with no counter and no atomics.
 
 
 ================================================================================
@@ -707,6 +747,12 @@ Phase 4. Results:
 * **Oracle parity**: `sheets.resolve_pixel_reference` (the §2 oracle) vs
   the kernel's `ALGAN_AA_DUMP` rows — worst |claim| diff **8.94e-08** over
   56 committed sheet rows at 24 probed pixels.
+  **CORRECTED 2026-10-30: no current run backs this figure**; it is this
+  2026-08-19 build's number only. A 2026-10-24 rerun
+  (`benchmarks/_sheet_resolve_parity.py --verify 1`, `--res ld`) probed a
+  frame the capture does not hold (329), got no dump rows, and printed
+  `[PASS]` over **0** committed sheet rows. The check passes when it has
+  checked nothing, so re-measure before quoting a parity figure.
 * **Ink wobble** (`_aa_line_check`, md, daemon-free A/B): bezier and flat
   quad identical to four decimals; the coarse Cylinder's mean over
   non-degenerate angles **0.0159 → 0.0050 (−69%)** and the fine rod
@@ -1035,3 +1081,9 @@ untouched by this design; revisit after Phase 4 on their own merits.
      brighter than both their neighbours -- the seam signature -- fall from
      522 to 88, the tent's wobble win is unchanged (0.1487 → 0.0836 px RMS,
      +45 sheets), and the split-off path stays byte-identical.
+
+     **CORRECTED 2026-10-30.** "DEFAULT OFF" was true of the 2026-08-19 build
+     only. The flip anticipated above has happened: `sheet_shade_split`
+     defaults ON (`ALGAN_SHEET_SHADE_SPLIT=0` turns it off), and the scenes
+     carrying flat-shaded solids are baselined with it. Turning it OFF is
+     now the re-baseline (the setting's comment in `settings.py`).

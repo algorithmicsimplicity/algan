@@ -7,9 +7,9 @@ what the encoder is handed, as distinct from what the renderer computes (that is
 The presets, in increasing cost:
 
 ``SMOKE_TEST``
-    32x32 -- fast enough to assert a render ran at all.
+    32x32 -- fast enough to assert a render ran at all. No supersampling.
 ``PREVIEW``
-    704x396 at 10 fps, no anti-aliasing. The while-you-work setting.
+    704x396 at 10 fps, no supersampling. The while-you-work setting.
 ``LD`` / ``MD``
     864x486 at 15 fps; 720p at 30 fps.
 ``HD``
@@ -17,8 +17,14 @@ The presets, in increasing cost:
 ``PRODUCTION`` / ``UHD``
     1440p and 2160p at 60 fps.
 ``THUMBNAIL``
-    720p, a single frame, heavily anti-aliased -- for
+    720p, a single frame, supersampling 4 -- for
     :meth:`~algan.scene.Scene.save_frame`.
+
+Supersampling is 2 unless a preset says otherwise, and only the deterministic
+renderer's supersampled fallback reads it. Its default analytic path
+anti-aliases every preset at output resolution and ignores the level. So a
+batch that falls back under ``PREVIEW`` or ``SMOKE_TEST`` has no anti-aliasing
+at all.
 
 Presets are immutable, so ``HD.set(frames_per_second=60)`` returns a copy and
 leaves ``HD`` alone. Pass one to

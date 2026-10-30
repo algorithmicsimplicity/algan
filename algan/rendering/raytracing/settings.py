@@ -1951,20 +1951,21 @@ def refit_bvh_active():
     return bvh_refit
 
 
-# Hybrid raster front-end for deterministic primary visibility.
-# Eligible flat-triangle/Bezier batches replace iteration zero with a typed
-# opaque visibility buffer, alpha-filtered ordered fragment runs, optional exact
-# sparse hard-shadow events, and a serial per-pixel resolve. Ordering matches the
-# classic transitive depth-bin/descending-layer relation. Surviving reflected or
-# refracted branches stay in the shared continuation pool and are traced by the
-# classic bounce loop (whose per-iteration surface-event batches replaced the
-# old per-slot K-buffers). Primary hard shadows and emitter-radius
-# soft shadows use a sparse any-hit event queue. PN geometry is preserved and
-# simply falls back to classic primary traversal. The straight-ray safety limit
-# is max_surfaces_per_ray (currently 256), not literally unbounded. Custom
-# scatter, mem-trim, in-place AA, near clipping and legacy routes still fall
-# back to classic. Default ON (ALGAN_HYBRID_RASTER=0 restores the classic
-# iteration-zero wavefront).
+# Hybrid raster front-end for deterministic primary visibility: the master
+# switch of the sheet route (DESIGN_sheet_resolve.md). An eligible batch's
+# flat triangles -- PN patches included, which are diced into flat triangles
+# at projection -- and Bezier circuits emit exact analytic-coverage fragments,
+# which are compacted into per-pixel depth-banded sheets that one kernel
+# resolves, builds primary shadow events for, and shades. Surviving reflected
+# or refracted branches stay in the shared continuation pool and are traced
+# by the classic bounce loop (whose per-iteration surface-event batches
+# replaced the old per-slot K-buffers). The straight-ray safety limit is
+# max_surfaces_per_ray (currently 256), not literally unbounded. Which
+# batches are eligible is tracer.analytic_raster_route_veto's decision:
+# tracer.ROUTE_VETOES lists every reason a batch falls back to the classic
+# supersampled wavefront, this switch among them. (In-place AA is not one --
+# it only changes how that fallback supersamples.) Default ON
+# (ALGAN_HYBRID_RASTER=0 restores the classic iteration-zero wavefront).
 hybrid_raster = env_flag("ALGAN_HYBRID_RASTER", True)
 
 
@@ -2869,8 +2870,11 @@ def set_analytic_aa_bez_anisotropic(enabled):
 # edge levels 620/621, seam notches inside the documented band, trans
 # improves, thin gains its reachable share (0.857 -> 0.884; the 0.99 target
 # was calibrated on the rejected cells accounting -- see the ss8 Phase D
-# note). Worst-case cost is +6.6% frame device on sub-pixel-diced meshes;
-# RUN=0 is byte-identical to the pre-v2 renderer.
+# note). Worst-case cost is +6.6% frame device on sub-pixel-diced meshes.
+# RUN=0 no longer restores the pre-v2 renderer: the sheet resolve consumes the
+# run representation and is the only analytic-coverage path, so off is a
+# sheet-route veto (tracer.ROUTE_VETOES["analytic_aa_run_off"]) and the batch
+# renders through the classic supersampled wavefront.
 analytic_aa_run = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 
 # The corr > 1 accounting rule (v2 ss4.4), the design's one open empirical

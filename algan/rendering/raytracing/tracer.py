@@ -3618,9 +3618,9 @@ def raytrace_render_wavefront(
     if merged.get("bvh_deferred") and (shadow_flag != 0 or not use_raster):
         # Runtime routing needs the trees after all: primary shadows trace
         # them from the sheet resolve's event queue (raster_shadow_trace),
-        # and a batch that fell back to classic primary traversal (near
-        # clip, in-place AA, flipped toggles, ...) walks them for every
-        # primary ray.
+        # and a batch that fell back to classic primary traversal (a
+        # ROUTE_VETOES reason: near clip, a toggle flipped after the merge,
+        # ...) walks them for every primary ray.
         _ensure_bvhs()
 
     gen_fused = (
