@@ -1,10 +1,11 @@
 """Which ``sheet_resolve_shade`` variant each launch compiles.
 
 The resolve is the renderer's largest kernel, and its cold compile is paid once
-per distinct set of template values. Most of that cost is the five
-continuation-tap fans, each unrolling ``sec_aa`` inlined copies of a jittered
-surface sample, a normal fetch and a pool spawn. Two launches compiled them for
-nothing (``findings/raster_bvh_verdicts.md`` S1):
+per distinct set of template values. The largest part of that cost is the
+continuation-tap fan site, which unrolls ``sec_aa`` inlined copies of a jittered
+surface sample, a normal fetch and a pool spawn (there were five such fans, one
+per branch that can fan, before they shared one site). Two launches compiled the
+fans for nothing (``findings/raster_bvh_verdicts.md`` S1):
 
 * the shadow event pass (mode 1), which spawns nothing and reads nothing a fan
   writes after the ``break`` that follows it;
@@ -108,16 +109,22 @@ def _fan_loops(tree):
 def test_mode_1_unrolls_no_continuation_fan():
     """The event pass compiled all five fans at the full tap count.
 
-    Each fan is gated ``mode != 1`` only around its spawns, and the frontend
+    Each fan was gated ``mode != 1`` only around its spawns, and the frontend
     builds the rest regardless (``advanced_optimization`` is off), so a
     shadowed batch's event pass cost about as much to compile as its shading
     pass. The fans now unroll ``fan_taps``, a compile-time count that is the
     live ``sec_aa`` in modes 0 and 2 and zero in mode 1.
+
+    And they unroll it once: the glass refraction and the four reflection
+    fans each inlined their own ``sec_aa`` jittered samples, though a sheet
+    fans at most twice (a refraction and a reflection). The branches now
+    record what they would fan and one site after them runs it, so a second
+    fan loop here is a branch unrolling its own copy again.
     """
     source = inspect.getsource(sheet_resolve_taichi.sheet_resolve_shade_arena)
     tree = ast.parse(source.lstrip())
     fans = _fan_loops(tree)
-    assert len(fans) == 5, f"expected the five continuation fans, found {fans}"
+    assert len(fans) == 1, f"expected the one continuation fan site, found {fans}"
     assert set(fans) == {"fan_taps"}, (
         f"a fan unrolls {sorted(set(fans) - {'fan_taps'})} instead of fan_taps, "
         "so the event pass compiles it"
@@ -173,13 +180,14 @@ def test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe():
     sheet and keeps ``_mirror_share``'s throttle on every other reflective
     sheet, yet still spread those sheets' fans too: rough glass and a weaker
     second reflector drew stair-edged ghost copies of what they reflected on
-    top of the throttle. Every spread now sits behind a gate that compiles it
+    top of the throttle. The spread now sits behind a gate that compiles it
     into modes 1 and 2 only, which also keeps it out of the default kernel.
-    ``test_glossy_prefilter`` renders the image this changed.
+    ``test_glossy_prefilter`` renders the image this changed. There is one
+    spread, in the continuation fan site every reflection's fan goes through.
     """
     source = inspect.getsource(sheet_resolve_taichi.sheet_resolve_shade_arena)
     sites = _static_gates(ast.parse(source.lstrip()), "_glossy_reflect")
-    assert len(sites) == 4, f"expected the four lobe-spread sites, found {len(sites)}"
+    assert len(sites) == 1, f"expected the one lobe-spread site, found {len(sites)}"
     for gates in sites:
         modes = None
         for gate in gates:

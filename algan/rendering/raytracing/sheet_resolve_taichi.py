@@ -286,14 +286,14 @@ def sheet_resolve_shade_arena(
     pixels_per_frame = width * height
     far_clip = layer_offsets[5]
     max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
-    # Taps the five continuation fans below unroll (``for s in
+    # Taps the continuation fan site below unrolls (``for s in
     # ti.static(range(fan_taps))``). Each tap inlines a jittered surface
     # sample, a normal fetch and a pool spawn, so at ``sec_aa`` 4 the fans are
-    # most of this kernel's compile time. The event pass (mode 1) compiles
-    # their bodies out: all a body produces is the pool spawns, which mode 1
+    # the largest part of this kernel's compile time. The event pass (mode 1)
+    # compiles the site out: all it produces is the pool spawns, which mode 1
     # never makes, and the re-aimed ``ro``/``rd``, which nothing reads after
-    # the ``break`` that follows. What surrounds the bodies -- the fan
-    # conditions, the ``weight`` scale by ``1 / sec_n``, ``bounces_left``,
+    # the ``break`` that follows. What the branches do to ask for a fan -- the
+    # fan conditions, the ``weight`` scale by ``1 / sec_n``, ``bounces_left``,
     # ``bounced`` -- stays, so mode 1 walks the same transport as mode 2.
     # Past that, mode 1's output depends on ``sec_aa`` only through
     # ``sec_aa > 1`` (the ``event_dp`` footprint below), so the host passes it
@@ -994,6 +994,23 @@ def sheet_resolve_shade_arena(
             if areal:
                 own_msk = _AA_MASK_ALL
 
+            # The continuation fans the branches below ask for, which the one
+            # fan site after them traces: at most the glass's refraction
+            # (``fan_refract``, at ``fan_w0`` per tap across the face
+            # ``fan_face_n``) and one reflection (``fan_reflect``, at
+            # ``fan_w1`` per tap off ``fan_n1``), whose first tap re-aims the
+            # primary when ``fan_to_primary``. A branch whose primary becomes
+            # the reflection sets ``bounce_break``, and the walk breaks once
+            # the fans are out.
+            fan_refract = False
+            fan_reflect = False
+            fan_to_primary = False
+            fan_w0 = ti.math.vec3(0.0, 0.0, 0.0)
+            fan_w1 = ti.math.vec3(0.0, 0.0, 0.0)
+            fan_n1 = ti.math.vec3(0.0, 0.0, 0.0)
+            fan_face_n = ti.math.vec3(0.0, 0.0, 0.0)
+            bounce_break = False
+
             if is_glass:
                 wt = weight * trans_energy * tint
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
@@ -1012,48 +1029,14 @@ def sheet_resolve_shade_arena(
                     face_normal = (v1 - v0).cross(v2 - v0)
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
-                        wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
-                        for s in ti.static(range(fan_taps)):
-                            if (sec_pm >> s) & 1:
-                                rdj, hpj, nj, _b1, _b2 = \
-                                    _jittered_surface_sample(
-                                        f, px, py,
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                        gen_meta, fetched_bez, prim, hp, normal,
-                                        tri_pos, tri_norm, tri_uvs,
-                                        tri_tex_meta, textures,
-                                        num_colored_triangles,
-                                        cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y, cam_proj)
-                                nj = _transmission_normal(rdj, nj, face_normal)
-                                rel_j = _relative_ior(rs_sca, r, ior,
-                                                     rdj.dot(face_normal) < 0.0,
-                                                     ior_stack)
-                                rdt = _refract_ray(rdj, nj, rel_j)
-                                if ti.static(mode != 1):
-                                    # Refraction off a primary: push or pop the
-                                    # hit medium, the side read from the
-                                    # GEOMETRIC face normal (see
-                                    # _relative_ior). Not assumed to be an
-                                    # entry: a partially covering glass
-                                    # fragment lets the primary walk on to the
-                                    # solid's back face, where an
-                                    # unconditional push would record a medium
-                                    # the ray is leaving.
-                                    _spawn_pool_ray(
-                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc,
-                                        _offset_transmitted_origin(
-                                            hpj, rdt, face_normal, nj),
-                                        rdt, wsub, base_dist + t_hit,
-                                        bounces_left - 1, processed, pixel, r, r, 1,
-                                        ior_stack, 1, ior, rdj.dot(face_normal) < 0.0)
+                        fan_refract = True
+                        fan_w0 = wt * (1.0 / ti.cast(sec_n, ti.f32))
+                        fan_face_n = face_normal
                     else:
                         rdt = _refract_ray(surf_rd, interface_n, rel)
                         if ti.static(mode != 1):
                             # Refraction off a primary: push or pop the hit
-                            # medium (see the jittered spawn above).
+                            # medium (see the fan site's refraction below).
                             _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
@@ -1077,57 +1060,15 @@ def sheet_resolve_shade_arena(
                     if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                             and (sec_n > 1):
                         weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
-                        placed = False
-                        jtap = 0
-                        for s in ti.static(range(fan_taps)):
-                            if (sec_pm >> s) & 1:
-                                rdj, hpj, nj, _b1, _b2 = \
-                                    _jittered_surface_sample(
-                                        f, px, py,
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                        gen_meta, fetched_bez, prim, hit_point,
-                                        nref, tri_pos, tri_norm, tri_uvs,
-                                        tri_tex_meta, textures,
-                                        num_colored_triangles,
-                                        cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y, cam_proj)
-                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                                if ti.static(glossy == 1 or glossy == 2):
-                                    if rough > _GLOSSY_MIN_ROUGHNESS:
-                                        rdr = _glossy_reflect(
-                                            rdj, nj, rough, jtap, sec_n,
-                                            g_roff, g_aoff)
-                                jtap += 1
-                                org = _offset_ray_origin(hpj, nj)
-                                if placed:
-                                    if ti.static(mode != 1):
-                                        _spawn_pool_ray(
-                                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                            rs_pix, rs_alloc, org, rdr, weight,
-                                            base_dist + t_hit, bounces_left - 1,
-                                            processed, pixel, r, r, 1,
-                                            ior_stack, 0, 0.0, 0)
-                                else:
-                                    rd = rdr
-                                    ro = org
-                                    placed = True
+                        fan_reflect = True
+                        fan_to_primary = True
+                        fan_w1 = weight
+                        fan_n1 = nref
                     else:
                         rd = refl_rd
                         ro = _offset_ray_origin(hit_point, nref)
                         weight *= refl_energy
-                    base_dist += t_hit
-                    bounces_left -= 1
-                    bounced = True
-                    if ti.static(dump):
-                        if dmatch:
-                            _aa_dump_frag(dump_out, q - 1,
-                                          d_kind, 2,
-                                          prim_raw, 0, 0, msk, cov,
-                                          _popcount_samples(msk), cfac, eff,
-                                          mat_alpha, alpha, trans_share,
-                                          refl_max, t_hit, svis)
-                    break
+                    bounce_break = True
                 else:
                     rwt = weight * refl_energy
                     rwt_max = ti.max(rwt[0], ti.max(rwt[1], rwt[2]))
@@ -1137,39 +1078,9 @@ def sheet_resolve_shade_arena(
                         rhp = surf_pos
                         if ti.static(sec_aa > 1) \
                                 and (rwt_max > sec_min_energy) and (sec_n > 1):
-                            rwsub = rwt * (1.0 / ti.cast(sec_n, ti.f32))
-                            jtap = 0
-                            for s in ti.static(range(fan_taps)):
-                                if (sec_pm >> s) & 1:
-                                    rdj, hpj, nj, _b1, _b2 = \
-                                        _jittered_surface_sample(
-                                            f, px, py,
-                                            ti.static(
-                                                _AA_SEC_JITTER[sec_aa][s][0]),
-                                            ti.static(
-                                                _AA_SEC_JITTER[sec_aa][s][1]),
-                                            gen_meta, fetched_bez, prim, rhp,
-                                            nref, tri_pos, tri_norm, tri_uvs,
-                                            tri_tex_meta, textures,
-                                            num_colored_triangles,
-                                            cam_origin, screen_point,
-                                            pixel_basis_x, pixel_basis_y, cam_proj)
-                                    rdr, nj = _reflect_frame(rdj, nj,
-                                                             geo_normal)
-                                    if ti.static(glossy == 1 or glossy == 2):
-                                        if rough > _GLOSSY_MIN_ROUGHNESS:
-                                            rdr = _glossy_reflect(
-                                                rdj, nj, rough, jtap, sec_n,
-                                                g_roff, g_aoff)
-                                    jtap += 1
-                                    if ti.static(mode != 1):
-                                        _spawn_pool_ray(
-                                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                            rs_pix, rs_alloc,
-                                            _offset_ray_origin(hpj, nj),
-                                            rdr, rwsub, base_dist + t_hit,
-                                            bounces_left - 1, processed, pixel, r, r,
-                                            1, ior_stack, 0, 0.0, 0)
+                            fan_reflect = True
+                            fan_w1 = rwt * (1.0 / ti.cast(sec_n, ti.f32))
+                            fan_n1 = nref
                         else:
                             if ti.static(mode != 1):
                                 _spawn_pool_ray(
@@ -1277,37 +1188,9 @@ def sheet_resolve_shade_arena(
                     hp = surf_pos
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
-                        wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
-                        jtap = 0
-                        for s in ti.static(range(fan_taps)):
-                            if (sec_pm >> s) & 1:
-                                rdj, hpj, nj, _b1, _b2 = \
-                                    _jittered_surface_sample(
-                                        f, px, py,
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
-                                        ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                        gen_meta, fetched_bez, prim, hp, nref,
-                                        tri_pos, tri_norm, tri_uvs,
-                                        tri_tex_meta, textures,
-                                        num_colored_triangles,
-                                        cam_origin, screen_point,
-                                        pixel_basis_x, pixel_basis_y, cam_proj)
-                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                                if ti.static(glossy == 1 or glossy == 2):
-                                    if rough > _GLOSSY_MIN_ROUGHNESS:
-                                        rdr = _glossy_reflect(
-                                            rdj, nj, rough, jtap, sec_n,
-                                            g_roff, g_aoff)
-                                jtap += 1
-                                if ti.static(mode != 1):
-                                    _spawn_pool_ray(
-                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc,
-                                        _offset_ray_origin(hpj, nj),
-                                        rdr,
-                                        wsub, base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, r, 1,
-                                        ior_stack, 0, 0.0, 0)
+                        fan_reflect = True
+                        fan_w1 = wt * (1.0 / ti.cast(sec_n, ti.f32))
+                        fan_n1 = nref
                     else:
                         if ti.static(mode != 1):
                             _spawn_pool_ray(
@@ -1336,54 +1219,15 @@ def sheet_resolve_shade_arena(
                 if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                         and (sec_n > 1):
                     weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
-                    placed = False
-                    jtap = 0
-                    for s in ti.static(range(fan_taps)):
-                        if (sec_pm >> s) & 1:
-                            rdj, hpj, nj, _b1, _b2 = _jittered_surface_sample(
-                                f, px, py,
-                                ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
-                                ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
-                                gen_meta, fetched_bez, prim, hit_point, nref,
-                                tri_pos, tri_norm, tri_uvs, tri_tex_meta,
-                                textures, num_colored_triangles,
-                                cam_origin, screen_point,
-                                pixel_basis_x, pixel_basis_y, cam_proj)
-                            rdr, nj = _reflect_frame(rdj, nj, geo_normal)
-                            if ti.static(glossy == 1 or glossy == 2):
-                                if rough > _GLOSSY_MIN_ROUGHNESS:
-                                    rdr = _glossy_reflect(
-                                        rdj, nj, rough, jtap, sec_n,
-                                        g_roff, g_aoff)
-                            jtap += 1
-                            org = _offset_ray_origin(hpj, nj)
-                            if placed:
-                                if ti.static(mode != 1):
-                                    _spawn_pool_ray(
-                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc, org, rdr, weight,
-                                        base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, r, 1,
-                                        ior_stack, 0, 0.0, 0)
-                            else:
-                                rd = rdr
-                                ro = org
-                                placed = True
+                    fan_reflect = True
+                    fan_to_primary = True
+                    fan_w1 = weight
+                    fan_n1 = nref
                 else:
                     rd = refl_rd
                     ro = _offset_ray_origin(hit_point, nref)
                     weight *= refl_energy
-                base_dist += t_hit
-                bounces_left -= 1
-                bounced = True
-                if ti.static(dump):
-                    if dmatch:
-                        _aa_dump_frag(dump_out, q - 1, d_kind, 2,
-                                      prim_raw, 0, 0, msk, cov,
-                                      _popcount_samples(msk), cfac, eff,
-                                      mat_alpha, alpha, trans_share, refl_max,
-                                      t_hit, svis)
-                break
+                bounce_break = True
             else:
                 ts_s = w_a_s * trans_share
                 pm = (1.0 - w_a_s) + ts_s
@@ -1397,6 +1241,93 @@ def sheet_resolve_shade_arena(
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - w_a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
+
+            # THE CONTINUATION FANS: one site for the up to two the branches
+            # above asked for, so the kernel unrolls ``fan_taps`` jittered
+            # surface samples once, where it unrolled them in each of the five
+            # branches that can fan. Job 0 is the glass's refraction, job 1 the
+            # reflection; a runtime loop runs whichever were asked for, in that
+            # order. The fans now follow the branch's single-ray spawns rather
+            # than preceding them, which reorders a pixel's rays in the pool
+            # and nothing else: a batch that can fan splits, and a splitting
+            # batch commits on the order-independent grid (``det_sum``).
+            if ti.static(sec_aa > 1 and fan_taps > 0):
+                fan_first = 0 if fan_refract else 1
+                fan_jobs = (1 if fan_refract else 0) + (1 if fan_reflect else 0)
+                for fj in range(fan_jobs):
+                    job = fan_first + fj
+                    n_in = normal
+                    fw = fan_w0
+                    if job == 1:
+                        n_in = fan_n1
+                        fw = fan_w1
+                    to_pool = (job == 0) or (not fan_to_primary)
+                    jtap = 0
+                    for s in ti.static(range(fan_taps)):
+                        if (sec_pm >> s) & 1:
+                            rdj, hpj, nj, _b1, _b2 = _jittered_surface_sample(
+                                f, px, py,
+                                ti.static(_AA_SEC_JITTER[sec_aa][s][0]),
+                                ti.static(_AA_SEC_JITTER[sec_aa][s][1]),
+                                gen_meta, fetched_bez, prim, surf_pos, n_in,
+                                tri_pos, tri_norm, tri_uvs, tri_tex_meta,
+                                textures, num_colored_triangles,
+                                cam_origin, screen_point,
+                                pixel_basis_x, pixel_basis_y, cam_proj)
+                            if job == 0:
+                                # Refraction off a primary: push or pop the
+                                # hit medium, the side read from the GEOMETRIC
+                                # face normal (see _relative_ior). Not assumed
+                                # to be an entry: a partially covering glass
+                                # fragment lets the primary walk on to the
+                                # solid's back face, where an unconditional
+                                # push would record a medium the ray is
+                                # leaving.
+                                entering = rdj.dot(fan_face_n) < 0.0
+                                nj = _transmission_normal(rdj, nj, fan_face_n)
+                                rel_j = _relative_ior(rs_sca, r, ior, entering,
+                                                      ior_stack)
+                                rdt = _refract_ray(rdj, nj, rel_j)
+                                _spawn_pool_ray(
+                                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                    rs_pix, rs_alloc,
+                                    _offset_transmitted_origin(
+                                        hpj, rdt, fan_face_n, nj),
+                                    rdt, fw, base_dist + t_hit,
+                                    bounces_left - 1, processed, pixel, r, r, 1,
+                                    ior_stack, 1, ior, entering)
+                            else:
+                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
+                                if ti.static(glossy == 1 or glossy == 2):
+                                    if rough > _GLOSSY_MIN_ROUGHNESS:
+                                        rdr = _glossy_reflect(
+                                            rdj, nj, rough, jtap, sec_n,
+                                            g_roff, g_aoff)
+                                jtap += 1
+                                org = _offset_ray_origin(hpj, nj)
+                                if to_pool:
+                                    _spawn_pool_ray(
+                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                        rs_pix, rs_alloc, org, rdr, fw,
+                                        base_dist + t_hit, bounces_left - 1,
+                                        processed, pixel, r, r, 1,
+                                        ior_stack, 0, 0.0, 0)
+                                else:
+                                    rd = rdr
+                                    ro = org
+                                    to_pool = True
+            if bounce_break:
+                base_dist += t_hit
+                bounces_left -= 1
+                bounced = True
+                if ti.static(dump):
+                    if dmatch:
+                        _aa_dump_frag(dump_out, q - 1, d_kind, 2,
+                                      prim_raw, 0, 0, msk, cov,
+                                      _popcount_samples(msk), cfac, eff,
+                                      mat_alpha, alpha, trans_share, refl_max,
+                                      t_hit, svis)
+                break
 
             if ti.static(dump):
                 if dmatch:
