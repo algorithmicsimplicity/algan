@@ -156,6 +156,13 @@ CASES = {
         S("B", 0.5),
         S("R", 1.0),
     ],
+    # The closed-shell ceiling can spend a band's last sibling to nothing; it
+    # still owes the band's occlusion write.
+    "a band closed by a zero-area sibling": [
+        S("R", 0.75, continues=True),
+        S("G", 0.0),
+        S("B", 1.0),
+    ],
     "one-mesh ceiling spent": [
         S("R", 0.25, ONE_MESH | 0b00000111, cap=0.25),
         S("G", 0.25, ONE_MESH | 0b00000111, cap=0.25),

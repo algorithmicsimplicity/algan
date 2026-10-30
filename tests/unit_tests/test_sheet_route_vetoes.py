@@ -56,12 +56,8 @@ class Batch(NamedTuple):
 
 VETOES = {
     "samples_per_pixel > 1": Batch(settings={"samples_per_pixel": 2}),
-    "camera.near > 0": Batch(route={"near_clip": 0.1}),
     "a fragment shader that overrides ray bouncing": Batch(
         merged={"has_user_pipeline": True, "has_custom_scatter": True}
-    ),
-    "a transparent background with an environment map": Batch(
-        route={"transparent_background": True, "environment_map": ENV}
     ),
     "no triangles and no circuits": Batch(
         merged={"num_triangles": 0, "num_circuits": 0}
@@ -80,9 +76,15 @@ VETOES = {
 #: One change short of a veto: these keep the route.
 NEAR_MISSES = {
     "camera.near == 0": Batch(route={"near_clip": 0.0}),
+    # The emission cuts geometry at the near plane.
+    "camera.near > 0": Batch(route={"near_clip": 0.1}),
     "a user pipeline that only shades": Batch(merged={"has_user_pipeline": True}),
     "a transparent background alone": Batch(route={"transparent_background": True}),
     "an environment map alone": Batch(route={"environment_map": ENV}),
+    # The env prefill writes the alpha opaque, as every route does.
+    "a transparent background with an environment map": Batch(
+        route={"transparent_background": True, "environment_map": ENV}
+    ),
     "circuits alone": Batch(merged={"num_triangles": 0, "num_circuits": 1}),
     "triangle coverage off, circuits alone": Batch(
         settings={"analytic_aa_tri": False},
