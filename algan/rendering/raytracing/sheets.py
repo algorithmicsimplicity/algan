@@ -213,8 +213,11 @@ sheet_metadata_kernel = env_flag("ALGAN_SHEET_METADATA_KERNEL", False)
 # index_copy_ per array). Captured HD explainer streams, one thread: the
 # split's own work 320 -> 62 ms, the whole compaction 597 -> 353 ms. Copies,
 # so bit-identical; the torch arm stays as the A/B and serves launches that
-# would stage.
+# would stage. Off on an Apple GPU unless ``ALGAN_SHEET_SPLIT_KERNEL_MPS``
+# asks: nobody has timed it there, and the one compaction kernel that was
+# (``sheet_sibling_weights_kernel``) made the whole render slower on MPS.
 sheet_split_kernel = env_flag("ALGAN_SHEET_SPLIT_KERNEL", True)
+sheet_split_kernel_mps = env_flag("ALGAN_SHEET_SPLIT_KERNEL_MPS", False)
 
 # Reuse established group IDs where another grouping cannot subdivide them.
 sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
@@ -1954,7 +1957,8 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
     copying run by run. The torch arm maps every fragment to its pixel and
     moves each array through an ``index_select`` and an ``index_copy_``: on
     an HD frame of mostly strokes those passes took longer than compacting
-    the triangle pixels did.
+    the triangle pixels did. The kernels stay off on MPS unless
+    ``sheet_split_kernel_mps`` asks for them.
 
     Returns ``None`` (the caller then compacts the whole stream) when more
     than ``_STROKE_SPLIT_MAX_MIXED`` of the fragments sit in triangle pixels.
@@ -1964,7 +1968,11 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
     names = ("frag_key", "frag_ref", "frag_ab", "frag_cov", "frag_msk", "frag_cap")
     frags = [coverage[name][:n].contiguous() for name in names]
     run_offsets = coverage["run_offsets"][: num_covered + 1].contiguous()
-    kernel = sheet_split_kernel and _launches_locally(frag_ref)
+    kernel = (
+        sheet_split_kernel
+        and (device.type != "mps" or sheet_split_kernel_mps)
+        and _launches_locally(frag_ref)
+    )
     counts = seg = sidx = None
     if kernel:
         from algan.rendering.raytracing.sheet_compact_taichi import (
