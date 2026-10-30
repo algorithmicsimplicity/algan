@@ -13,9 +13,10 @@ list could break it.
 
 So are the script's pins. ``ALWAYS_CI`` and ``ALWAYS_PRE_PR`` name the tests
 the greedy pass would never pick -- source guards, and the regression tests of
-a fix, which add no lines of their own -- and the lists must carry every one of
-them. A regeneration that predates the pins dropped the sheet resolve's
-regression tests exactly that way, and nothing noticed for a week.
+a fix, which add no lines of their own -- and ``--group`` runs every test they
+name, listed or not (a regeneration that predates the pins dropped the sheet
+resolve's regression tests, and nothing noticed for a week). A pin left behind
+by a rename names nothing and runs nothing, just as silently.
 """
 
 from __future__ import annotations
@@ -86,47 +87,20 @@ def _selector():
     return module
 
 
-def _pinned(prefix):
-    """The test functions a pin (a node-id prefix) names, as node ids."""
-    file, _, rest = prefix.partition("::")
+def _names_a_test(pin):
+    """Whether a pin, a node-id prefix, names any test function."""
+    file, _, rest = pin.partition("::")
     path = ROOT / file
-    if not path.is_file():
-        return []
-    return [
-        f"{file}::{name}"
-        for name in sorted(_definitions(path))
-        if name.startswith(rest)
-        and all(
-            part.startswith("Test") if i < name.count("::") else part.startswith("test")
-            for i, part in enumerate(name.split("::"))
-        )
-    ]
-
-
-@pytest.mark.parametrize(
-    ("group", "pins"),
-    [("ci", ("ALWAYS_CI",)), ("pre-pr", ("ALWAYS_CI", "ALWAYS_PRE_PR"))],
-    ids=["ci", "pre-pr"],
-)
-def test_every_pinned_test_is_listed(group, pins):
-    """A parametrized test counts as listed when any of its cases is: a
-    regeneration lists them all, and checking that needs a collection.
-    """
-    listed = set(_members(group))
-    prefixes = [p for name in pins for p in getattr(_selector(), name)]
-    stale = [p for p in prefixes if not _pinned(p)]
-    assert not stale, (
-        f"{stale} in scripts/select_test_groups.py match no test function any "
-        f"more; point them at the test's new name, or drop them."
+    return path.is_file() and any(
+        name.startswith(rest) and name.split("::")[-1].startswith("test")
+        for name in _definitions(path)
     )
-    missing = [
-        nodeid
-        for p in prefixes
-        for nodeid in _pinned(p)
-        if nodeid not in listed and not any(m.startswith(nodeid + "[") for m in listed)
-    ]
-    assert not missing, (
-        f"tests/groups/{group}.txt leaves out {len(missing)} test(s) the "
-        f"selector pins, e.g. {missing[:5]}. Add their node ids (every "
-        f"parametrized case) -- a regeneration would put them back anyway."
+
+
+@pytest.mark.parametrize("pins", ["ALWAYS_CI", "ALWAYS_PRE_PR"])
+def test_every_pin_still_names_a_test(pins):
+    stale = [p for p in getattr(_selector(), pins) if not _names_a_test(p)]
+    assert not stale, (
+        f"{stale} in {pins} (scripts/select_test_groups.py) match no test "
+        f"function any more; point them at the test's new name, or drop them."
     )

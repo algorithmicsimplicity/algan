@@ -232,19 +232,20 @@ tests of fixes: both cover almost no lines of their own, so the greedy pass
 would never choose them, yet they are what trips on a change made elsewhere.
 The pre-PR group always contains the whole CI group, plus `ALWAYS_PRE_PR`:
 regression tests too slow for the CI budget, such as the sheet resolve's
-kernel-against-oracle test. A regeneration that predated that list dropped the
-sheet resolve's regression tests from both groups.
+kernel-against-oracle test. `--group ci` runs every test `ALWAYS_CI` names,
+and `--group pre-pr` every test either names, whether `tests/groups/` lists it
+yet or not, so a pinned test runs with every case it has. (A regeneration that
+predated `ALWAYS_PRE_PR` dropped the sheet resolve's regression tests from both
+groups.)
 
 So when a fix gets a regression test that re-runs lines other tests already
 cover, pin it: add its node id, or its file's ending in `::`, to `ALWAYS_CI` if
-it costs a fraction of a second and to `ALWAYS_PRE_PR` otherwise, and add its
-node ids to the lists.
+it costs a fraction of a second, and to `ALWAYS_PRE_PR` otherwise.
 
 **Regenerate** when a group drifts (a big new test file, a budget overrun),
 not on every change. `test_test_groups.py` fails when a listed test is renamed
-or deleted, and when a list leaves out a test the script pins; dropping or
-adding those lines by hand is fine. To regenerate, measure on a warm kernel
-cache:
+or deleted, and when a pin names no test; dropping that line by hand is fine.
+To regenerate, measure on a warm kernel cache:
 
 ```bash
 <venv-python> -m pytest -q -p no:cacheprovider tests/unit_tests tests/fast -n 1 \
