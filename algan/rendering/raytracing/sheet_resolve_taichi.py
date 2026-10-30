@@ -150,7 +150,6 @@ def sheet_resolve_shade_arena(
         has_bez: ti.template(),
         sec_aa: ti.template(), sec_min_energy: ti.f32,
         glossy: ti.template(),
-        env_in_composite: ti.template(),
         # Deliver the direct lights' share of the reflected specular lobe,
         # which the continuation this hit spawns cannot (rt_settings.
         # direct_specular_lobe). 0 restores the previous weighting exactly.
@@ -286,10 +285,6 @@ def sheet_resolve_shade_arena(
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[41], (ashp[83], ashp[84])))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
-    env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
-    env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
-    env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
-    env_intensity = layer_offsets[4]
     far_clip = layer_offsets[5]
     max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
     # Taps the five continuation fans below unroll (``for s in
@@ -301,10 +296,11 @@ def sheet_resolve_shade_arena(
     # the ``break`` that follows. What surrounds the bodies -- the fan
     # conditions, the ``weight`` scale by ``1 / sec_n``, ``bounces_left``,
     # ``bounced`` -- stays, so mode 1 walks the same transport as mode 2.
-    # ``sec_aa`` stays specialised in mode 1 all the same: the ``event_dp``
-    # footprint below reads it, and so does raster_shadow_trace. (The host
-    # passes ``sec_aa`` 1 to the shading launches of a batch with nothing a
-    # fan could reflect or refract through; raster_pipeline.)
+    # Past that, mode 1's output depends on ``sec_aa`` only through
+    # ``sec_aa > 1`` (the ``event_dp`` footprint below), so the host passes it
+    # 2 for any count above 1, and passes ``sec_aa`` 1 to the shading launches
+    # of a batch with nothing a fan could reflect or refract through
+    # (raster_pipeline's ``event_args`` and ``shade_taps``).
     fan_taps = ti.static(sec_aa if mode != 1 else 0)
     # Quadrants patch 0005's per-kernel register cap, off unless
     # rt_settings.megakernel_max_reg asks for one (see megakernel_register_cap).
@@ -1525,27 +1521,18 @@ def sheet_resolve_shade_arena(
                 # A bounced ray's leftover is reflected/transmitted throughput
                 # through an area the geometry does cover, which must not be
                 # clamped that way, so it deposits nothing here and the
-                # composite falls back to the plain linear blend. Captured
-                # before the env fold below zeroes ``weight``.
+                # composite falls back to the plain linear blend.
                 if not bounced:
                     ti.atomic_add(pix_accum[r, ACC_GEO], weight[0])
-                # Background-as-final-sheet (§4.5): on the sparse route the frame
-                # buffer is prefilled with the background — env map included, via
+                # Background-as-final-sheet (§4.5): the frame buffer is
+                # prefilled with the background — env map included, via
                 # env_background_prefill — and the composite multiplies the
-                # leftover weight by it. The primary retire direction IS the
-                # prefill direction, so folding the env here as well would count
-                # it twice; env_in_composite skips the fold and hands the weight
-                # through. Bounced rays retire in wavefront_shade, which still
-                # samples the env with THEIR direction (the pixel's background
-                # would be the wrong ray).
-                if ti.static(not env_in_composite):
-                    if (env_w > 0) and (ti.max(weight[0], ti.max(
-                            weight[1], weight[2])) > 0.0):
-                        ec = _sample_env_map(f, rd, env_off, env_w, env_h,
-                                             env_intensity, textures)
-                        for k in ti.static(range(3)):
-                            acc[k] += weight[k] * ec[k]
-                        weight = ti.math.vec3(0.0, 0.0, 0.0)
+                # leftover weight by it, so the weight is handed through
+                # rather than folded with the env here. The primary retire
+                # direction IS the prefill direction; sampling the env again
+                # would count it twice. Bounced rays retire in wavefront_shade,
+                # which still samples the env with THEIR direction (the pixel's
+                # background would be the wrong ray).
                 for k in ti.static(range(4)):
                     ti.atomic_add(pix_accum[r, k], _det_deposit(acc[k], det_sum))
                 for k in ti.static(range(3)):
@@ -1615,7 +1602,7 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "light_col", "num_lights", "vis_lights", "layer_offsets", "frag_shading",
     "frag_pipelines", "tri_pids", "refraction", "ior_stack",
     "skip_unlit_normal", "has_bez", "sec_aa", "sec_min_energy", "glossy",
-    "env_in_composite", "direct_spec", "mode", "shadow_term", "sided_cull",
+    "direct_spec", "mode", "shadow_term", "sided_cull",
     "memo", "det_sum",
     "sheet_memo", "sheet_accept", "event_pos", "event_snrm", "event_fnrm",
     "event_frame", "event_msk", "event_dp", "event_toff", "sheet_event_id",

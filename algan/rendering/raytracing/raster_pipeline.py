@@ -2416,7 +2416,6 @@ def prepare_sparse_raster_coverage(
     half_w,
     half_h,
     layer_offset_triangles,
-    env_in_composite=False,
     depth_order_eye=None,
     keep_fragment_stream=None,
 ):
@@ -3097,7 +3096,6 @@ def prepare_sparse_raster_coverage(
                 "sheet_cap": frag_cap,
                 "sheet_offsets": run_offsets,
                 "num_sheets": num_frags,
-                "env_in_composite": bool(env_in_composite),
             }
         else:
             # The stream is the compaction's input and nothing else's on the
@@ -3223,9 +3221,6 @@ def prepare_sparse_raster_coverage(
                 "sheet_cap": sheet_cap_t,
                 "sheet_offsets": sheet_offsets,
                 "num_sheets": ns,
-                # Pinned with the emission like aa_*: the resolve's env
-                # handling must match the frame buffer this batch prefilled.
-                "env_in_composite": bool(env_in_composite),
             }
 
         # Recorded for calibration: the fragment/covered counts are this
@@ -3420,10 +3415,10 @@ def shade_sparse_raster_coverage(
     # so in a batch with none of them no fan can run, and compiling ``sec_aa``
     # taps there buys nothing but the unrolled bodies -- most of the kernel's
     # compile time (the built-in 2-D variant: ~45 s against ~17 s on a 4-vCPU
-    # CPU). The event pass (mode 1) keeps the live count, because its
-    # ``event_dp`` footprint -- sized below, read by raster_shadow_trace --
-    # depends on it; it compiles its fans out by itself (the kernel's
-    # ``fan_taps``).
+    # CPU). The event pass (mode 1) compiles its fans out by itself (the
+    # kernel's ``fan_taps``) and takes a fixed 2 for any live count above 1:
+    # its ``event_dp`` footprint -- sized below, read by raster_shadow_trace
+    # -- only asks whether there is a fan (``event_args``).
     from algan.rendering.raytracing.tracer import _batch_can_spawn_continuations
 
     shade_taps = sec_aa if _batch_can_spawn_continuations(merged) else 1
@@ -3493,12 +3488,37 @@ def shade_sparse_raster_coverage(
         # accumulator rows this launch writes; the live mode where no batch
         # decision was made.
         int(merged.get("glossy_mode", rt_settings.glossy_reflection_mode())),
-        1 if coverage.get("env_in_composite") else 0,
         int(rt_settings.direct_specular_lobe),
     )
 
     def pre_args(vis_slots, taps):
         return (*pre_head, vis_slots, *pre_mid, taps, *pre_tail)
+
+    # The event pass (mode 1) reads none of the shading axes -- frag_shading,
+    # frag_pipelines, tri_pids, skip_unlit_normal and direct_spec reach only
+    # ``mode != 1`` code -- and its output depends on ``sec_aa`` only through
+    # ``sec_aa > 1`` (the ``event_dp`` footprint; its fans compile out). Fixed
+    # values for them give every batch's event pass one compiled variant
+    # instead of one per shading configuration, each about 5.6 s cold on a
+    # 4-vCPU CPU. ``vis_lights`` is already 1 here (``shaded_slots``).
+    layer_arg, _frag, _pipes, _pids, refr_arg, stack_arg, _skip, bez_arg = pre_mid
+    energy_arg, glossy_arg, _spec = pre_tail
+    event_args = (
+        *pre_head,
+        1,  # vis_lights
+        layer_arg,
+        0,  # frag_shading
+        (),  # frag_pipelines
+        0,  # tri_pids
+        refr_arg,
+        stack_arg,
+        0,  # skip_unlit_normal
+        bez_arg,
+        min(sec_aa, 2),
+        energy_arg,
+        glossy_arg,
+        0,  # direct_spec
+    )
 
     post_args = (
         covered_idx,
@@ -3566,7 +3586,7 @@ def shade_sparse_raster_coverage(
         )
         sheet_memo = _arena_tensor(memory, (S if memo_on else 1, 12), torch.float32)
         sheet_resolve_shade(
-            *pre_args(1, sec_aa),
+            *event_args,
             1,
             term_mode,
             sided_on,
