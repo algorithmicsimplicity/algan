@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from algan.environment import env_flag, env_str
+from algan.rendering import fragment_capture
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     clamp_floor,
@@ -58,6 +59,20 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_DUMP_COLS as AA_DUMP_COLS,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_LATTICE_MAX_COORD,
+    _AA_LATTICE_MAX_EXTENT,
+    _BEZ_BORDER_BITS,
+    _WRITE_MISS_T_BITS,
+    AA_FULL_COVERAGE,
+    Z_SENTINEL,
+    _aa_run_full,
+    raster_bez_count,
+    raster_bez_write,
+    raster_chunk,
+    raster_tri_count,
+    raster_tri_write,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -71,17 +86,6 @@ from algan.rendering.raytracing.raster_taichi import (
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
-)
-from algan.rendering.raytracing.raster_taichi import (
-    _BEZ_BORDER_BITS,
-    AA_FULL_COVERAGE,
-    Z_SENTINEL,
-    _aa_run_full,
-    raster_bez_count,
-    raster_bez_write,
-    raster_chunk,
-    raster_tri_count,
-    raster_tri_write,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
@@ -241,6 +245,35 @@ def _floor(tensor, floor):
     return torch.where(tensor < floor, floor, tensor)
 
 
+#: Projection-table column 9 for an all-front triangle the exact coverage
+#: lattice cannot hold (:func:`_lattice_demote`): ray-cast, but with its
+#: projected bbox and band scale (:func:`precompute_triangle_projection`).
+FLAG_FRONT_RAYCAST = 0.5
+
+
+def _lattice_demote(flag, sx, sy, half_w, half_h):
+    """``flag`` with every exact-path value (above 0.5) whose triangle the
+    int64 coverage lattice cannot hold replaced by :data:`FLAG_FRONT_RAYCAST`.
+
+    The bound is ``raster_taichi._AA_LATTICE_MAX_EXTENT`` on
+    ``(max|sx| + W) * (max|sy| + H)`` and ``_AA_LATTICE_MAX_COORD`` on the
+    largest coordinate, both documented there. It reads the same f32 ``sx`` /
+    ``sy`` the kernels will, and uses only abs, max, add, multiply and
+    compare, so a compiled region evaluates it exactly as eager does. A NaN
+    coordinate fails both comparisons and demotes. Applied to every value
+    above 0.5 rather than to 1 alone, so any later exact-path flag passes
+    through the same bound.
+    """
+    mx = sx.abs().amax(-1)
+    my = sy.abs().amax(-1)
+    fits = (torch.maximum(mx, my) <= _AA_LATTICE_MAX_COORD) & (
+        (mx + 2.0 * half_w) * (my + 2.0 * half_h) <= _AA_LATTICE_MAX_EXTENT
+    )
+    return torch.where(
+        (flag > 0.5) & ~fits, torch.full_like(flag, FLAG_FRONT_RAYCAST), flag
+    )
+
+
 @compiled(dynamic=True)
 def _triangle_projection_fused(
     verts, ro, sp, pbx, pby, half_w, half_h, wide, proj=None, clip=None
@@ -281,13 +314,10 @@ def _triangle_projection_fused(
     # A triangle with NO vertex in front of the camera-origin plane cannot be
     # hit by any forward primary ray (every point of the triangle is a convex
     # combination of its vertices, so its plane projection is <= 0, while any
-    # ray point at t > 0 projects > 0). Column 9 therefore carries a
-    # three-state flag: 1 = all-front (screen-space rasterization valid),
-    # 0 = straddling/degenerate (full-window ray-cast fallback), -1 = provably
-    # behind (the host culls the primitive from candidate emission entirely,
-    # instead of the old full-window fallback that made every behind-camera
-    # primitive a full-screen candidate scan). Camera clip planes add a
-    # fourth state, 2, and widen -1 (see ``clip`` below).
+    # ray point at t > 0 projects > 0), so it gets -1 and the host culls it
+    # from candidate emission entirely, instead of the old full-window fallback
+    # that made every behind-camera primitive a full-screen candidate scan.
+    # The full list of column 9 values is in precompute_triangle_projection.
     behind = ~cam_ok | (cam_ok & ~vert_front.any(-1))
 
     safe_n2 = _floor(n2, 1e-30)
@@ -343,6 +373,9 @@ def _triangle_projection_fused(
         cut = valid & (near > 0) & (lo < near)
         flag = torch.where(cut, torch.full_like(flag, 2.0), flag)
         flag = torch.where(culled, torch.full_like(flag, -1.0), flag)
+    # After the clip flags, so a cut triangle the lattice cannot hold is
+    # ray-cast too; its samples then test the near plane per ray.
+    flag = _lattice_demote(flag, sx, sy, half_w, half_h)
     parts = [sx, sy, inv_d, flag.unsqueeze(-1)]
     if wide:
         # Edge i faces vertex i: edge 0 is V1->V2, edge 1 is V2->V0, edge 2 is
@@ -378,16 +411,39 @@ def precompute_triangle_projection(
     """Prepare one compact projection record per frame and flat triangle.
 
     Columns 0:3 are continuous screen x, 3:6 screen y, 6:9 reciprocal
-    perspective divisors, and 9 is one when all vertices are safely in front of
-    the camera plane.  Invalid/straddling triangles retain zeros and use the
-    exact ray-cast fallback in the kernels.  The result is camera-specific and
-    is built once per render batch, rather than once per primitive chunk and
-    raster phase.
+    perspective divisors, and 9 is the triangle's path flag:
+
+    * ``-1``: every vertex is behind the camera plane. No primary ray can hit
+      it, so candidate emission culls it.
+    * ``0``: straddling the camera plane, or degenerate. The projection is
+      invalid (columns 6:9 and 10:13 stay zero): the bbox comes from the
+      camera-plane clip or the whole window, the band scale is the raw depth
+      extent, and the kernels ray-cast every candidate pixel.
+    * ``0.5`` (:data:`FLAG_FRONT_RAYCAST`): all-front, so the projection is
+      valid and gives the bbox and band scale, but its coordinates are too
+      large for the exact int64 coverage lattice (:func:`_lattice_demote`),
+      so the kernels ray-cast it too.
+    * ``1``: all-front and lattice-safe: the exact projected path
+      (``raster_taichi._ss_pixel``).
+    * ``2``: all-front and lattice-safe, but crossed by the near clip plane
+      (below): the exact path, cut along the plane's line on screen.
+    * Larger values are reserved for further exact-path variants; every
+      value above 0.5 passes through the same lattice bound, so a cut
+      triangle too large for the lattice is ray-cast (0.5), and its samples
+      test the near plane per ray.
+
+    So readers test ``> 0.5`` for "exact projected path", ``> 0.25`` for
+    "every vertex in front, projection valid", ``> -0.5`` for "not behind" and
+    ``> 1.5`` for "cut by the near plane".
+    Span-row candidates (``sheet_compact_taichi._span_mode``) keep ``> 0.5``:
+    a demoted triangle walks its whole clipped box. The result is
+    camera-specific and is built once per render batch, rather than once per
+    primitive chunk and raster phase.
 
     ``near_clip`` / ``far_clip`` are the camera's clip planes (``Camera.near``
     / ``Camera.far``, 0 for off). Column 9 is then -1 for a triangle either
     one removes entirely, and 2 for an all-front triangle the near plane
-    crosses, which the kernels rasterize exactly and cut along the plane.
+    crosses.
 
     Under triangle analytic anti-aliasing the table is widened to 13 columns,
     10:13 holding the reciprocal SCREEN lengths of the three edges (edge ``i``
@@ -857,7 +913,10 @@ def _frame_pairs(
     screen = tri_screen[f % tri_screen.shape[0]]
     px = screen[:, 0:3]
     py = screen[:, 3:6]
-    front = (screen[:, 9] > 0.5).unsqueeze(-1).expand(-1, 3)
+    # Every vertex in front, so the projected bbox is valid -- including a
+    # triangle demoted to the ray cast (flag 0.5; see
+    # precompute_triangle_projection for the values).
+    front = (screen[:, 9] > 0.25).unsqueeze(-1).expand(-1, 3)
     tri_pos = merged["tri_pos"]
     clip = None
     if _straddle_clip_wanted((screen[:, 9] > -0.5) & ~front[:, 0]):
@@ -1145,11 +1204,12 @@ def precompute_triangle_screen_bounds(
     ``_frame_pairs`` derived the same bboxes and class masks per
     (tile, frame); only the row-band clamp is tile-dependent, so the rest is
     batched here over all frames into the same three-table schema consumed by
-    ``_window_pairs``.  ``tri_screen`` column 9 is the three-state front flag
-    (1 all-front / 0 straddling / -1 behind); all three vertices share it, so
-    ``all_front`` is the flag itself and the behind-cull folds into the
-    straddler reach base.  Byte-identical to the per-frame path by
-    construction.
+    ``_window_pairs``.  ``tri_screen`` column 9 is the path flag
+    (:func:`precompute_triangle_projection` lists its values); all three
+    vertices share it, so ``all_front`` is ``flag > 0.25`` -- every vertex in
+    front, which includes a triangle demoted to the ray cast (0.5) -- and the
+    behind-cull folds into the straddler reach base.  Byte-identical to the
+    per-frame path by construction.
 
     Straddlers get the camera-plane clip of :func:`_clipped_screen_extents`
     rather than the whole window; the camera arguments (``projection`` and
@@ -1173,7 +1233,7 @@ def precompute_triangle_screen_bounds(
     px = screen[..., 0:3]
     py = screen[..., 3:6]
     flag = screen[..., 9]
-    all_front = flag > 0.5
+    all_front = flag > 0.25
     not_behind = flag > -0.5
 
     ntri = int(screen.shape[1])
@@ -1396,6 +1456,19 @@ def _circuit_pair_expand_rows(
         float(half_h),
         float(aa_hw),
     )
+    # Every masked box big enough to go row by row gets a slot per row for
+    # its span, which the count pass fills and the write pass reads: one
+    # readback more than sizing the rows alone, for a write pass that no
+    # longer projects anything.
+    bh = (y1f - y0f + 1).clamp_min(0)
+    span_rows = torch.where(
+        (mflat != 0) & ((x1f - x0f + 1) * bh >= span_min_area), bh, 0
+    )
+    row_offs = torch.cumsum(span_rows, 0) - span_rows
+    num_span_rows = int(span_rows.sum().item())
+    del bh, span_rows
+    span_x = torch.empty((max(num_span_rows, 1), 2), dtype=torch.float32, device=device)
+    spans = torch.empty(numel, dtype=torch.int32, device=device)
     counts = torch.empty(numel, dtype=torch.int64, device=device)
     pair_expand_count_circuits(
         mflat.view(torch.uint8),
@@ -1406,6 +1479,9 @@ def _circuit_pair_expand_rows(
         numel,
         raster_chunk,
         counts,
+        spans,
+        row_offs,
+        span_x,
         f_abs_k,
         ncirc,
         span_min_area,
@@ -1428,8 +1504,9 @@ def _circuit_pair_expand_rows(
         ncirc,
         raster_chunk,
         rows,
-        span_min_area,
-        *geometry,
+        spans,
+        row_offs,
+        span_x,
     )
     return rows
 
@@ -1620,6 +1697,16 @@ def _fragment_layer(frag_ref, layer_offset_triangles):
     return torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
 
 
+#: The most pixel bins per fragment the counting sort takes on. Its bins cost
+#: about 8 B each live (the counts, then the offsets beside the scatter
+#: cursor), torch allocations outside the arena that the batch planner never
+#: sees, against about 32 B a fragment for the radix sort it replaces. Past
+#: this a mostly empty window -- a 30-frame 4K chunk is 249M bins, 2 GB --
+#: spends several times the radix sort's memory, and more time than it takes,
+#: on clearing and scanning empty bins.
+_BINNED_MAX_BINS_PER_FRAGMENT = 16
+
+
 def _binned_fragment_order(
     frag_key,
     frag_ref,
@@ -1628,6 +1715,7 @@ def _binned_fragment_order(
     *,
     exact_depth=False,
     min_fragments=65536,
+    max_bins_per_fragment=_BINNED_MAX_BINS_PER_FRAGMENT,
     devices=("cuda",),
 ):
     """The same order as the two stable sorts, by counting sort, or None.
@@ -1656,10 +1744,11 @@ def _binned_fragment_order(
     :func:`_tie_grouped_fragment_order`. The bits sit above the layer at
     ``<< 31``, so the key stays non-negative for every 32-bit pattern.
 
-    Declines (None) below ``min_fragments``, off ``devices``, where a launch
-    would stage its arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and
-    when any key's pixel lies outside ``[0, num_bins)`` -- a bug upstream,
-    which the comparison sort would at least keep in order.
+    Declines (None) below ``min_fragments``, above ``max_bins_per_fragment``
+    bins per fragment, off ``devices``, where a launch would stage its
+    arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and when any key's
+    pixel lies outside ``[0, num_bins)`` -- a bug upstream, which the
+    comparison sort would at least keep in order.
     """
     from algan.animation_timeline.timeline import _opt_disabled
     from algan.rendering.raytracing.sheet_stream import stream_kernel_available
@@ -1668,6 +1757,7 @@ def _binned_fragment_order(
     num_bins = int(num_bins)
     if (
         n < min_fragments
+        or num_bins > max_bins_per_fragment * n
         or frag_key.device.type not in devices
         or not 0 < num_bins < 2**31 - 1
         or _opt_disabled("binfragsort")
@@ -2263,11 +2353,24 @@ def _check_emitted_keys(frag_key_u, tile_pixels, num_frags):
     emitted fewer than the count pass promised) or are scattered (a gather or
     an ordering problem upstream of them).
 
-    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is two reductions and a
+    It also counts the write pass's MISS records (depth bits
+    ``_WRITE_MISS_T_BITS``): pixels the count pass accepted whose geometry the
+    write pass's own evaluation then rejected. Those keys are in range and
+    the records are inert, so only this count can show that the two passes
+    disagreed.
+
+    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is three reductions and a
     host readback over the whole fragment stream.
     """
     if not env_flag("ALGAN_RASTER_KEY_CHECK", False) or num_frags <= 0:
         return
+    n_miss = int(((frag_key_u[:num_frags] & 0xFFFFFFFF) == _WRITE_MISS_T_BITS).sum())
+    if n_miss:
+        print(
+            f"[raster-key-check] {n_miss} of {num_frags} slots hold the write "
+            f"pass's miss record: pixels the COUNT pass accepted and the WRITE "
+            f"pass's geometry evaluation rejected (count/write divergence)."
+        )
     pix = frag_key_u[:num_frags] >> 32
     bad = (pix < 0) | (pix >= tile_pixels)
     n_bad = int(bad.sum())
@@ -2453,6 +2556,7 @@ def prepare_sparse_raster_coverage(
     layer_offset_triangles,
     env_in_composite=False,
     depth_order_eye=None,
+    keep_fragment_stream=None,
     near_clip=0.0,
     far_clip=0.0,
 ):
@@ -2467,8 +2571,15 @@ def prepare_sparse_raster_coverage(
     wavefront state can coexist with it and be reset independently.
 
     Returns ``None`` when no exact pixel is covered, otherwise a dict
-    containing compact ``frag_*``, ``covered_idx`` and ``run_offsets``
-    arrays plus the ``sheet_*`` arrays the resolve consumes.
+    containing ``covered_idx`` and the ``sheet_*`` arrays the resolve
+    consumes, plus the compact fragment stream the sheets were made from
+    (``frag_*`` and its ``run_offsets`` CSR). Nothing on the render path reads
+    that stream past the compaction, so it is released with this function's
+    scratch and comes back as ``None`` -- unless ``keep_fragment_stream`` asks
+    for it, which by default it does only while a fragment capture is armed
+    (``fragment_capture``, which copies it after this returns). A window with
+    no triangle fragment compacts one sheet per fragment, so there the stream
+    is the sheet record itself and always comes back.
 
     Under analytic circuit coverage the per-fragment ``frag_cov`` lane carries
     the fraction of the pixel square each circuit fragment covers, and the
@@ -2498,6 +2609,9 @@ def prepare_sparse_raster_coverage(
     """
     device = merged["tri_pos"].device
     ppf = int(width) * int(height)
+    if keep_fragment_stream is None:
+        keep_fragment_stream = fragment_capture.is_armed()
+    keep_fragment_stream = bool(keep_fragment_stream)
     depth_order = None
     g0 = 0
     g1 = (int(time_end) - int(time_start)) * ppf
@@ -3151,17 +3265,23 @@ def prepare_sparse_raster_coverage(
                 "env_in_composite": bool(env_in_composite),
             }
         else:
-            frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
-            frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
-            frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
-            frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
-            frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
-            frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+            # The stream is the compaction's input and nothing else's on the
+            # render path -- the resolve walks the sheets -- so it is this
+            # scope's forward scratch and goes with it, instead of holding 32
+            # B/fragment at the reverse end through the whole resolve (68 MB
+            # of a 2.1M-fragment HD chunk). Kept only when asked for.
+            keep = keep_fragment_stream
+            frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=keep)
+            frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=keep)
+            frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=keep)
+            frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=keep)
+            frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=keep)
+            frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=keep)
             covered_idx = _arena_tensor(
                 memory, (num_covered,), torch.int32, persist=True
             )
             run_offsets = _arena_tensor(
-                memory, (num_covered + 1,), torch.int32, 0, persist=True
+                memory, (num_covered + 1,), torch.int32, 0, persist=keep
             )
             frag_key.copy_(key_s)
             frag_ref.copy_(ref_s)
@@ -3285,21 +3405,15 @@ def prepare_sparse_raster_coverage(
             pixels=int(width) * int(height),
         )
 
-    # Reserve for the next chunk's discovery peak: the pre-truncation scratch
-    # (frag_*_u: 8+4+8+4+4+1 B/frag) plus the persistent compact result
-    # (frag_key/ref/ab/cov/msk/cap: 8+4+8+4+4+4 B/frag; covered_idx/
-    # run_offsets: 4+4 B/covered) coexist in the arena at the copy. Amortized
-    # per output frame so the render-chunk preflight sizes later chunks to fit
-    # it instead of over-committing.
-    # 32 B/fragment of compact result, plus 32 B of persistent sheet record +
-    # the sheet CSR. The torch-side sort and scatter intermediates are
-    # allocator-owned, like the fragment sort's.
-    # frag_cap is a persist=True allocation like the other five (it carries the
-    # per-pixel one-mesh coverage ceiling into compaction), so leaving it out
-    # of the sum reported this scope 12.5% smaller than the arena it actually
-    # took -- and this number is what the render-chunk preflight reserves
-    # against for the next chunk. The 1.25 sparse_discovery_safety factor was
-    # absorbing the error rather than spending it on the margin it exists for.
+    # The discovery's arena peak, amortized per output frame for a render-chunk
+    # preflight to reserve against (``sparse_discovery_bytes_for_frames``,
+    # which no planner reads yet): the pre-truncation scratch (frag_*_u:
+    # 8+4+8+4+4+1 B/frag), the compact stream (frag_key/ref/ab/cov/msk/cap:
+    # 8+4+8+4+4+4 B/frag; covered_idx/run_offsets: 4+4 B/covered), and 32 B of
+    # sheet record per sheet plus the sheet CSR. Of these only covered_idx and
+    # the sheets outlive this function unless the stream is kept. The
+    # torch-side sort and scatter intermediates are allocator-owned, like the
+    # fragment sort's.
     per_frag = 32
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
@@ -3313,6 +3427,10 @@ def prepare_sparse_raster_coverage(
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
+    if not stroke_only and not keep_fragment_stream:
+        # Reclaimed with the scope above: no view of it may leave here.
+        frag_key = frag_ref = frag_ab = frag_cov = frag_msk = frag_cap = None
+        run_offsets = None
 
     result = {
         "frag_key": frag_key,

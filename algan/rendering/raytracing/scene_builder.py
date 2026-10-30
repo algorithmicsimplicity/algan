@@ -1052,8 +1052,8 @@ def _bvh_deferral_eligible(scene):
     routes to the classic wavefront, (b) the sparse shadow queue, (c) bounced
     reflection/refraction/scatter continuations, and (d) the Monte Carlo
     megakernel. Every merge-time-knowable trigger for those is excluded here;
-    runtime-only triggers (camera near clip, toggles flipped after the merge,
-    an actually spawned continuation) are caught by the tracer, which calls
+    runtime-only triggers (toggles flipped after the merge, an actually
+    spawned continuation) are caught by the tracer, which calls
     ``build_deferred_bvhs`` before any traversal could happen -- so a false
     positive here costs a late build, never a wrong image.
     """
@@ -1061,7 +1061,7 @@ def _bvh_deferral_eligible(scene):
     if not _rts.bvh_defer:
         return False
     # The sheet route is what resolves primaries without a tree, so every
-    # switch that vetoes it outright (``tracer.analytic_raster_route_active``)
+    # switch that vetoes it outright (``tracer.analytic_raster_route_veto``)
     # sends the batch to the classic wavefront, which traverses for every
     # primary ray. All of them are readable here, so a settings-driven
     # fallback -- ``analytic_aa=False``, the reference arm for judging a
@@ -1069,7 +1069,8 @@ def _bvh_deferral_eligible(scene):
     # discovered mid-render: its trees are built on the prefetch worker with
     # the rest of the merge and uploaded with it, instead of stalling the
     # render and being re-homed into the arena afterwards. The route's
-    # remaining vetoes are scene- or camera-dependent and stay runtime-only.
+    # remaining vetoes depend on the scene and are excluded below. Camera clip
+    # planes are none of them: the emission cuts at the near plane.
     if not (
         _rts.hybrid_raster
         and _rts.analytic_aa
@@ -1079,6 +1080,9 @@ def _bvh_deferral_eligible(scene):
         and _rts.raster_empty_skip
         and _rts.raster_covered_shade
     ):
+        return False
+    # raster_ss off vetoes the route only for a batch with triangles in it.
+    if not _rts.raster_ss and scene["num_triangles"] > 0:
         return False
     if int(_rts.samples_per_pixel) > 1 or _rts.shadows or _rts.inplace_aa:
         return False

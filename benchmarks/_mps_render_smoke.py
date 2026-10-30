@@ -158,7 +158,9 @@ def _install_pipeline_report():
     def reporting(merged, *args, **kwargs):
         if isinstance(merged, dict) and merged.get("tri_pos") is not None:
             _say(geometry_line, merged)
-        coverage = original(merged, *args, **kwargs)
+        # Kept for the frag_cov line below: the pipeline otherwise releases
+        # the raw stream once the sheets are made.
+        coverage = original(merged, *args, keep_fragment_stream=True, **kwargs)
         if coverage is None:
             print("  [pipeline] no coverage at all -- nothing rasterised")
             return coverage

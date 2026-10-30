@@ -867,6 +867,13 @@ def _span_mode(mask_e, bw, bh, span_min_area, screen: ti.template(), fr, prim,
                spans: ti.template()):
     """Whether candidate ``e`` expands row by row: on, box at least
     ``span_min_area`` pixels, and a valid screen projection to follow.
+
+    ``> 0.5`` is the exact-path flag (``raster_pipeline.
+    precompute_triangle_projection`` lists the values), deliberately not the
+    ``> 0.25`` all-front test: a triangle demoted to the ray cast (0.5) can
+    have coordinates far past ``raster_taichi._AA_LATTICE_MAX_COORD``, where
+    these f32 row extents are no longer good to their 1-pixel margin, so it
+    walks its whole clipped box instead (a superset, so exact either way).
     """
     use_span = 0
     if ti.static(spans):
@@ -1123,92 +1130,89 @@ def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
 
 
 @ti.func
-def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
-                        aa_min_half_width, cam_origin: ti.template(),
-                        screen_point: ti.template(), pixel_basis_x: ti.template(),
-                        pixel_basis_y: ti.template(), cam_proj: ti.template(),
-                        circuit_meta: ti.template(),
-                        edges_2d: ti.template(), edge_accel: ti.template()):
-    """``(use_span, e0, e1, reach)`` for candidate circuit ``c`` of frame ``f``.
-
-    Row by row only for a box of at least ``span_min_area`` pixels whose
-    outline has edges and lies wholly in front of the camera; anything else
-    keeps its box.
-    """
-    use_span = 0
-    e0 = 0
-    e1 = 0
-    reach = 0.0
-    if (mask_e != 0) and (bw * bh >= span_min_area):
-        tm = f % circuit_meta.shape[0]
-        te = f % edges_2d.shape[0]
-        header = (te * circuit_meta.shape[1] + c) * BEZIER_ACCEL_HEADER_SIZE
-        e0 = edge_accel[header + BEZIER_EDGE_START]
-        e1 = edge_accel[header + BEZIER_EDGE_END]
-        if e1 > e0:
-            ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
-                f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
-            center, bu, bv = _circuit_plane(tm, c, circuit_meta)
-            front = 1
-            for k in range(e0, e1):
-                for end in ti.static(range(2)):
-                    w = (center + edges_2d[te, k, 2 * end] * bu
-                         + edges_2d[te, k, 2 * end + 1] * bv)
-                    ok, _px, _py = _screen_point_of(w, ro, sp, pbx, pby, nvec,
-                                                    big_d, dsq, 0.0, 0.0, f,
-                                                    cam_proj)
-                    front = ti.min(front, ok)
-            if front == 1:
-                use_span = 1
-                reach = _circuit_reach(f, tm, c, half_w, half_h,
-                                       aa_min_half_width, cam_origin,
-                                       screen_point, pixel_basis_x,
-                                       pixel_basis_y, cam_proj, circuit_meta)
-    return use_span, e0, e1, reach
-
-
-@ti.func
-def _circuit_span_chunks(f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
+def _circuit_row_extents(base, by0, by1, f, c, e0, e1, reach, half_w, half_h,
                          cam_origin: ti.template(), screen_point: ti.template(),
                          pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
-                         cam_proj: ti.template(),
-                         circuit_meta: ti.template(), edges_2d: ti.template()):
-    """Chunks the row ``y`` of a circuit span candidate expands to, and the span."""
+                         cam_proj: ti.template(), circuit_meta: ti.template(),
+                         edges_2d: ti.template(), span_x: ti.template()):
+    """Each box row's extent along circuit ``c``'s projected outline.
+
+    Row ``y`` of rows ``by0 .. by1`` gets, in ``span_x[base + y - by0]``, the
+    x range its centre line widened by ``reach`` cuts from the projected
+    edges -- each edge clipped to the widened line, its clipped ends bounding
+    the row -- or the empty range ``(1e30, -1e30)`` where no edge reaches it.
+    Edge by edge: each is projected once and visits only the rows within a
+    row and its reach of its own y range, so a candidate costs its edges plus
+    the rows they cross rather than every row times every edge. A visited row
+    still takes the exact per-row test, so the extents are the ones a row by
+    row walk over every edge finds (``min`` and ``max`` do not care in which
+    order the edges come).
+
+    Returns 1 when every edge end lies in front of the camera, which a row
+    span needs; otherwise the extents are meaningless and the box stands.
+    """
     tm = f % circuit_meta.shape[0]
     te = f % edges_2d.shape[0]
     ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
         f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     center, bu, bv = _circuit_plane(tm, c, circuit_meta)
-    ylo = ti.cast(y, ti.f32) + 0.5 - reach
-    yhi = ti.cast(y, ti.f32) + 0.5 + reach
-    ok = 0
-    xmin = 1e30
-    xmax = -1e30
+    for i in range(by1 - by0 + 1):
+        span_x[base + i, 0] = 1e30
+        span_x[base + i, 1] = -1e30
+    lo_row = ti.cast(by0, ti.f32)
+    hi_row = ti.cast(by1, ti.f32)
+    front = 1
     for k in range(e0, e1):
         wa = center + edges_2d[te, k, 0] * bu + edges_2d[te, k, 1] * bv
         wb = center + edges_2d[te, k, 2] * bu + edges_2d[te, k, 3] * bv
-        _fa, ax, ay = _screen_point_of(wa, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       half_w, half_h, f, cam_proj)
-        _fb, bx, by = _screen_point_of(wb, ro, sp, pbx, pby, nvec, big_d, dsq,
-                                       half_w, half_h, f, cam_proj)
-        if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
-            t0 = 0.0
-            t1 = 1.0
-            dy = by - ay
-            if ti.abs(dy) > 1e-12:
-                ta = (ylo - ay) / dy
-                tb = (yhi - ay) / dy
-                t0 = ti.max(0.0, ti.min(ta, tb))
-                t1 = ti.min(1.0, ti.max(ta, tb))
-            xa = ax + (bx - ax) * t0
-            xb = ax + (bx - ax) * t1
-            xmin = ti.min(xmin, ti.min(xa, xb))
-            xmax = ti.max(xmax, ti.max(xa, xb))
-            ok = 1
+        fa, ax, ay = _screen_point_of(wa, ro, sp, pbx, pby, nvec, big_d, dsq,
+                                      half_w, half_h, f, cam_proj)
+        fb, bx, by = _screen_point_of(wb, ro, sp, pbx, pby, nvec, big_d, dsq,
+                                      half_w, half_h, f, cam_proj)
+        front = ti.min(front, ti.min(fa, fb))
+        # The rows whose widened centre line can meet the edge, with a row to
+        # spare at each end for rounding (a few f32 roundings, far under a
+        # row while the reach is under millions of pixels); the exact test
+        # below decides. A comparison that fails (NaN included) keeps the
+        # box's own end.
+        r0 = by0
+        r1 = by1
+        lo = ti.min(ay, by) - 0.5 - reach
+        hi = ti.max(ay, by) - 0.5 + reach
+        if lo > lo_row:
+            r0 = ti.max(ti.cast(ti.floor(ti.min(lo, hi_row)), ti.i32) - 1, by0)
+        if hi < hi_row:
+            r1 = ti.min(ti.cast(ti.floor(ti.max(hi, lo_row)), ti.i32) + 1, by1)
+        for y in range(r0, r1 + 1):
+            ylo = ti.cast(y, ti.f32) + 0.5 - reach
+            yhi = ti.cast(y, ti.f32) + 0.5 + reach
+            if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
+                t0 = 0.0
+                t1 = 1.0
+                dy = by - ay
+                if ti.abs(dy) > 1e-12:
+                    ta = (ylo - ay) / dy
+                    tb = (yhi - ay) / dy
+                    t0 = ti.max(0.0, ti.min(ta, tb))
+                    t1 = ti.min(1.0, ti.max(ta, tb))
+                xa = ax + (bx - ax) * t0
+                xb = ax + (bx - ax) * t1
+                r = base + y - by0
+                span_x[r, 0] = ti.min(span_x[r, 0], ti.min(xa, xb))
+                span_x[r, 1] = ti.max(span_x[r, 1], ti.max(xa, xb))
+    return front
+
+
+@ti.func
+def _circuit_row_span(xmin, xmax, reach, bx0, bx1, chunk):
+    """``(chunks, xs, xe)`` of a row whose outline extent is ``[xmin, xmax]``:
+    the extent widened by the reach and a pixel each side, clamped to the
+    box. An empty extent (``xmin > xmax``) is an empty row, ``xe < xs``.
+    """
     xs = bx0
     xe = bx0 - 1
     nch = 0
-    if ok == 1:
+    if xmin <= xmax:
         lo = ti.max(xmin - reach, -1e6)
         hi = ti.min(xmax + reach, 1e6)
         xs = ti.max(ti.cast(ti.floor(lo), ti.i32) - 1, bx0)
@@ -1228,6 +1232,9 @@ def pair_expand_count_circuits(
     n: ti.i32,
     chunk: ti.i32,
     counts: ti.types.ndarray(),  # [N] i64 OUT
+    spans: ti.types.ndarray(),  # [N] i32 OUT -- 1 where the rows replace the box
+    row_offs: ti.types.ndarray(),  # [N] i64 -- EXCLUSIVE prefix of the span rows
+    span_x: ti.types.ndarray(),  # [R, 2] f32 OUT -- each span row's (xs, xe)
     f_abs: ti.types.ndarray(),  # [Ft]
     ncirc: ti.i32,
     span_min_area: ti.i32,
@@ -1246,10 +1253,18 @@ def pair_expand_count_circuits(
 ):
     """:func:`pair_expand_count` for circuits: each candidate's chunk count,
     row by row along its projected outline where it qualifies.
+
+    Rows replace the box only for a box of at least ``span_min_area`` pixels
+    whose outline has edges and lies wholly in front of the camera. Such a
+    box's rows, ``by0 .. by1``, are its ``row_offs[e]`` onward in ``span_x``,
+    which the host sized for every masked box that large; each gets its
+    span's ``(xs, xe)`` there (small integers, exact in f32), which is all
+    ``pair_expand_write_circuits`` needs, and ``spans[e]`` says it did.
     """
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for e in range(n):
         cnt = ti.i64(0)
+        use_span = 0
         if mask[e] != 0:
             bx0 = ti.cast(x0f[e], ti.i32)
             bx1 = ti.cast(x1f[e], ti.i32)
@@ -1259,20 +1274,36 @@ def pair_expand_count_circuits(
             bh = by1 - by0 + 1
             c = e % ncirc
             f = ti.cast(f_abs[e // ncirc], ti.i32)
-            use_span, e0, e1, reach = _circuit_span_setup(
-                mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
-                aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel)
-            if use_span == 1:
-                for y in range(by0, by1 + 1):
-                    nch, _xs, _xe = _circuit_span_chunks(
-                        f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
+            # In i64, as the host tests it when it reserves the rows (an
+            # inverted box reserves none, and visits none here either).
+            if ti.cast(bw, ti.i64) * bh >= span_min_area:
+                tm = f % circuit_meta.shape[0]
+                te = f % edges_2d.shape[0]
+                header = (te * circuit_meta.shape[1] + c) * BEZIER_ACCEL_HEADER_SIZE
+                e0 = edge_accel[header + BEZIER_EDGE_START]
+                e1 = edge_accel[header + BEZIER_EDGE_END]
+                if e1 > e0:
+                    reach = _circuit_reach(f, tm, c, half_w, half_h,
+                                           aa_min_half_width, cam_origin,
+                                           screen_point, pixel_basis_x,
+                                           pixel_basis_y, cam_proj, circuit_meta)
+                    base = row_offs[e]
+                    use_span = _circuit_row_extents(
+                        base, by0, by1, f, c, e0, e1, reach, half_w, half_h,
                         cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                        cam_proj, circuit_meta, edges_2d)
-                    cnt += nch
-            else:
+                        cam_proj, circuit_meta, edges_2d, span_x)
+                    if use_span == 1:
+                        for i in range(bh):
+                            nch, xs, xe = _circuit_row_span(
+                                span_x[base + i, 0], span_x[base + i, 1], reach,
+                                bx0, bx1, chunk)
+                            span_x[base + i, 0] = ti.cast(xs, ti.f32)
+                            span_x[base + i, 1] = ti.cast(xe, ti.f32)
+                            cnt += nch
+            if use_span == 0:
                 cnt = (ti.cast(bw, ti.i64) * bh + chunk - 1) // chunk
         counts[e] = cnt
+        spans[e] = use_span
 
 
 @ti.kernel
@@ -1288,25 +1319,15 @@ def pair_expand_write_circuits(
     ncirc: ti.i32,
     chunk: ti.i32,
     rows: ti.types.ndarray(),  # [total, 8] i32 OUT
-    span_min_area: ti.i32,
-    cam_origin: ti.types.ndarray(),
-    screen_point: ti.types.ndarray(),
-    pixel_basis_x: ti.types.ndarray(),
-    pixel_basis_y: ti.types.ndarray(),
-    cam_proj_table: ti.types.ndarray(),
-    projected: ti.template(),
-    circuit_meta: ti.types.ndarray(),
-    edges_2d: ti.types.ndarray(),
-    edge_accel: ti.types.ndarray(),
-    half_w: ti.f32,
-    half_h: ti.f32,
-    aa_min_half_width: ti.f32,
+    spans: ti.types.ndarray(),  # [N] i32
+    row_offs: ti.types.ndarray(),  # [N] i64
+    span_x: ti.types.ndarray(),  # [R, 2] f32
 ):
     """:func:`pair_expand_write` for circuits, in the same row layout: each
     row's span a one-row-high box, so ``raster_bez_count`` decodes it unchanged,
-    and rows ascending within a candidate, as its box's chunks were.
+    and rows ascending within a candidate, as its box's chunks were. The spans
+    are the ones ``pair_expand_count_circuits`` left in ``span_x``.
     """
-    cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     for e in range(n):
         if mask[e] != 0:
             bx0 = ti.cast(x0f[e], ti.i32)
@@ -1318,21 +1339,19 @@ def pair_expand_write_circuits(
             c = e % ncirc
             f = ti.cast(f_abs[e // ncirc], ti.i32)
             j = offs[e]
-            use_span, e0, e1, reach = _circuit_span_setup(
-                mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
-                aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, cam_proj, circuit_meta, edges_2d, edge_accel)
-            if use_span == 1:
-                for y in range(by0, by1 + 1):
-                    nch, xs, xe = _circuit_span_chunks(
-                        f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
-                        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                        cam_proj, circuit_meta, edges_2d)
+            if spans[e] == 1:
+                base = row_offs[e]
+                for i in range(bh):
+                    xs = ti.cast(span_x[base + i, 0], ti.i32)
+                    xe = ti.cast(span_x[base + i, 1], ti.i32)
+                    nch = 0
+                    if xe >= xs:
+                        nch = (xe - xs + 1 + chunk - 1) // chunk
                     for k in range(nch):
                         rows[j, 0] = c
                         rows[j, 1] = f
                         rows[j, 2] = xs
-                        rows[j, 3] = y
+                        rows[j, 3] = by0 + i
                         rows[j, 4] = xe - xs + 1
                         rows[j, 5] = 1
                         rows[j, 6] = k * chunk

@@ -28,6 +28,16 @@ from algan.viewer.pixels import PixelRecord
 
 TINY = PREVIEW.set(resolution=(64, 36))
 
+#: The raw stream's per-fragment fields, as the coverage record names them.
+FRAGMENT_FIELDS = (
+    "frag_key",
+    "frag_ref",
+    "frag_ab",
+    "frag_cov",
+    "frag_msk",
+    "frag_cap",
+)
+
 
 def pixel_when_ready(session, frame, x, y, timeout=300.0):
     """``session.pixel`` with the poll the page itself does.
@@ -63,13 +73,10 @@ def last_frame(scene, settings=TINY):
     return max(0, round(duration * settings.frames_per_second) - 1)
 
 
-def capture_frame(scene, frame=None, settings=TINY):
-    """Render one frame with the inspector armed; return its record and pixels."""
-    if frame is None:
-        frame = last_frame(scene, settings)
+def render_frame(scene, frame, settings=TINY):
+    """The pixels of one frame, rendered as the inspector renders it."""
     previous = scene.video_settings
     scene.set_video_settings(settings)
-    fragment_capture.arm()
     image = None
     try:
         with (
@@ -82,8 +89,19 @@ def capture_frame(scene, frame=None, settings=TINY):
                 if batch.shape[0]:
                     image = batch[-1]
     finally:
-        captures = fragment_capture.disarm()
         scene.set_video_settings(previous)
+    return image
+
+
+def capture_frame(scene, frame=None, settings=TINY):
+    """Render one frame with the inspector armed; return its record and pixels."""
+    if frame is None:
+        frame = last_frame(scene, settings)
+    fragment_capture.arm()
+    try:
+        image = render_frame(scene, frame, settings)
+    finally:
+        captures = fragment_capture.disarm()
     return captures, image
 
 
@@ -94,6 +112,52 @@ def test_capture_is_off_unless_armed(fresh_scene):
     captures, image = capture_frame(Scene.current(), 5)
     assert captures, "an armed render should produce a record"
     assert fragment_capture.is_armed() is False, "disarm must leave it off"
+
+
+def test_the_raw_stream_outlives_discovery_only_for_a_capture(fresh_scene, monkeypatch):
+    """The raw fragment stream is the sheets' input, and past the compaction
+    only an armed capture reads it.
+
+    Unarmed, the pipeline releases it with its scratch rather than holding it
+    at the arena's reverse end through the whole resolve, and hands back no
+    view of the memory it gave up; armed, it keeps all of it for the copy.
+    Neither changes a pixel.
+    """
+    from algan.rendering.raytracing import raster_pipeline as rp
+
+    chunks = []
+    original = rp.prepare_sparse_raster_coverage
+
+    def spy(*args, **kwargs):
+        memory = args[4]
+        before = memory.get_pointers()[1]
+        coverage = original(*args, **kwargs)
+        chunks.append((coverage, before - memory.get_pointers()[1]))
+        return coverage
+
+    monkeypatch.setattr(rp, "prepare_sparse_raster_coverage", spy)
+    Cube().spawn().rotate(45, UP)
+    scene = Scene.current()
+    frame = last_frame(scene)
+    image = render_frame(scene, frame)
+    [(released, released_bytes)] = chunks
+    chunks.clear()
+    captures, captured_image = capture_frame(scene, frame)
+    [(kept, kept_bytes)] = chunks
+
+    assert torch.equal(captured_image, image)
+    num_fragments, num_covered = kept["num_fragments"], kept["num_covered"]
+    assert num_fragments == released["num_fragments"] > 0
+    for name in (*FRAGMENT_FIELDS, "run_offsets"):
+        assert released[name] is None, name
+        assert kept[name] is not None, name
+    # Kept, it is 32 B/fragment and the CSR more of persistent arena (give or
+    # take dtype alignment); released, the sheets the resolve reads are still
+    # there.
+    stream = 32 * num_fragments + 4 * (num_covered + 1)
+    assert stream <= kept_bytes - released_bytes <= stream + 64
+    assert released["covered_idx"] is not None
+    assert int(captures[0]["run_offsets"][-1]) == num_fragments
 
 
 def test_fragments_are_sorted_nearest_first_and_name_their_mob(fresh_scene):

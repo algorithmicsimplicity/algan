@@ -1089,7 +1089,9 @@ def _measure(build, settings, capture=None):
     original = rp.prepare_sparse_raster_coverage
 
     def spy(*args, **kwargs):
-        coverage = original(*args, **kwargs)
+        # The replay reads the raw fragment stream, which the pipeline releases
+        # once the sheets are made unless asked to keep it.
+        coverage = original(*args, keep_fragment_stream=True, **kwargs)
         if coverage is None:
             return coverage
         aa_tri = int(coverage["aa_tri"])

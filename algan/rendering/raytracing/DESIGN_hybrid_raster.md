@@ -353,9 +353,12 @@ primitive is a convex combination of its vertices, so its plane projection is
 primitive fell back to the conservative full-row-band bbox and became a
 full-screen candidate scan (~8k pairs/frame at HD, per primitive — a real
 pathology when the camera moves past geometry). The projection table's flag
-is 3-state (1 = all-front, SS valid; 0 = straddling/degenerate, full-window
+was 3-state (1 = all-front, SS valid; 0 = straddling/degenerate, full-window
 ray-cast fallback; -1 = provably behind, culled at binning), and the bezier
-path culls on `front.any() == False` over the 8 AABB corners.
+path culls on `front.any() == False` over the 8 AABB corners. It has since
+gained 0.5 = all-front but too far off-screen for the exact int64 lattice, so
+ray-cast with its projected bbox; `precompute_triangle_projection` holds the
+current list.
 
 4.10 In-place bounce continuations
 ----------------------------------
@@ -873,10 +876,11 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
 
 Gate for engaging the front-end (`use_raster` in tracer.py): HYBRID_RASTER on,
 merged visibility masks present, (num_triangles > 0 or num_circuits > 0), not
-textured/sorted-legacy, no mem-trim, no custom scatter, near_clip <= 0,
-aa_level <= 1, and RASTER_SPARSE_COVERAGE / RASTER_EMPTY_SKIP /
-RASTER_COVERED_SHADE all on (the sheet route needs the compacted chain). The
-old `num_pn == 0` condition is gone with PN itself.
+textured/sorted-legacy, no mem-trim, no custom scatter, aa_level <= 1, and
+RASTER_SPARSE_COVERAGE / RASTER_EMPTY_SKIP / RASTER_COVERED_SHADE all on (the
+sheet route needs the compacted chain). The old `num_pn == 0` condition is
+gone with PN itself, and `near_clip <= 0` since the emission cuts at the near
+plane (2026-10-30, DESIGN_sheet_resolve.md Phase 4).
 
 SUPPORTED through the front-end: fragment shading, refraction and
 refl-transparent splits, environment maps, far clip, hard AND soft shadows
