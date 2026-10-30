@@ -706,7 +706,11 @@ Phase 4. Results:
   max|d| 0), engagement asserted (kernel launch counters).
 * **Oracle parity**: `sheets.resolve_pixel_reference` (the §2 oracle) vs
   the kernel's `ALGAN_AA_DUMP` rows — worst |claim| diff **8.94e-08** over
-  56 committed sheet rows at 24 probed pixels.
+  56 committed sheet rows at 24 probed pixels. (The harness's spy later
+  read `prepare_sparse_raster_coverage` by position, went stale when
+  `cam_proj` was inserted, and passed over zero rows until it was repaired
+  in 2026-10; `tests/unit_tests/test_sheet_resolve_parity.py` now runs the
+  kernel against the oracle in the pre-PR group.)
 * **Ink wobble** (`_aa_line_check`, md, daemon-free A/B): bezier and flat
   quad identical to four decimals; the coarse Cylinder's mean over
   non-degenerate angles **0.0159 → 0.0050 (−69%)** and the fine rod
