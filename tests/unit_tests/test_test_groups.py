@@ -10,11 +10,18 @@ class -- which is cheap enough to run in the CI group itself.
 The pre-PR group is a superset of the CI group by construction (see
 scripts/select_test_groups.py); that is checked too, since a hand edit to one
 list could break it.
+
+So are the script's pins. ``ALWAYS_CI`` and ``ALWAYS_PRE_PR`` name the tests
+the greedy pass would never pick -- source guards, and the regression tests of
+a fix, which add no lines of their own -- and the lists must carry every one of
+them. A regeneration that predates the pins dropped the sheet resolve's
+regression tests exactly that way, and nothing noticed for a week.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 from functools import cache
 from pathlib import Path
 
@@ -66,4 +73,60 @@ def test_the_pre_pr_group_contains_the_ci_group():
         f"{len(missing)} test(s) in the CI group are not in the pre-PR group, "
         f"e.g. {missing[:5]}; a pull request that passed pre-PR could then "
         f"fail CI on a test nobody ran."
+    )
+
+
+@cache
+def _selector():
+    """scripts/select_test_groups.py, loaded by path: scripts/ is no package."""
+    path = ROOT / "scripts" / "select_test_groups.py"
+    spec = importlib.util.spec_from_file_location("select_test_groups", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _pinned(prefix):
+    """The test functions a pin (a node-id prefix) names, as node ids."""
+    file, _, rest = prefix.partition("::")
+    path = ROOT / file
+    if not path.is_file():
+        return []
+    return [
+        f"{file}::{name}"
+        for name in sorted(_definitions(path))
+        if name.startswith(rest)
+        and all(
+            part.startswith("Test") if i < name.count("::") else part.startswith("test")
+            for i, part in enumerate(name.split("::"))
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("group", "pins"),
+    [("ci", ("ALWAYS_CI",)), ("pre-pr", ("ALWAYS_CI", "ALWAYS_PRE_PR"))],
+    ids=["ci", "pre-pr"],
+)
+def test_every_pinned_test_is_listed(group, pins):
+    """A parametrized test counts as listed when any of its cases is: a
+    regeneration lists them all, and checking that needs a collection.
+    """
+    listed = set(_members(group))
+    prefixes = [p for name in pins for p in getattr(_selector(), name)]
+    stale = [p for p in prefixes if not _pinned(p)]
+    assert not stale, (
+        f"{stale} in scripts/select_test_groups.py match no test function any "
+        f"more; point them at the test's new name, or drop them."
+    )
+    missing = [
+        nodeid
+        for p in prefixes
+        for nodeid in _pinned(p)
+        if nodeid not in listed and not any(m.startswith(nodeid + "[") for m in listed)
+    ]
+    assert not missing, (
+        f"tests/groups/{group}.txt leaves out {len(missing)} test(s) the "
+        f"selector pins, e.g. {missing[:5]}. Add their node ids (every "
+        f"parametrized case) -- a regeneration would put them back anyway."
     )

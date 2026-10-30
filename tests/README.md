@@ -225,16 +225,26 @@ newly covered per second until each budget is spent.
 Each test is charged its measured duration plus a fixed per-test overhead
 (`PER_TEST_OVERHEAD`, what a runner actually spends per test beyond the
 reported time), so a thousand trivial tests are not mistaken for free. The CI
-group always contains the fast suite and a short named list of guards (`ALWAYS_CI` in the script) that read
-the source rather than run it, such as
-`test_every_builtin_spec_still_matches_a_live_kernel`: they cover almost no
-lines, so the greedy pass would never choose them, yet they are what trips on
-a change made elsewhere. The pre-PR group always contains the whole CI group.
+group always contains the fast suite and a short named list (`ALWAYS_CI` in
+the script) of guards that read the source rather than run it, such as
+`test_every_builtin_spec_still_matches_a_live_kernel`, and of the regression
+tests of fixes: both cover almost no lines of their own, so the greedy pass
+would never choose them, yet they are what trips on a change made elsewhere.
+The pre-PR group always contains the whole CI group, plus `ALWAYS_PRE_PR`:
+regression tests too slow for the CI budget, such as the sheet resolve's
+kernel-against-oracle test. A regeneration that predated that list dropped the
+sheet resolve's regression tests from both groups.
+
+So when a fix gets a regression test that re-runs lines other tests already
+cover, pin it: add its node id, or its file's ending in `::`, to `ALWAYS_CI` if
+it costs a fraction of a second and to `ALWAYS_PRE_PR` otherwise, and add its
+node ids to the lists.
 
 **Regenerate** when a group drifts (a big new test file, a budget overrun),
 not on every change. `test_test_groups.py` fails when a listed test is renamed
-or deleted; dropping that line by hand is fine. To regenerate, measure on a
-warm kernel cache:
+or deleted, and when a list leaves out a test the script pins; dropping or
+adding those lines by hand is fine. To regenerate, measure on a warm kernel
+cache:
 
 ```bash
 <venv-python> -m pytest -q -p no:cacheprovider tests/unit_tests tests/fast -n 1 \
