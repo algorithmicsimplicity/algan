@@ -4335,9 +4335,18 @@ sheet_depth_reduce_kernel = env_flag("ALGAN_SHEET_DEPTH_REDUCE_KERNEL", True)
 # end-to-end speedup. Keep the candidate opt-in until that is demonstrated.
 sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", False)
 
-# Two device passes replace the Torch sibling-weight graph and its host read.
-# Live A/B switch; opt-in until whole-render measurements justify enabling it.
-sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", False)
+# Two device passes replace the Torch sibling-weight graph and its host read,
+# with bit-identical weights (``tests/unit_tests/test_sheet_sibling_weights.py``).
+# On everywhere but MPS. On the CPU they take the helper from 7.6 to 2.0 ms on
+# an HD explainer frame (the whole compaction 5-7%). The Mac runner's A/B
+# (``benchmarks/performance/reports/mac_2026_09/SIBLING_WEIGHTS.md``) measured
+# the whole render 15% SLOWER with them, cause not isolated, so an MPS render
+# keeps the graph unless ``sheet_sibling_weights_kernel_mps`` is on too -- the
+# switch that A/B flips there.
+sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", True)
+sheet_sibling_weights_kernel_mps = env_flag(
+    "ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL_MPS", False
+)
 
 
 # UV texture anti-aliasing. Read at merge time; directories carried as DATA

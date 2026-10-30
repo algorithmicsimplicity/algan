@@ -354,3 +354,88 @@ def test_stroke_pixel_split_holds_with_a_closed_solid(
             assert torch.equal(_bits(got[name]), _bits(want)), name
         else:
             assert got[name] == want, name
+
+
+def _edge_areas_on_stroke_pixels(stream, seed):
+    """``stream`` with edge-case areas written over fragments of stroke-only
+    pixels: -0.0, a negative, -inf, +inf and NaNs, quiet and signaling, of
+    either sign. Stroke pixels compact one fragment to one sheet, so these
+    reach ``_stroke_sheets``' area rule unaltered. (Not denormals: the torch
+    arm's add flushes those or not as the thread's flush-to-zero mode says,
+    and initializing Taichi turns it on.)
+    """
+    coverage = dict(stream[0])
+    n = coverage["num_fragments"]
+    ref = coverage["frag_ref"][:n].cpu()
+    offsets = coverage["run_offsets"].to(torch.int64).cpu()
+    counts = offsets[1:] - offsets[:-1]
+    pixel = torch.repeat_interleave(torch.arange(counts.numel()), counts)
+    tri_pixel = torch.zeros(counts.numel(), dtype=torch.bool)
+    tri_pixel[pixel[ref >= 0]] = True
+    rows = (~tri_pixel[pixel]).nonzero().squeeze(1)
+    patterns = [0x80000000, 0xBE800000, 0xFF800000, 0x7F800000]
+    patterns += [0x7FC00000, 0xFFC00000, 0x7FA00000, 0xFFA00000]
+    bits = torch.tensor(
+        [b - (1 << 32) if b >= 1 << 31 else b for b in patterns], dtype=torch.int32
+    )
+    g = torch.Generator().manual_seed(seed)
+    pick = rows[torch.randperm(rows.numel(), generator=g)[: 3 * len(patterns)]]
+    cov = coverage["frag_cov"].clone()
+    cov[pick.to(cov.device)] = (
+        bits.repeat(3)[: pick.numel()].view(torch.float32).to(cov.device)
+    )
+    coverage["frag_cov"] = cov
+    return (coverage, *stream[1:])
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("resolve_only", [True, False])
+@pytest.mark.parametrize("closed", [False, True])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_stroke_pixel_split_kernels_match_the_torch_arm(
+    device, resolve_only, closed, seed, monkeypatch
+):
+    """``sheet_split_kernel``'s gather and interleave against the torch arm.
+
+    The split moves rows rather than computing them, apart from the stroke
+    pixels' area and mask rules, so the two arms must agree bit for bit --
+    on edge-case areas too. NaN payloads are only compared on the CPU, whose
+    add keeps them (``split_merge_sheets``).
+    """
+    import algan.rendering.raytracing.sheet_compact_taichi as kernels
+    import algan.rendering.raytracing.sheets as sheets_mod
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    if not sheets_mod._launches_locally(torch.zeros(1, device=device)):
+        pytest.skip("no local Taichi launch on this device")
+    stream = _mixed_stream(
+        seed, device, True, False, tri_share=0.2 if closed else 0.08, closed=closed
+    )
+    if device == "cpu":
+        stream = _edge_areas_on_stroke_pixels(stream, seed)
+    flags = {"shade_split": True, "positioned_depth": True, "sample_depth": True}
+    monkeypatch.setattr(sheets_mod, "sheet_split_kernel", False)
+    ref = _run(stream, shortcut=False, resolve_only=resolve_only, **flags)
+    launched = []
+    for name in ("split_gather_pixels", "split_merge_sheets"):
+        real = getattr(kernels, name)
+
+        def spy(*a, _real=real, _name=name):
+            launched.append(_name)
+            return _real(*a)
+
+        monkeypatch.setattr(kernels, name, spy)
+    monkeypatch.setattr(sheets_mod, "sheet_split_kernel", True)
+    got = _run(stream, shortcut=False, resolve_only=resolve_only, **flags)
+    assert launched == ["split_gather_pixels"] + (
+        ["split_merge_sheets"] if resolve_only else []
+    )
+    assert set(got) == set(ref)
+    for name, want in ref.items():
+        if torch.is_tensor(want):
+            assert got[name].dtype == want.dtype, name
+            assert got[name].shape == want.shape, name
+            assert torch.equal(_bits(got[name]), _bits(want)), name
+        else:
+            assert got[name] == want, name

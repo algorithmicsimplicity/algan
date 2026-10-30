@@ -166,6 +166,166 @@ def gather_fragment_arrays(
 
 
 @ti.kernel
+def split_mixed_pixels(
+    run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
+    frag_ref: ti.types.ndarray(),  # [n] i32 -- negative for a circuit fragment
+    nc: ti.i32,
+    mixed: ti.types.ndarray(),  # [nc] u8 OUT -- 1 where the pixel holds a triangle
+    tally: ti.types.ndarray(),  # [nc, 2] i32 OUT -- (mixed, its fragments if mixed)
+):
+    """``_split_stroke_pixels``' classification: which covered pixels hold a
+    triangle fragment, and how many fragments each such pixel brings.
+
+    One thread per covered pixel scans its run until the first triangle
+    fragment. ``tally``'s two columns are what the caller's single ``cumsum``
+    turns into each pixel's triangle-pixel rank and its run's end in the
+    triangle pixels' stream -- and, in its last row, the two totals.
+    """
+    for p in range(nc):
+        s = ti.cast(run_offsets[p], ti.i32)
+        e = ti.cast(run_offsets[p + 1], ti.i32)
+        hit = 0
+        i = s
+        while i < e:
+            if frag_ref[i] >= 0:
+                hit = 1
+                break
+            i += 1
+        mixed[p] = ti.cast(hit, ti.u8)
+        tally[p, 0] = hit
+        tally[p, 1] = hit * (e - s)
+
+
+@ti.kernel
+def split_gather_pixels(
+    mixed: ti.types.ndarray(),  # [nc] u8 -- ``split_mixed_pixels``' flags
+    ends: ti.types.ndarray(),  # [nc, 2] i32 -- ``tally``'s inclusive prefix
+    run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
+    nc: ti.i32,
+    in_key: ti.types.ndarray(),  # [n] i64
+    in_ref: ti.types.ndarray(),  # [n] i32
+    in_ab: ti.types.ndarray(),  # [n, 2] f32
+    in_cov: ti.types.ndarray(),  # [n] f32
+    in_msk: ti.types.ndarray(),  # [n] i32
+    in_cap: ti.types.ndarray(),  # [n] f32
+    out_key: ti.types.ndarray(),  # [m_frags] i64
+    out_ref: ti.types.ndarray(),  # [m_frags] i32
+    out_ab: ti.types.ndarray(),  # [m_frags, 2] f32
+    out_cov: ti.types.ndarray(),  # [m_frags] f32
+    out_msk: ti.types.ndarray(),  # [m_frags] i32
+    out_cap: ti.types.ndarray(),  # [m_frags] f32
+):
+    """``_split_stroke_pixels``' triangle-pixel stream: the six fragment arrays
+    of every covered pixel holding a triangle fragment, copied run by run.
+
+    One thread per covered pixel; a stroke pixel copies nothing, and a
+    triangle pixel's run lands so that it ends at ``ends[p, 1]``. Copies of
+    the stored bits, so exact. Replaces a per-fragment pixel map, its gather,
+    a ``nonzero`` and six ``index_select`` s.
+    """
+    for p in range(nc):
+        if mixed[p] != 0:
+            s = ti.cast(run_offsets[p], ti.i32)
+            e = ti.cast(run_offsets[p + 1], ti.i32)
+            d = ends[p, 1] - e
+            for i in range(s, e):
+                out_key[d + i] = in_key[i]
+                out_ref[d + i] = in_ref[i]
+                out_ab[d + i, 0] = in_ab[i, 0]
+                out_ab[d + i, 1] = in_ab[i, 1]
+                out_cov[d + i] = in_cov[i]
+                out_msk[d + i] = in_msk[i]
+                out_cap[d + i] = in_cap[i]
+
+
+@ti.kernel
+def split_merge_sheets(
+    mixed: ti.types.ndarray(),  # [nc] u8 -- ``split_mixed_pixels``' flags
+    ends: ti.types.ndarray(),  # [nc, 2] i32 -- ``tally``'s inclusive prefix
+    run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
+    sub_frags: ti.types.ndarray(),  # [m + 1] i32 -- the triangle pixels' CSR
+    sub_sheets: ti.types.ndarray(),  # [m + 1] i64 -- their sheets' CSR
+    nc: ti.i32,
+    mask_all: ti.i32,  # _AA_MASK_ALL
+    sliver_bit: ti.i32,  # _AA_SLIVER_BIT
+    frag_key: ti.types.ndarray(),  # [n] i64
+    frag_ref: ti.types.ndarray(),  # [n] i32
+    frag_ab: ti.types.ndarray(),  # [n, 2] f32
+    frag_cov: ti.types.ndarray(),  # [n] f32
+    frag_msk: ti.types.ndarray(),  # [n] i32
+    frag_cap: ti.types.ndarray(),  # [n] f32
+    sub_key: ti.types.ndarray(),  # [sub_nb] i64
+    sub_ref: ti.types.ndarray(),  # [sub_nb] i32
+    sub_ab: ti.types.ndarray(),  # [sub_nb, 2] f32
+    sub_wgt: ti.types.ndarray(),  # [sub_nb] f32
+    sub_wmsk: ti.types.ndarray(),  # [sub_nb] i32
+    sub_cap: ti.types.ndarray(),  # [sub_nb] f32
+    out_key: ti.types.ndarray(),  # [total] i64
+    out_ref: ti.types.ndarray(),  # [total] i32
+    out_ab: ti.types.ndarray(),  # [total, 2] f32
+    out_wgt: ti.types.ndarray(),  # [total] f32
+    out_wmsk: ti.types.ndarray(),  # [total] i32
+    out_cap: ti.types.ndarray(),  # [total] f32
+    sheet_offsets: ti.types.ndarray(),  # [nc + 1] i64 OUT -- all but the last
+):
+    """``_split_stroke_pixels``' six resolve fields, interleaved back into
+    pixel order in one pass over the covered pixels, with the output's CSR.
+
+    A pixel's sheets start where its fragments did, moved by how many more
+    sheets than fragments the triangle pixels before it made: with ``k`` of
+    them, ``sub_sheets[k] - sub_frags[k]``. A triangle pixel then copies its
+    sheets from the general path's result; a stroke pixel writes its
+    fragments one for one as ``_stroke_sheets`` does: the area as
+    ``(cov + 0.0).clamp_min_(0.0)`` and the mask with the sliver bit forced
+    on for an empty union. The area rule is spelled on the bits, so fast_math
+    has no float arithmetic to rewrite: a set sign bit (-0.0, a negative,
+    -inf) becomes +0.0, and a NaN comes back quieted, as the CPU's add
+    returns it. That is the torch arm bit for bit on the CPU, with two
+    exceptions no real area reaches: a GPU's add returns its one canonical
+    NaN, and under flush-to-zero (which Taichi's initialization turns on for
+    the CPU thread) the torch add turns a denormal into a zero of its sign,
+    where this keeps a positive one and zeroes a negative one like any other.
+    """
+    for p in range(nc):
+        hit = ti.cast(mixed[p], ti.i32)
+        k = ends[p, 0] - hit
+        s = ti.cast(run_offsets[p], ti.i32)
+        e = ti.cast(run_offsets[p + 1], ti.i32)
+        d = s + ti.cast(sub_sheets[k], ti.i32) - sub_frags[k]
+        sheet_offsets[p] = d
+        if hit != 0:
+            ss = ti.cast(sub_sheets[k], ti.i32)
+            se = ti.cast(sub_sheets[k + 1], ti.i32)
+            for i in range(ss, se):
+                o = d + i - ss
+                out_key[o] = sub_key[i]
+                out_ref[o] = sub_ref[i]
+                out_ab[o, 0] = sub_ab[i, 0]
+                out_ab[o, 1] = sub_ab[i, 1]
+                out_wgt[o] = sub_wgt[i]
+                out_wmsk[o] = sub_wmsk[i]
+                out_cap[o] = sub_cap[i]
+        else:
+            for i in range(s, e):
+                o = d + i - s
+                out_key[o] = frag_key[i]
+                out_ref[o] = frag_ref[i]
+                out_ab[o, 0] = frag_ab[i, 0]
+                out_ab[o, 1] = frag_ab[i, 1]
+                bits = ti.bit_cast(frag_cov[i], ti.u32)
+                if (bits & ti.u32(0x7FFFFFFF)) > ti.u32(0x7F800000):
+                    bits = bits | ti.u32(0x00400000)
+                elif (bits >> 31) != 0:
+                    bits = ti.u32(0)
+                out_wgt[o] = ti.bit_cast(bits, ti.f32)
+                m = frag_msk[i]
+                if (m & mask_all) == 0:
+                    m = m | sliver_bit
+                out_wmsk[o] = m
+                out_cap[o] = frag_cap[i]
+
+
+@ti.kernel
 def sheet_band_reduce(
     band: ti.types.ndarray(),  # [n] i64 -- band/sheet index of each fragment
     msk: ti.types.ndarray(),  # [n] i32 -- fragment mask word
