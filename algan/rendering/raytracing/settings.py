@@ -939,6 +939,10 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
 # occupancy-bound kernel; see benchmarks/_wf_mem_trim_ab.py). Byte-identical to
 # the baseline. Opt-in; only engaged for a no-shadow, non-refractive,
 # scatter-free triangle path (the common case). Default OFF.
+# Classic wavefront only: the trimmed arrays are built beside the untrimmed
+# ones, which is all the sheet route reads, so a batch the trim would engage
+# for is a sheet-route veto (tracer.ROUTE_VETOES["wf_mem_trim"]) and renders
+# through the classic supersampled wavefront instead.
 wf_mem_trim = env_flag("ALGAN_WF_MEM_TRIM", False)
 
 # Shared-topology binned-SAH refit BVH (raytracer-v2 design doc section 9;
@@ -1978,6 +1982,11 @@ def set_hybrid_raster(enabled):
 # Invalid/camera-plane-straddling projections fall back to exact per-pixel
 # Moller-Trumbore ray casting. ALGAN_RASTER_SS=0 forces ray casting for all
 # triangle candidates; the optimal policy may eventually be selected per pair.
+# The ray-cast path's coverage is the sampled popcount of its sub-pixel mask,
+# not the exact clipped area the sheet resolve consumes, so off is a sheet-route
+# veto for any batch with triangles (tracer.ROUTE_VETOES["raster_ss_off"]): the
+# batch renders through the classic supersampled wavefront, like the route's
+# other kill switches, rather than through the route on sampled coverage.
 raster_ss = env_flag("ALGAN_RASTER_SS", True)
 
 

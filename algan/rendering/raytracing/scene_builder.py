@@ -1061,7 +1061,7 @@ def _bvh_deferral_eligible(scene):
     if not _rts.bvh_defer:
         return False
     # The sheet route is what resolves primaries without a tree, so every
-    # switch that vetoes it outright (``tracer.analytic_raster_route_active``)
+    # switch that vetoes it outright (``tracer.analytic_raster_route_veto``)
     # sends the batch to the classic wavefront, which traverses for every
     # primary ray. All of them are readable here, so a settings-driven
     # fallback -- ``analytic_aa=False``, the reference arm for judging a
@@ -1079,6 +1079,9 @@ def _bvh_deferral_eligible(scene):
         and _rts.raster_empty_skip
         and _rts.raster_covered_shade
     ):
+        return False
+    # raster_ss off vetoes the route only for a batch with triangles in it.
+    if not _rts.raster_ss and scene["num_triangles"] > 0:
         return False
     if int(_rts.samples_per_pixel) > 1 or _rts.shadows or _rts.inplace_aa:
         return False
