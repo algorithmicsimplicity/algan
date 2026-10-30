@@ -819,9 +819,18 @@ records.** The resolve kernel gained a `mode` template — 1 walks the
 transport and writes one candidate event per accepted lit triangle sheet
 (no shading, no spawns), 2 shades reading the traced visibility — so the
 event pass and the shading pass are the SAME kernel body and a
-resolve/shadow desync is structurally impossible (the machinery the old
-lockstep pair needed, `_aa_dump_check`'s lockstep leg included, has
-nothing left to check on this route). Event identity is the SHEET INDEX
+resolve/shadow desync can no longer be written into the source (the
+machinery the old lockstep pair needed, `_aa_dump_check`'s lockstep leg
+included, has nothing left to check on this route). **CORRECTED
+2026-10-30:** it is not bit-exact. Modes 1 and 2 are separate fast-math
+compiles, so a value within rounding of a threshold (the
+`eff <= min_alpha` skip, the far clip, the `min_weight` cut) can fall on
+different sides of it in the two walks. Only a sheet at such a threshold
+can flip (one claiming about `min_alpha`, one reached with under
+`min_weight` left, or one at the far clip to within rounding); a sheet
+the shading pass meets without an event is lit unshadowed, and the
+opt-in material memo (`sheet_resolve_memo`) reads a row the event pass
+never wrote. Event identity is the SHEET INDEX
 into dense per-sheet tables: no counter, no atomic reserve; the host
 compacts accepted rows (deterministic ascending order) and the unchanged
 `raster_shadow_trace` runs over the compact queue. `sheet_route` no

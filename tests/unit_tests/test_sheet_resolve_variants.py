@@ -116,6 +116,61 @@ def test_mode_1_unrolls_no_continuation_fan():
             assert eval(expr, {}, {"sec_aa": sec_aa, "mode": mode}) == sec_aa
 
 
+def _static_gates(tree, name):
+    """For each call to ``name``, the ``ti.static`` conditions of every ``if``
+    whose body (not its ``else``) holds the call, innermost first.
+    """
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    sites = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and ast.unparse(node.func) == name):
+            continue
+        gates = []
+        child, parent = node, parents.get(node)
+        while parent is not None:
+            if (
+                isinstance(parent, ast.If)
+                and any(child is stmt for stmt in parent.body)
+                and isinstance(parent.test, ast.Call)
+                and ast.unparse(parent.test.func) == "ti.static"
+            ):
+                gates.append(parent.test.args[0])
+            child, parent = parent, parents.get(parent)
+        sites.append(gates)
+    return sites
+
+
+def test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe():
+    """Under the prefilter (glossy mode 3) no fan is spread over the GGX lobe.
+
+    Modes 1 and 2 spread a reflector's ``sec_aa`` continuations over its lobe
+    (``_glossy_reflect``). Mode 3 gives the lobe to the pixel's one claiming
+    sheet and keeps ``_mirror_share``'s throttle on every other reflective
+    sheet, yet still spread those sheets' fans too: rough glass and a weaker
+    second reflector drew stair-edged ghost copies of what they reflected on
+    top of the throttle. Every spread now sits behind a gate that compiles it
+    into modes 1 and 2 only, which also keeps it out of the default kernel.
+    ``test_glossy_prefilter`` renders the image this changed.
+    """
+    source = inspect.getsource(sheet_resolve_taichi.sheet_resolve_shade_arena)
+    sites = _static_gates(ast.parse(source.lstrip()), "_glossy_reflect")
+    assert len(sites) == 4, f"expected the four lobe-spread sites, found {len(sites)}"
+    for gates in sites:
+        modes = None
+        for gate in gates:
+            if {n.id for n in ast.walk(gate) if isinstance(n, ast.Name)} == {"glossy"}:
+                expr = compile(ast.Expression(gate), "<gate>", "eval")
+                modes = {g for g in range(4) if eval(expr, {}, {"glossy": g})}
+                break
+        assert modes == {1, 2}, (
+            f"a lobe spread compiles into glossy modes {modes}, not just the "
+            "tap-fan modes 1 and 2"
+        )
+
+
 def _install_recorder(monkeypatch, launches):
     """Record each resolve launch's arguments by name instead of launching.
 
