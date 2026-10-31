@@ -135,6 +135,31 @@ def _pt_medium_tracked(vol_i: ti.template(), tri_mat: ti.template(), f, prim):
 
 
 @ti.func
+def _pt_medium_stops_connection(vol_i: ti.template(), tri_mat: ti.template(),
+                                f, previous, following):
+    """1 when a straight connection stops at the interface between interiors
+    ``previous`` and ``following`` (stack tops, -1 for outside every shell).
+
+    An index change into or out of a tracked interior is where
+    ``_pt_medium_transmittance`` ends a next-event connection: it cannot take
+    the bent path. So a BSDF path that refracts there finds what no light
+    sample from its last scatter vertex reached.
+    """
+    ni = 1.0
+    if previous >= 0:
+        ni = tri_mat[f % tri_mat.shape[0], previous, 12]
+    nt = 1.0
+    if following >= 0:
+        nt = tri_mat[f % tri_mat.shape[0], following, 12]
+    stops = 0
+    if ti.abs(ni / ti.max(nt, 1e-6) - 1.0) >= 1e-4:
+        if ti.max(_pt_medium_tracked(vol_i, tri_mat, f, previous),
+                  _pt_medium_tracked(vol_i, tri_mat, f, following)) > 0:
+            stops = 1
+    return stops
+
+
+@ti.func
 def _pt_medium_id(shell: ti.template(), f, prim, offset):
     sid = -1
     if prim >= 0:
@@ -451,24 +476,15 @@ def _pt_medium_transmittance(
             if _pt_medium_id(shell, f, prim, offset) >= 0:
                 entering = rd.dot(_pt_medium_normal(tri_pos, f, prim)) < 0.0
                 previous = _pt_medium_top(media)
-                ni = 1.0
-                if previous >= 0:
-                    ni = tri_mat[f % tri_mat.shape[0], previous, 12]
                 media, failed = _pt_medium_cross(
                     media, shell, f, prim, offset, entering
                 )
                 overflow = ti.max(overflow, failed)
-                following = _pt_medium_top(media)
-                nt = 1.0
-                if following >= 0:
-                    nt = tri_mat[f % tri_mat.shape[0], following, 12]
-                if ti.abs(ni / ti.max(nt, 1e-6) - 1.0) >= 1e-4:
-                    tracked_before = _pt_medium_tracked(vol_i, tri_mat, f, previous)
-                    tracked_after = _pt_medium_tracked(vol_i, tri_mat, f, following)
-                    if ti.max(tracked_before, tracked_after) > 0:
-                        result = ti.math.vec3(0.0, 0.0, 0.0)
-                        finished = 1
-                        break
+                if _pt_medium_stops_connection(
+                        vol_i, tri_mat, f, previous, _pt_medium_top(media)) == 1:
+                    result = ti.math.vec3(0.0, 0.0, 0.0)
+                    finished = 1
+                    break
     if (overflow != 0) or (finished == 0):
         result = ti.math.vec3(0.0, 0.0, 0.0)
     return result, overflow, 1 - finished, steps_over

@@ -265,6 +265,7 @@ from algan.rendering.raytracing.pt_media_taichi import (
     _pt_medium_cross,
     _pt_medium_id,
     _pt_medium_sample,
+    _pt_medium_stops_connection,
     _pt_medium_top,
     _pt_medium_tracked,
     _pt_medium_transmittance,
@@ -400,9 +401,12 @@ _PT_ACC_STOCH = 9
 #: crossing therefore keeps ``prev_pdf``, and the solid-angle pdf NEE would
 #: have had for an emissive triangle is measured from the scatter vertex
 #: recorded here (columns 10-12, a world point), not from the crossing's exit
-#: point. Column 13 is 1.0 while that is in force: set by the first smooth
-#: transmission after a scatter, cleared by the next scatter. Zeroed with the
-#: rest of the row before ``pt_generate``, so a camera segment starts clear.
+#: point. Not where the surface refracts into or out of a scattering interior:
+#: NEE stops there (``_pt_medium_stops_connection``), so that crossing drops
+#: ``prev_pdf`` as before. Column 13 is 1.0 while the origin is in force: set
+#: by the first smooth transmission after a scatter, cleared by the next
+#: scatter. Zeroed with the rest of the row before ``pt_generate``, so a
+#: camera segment starts clear.
 _PT_ACC_MIS_ORIGIN = 10
 _PT_ACC_MIS_CARRY = 13
 #: 1.0 once the path has bounced off a blurring lobe: diffuse, sheen, a
@@ -4981,11 +4985,27 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             cst_next = cst
                     if (media_offset > 0) and medium_boundary and (ok == 1):
                         if rd.dot(fnrm) * new_rd.dot(fnrm) > 0.0:
+                            top_before = _pt_medium_top(media)
                             media, overflow_m = _pt_medium_cross(
                                 media, tri_shell, f, prim, media_offset, rd.dot(fnrm) < 0.0)
                             ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], overflow_m)
                             if overflow_m != 0:
                                 ok = 0
+                            # A refracting boundary of a scattering interior
+                            # is where NEE's straight connection stops
+                            # (``_pt_medium_transmittance``), so the smooth
+                            # crossing above kept a pdf no light sample
+                            # covers: what the path finds past it is its
+                            # alone. Weighting it against that NEE darkened
+                            # a dense conservative cube in a white furnace
+                            # to 57%. A caster crossing on a caustic chain
+                            # (``cst_next`` >= 2) keeps it: the coverage
+                            # test weighs that path against the chain.
+                            if (smooth_cross == 1) and (cst_next < 2):
+                                if _pt_medium_stops_connection(
+                                        pt_vol_i, tri_mat, f, top_before,
+                                        _pt_medium_top(media)) == 1:
+                                    prev_pdf = 0.0
                     if ok == 0:
                         # Rejected sample direction: absorbed, not escaped.
                         absorbed = True
