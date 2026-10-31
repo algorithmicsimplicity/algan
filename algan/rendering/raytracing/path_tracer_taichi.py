@@ -2620,7 +2620,8 @@ _MQ_LS = _MQ_PSEL + 1
 def pt_caustic_request_width(light_samples):
     """``pt_cau`` columns a deferred-chain batch needs (``caustics == 2``):
     the coverage test's record, then the requests of ``light_samples`` light
-    samples."""
+    samples.
+    """
     return PT_CAU_WIDTH + _MQ_HEAD + _MQ_LS * int(light_samples)
 
 
@@ -2639,7 +2640,8 @@ def _mq_get(x):
 @ti.func
 def _pt_mq_slots(pt_cau: ti.template()):
     """The light samples ``pt_cau``'s width holds requests for (0 unless the
-    host sized it with :func:`pt_caustic_request_width`)."""
+    host sized it with :func:`pt_caustic_request_width`).
+    """
     return ti.max(pt_cau.shape[1] - PT_CAU_WIDTH - _MQ_HEAD, 0) // _MQ_LS
 
 
@@ -2648,7 +2650,8 @@ def _pt_mq_sample(pt_cau: ti.template(), r, ls, kind, ref, y, fixed,
                   vol_seed: ti.u32, count, prims, bary_a, bary_b, n_e,
                   one_sided, base, p_y, p_sel):
     """Leave light sample ``ls``'s chain request for ``pt_caustic_chains``
-    (the ``pt_shade`` names of the same terms)."""
+    (the ``pt_shade`` names of the same terms).
+    """
     o = PT_CAU_WIDTH + _MQ_HEAD + ls * _MQ_LS
     pt_cau[r, o + _MQ_ON] = 1.0
     pt_cau[r, o + _MQ_KIND] = _mq_put(kind)
@@ -2677,7 +2680,8 @@ def _pt_mq_receiver(pt_cau: ti.template(), r, x0, sorigin, n_side, f, media,
                     f0_l, rough, wl_pass, wl_diff, wl_spec, wl_trans, eta,
                     metalness, albedo3, T, layer_l):
     """Record the receiver whose light samples left chain requests: the
-    header's columns up to ``_MQ_W``."""
+    header's columns up to ``_MQ_W``.
+    """
     o = PT_CAU_WIDTH
     for c in ti.static(range(3)):
         pt_cau[r, o + _MQ_X0 + c] = x0[c]
@@ -2716,7 +2720,8 @@ def _pt_mq_weight(pt_cau: ti.template(), r, thru, alpha, add, clamped,
     """Record what ``pt_caustic_chains`` adds the receiver's chains with:
     ``thru``'s colour times the crossing's ``alpha``, and with ``clamped`` the
     room ``firefly_clamp`` leaves above ``add``, the rest of the crossing's
-    light before the clamp."""
+    light before the clamp.
+    """
     o = PT_CAU_WIDTH
     for c in ti.static(range(3)):
         pt_cau[r, o + _MQ_W + c] = thru[c] * alpha

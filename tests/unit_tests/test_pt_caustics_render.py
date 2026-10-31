@@ -403,8 +403,9 @@ def test_deferred_chains_render_what_the_single_kernel_renders(tmp_path, scene):
     and a delta light reaching a density-tracked subsurface interior through
     its face.
     """
-    from algan.rendering.taichi_runtime import taichi_arch_is_metal
     from test_path_tracer import _render_scene_result
+
+    from algan.rendering.taichi_runtime import taichi_arch_is_metal
 
     if taichi_arch_is_metal():
         pytest.skip("Metal always defers the chains: there is no single kernel")
