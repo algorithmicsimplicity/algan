@@ -3,15 +3,16 @@
 ``.github/workflows/test.yaml`` runs ``tests/unit_tests tests/fast`` on
 ``macos-latest`` with ``ALGAN_RENDER_DEVICE=mps``, and that arm is a **required**
 check. When it was first turned on it reported 32 failures and 3 errors against
-3311 passes (run 34102515789). **One is left**, and how the other came off is
-the caution this file needs most. Run 34302218686 reported the
+3311 passes (run 34102515789). Of those, **one is left**, and how the other
+came off is the caution this file needs most. Run 34302218686 reported the
 prefiltered-reflection entry as a strict XPASS -- the self-cleaning rule below
 firing -- and reading back through the arm's runs, that render had **never**
 failed on master: it was measured on the branch the entry was written on, and
 master's own arm was already green by the time that branch merged
 (``DESIGN_mps_support.md`` §4.5 has the run table). So an entry copied from a
 branch run is a claim about that branch until a master run repeats it. This
-file is the record of the one that remains;
+file is the record of that one and of the caustic renders a later compiler
+limit took (section I below);
 ``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind it.
 
 Counting causes rather than tests is what got it there. Thirty of the
@@ -78,4 +79,30 @@ _add(
     "MPS: ti.real_func early return breaks the SPIR-V builder -- "
     "DESIGN_mps_support.md §4.3",
     "tests/unit_tests/test_taichi_early_return.py::test_a_real_function_is_not_rewritten",
+)
+
+
+# -- I: the caustic pt_shade is too large for Apple's shader compiler --------
+#
+# With ``pt_caustics`` (or ``pt_subsurface_delta_lights`` in a scene with a
+# refracting scattering interior) the path tracer's shade kernel compiles its
+# manifold walk in, and that variant cross-compiles to ~17 MB of MSL: Apple's
+# compiler service drops its XPC connection on it, and the pipeline is never
+# made (weekly run 40306266933). ``pt_caustics._metal_declines_caustics`` now
+# keeps the kernel without them on Metal, so a render no longer fails; these
+# are the tests that assert what only the chains deliver -- a point light
+# focused through a glass plate, a delta light reaching a subsurface
+# interior. The furnace tests in the same file still pass: lossless glass
+# leaves a furnace unchanged with caustics off as well.
+_add(
+    "MPS: the caustic pt_shade is too large for Metal's compiler; caustics are "
+    "declined on Metal -- DESIGN_mps_support.md §4.8",
+    "tests/unit_tests/test_pt_caustics_render.py::"
+    "test_a_point_light_through_a_glass_plate_lights_the_floor_as_optics_says[True]",
+    "tests/unit_tests/test_pt_caustics_render.py::"
+    "test_a_point_light_reaches_inside_a_subsurface_block[True-True-False]",
+    "tests/unit_tests/test_pt_caustics_render.py::"
+    "test_a_point_light_reaches_inside_a_subsurface_block[False-True-False]",
+    "tests/unit_tests/test_pt_caustics_render.py::"
+    "test_a_point_light_reaches_inside_a_subsurface_block[False-True-True]",
 )

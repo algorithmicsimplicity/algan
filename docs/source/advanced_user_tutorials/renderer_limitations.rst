@@ -902,6 +902,12 @@ Limits and approximations
   - **Cost.** Every shadow ray from a lit surface probes its segment for
     casters, and one that finds them runs the walk, so shading costs more
     wherever glass stands between lights and what they light.
+  - **Not on an Apple GPU.** The kernel the walk compiles into is too large
+    for Apple's shader compiler, so on the Metal backend shadow caustics and
+    the delta-light reach into a subsurface solid are both off, with one
+    warning: glass keeps its straight, tinted shadow, and a point, spot or
+    directional light does not light a subsurface interior. Render on the CPU
+    (``ALGAN_RENDER_DEVICE=cpu``) for them.
 
 
 Reflection, refraction and transmission
@@ -1489,7 +1495,9 @@ Important limits:
   through sampled refraction either way. Turn it off with
   ``SETTINGS.raytracing.experimental.set(pt_subsurface_delta_lights=False)``
   to render such an interior as before, unlit by delta lights, and skip the
-  extra kernel variant it compiles. Glass that does not scatter
+  extra kernel variant it compiles. On an Apple GPU it is off whatever the
+  setting says, because that variant is too large for Apple's shader
+  compiler (`Limits and approximations`_). Glass that does not scatter
   -- clear, or tinted with ``attenuation_color`` -- is unaffected: it casts
   the same straight, tinted shadow it does in a scene without any medium, and
   honours ``shadows`` and ``casts_shadows`` the same way. Glass sitting

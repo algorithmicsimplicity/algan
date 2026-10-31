@@ -162,7 +162,9 @@ def on_program_start():
     if counting():
         from algan.rendering import taichi_runtime
 
-        if not (taichi_runtime.taichi_arch_is_cpu() or taichi_runtime.taichi_arch_is_cuda()):
+        if not (
+            taichi_runtime.taichi_arch_is_cpu() or taichi_runtime.taichi_arch_is_cuda()
+        ):
             # Metal has neither the 64-bit atomics nor the thread index the
             # counting sites use, and failed inside the first traversal
             # kernel's compile with "qd.thread_idx() is only available in

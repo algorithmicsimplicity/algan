@@ -101,6 +101,42 @@ def _caster_mask(merged):
     return refracts & lit & opted & shadow
 
 
+#: Set by the first render that :func:`_metal_declines_caustics` turns away.
+_METAL_WARNED = False
+
+
+def _metal_declines_caustics():
+    """Whether this program's arch cannot build the caustic ``pt_shade``.
+
+    On Metal the caustic variant cross-compiles to ~17 MB of MSL, and Apple's
+    compiler service drops its XPC connection on it, so every render that
+    asked for it failed to create its pipeline (``RhiResult=-1``) -- with
+    ``pt_subsurface_delta_lights`` on by default, any shadowed path-traced
+    scene with a refracting scattering interior. Declining keeps the kernel
+    the one without caustics, which renders as with both switches off: no
+    chain through glass, and a subsurface interior unlit by delta lights.
+    Warns once per process.
+    """
+    global _METAL_WARNED
+    from algan.rendering.taichi_runtime import taichi_arch_is_metal
+
+    if not taichi_arch_is_metal():
+        return False
+    if not _METAL_WARNED:
+        _METAL_WARNED = True
+        from algan.logging.logger import get_logger
+
+        get_logger("raytracing").warning(
+            "Path-traced caustics (pt_caustics, and the subsurface delta "
+            "lights of pt_subsurface_delta_lights) are off on the Metal "
+            "backend: the kernel they compile is too large for Apple's "
+            "shader compiler. Glass casts its straight, tinted shadow, and a "
+            "subsurface interior is lit by area lights and the environment "
+            "only. Render on the CPU (ALGAN_RENDER_DEVICE=cpu) to get them."
+        )
+    return True
+
+
 def _scattering_boundary_mask(merged):
     """``[rows, n]`` bool: triangles that bound a scattering interior.
 
@@ -144,6 +180,8 @@ def _prepare_casters(memory, merged, shells, media_offset=0):
         if not (rt_settings.pt_subsurface_delta_lights and int(media_offset) > 0):
             return shells, 0, False
         media_only = True
+    if _metal_declines_caustics():
+        return shells, 0, False
     if merged.get("has_refractive") is False:
         return shells, 0, False
     if int(merged.get("num_triangles", 0)) == 0 or merged.get("tri_mat") is None:
