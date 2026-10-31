@@ -1151,6 +1151,7 @@ section to update when one changes.
 | [34213125405](https://github.com/algorithmicsimplicity/algan/actions/runs/34213125405) (2026-09-08, the full scope after §2.3f, **on a branch**) | **2 failing**: 1 failed, 3563 passed, 217 skipped, 2 xfailed in 3178 s — and the 1 is the last XPASS |
 | [34302218686](https://github.com/algorithmicsimplicity/algan/actions/runs/34302218686) (2026-09-09, master at 2455d08) | **6 failed**, 3655 passed, 226 skipped, 1 xfailed in 2931 s — one stale strict XPASS (§4.5) and five regressions from that day's own Metal work, none of them a device defect (§4.6) |
 | [34306711211](https://github.com/algorithmicsimplicity/algan/actions/runs/34306711211) (2026-09-09, the five repaired files and `tests/fast`, on the fix branch) | 92 passed, 4 skipped in 82 s |
+| [40306266933](https://github.com/algorithmicsimplicity/algan/actions/runs/40306266933) (2026-10-26, the weekly full run) | **12 failed**, 8472 passed, 360 skipped, 3 xfailed in 4445 s — one a path-tracer bias every arm shared (#247), eleven this arm's own from four causes (§4.8) |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1174,6 +1175,7 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
 | G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
 | H | one fragment lands in the wrong pixel | 1 | 0 | **fixed** — §2.3f |
+| I | the caustic `pt_shade` is too large for Apple's shader compiler | 8 | 4 | renders **declined** on Metal; fitting the kernel is open — §4.8 |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
 **Two fixes took thirty of the thirty-two**, and neither was aimed at most of
@@ -1186,8 +1188,10 @@ for the xfail list: both fixes were found by measuring the runs it produced,
 not by reading code, and neither was predictable from the failure it was chased
 from.
 
-**What is left is one test**: the `ti.real_func` compile failure (§4.3), a
+**What was left was one test**: the `ti.real_func` compile failure (§4.3), a
 compiler defect a layer below Algan that blocks a test rather than a render.
+Cause I has since added four, a feature this backend cannot compile rather
+than a render it gets wrong (§4.8).
 The other entry — the glossy prefilter render whose reflection was absent — is
 gone from the list without a fix to point at, because it never reproduced on
 master at all (§4.5 has the run table). That is the one way this list can
@@ -1547,3 +1551,73 @@ on. The megabyte of margin is there because the length Metal sees is the buffer
 torch's allocator actually took, which it may round up from the request. Below
 the ceiling the clamp is the identity, so it changes nothing on a 7 GiB runner
 or on any Mac below ~13.4 GB.
+
+
+### 4.8 The 2026-10-26 eleven: a kernel too large to compile, and three tests
+
+The weekly full run 40306266933 failed this arm on twelve tests. One, the
+dense conservative cube at index 1.35, failed on every arm: a bias in the path
+tracer's MIS where a path refracts out of a scattering interior, fixed by #247
+and nothing to do with the device. The other eleven were this arm's own, and
+they were four causes.
+
+**I: the caustic `pt_shade` will not compile (8 tests).** Every render in
+`test_pt_caustics_render.py` that compiled the manifold walk in died making its
+pipeline:
+
+    Failed to create pipeline for kernel task 'pt_shade_arena_c170_26_1_t01'
+    (RhiResult=-1). The SPIR-V shader was rejected by the backend driver
+
+The diagnostic underneath is Apple's compiler service dropping its XPC
+connection, not an error about any construct in the shader, so the question is
+the shader's size. The glass-slab furnace,
+rendered once with `pt_caustics` off and once with it on, with `QD_DUMP_MSL`
+and `QD_SHADER_DUMP_DIR` capturing the translated shader (runs 41156317562 and
+41158150876):
+
+| `pt_shade_arena` variant | MSL bytes | lines | on Metal |
+| --- | --- | --- | --- |
+| without caustics | 9,023,921 | 114,538 | compiles |
+| with caustics | 17,427,878 | 202,658 | XPC connection dropped |
+
+The walk adds 8.4 MB, 93% on top of the variant that compiles. It is reached by more than `pt_caustics`:
+`pt_subsurface_delta_lights`, on by default, builds the same variant for any
+shadowed path-traced scene with a refracting scattering interior, because the
+chains are how a point, spot or directional light reaches inside one. So on a
+Mac every such scene failed, not only the opt-in feature.
+
+`pt_caustics._metal_declines_caustics` now keeps the kernel without the walk on
+Metal and warns once per process, which renders as with both switches off:
+glass casts its straight, tinted shadow, and a subsurface interior is lit by
+area lights and the environment only. Four tests assert what only the chains
+deliver — a point light focused through a glass plate, a delta light reaching
+a subsurface block — and are strict known failures under I. The other four
+pass: lossless glass leaves a furnace unchanged without the chains as well,
+and the straight-shadow test asserts what declining gives. Fitting the walk
+means taking it out of `pt_shade` into a kernel of its own, a wavefront stage
+the shade reads back, and that is a restructuring, not a fix to this arm.
+
+**The trace counters (1 test).** `ALGAN_TRACE_COUNTERS` failed inside the first
+traversal kernel's compile with `qd.thread_idx() is only available in cuda or
+cpu or amdgpu context`, and had it got past that, its `i64` atomics are what
+§1.2 says Metal does not have. The diagnostic was always CPU and CUDA only (its
+module says so), but nothing enforced it. `on_program_start` now refuses to
+start counting on any other arch with a message naming the way to count
+(`ALGAN_RENDER_DEVICE=cpu`), and the test skips off those two devices.
+
+**The device shadow glue (1 test).** The test asserted that both lane
+schedules build their shadow events on the device, and read
+`{'device': 0, 'events': 0, 'host': 6}`: `tracer._device_shadow_glue` keeps the
+host glue on Metal on purpose, because the int views and int32 prefix sum it
+leans on are unverified there. The test now skips where the tracer declines.
+
+**The precompile index hit (1 test).** The child script bound host tensors,
+and asserted the main process found the kernel a precompile worker had
+compiled: `(0, 1) == (1, 0)`, one miss where a hit was expected. Workers bind
+their placeholders on the render device, and on MPS a launch imports a device
+tensor as an external Metal ndarray but passes a host one as it is, which is a
+different source key. The child now binds on the render device, as a render
+does; on CPU and CUDA that changes nothing.
+
+Run 41158150876 put the last three on the Mac arm: they pass (or skip, the
+counters and the glue) with the rest of their files.
