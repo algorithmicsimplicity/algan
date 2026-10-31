@@ -479,9 +479,18 @@ pt_caustics = env_flag("ALGAN_PT_CAUSTICS", False)
 # caster and stays dark to a delta light. Off renders such an interior as it
 # was before (unlit by delta lights) and compiles no caustic kernel for it.
 # No effect while ``pt_caustics`` is on, which covers this case already.
-# Neither switch applies on the Metal backend: the kernel they compile is too
-# large for Apple's shader compiler (``pt_caustics._metal_declines_caustics``).
 pt_subsurface_delta_lights = env_flag("ALGAN_PT_SUBSURFACE_DELTA_LIGHTS", True)
+# Walk the caustic chains of ``pt_caustics`` / ``pt_subsurface_delta_lights``
+# in a kernel of their own (``pt_caustic_chains``) after the shading kernel,
+# which then only probes each light sample's shadow segment for casters and
+# leaves a request where a chain is to be walked. The Metal backend always
+# does: the single kernel is too large for Apple's shader compiler
+# (``pt_caustics.caustic_chains_deferred``). Elsewhere this is how the split
+# is tested against the single kernel; the two render the same image up to
+# rounding, except that a path defers one receiver's chains per launch and a
+# second receiver behind a partly transparent first one lights as with
+# caustics off.
+pt_caustics_deferred = False
 # Denoise path-traced output (samples_per_pixel > 1) with the Open Image
 # Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
 # linear HDR color guided by the albedo/normal AOVs the path tracer

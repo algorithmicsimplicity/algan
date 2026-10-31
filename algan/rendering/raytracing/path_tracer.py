@@ -110,7 +110,9 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     PT_STAT_SHELL_RING,
     PT_STAT_TRUNC_SURFACES,
     PT_STATS_WIDTH,
+    pt_caustic_chains,
     pt_caustic_cover,
+    pt_caustic_request_width,
     pt_generate,
     pt_reduce,
     pt_shade,
@@ -1387,17 +1389,29 @@ def path_trace_render(
     # Without a caster the kernel compiles without them. With caustics off
     # the same chains still carry delta lights into a scattering interior
     # (``pt_subsurface_delta_lights``); a negative word tells the kernel that
-    # only medium vertices receive through them.
+    # only medium vertices receive through them. Where the shading kernel
+    # cannot hold the walk (``pt_caustics.caustic_chains_deferred``) it is
+    # compiled with ``caustics == 2``: it probes, and pt_caustic_chains walks.
     caustics = 0
     caster_offset = 0
+    cau_width = PT_CAU_WIDTH
     if int(shadows) and int(has_tri):
-        from algan.rendering.raytracing.pt_caustics import _prepare_casters
+        from algan.rendering.raytracing.pt_caustics import (
+            _prepare_casters,
+            caustic_chains_deferred,
+        )
 
         tri_shell, caster_offset, media_only = _prepare_casters(
             memory, merged, tri_shell, media_offset
         )
         nee_meta[_NM_CAUSTIC] = float(-caster_offset if media_only else caster_offset)
-        caustics = 1 if caster_offset > 0 else 0
+        if caster_offset > 0:
+            caustics = 1
+            if caustic_chains_deferred():
+                caustics = 2
+                cau_width = pt_caustic_request_width(
+                    max(1, int(rt_settings.pt_light_samples))
+                )
     from algan.rendering.raytracing.pt_volume import prepare_volumes
 
     pt_vol_i, pt_vol_f = prepare_volumes(
@@ -1418,7 +1432,7 @@ def path_trace_render(
         aov_bgw_flat = aovs[2].view(-1, 3)
 
     tile_pixels, wave_samples = _pt_tile_shape(
-        memory, n, samples, PT_CAU_WIDTH * 4 if caustics else 0
+        memory, n, samples, cau_width * 4 if caustics else 0
     )
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
     # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0,
@@ -1471,13 +1485,14 @@ def path_trace_render(
                     (pool if aovs is not None else 1, PT_AOV_WIDTH), f32
                 )
                 # The caustic coverage test's per-path record
-                # (pt_caustics_taichi.PT_CAU_WIDTH, budgeted through
+                # (pt_caustics_taichi.PT_CAU_WIDTH, plus the deferred chain
+                # requests with caustics == 2; budgeted through
                 # _pt_tile_shape's extra slot bytes) and the caustic tallies
                 # (the stats' last two columns): a kernel compiled without
                 # caustics reads neither, so it gets a one-cell stand-in and
                 # the tallies it had before, inside _PT_FIXED_BYTES.
                 pt_cau = memory.get_tensor(
-                    (pool, PT_CAU_WIDTH) if caustics else (1, 1), f32
+                    (pool, cau_width) if caustics else (1, 1), f32
                 )
                 pt_stats = memory.get_tensor(
                     (PT_STATS_WIDTH if caustics else PT_STAT_CAUSTIC_CHAIN,), i32
@@ -1777,6 +1792,56 @@ def path_trace_render(
                                 bvh_refit,
                                 pt_acc,
                                 pt_cau,
+                            )
+                        if caustics == 2:
+                            # The chains pt_shade left as requests, walked in
+                            # a kernel of their own (see caustics above).
+                            pt_caustic_chains(
+                                active,
+                                na,
+                                tri_bvh.kernel_blocks,
+                                tri_bvh.node_miss,
+                                tri_bvh.leaf_prim,
+                                tri_bvh.leaf_tspan,
+                                int(tri_bvh.first_leaf),
+                                merged["tri_pos"],
+                                merged["tri_norm"],
+                                pt_tri_extra,
+                                merged["tri_colors"],
+                                merged["tri_uvs"],
+                                merged["tri_tex_meta"],
+                                merged["textures"],
+                                int(merged["num_colored_triangles"]),
+                                bez_bvh.kernel_blocks,
+                                bez_bvh.node_miss,
+                                bez_bvh.leaf_prim,
+                                bez_bvh.leaf_tspan,
+                                int(bez_bvh.first_leaf),
+                                merged["circuit_meta"],
+                                merged["circuit_colors"],
+                                merged["circuit_border_colors"],
+                                merged["edges_2d"],
+                                merged["edge_accel"],
+                                merged["tri_mat_id"],
+                                merged["tri_mat"],
+                                light_pos,
+                                light_col,
+                                tri_shell,
+                                int(caster_offset),
+                                int(media_offset),
+                                float(layer_offset_triangles),
+                                bvh_refit,
+                                int(has_tri),
+                                int(has_bez),
+                                shadow_mode,
+                                pt_acc,
+                                pt_stats,
+                                pt_cau,
+                                pt_glass_energy,
+                                cam_proj_table,
+                                pt_vol_i,
+                                pt_vol_f,
+                                projected,
                             )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1

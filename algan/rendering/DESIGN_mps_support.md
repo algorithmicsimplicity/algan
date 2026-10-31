@@ -1176,7 +1176,7 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
 | G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
 | H | one fragment lands in the wrong pixel | 1 | 0 | **fixed** — §2.3f |
-| I | the caustic `pt_shade` is too large for Apple's shader compiler | 8 | 4 | renders **declined** on Metal; fitting the kernel is open — §4.8 |
+| I | the caustic `pt_shade` is too large for Apple's shader compiler | 8 | 0 | **fixed**: the walk runs in a kernel of its own on Metal — §4.8 |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
 **Two fixes took thirty of the thirty-two**, and neither was aimed at most of
@@ -1191,8 +1191,9 @@ from.
 
 **What was left was one test**: the `ti.real_func` compile failure (§4.3), a
 compiler defect a layer below Algan that blocks a test rather than a render.
-Cause I has since added four, a feature this backend cannot compile rather
-than a render it gets wrong (§4.8).
+Cause I added four for a while, a feature this backend could not compile
+rather than a render it got wrong, until the walk moved to a kernel of its own
+(§4.8).
 The other entry — the glossy prefilter render whose reflection was absent — is
 gone from the list without a fix to point at, because it never reproduced on
 master at all (§4.5 has the run table). That is the one way this list can
@@ -1587,16 +1588,41 @@ shadowed path-traced scene with a refracting scattering interior, because the
 chains are how a point, spot or directional light reaches inside one. So on a
 Mac every such scene failed, not only the opt-in feature.
 
-`pt_caustics._metal_declines_caustics` now keeps the kernel without the walk on
-Metal and warns once per process, which renders as with both switches off:
-glass casts its straight, tinted shadow, and a subsurface interior is lit by
-area lights and the environment only. Four tests assert what only the chains
-deliver — a point light focused through a glass plate, a delta light reaching
-a subsurface block — and are strict known failures under I. The other four
-pass: lossless glass leaves a furnace unchanged without the chains as well,
-and the straight-shadow test asserts what declining gives. Fitting the walk
-means taking it out of `pt_shade` into a kernel of its own, a wavefront stage
-the shade reads back, and that is a restructuring, not a fix to this arm.
+The first answer was to decline: keep the kernel without the walk on Metal,
+which renders as with both switches off, and list the four tests that assert
+what only the chains deliver -- a point light focused through a glass plate, a
+delta light reaching a subsurface block -- as strict known failures (run
+41159788488). The fix splits the walk out of `pt_shade` instead. Where the
+megakernel's caustic IR goes (after Quadrants' simplify passes, on CPU, which
+tracks the MSL ratio):
+
+| piece of the caustic block | IR lines |
+| --- | --- |
+| the Newton solve, its projections included | 22,063 |
+| the legs' shadow and medium queries | 20,317 |
+| the casters' material evaluation | 11,169 |
+| the admissibility test | 6,564 |
+| the light estimate after the walk | 3,348 |
+| the caster probe, the bookkeeping, the geometry term | 31,363 |
+
+Run 41163373007 compiled four trimmed variants of the kernel on the runner to
+find the limit. With only the probe left in (154,639 lines, about 10.6 MB of
+MSL) the kernel compiled in 48 s; with the walk's materials, legs,
+admissibility and light estimate back it failed at 13.5 MB of MSL, and with
+the legs alone back at 15.3 MB. So on Metal (`pt_caustics.caustic_chains_deferred`)
+`pt_shade` is compiled with `caustics == 2`: it probes each light sample's
+straight segment for casters -- which decides what the straight connection
+keeps, so it has to stay -- and leaves a request where a chain is to be
+walked, and a new kernel, `pt_caustic_chains`, walks them after it over the
+same active slots and adds their light (`path_tracer_taichi._MQ_HEAD` has the
+request's layout). The receiver's share of the firefly clamp rides along, so
+the sum is clamped as the single kernel clamps it. A path defers one
+receiver's chains per launch; a second receiver behind a partly transparent
+first one lights as with caustics off, and is no receiver for the coverage
+test either, so the two halves of the chain's MIS stay paired. CPU and CUDA
+keep the single kernel; `pt_caustics_deferred` selects the split there, and
+`test_deferred_chains_render_what_the_single_kernel_renders` holds the two to
+the same image.
 
 **The trace counters (1 test).** `ALGAN_TRACE_COUNTERS` failed inside the first
 traversal kernel's compile with `qd.thread_idx() is only available in cuda or

@@ -389,3 +389,76 @@ def _small():
     from test_path_tracer import SMALL_SETTINGS
 
     return SMALL_SETTINGS
+
+
+@pytest.mark.parametrize("scene", ["plate", "subsurface"])
+def test_deferred_chains_render_what_the_single_kernel_renders(tmp_path, scene):
+    """Where the shading kernel cannot hold the walk (Metal) it only probes
+    each light sample's shadow segment, and ``pt_caustic_chains`` walks the
+    chains it left as requests (``caustics == 2``; ``pt_caustics_deferred``
+    selects it anywhere). It is the same estimator split across two kernels,
+    so it renders the single kernel's image up to float rounding: here a
+    point light focused through a glass plate onto a floor with bounces left
+    under the firefly clamp, whose share of the clamp the split hands across,
+    and a delta light reaching a density-tracked subsurface interior through
+    its face.
+    """
+    from algan.rendering.taichi_runtime import taichi_arch_is_metal
+    from test_path_tracer import _render_scene_result
+
+    if taichi_arch_is_metal():
+        pytest.skip("Metal always defers the chains: there is no single kernel")
+    if scene == "plate":
+        build = _point_light_over_plate(True)
+        bounces, clamp, samples = 3, 1.0, 8
+        experimental = {"pt_caustics": True}
+    else:
+
+        def build(scene):
+            scene.set_background(BLACK)
+            Scene.clear_lights()
+            PointLight(
+                location=OUT * 15.0, color=WHITE, intensity=4000.0, decay=2
+            ).spawn(animate=False)
+            block = Prism(width=4, height=4, depth=0.6)
+            block.set_material(
+                MeshPhysicalMaterial(
+                    color=WHITE,
+                    transmission=1,
+                    ior=1.5,
+                    roughness=0,
+                    sigma_s=4.0,
+                    density=DensityGrid(torch.ones(2, 2, 2)),
+                )
+            )
+            block.move(OUT * 1.5)
+            block.spawn(animate=False)
+
+        bounces, clamp, samples = 2, 0, 16
+        experimental = {"pt_caustics": False, "pt_subsurface_delta_lights": True}
+    images = []
+    for deferred in (False, True):
+        image, result = _render_scene_result(
+            tmp_path,
+            f"{scene}-{deferred}.png",
+            build,
+            samples,
+            video=_small(),
+            max_bounces=bounces,
+            shadows=True,
+            linear_color_space=False,
+            tonemapping=False,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_firefly_clamp": clamp,
+                "pt_error_target": 0,
+                "pt_caustics_deferred": deferred,
+                **experimental,
+            },
+        )
+        _assert_no_caustic_truncation(result)
+        images.append(image[..., :3].double())
+    single, split = images
+    assert float(single.mean()) > 1.0
+    assert float((split - single).abs().max()) <= 1.0
+    assert float((split - single).abs().mean()) < 0.01
