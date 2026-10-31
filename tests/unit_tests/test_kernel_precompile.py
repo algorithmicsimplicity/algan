@@ -1013,10 +1013,15 @@ from algan.rendering.taichi_runtime import ensure_taichi_for_render
 from algan.rendering.post_processing.tonemap_kernels_taichi import tonemap_to_u8
 from algan.utils import taichi_source_key as sk
 
+from algan.settings._startup import render_device
+
 ensure_taichi_for_render()
 torch.manual_seed(0)
-frame = torch.rand((1, 8, 12, 4))
-out = torch.zeros((1, 8, 12, 3), dtype=torch.uint8)
+# On the render device, as a render's are: a precompile worker binds its
+# placeholders there, and on MPS a launch imports a device tensor as a Metal
+# ndarray but passes a host one as it is, which is another source key.
+frame = torch.rand((1, 8, 12, 4)).to(render_device())
+out = torch.zeros((1, 8, 12, 3), dtype=torch.uint8, device=render_device())
 args = (frame, out, 1, 1.0, 0, 1, 0, 0.49)
 mode = sys.argv[1]
 report = {}

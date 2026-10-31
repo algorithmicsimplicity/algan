@@ -160,6 +160,18 @@ def on_program_start():
     global _COUNTS
     _COUNTS = None
     if counting():
+        from algan.rendering import taichi_runtime
+
+        if not (taichi_runtime.taichi_arch_is_cpu() or taichi_runtime.taichi_arch_is_cuda()):
+            # Metal has neither the 64-bit atomics nor the thread index the
+            # counting sites use, and failed inside the first traversal
+            # kernel's compile with "qd.thread_idx() is only available in
+            # cuda or cpu or amdgpu context".
+            raise RuntimeError(
+                "ALGAN_TRACE_COUNTERS counts on the CPU and CUDA backends only "
+                "(it needs 64-bit atomics): render with ALGAN_RENDER_DEVICE=cpu "
+                "to count, or unset it."
+            )
         _COUNTS = ti.field(ti.i64, shape=(NUM_SLOTS * LANES,))
 
 
