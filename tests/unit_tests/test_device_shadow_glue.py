@@ -314,6 +314,16 @@ def test_the_device_glue_renders_what_the_host_glue_renders(config, tmp_path):
     assert torch.equal(host, device), int((host != device).sum())
 
 
+def _host_glue_only():
+    from algan.settings._startup import render_device
+
+    return render_device().type not in ("cuda", "cpu")
+
+
+@pytest.mark.skipif(
+    _host_glue_only(),
+    reason="tracer._device_shadow_glue keeps the host glue on this device",
+)
 def test_both_lane_schedules_write_every_slot_below_the_count_and_none_above():
     """Event-major and light-major traces agree, slot for slot.
 

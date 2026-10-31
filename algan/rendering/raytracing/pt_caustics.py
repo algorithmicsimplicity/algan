@@ -101,6 +101,22 @@ def _caster_mask(merged):
     return refracts & lit & opted & shadow
 
 
+def caustic_chains_deferred():
+    """Whether a caustic batch walks its chains in a kernel of their own.
+
+    The single caustic ``pt_shade`` cross-compiles to ~17 MB of MSL on Metal,
+    and Apple's compiler service drops its XPC connection on it (the pipeline
+    fails with ``RhiResult=-1``), so there the shading kernel is compiled with
+    ``caustics == 2``: it only probes each light sample's straight segment for
+    casters, and ``pt_caustic_chains`` walks the chains after it
+    (``path_tracer_taichi._MQ_HEAD``). Elsewhere ``pt_caustics_deferred``
+    selects the same split, which renders the same image up to rounding.
+    """
+    from algan.rendering.taichi_runtime import taichi_arch_is_metal
+
+    return bool(rt_settings.pt_caustics_deferred) or taichi_arch_is_metal()
+
+
 def _scattering_boundary_mask(merged):
     """``[rows, n]`` bool: triangles that bound a scattering interior.
 

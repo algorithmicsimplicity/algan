@@ -16,7 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from algan.rendering.raytracing import trace_counters_taichi as tc
+from algan.settings._startup import render_device
 
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parents[1]
@@ -43,6 +46,10 @@ def test_counting_is_off_and_compiled_out_by_default():
     assert "off" in tc.format_counts(tc.read())
 
 
+@pytest.mark.skipif(
+    render_device().type not in ("cpu", "cuda"),
+    reason="the counters count on the CPU and CUDA backends only (64-bit atomics)",
+)
 def test_counts_add_up_verify_finds_no_mismatch_and_pixels_do_not_move(tmp_path):
     env = dict(
         os.environ,
