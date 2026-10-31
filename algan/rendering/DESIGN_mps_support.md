@@ -1153,6 +1153,7 @@ section to update when one changes.
 | [34306711211](https://github.com/algorithmicsimplicity/algan/actions/runs/34306711211) (2026-09-09, the five repaired files and `tests/fast`, on the fix branch) | 92 passed, 4 skipped in 82 s |
 | [40306266933](https://github.com/algorithmicsimplicity/algan/actions/runs/40306266933) (2026-10-26, the weekly full run) | **12 failed**, 8472 passed, 360 skipped, 3 xfailed in 4445 s — one a path-tracer bias every arm shared (#247), eleven this arm's own from four causes (§4.8) |
 | [41159788488](https://github.com/algorithmicsimplicity/algan/actions/runs/41159788488) (2026-10-31, the four files of those eleven, on the fix branch) | 74 passed, 2 skipped, 4 xfailed in 347 s — the xfails are cause I's entries |
+| [41164965493](https://github.com/algorithmicsimplicity/algan/actions/runs/41164965493) (2026-10-31, the caustic files with the walk in a kernel of its own, on the fix branch) | 41 passed, 2 skipped in 313 s — all ten caustic renders pass, cause I's four among them; the skips are the CPU-only comparison of the split with the single kernel |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1622,7 +1623,10 @@ first one lights as with caustics off, and is no receiver for the coverage
 test either, so the two halves of the chain's MIS stay paired. CPU and CUDA
 keep the single kernel; `pt_caustics_deferred` selects the split there, and
 `test_deferred_chains_render_what_the_single_kernel_renders` holds the two to
-the same image.
+the same image (on five caustic scenes they render the same PNG bytes). Run
+41164965493 compiled the split on the runner -- `pt_shade` in 35-41 s,
+`pt_caustic_chains` in 17.5 s -- and passed all ten caustic renders, the four
+known failures among them, so cause I's entries are gone.
 
 **The trace counters (1 test).** `ALGAN_TRACE_COUNTERS` failed inside the first
 traversal kernel's compile with `qd.thread_idx() is only available in cuda or
