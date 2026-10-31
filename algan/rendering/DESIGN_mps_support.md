@@ -1152,6 +1152,7 @@ section to update when one changes.
 | [34302218686](https://github.com/algorithmicsimplicity/algan/actions/runs/34302218686) (2026-09-09, master at 2455d08) | **6 failed**, 3655 passed, 226 skipped, 1 xfailed in 2931 s — one stale strict XPASS (§4.5) and five regressions from that day's own Metal work, none of them a device defect (§4.6) |
 | [34306711211](https://github.com/algorithmicsimplicity/algan/actions/runs/34306711211) (2026-09-09, the five repaired files and `tests/fast`, on the fix branch) | 92 passed, 4 skipped in 82 s |
 | [40306266933](https://github.com/algorithmicsimplicity/algan/actions/runs/40306266933) (2026-10-26, the weekly full run) | **12 failed**, 8472 passed, 360 skipped, 3 xfailed in 4445 s — one a path-tracer bias every arm shared (#247), eleven this arm's own from four causes (§4.8) |
+| [41159788488](https://github.com/algorithmicsimplicity/algan/actions/runs/41159788488) (2026-10-31, the four files of those eleven, on the fix branch) | 74 passed, 2 skipped, 4 xfailed in 347 s — the xfails are cause I's entries |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1620,4 +1621,6 @@ different source key. The child now binds on the render device, as a render
 does; on CPU and CUDA that changes nothing.
 
 Run 41158150876 put the last three on the Mac arm: they pass (or skip, the
-counters and the glue) with the rest of their files.
+counters and the glue) with the rest of their files. Run 41159788488 then ran
+all four files with the decline in: 74 passed, 2 skipped, and the four entries
+under I strict-xfailed, with the decline's warning printed once.
