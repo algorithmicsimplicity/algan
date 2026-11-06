@@ -27,7 +27,7 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_int
-from algan.rendering.mps_compat import clamp_floor
+from algan.rendering.mps_compat import clamp_floor, gather_exact
 
 # Resolution of the two indices. Both are pure acceleration: a query that a
 # coarser index sends more edges to still exact-tests every one of them, so
@@ -524,9 +524,19 @@ def build_bezier_edge_acceleration(
     compact[:, BEZIER_SPATIAL_OFFSET_BASE:BEZIER_ACCEL_HEADER_SIZE] += spatial_base
 
     out = torch.empty((total_words,), dtype=torch.int32, device=device)
-    torch.index_select(
+    # Every header word goes through this gather, and few of them fit in 24
+    # bits: the bounds and inverse bin sizes are float32 bit patterns, past
+    # 2**24 for every float of magnitude between 2**-125 and 2**127, and the
+    # bin offsets pass it once the buffer does (the header alone does from
+    # 184,366 groups at the default bins). MPS's index_select hands an int32
+    # back as float32(value) (mps_compat._MPS_EXACT_INT_BITS). That moves a
+    # bound or a scale by up to 64 ulps, enough to send a scanline query to a
+    # bin that does not hold the edge it crosses, and a bin's begin or end onto
+    # a neighbouring entry of the edge lists. So the rows are gathered with
+    # gather_exact, which off MPS-friendly mode is this same index_select into
+    # ``out``.
+    gather_exact(
         compact,
-        0,
         compact_of_group,
         out=out[:header_words].view(num_groups, BEZIER_ACCEL_HEADER_SIZE),
     )

@@ -391,8 +391,11 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     return gather_exact(tensor, index)
 
 
-def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
-    """``tensor.index_select(0, index)`` for an integer whose low bits matter.
+def gather_exact(
+    tensor: torch.Tensor, index: torch.Tensor, *, out: torch.Tensor | None = None
+) -> torch.Tensor:
+    """``torch.index_select(tensor, 0, index, out=out)`` for an integer whose low
+    bits matter.
 
     :func:`gather_packed_key` is this function applied to the fragment key, and
     the ceiling it documents is a property of the **gather**, not of that key:
@@ -418,10 +421,30 @@ def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
     Restricted to int32 and int64 because those are the widths measured. A
     narrower integer cannot reach the ceiling and takes ``index_select``, which
     is one op rather than a dispatch this module has to keep vouching for.
+
+    A 2-D ``tensor`` gathers whole rows, as ``index_select(0, index)`` does.
+    The Bezier header is such a table (``bezier_acceleration``): one int32 row
+    per (frame, circuit) group, whose float bounds and bin scales are stored as
+    float32 bit patterns, past 2**24 for every float of magnitude between
+    2**-125 and 2**127, and whose bin offsets pass 2**24 once the header and
+    its edge lists do.
+    ``test_mps_friendly.py``'s
+    ``test_advanced_indexing_is_exact_above_the_mps_ceiling`` checks the 2-D
+    gather on the Apple GPU as well as the 1-D one.
+
+    ``out`` is ``index_select``'s: the rows are written into it, and it is
+    returned. Off the mode it goes straight to ``index_select``, so a caller
+    that writes into a preallocated buffer keeps doing exactly that. Advanced
+    indexing has no ``out=``, so in the mode the rows are gathered and then
+    copied in, which holds one transient copy of the result.
     """
     if not mps_friendly() or tensor.dtype not in (torch.int32, torch.int64):
-        return tensor.index_select(0, index)
-    return tensor[index]
+        if out is None:
+            return tensor.index_select(0, index)
+        return torch.index_select(tensor, 0, index, out=out)
+    if out is None:
+        return tensor[index]
+    return out.copy_(tensor[index])
 
 
 def unique_consecutive_exact(keys: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
