@@ -16,11 +16,11 @@ same way.
 The ordinary MPS route builds these tables on the CPU, since the merge moves
 to the render device only on CUDA (``settings.merge_on_gpu_active``), and
 uploads them byte for byte. So most of these tests reproduce the defect the
-way the rest of this family does: ``mps_rounding.round_integer_gathers``, or
-:func:`_round_integer_repeats`, makes the CPU's gathers round as MPS's do, and
-in MPS-friendly mode the tables must come back exactly as the exact gathers
-build them. The two ``apple_gpu`` tests build them on the Apple GPU whenever
-the machine has one.
+way the rest of this family does: ``mps_rounding.round_integer_gathers``
+makes the CPU's gathers round as MPS's do, with :func:`_round_integer_repeats`
+for the gather inside ``repeat_interleave``, and in MPS-friendly mode the
+tables must come back exactly as the exact gathers build them. The two
+``apple_gpu`` tests build them on the Apple GPU whenever the machine has one.
 """
 
 # No ``from __future__ import annotations``: it would turn the probe kernel's
@@ -265,7 +265,8 @@ def _round_integer_repeats(monkeypatch):
     moved, 55104562 to 55104560. ``round_integer_gathers`` cannot reach it,
     because torch's own index_select never goes through Python. A
     whole-number count is an expand and a copy, and the counts alone come
-    back as indices; both are left exact.
+    back as indices; both are left exact. The tests round the gathers as
+    well, as MPS does, so an exact repeat has to gather exactly too.
     """
     for owner in (torch, torch.Tensor):
         real = owner.repeat_interleave
@@ -322,6 +323,7 @@ def test_the_bin_intervals_survive_the_mps_repeat_interleave(mps_friendly, monke
     want = ba._expand_intervals(source, counts)
     assert want[0].numel() > FIRST_ROUNDED, "the entries should pass 2**24"
     _round_integer_repeats(monkeypatch)
+    round_integer_gathers(monkeypatch)
     got = ba._expand_intervals(source, counts)
     for name, g, w in zip(("rows", "offsets"), got, want):
         assert torch.equal(g, w), _differ(g, w, name, "moved through the expansion")

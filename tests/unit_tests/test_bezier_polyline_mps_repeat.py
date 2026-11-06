@@ -14,10 +14,11 @@ once a batch has that many vertices or edges.
 
 The ordinary MPS route samples on the CPU, since projection moves to the
 render device only on CUDA (``settings.project_on_gpu_active``), so most of
-these tests round the CPU's ``repeat_interleave`` as MPS's does
-(``test_bezier_header_mps_gather._round_integer_repeats``) and, in
-MPS-friendly mode, ask for exactly what the exact call gives. The
-``apple_gpu`` test samples on the Apple GPU whenever the machine has one.
+these tests round the CPU's ``repeat_interleave`` and gathers as MPS's do
+(``test_bezier_header_mps_gather._round_integer_repeats`` and
+``mps_rounding.round_integer_gathers``) and, in MPS-friendly mode, ask for
+exactly what the exact calls give. The ``apple_gpu`` test samples on the
+Apple GPU whenever the machine has one.
 """
 
 import pytest
@@ -30,7 +31,7 @@ from algan.rendering.raytracing.bezier_geometry_cache import (
 )
 from algan.rendering.raytracing.primitives import _packed_uniform_cubic_parameters
 from algan.settings import SETTINGS
-from tests.unit_tests.mps_rounding import FIRST_ROUNDED
+from tests.unit_tests.mps_rounding import FIRST_ROUNDED, round_integer_gathers
 from tests.unit_tests.test_bezier_header_mps_gather import _round_integer_repeats
 
 
@@ -76,6 +77,7 @@ def test_the_vertex_parameters_survive_the_mps_repeat_interleave(
         _packed_uniform_cubic_parameters(chords, torch.float32, vertices),
     )
     _round_integer_repeats(monkeypatch)
+    round_integer_gathers(monkeypatch)
     got = (
         _packed_uniform_cubic_parameters(chords, torch.float32, vertices, total=total),
         _packed_uniform_cubic_parameters(chords, torch.float32, vertices),
@@ -171,6 +173,7 @@ def test_the_cache_places_every_edge_past_the_ceiling(mps_friendly, monkeypatch)
     want, want_offsets = _build_cached_circuit_edges(None, _tagged_build, args, False)
     assert want.shape[1] > FIRST_ROUNDED
     _round_integer_repeats(monkeypatch)
+    round_integer_gathers(monkeypatch)
     got, got_offsets = _build_cached_circuit_edges(None, _tagged_build, args, False)
     assert torch.equal(got_offsets, want_offsets)
     assert torch.equal(got, want), _moved(got[..., 0], want[..., 0], "edge slots")
@@ -189,6 +192,7 @@ def test_frame_local_edges_keep_their_slots_past_the_ceiling(mps_friendly, monke
     )
     assert want.shape[1] > FIRST_ROUNDED
     _round_integer_repeats(monkeypatch)
+    round_integer_gathers(monkeypatch)
     got, got_offsets = _build_frame_local_circuit_edges(
         None, _tagged_build, args, False, cache=False
     )
