@@ -531,10 +531,11 @@ def _lexsort(*keys):
 
     The device arm (:func:`~algan.rendering.raytracing.device_sort.stable_lexsort`)
     is the same composition with both halves moved off torch: each pass is
-    Quadrants' radix sort, and the ``index_select`` that carries the running
-    permutation into the next key happens inside that sort's own seed loop. It
-    declines wherever it does not apply, which is everywhere but a GPU arch in
-    MPS-friendly mode today, and this falls straight through to the torch form.
+    Quadrants' radix sort, and the gather that carries the running permutation
+    into the next key happens inside that sort's own seed loop. It declines
+    unless ``ALGAN_DEVICE_RADIX_SORT`` asks for it on a GPU arch
+    (``device_sort.radix_sort_available``), so on MPS too this falls straight
+    through to the torch form.
 
     Its permutation is int32; widened here so every caller keeps the int64
     order ``torch.argsort`` hands back, which several of them pass on to a
@@ -545,9 +546,15 @@ def _lexsort(*keys):
         return order.to(torch.int64)
     order = None
     for key in reversed(keys):
-        k = key if order is None else key.index_select(0, order)
+        # ``gather_exact``: MPS's ``index_select`` returns an integer as
+        # ``float32(value)`` past 2**24 (``mps_compat._MPS_EXACT_INT_BITS``).
+        # The shell ceiling's key, ``pix * K + sid``, passes that, and rounded,
+        # two keys that differ only in their low bits sort as one, so their
+        # rows interleave by depth; the permutation passes it once a stream
+        # holds 2**24 rows. Off MPS-friendly mode this is ``index_select``.
+        k = key if order is None else gather_exact(key, order)
         o = torch.argsort(k, stable=True)
-        order = o if order is None else order.index_select(0, o)
+        order = o if order is None else gather_exact(order, o)
     return order
 
 
@@ -636,7 +643,8 @@ def _key_depth_order(key, depth, runs=None):
             key_run_order(runs, key, depth, order, key.numel(), True, True)
             return order
         order = torch.argsort(key, stable=True)
-        run_key = key.index_select(0, order)
+        # Exact on MPS as well: the key passes 2**24 there (``_lexsort``).
+        run_key = gather_exact(key, order)
         key_run_order(run_key, key, depth, order, key.numel(), False, True)
         return order
     if sheet_packed_sort:
@@ -681,8 +689,13 @@ def _segment_exclusive_prefix(values, seg, first):
     out = torch.zeros_like(values)
     if n < 2:
         return out
+    # ``gather_exact``, because this is the MPS-friendly arm and ``first``
+    # holds row positions: once a chunk holds 2**24 fragments they pass what an
+    # MPS ``index_select`` carries exactly, and a start rounded down would add
+    # the previous segment's areas to this one's spend (rounded up, drop some
+    # of its own).
     pos = torch.arange(n, dtype=torch.int64, device=values.device).sub_(
-        first.index_select(0, seg)
+        gather_exact(first, seg)
     )
     zero = torch.zeros((), dtype=values.dtype, device=values.device)
     # Exclusive: each row starts from its in-segment predecessor's value, and
@@ -2967,7 +2980,19 @@ def compact_sheets(
             # ``index_select`` copies, so the in-place floor below never
             # touches ``cov_o``.
             c2 = cov_o.index_select(0, o2).to(accumulate_dtype())
-            k2 = key.index_select(0, o2)
+            # ``gather_exact``, as every gather of this key must be. It is
+            # ``pix * K + sid``, which passes the 2**24 an MPS ``index_select``
+            # carries exactly (``mps_compat._MPS_EXACT_INT_BITS``) wherever the
+            # pixel id times the surface bound does: from pixel row 1456 of a
+            # 4K frame's 2160 with two surfaces, from row 971 of a 1080p
+            # frame's 1080 with eight, and in any frame of a chunk past the
+            # first few. There the key comes back as ``float32(key)``, two
+            # solids' segments in one pixel read as one, and one allowance
+            # spent across both keeps one solid's far shell and drops the
+            # other solid: on a real frame's fragments in a 4K window, 491 of
+            # 3468 sheets moved, by up to a whole pixel. Off MPS-friendly mode
+            # this is ``index_select``.
+            k2 = gather_exact(key, o2)
             del key
             seg_start = torch.ones(n, dtype=torch.bool, device=device)
             if n > 1:
@@ -2986,8 +3011,12 @@ def compact_sheets(
                 q2 = (c2 * SHELL_SPEND_ONE).to(torch.int64)
                 excl_q = torch.cumsum(q2, 0).sub_(q2)
                 del q2
+                # Q32 integers are past 2**24 from the first fragment on, so
+                # they gather exactly too. MPS-friendly mode never takes this
+                # float64 branch today, and off it ``gather_exact`` is
+                # ``index_select``; this keeps the spend exact if it ever does.
                 spent = (
-                    (excl_q - excl_q.index_select(0, first).index_select(0, seg))
+                    (excl_q - gather_exact(gather_exact(excl_q, first), seg))
                     .to(c2.dtype)
                     .mul_(SHELL_SPEND_QUANTUM)
                 )

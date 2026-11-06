@@ -146,6 +146,11 @@ ALWAYS_PRE_PR = (
     # and rough glass with and without the prefilter.
     "tests/unit_tests/test_sheet_resolve_shading.py::",
     "tests/unit_tests/test_glossy_prefilter.py::test_rough_glass_reflects_the_same_with_and_without_the_prefilter",
+    # The closed-shell ceiling's torch arm and its segment order keep their
+    # integer gathers exact past MPS's 2**24: a real frame's fragments in a 4K
+    # window, and a float32 spend over 2**24 rows.
+    "tests/unit_tests/test_sheet_chain_kernels.py::test_the_shell_ceiling_keeps_its_segments_past_the_mps_gather_ceiling",
+    "tests/unit_tests/test_sheet_chain_kernels.py::test_the_float32_segment_prefix_finds_its_rows_past_the_mps_gather_ceiling",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")

@@ -16,10 +16,25 @@ convention in ``test_sheet_compaction.py``).
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 import torch
 
+from algan import (
+    BLUE,
+    GREEN,
+    RED,
+    RIGHT,
+    UP,
+    Cube,
+    Off,
+    Scene,
+    Square,
+    VideoSettings,
+)
 from algan.rendering.mps_compat import kernel_index
+from algan.rendering.raytracing import sheets
 from algan.rendering.raytracing.raster_pipeline import (
     _class_pairs_flat,
     raster_chunk,
@@ -35,8 +50,10 @@ from algan.rendering.raytracing.sheet_compact_taichi import (
     solid_shell_ceiling,
 )
 from algan.rendering.raytracing.sheets import _lexsort, _segment_exclusive_prefix
+from algan.scene_manager import SceneManager
 from algan.settings import SETTINGS
 from algan.taichi_compat import template_dtype, ti
+from tests.unit_tests.mps_rounding import round_integer_gathers
 
 EXPERIMENTAL = SETTINGS.raytracing.experimental
 # Dtype template arguments as the renderer passes them (template_dtype): a raw
@@ -331,6 +348,294 @@ def test_float32_segment_prefix_matches_the_float64_global_difference():
             if sseg[i] == sseg[i - 1]:
                 serial[i] = serial[i - 1] + values[i - 1]
         assert torch.allclose(got, serial, atol=1e-6), n
+
+
+def test_the_float32_segment_prefix_finds_its_rows_past_the_mps_gather_ceiling(
+    monkeypatch,
+):
+    """The torch arm's float32 spend (``_segment_exclusive_prefix``) places a
+    row in its segment by gathering the segment's first row, a stream
+    position. Once a stream holds 2**24 rows, MPS's ``index_select`` rounds
+    that position through a float32 (``mps_compat._MPS_EXACT_INT_BITS``), and
+    a row then counts the previous segment's area as spent, or forgets one of
+    its own segment's.
+
+    Three-row segments of unit area past 2**24 rows, in MPS-friendly mode
+    with integer gathers rounding as on MPS: each row must have spent exactly
+    its place in its segment, which holds only while the gather goes through
+    ``gather_exact``. On MPS tensors where MPS is the render device. The
+    segment ids are built on the CPU, because MPS also rounds an int64 ``//``.
+    """
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    device = SETTINGS.computing.render_device
+    n = (1 << 24) + (1 << 16)
+    seg = (torch.arange(n) // 3).to(device)
+    first = torch.arange(0, n, 3).to(device)
+    round_integer_gathers(monkeypatch)
+    got = _segment_exclusive_prefix(torch.ones(n, device=device), seg, first)
+    moved = int((got.cpu() != (torch.arange(n) % 3).to(torch.float32)).sum())
+    assert not moved, (
+        f"{moved} of {n} rows spent another segment's area or lost their own"
+    )
+
+
+# ----------------------- the ceiling past MPS's integer gather ceiling
+
+#: The merged tables ``compact_sheets`` reads.
+_COMPACTION_TABLES = ("tri_obj", "tri_closed", "tri_pos", "tri_norm")
+#: The 4K frame a captured 96x54 frame is moved into, and the window's first
+#: pixel, (column, row): far enough along the frame's pixel ids that a ceiling
+#: key passes 2**24.
+_FRAME_4K = (3840, 2160)
+_WINDOW_ORIGIN = (1800, 1600)
+
+
+def _two_overlapping_cubes_and_a_pane():
+    """Two translucent cubes overlapping on screen and in depth, and a pane
+    in front of both. The cubes are two declared closed surfaces that share
+    pixels, so the ceiling sees two (pixel, surface) segments side by side;
+    the pane is a circuit, and its fragments pass through on keys of their own.
+    """
+    near = Cube(size=3.0, color=RED, opacity=0.5)
+    near.rotate(30, UP).rotate(20, RIGHT).move_to((-0.8, 0.0, 0.0))
+    near.spawn(animate=False)
+    far = Cube(size=3.0, color=BLUE, opacity=0.5)
+    far.rotate(-25, UP).rotate(15, RIGHT).move_to((0.9, 0.3, -1.0))
+    far.spawn(animate=False)
+    pane = Square(size=3.0, color=GREEN, fill_opacity=0.4, stroke_width=0)
+    pane.move_to((0.0, -0.8, 2.0)).spawn(animate=False)
+
+
+def _copied(value):
+    return value.clone() if torch.is_tensor(value) else value
+
+
+def _captured_compaction(build):
+    """One 96x54 frame of ``build``, rendered in MPS-friendly mode, and its
+    sheet compaction as the renderer called it.
+
+    Returned as ``compact_sheets``' arguments by name. The fragment stream and
+    the merged tables are copies, because they are arena views that the
+    renderer reuses once the chunk is done. Settings are restored afterwards,
+    so a module-scoped fixture can call this once for every test using it.
+    """
+    real = sheets.compact_sheets
+    calls = []
+
+    def capture(*args, **kwargs):
+        if not calls:
+            bound = inspect.signature(real).bind(*args, **kwargs).arguments
+            call = {
+                name: _copied(value)
+                for name, value in bound.items()
+                if name not in ("coverage", "merged", "memory")
+            }
+            call["coverage"] = {k: _copied(v) for k, v in bound["coverage"].items()}
+            call["merged"] = {
+                k: bound["merged"][k].clone()
+                for k in _COMPACTION_TABLES
+                if k in bound["merged"]
+            }
+            calls.append(call)
+        return real(*args, **kwargs)
+
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    try:
+        with pytest.MonkeyPatch.context() as patched:
+            patched.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+            patched.setattr(sheets, "compact_sheets", capture)
+            SETTINGS.computing.set(mps_friendly=True)
+            SETTINGS.raytracing.set(shadows=False, samples_per_pixel=1)
+            SETTINGS.raytracing.experimental.hybrid_raster = True
+            video = VideoSettings(
+                resolution=(96, 54), frames_per_second=10, supersampling=1
+            )
+            with Scene(video_settings=video) as scene:
+                with Off():
+                    build()
+                # A lazy iterator: the frame renders as it is drawn from.
+                for _frame in scene.get_frames(0, 1):
+                    pass
+    finally:
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+    assert calls, "the frame was not compacted into sheets"
+    return calls[0]
+
+
+@pytest.fixture(scope="module")
+def cubes_in_a_4k_window():
+    """``_two_overlapping_cubes_and_a_pane``'s compaction, in a 4K window."""
+    return _in_a_4k_window(_captured_compaction(_two_overlapping_cubes_and_a_pane))
+
+
+def _in_a_4k_window(call):
+    """The captured compaction, its pixels moved into a window of a 4K frame.
+
+    ``compact_sheets`` reads a pixel id only to find its frame and to group by
+    it, and the band rule reads per-frame tables rather than pixel coordinates,
+    so this changes the ids and nothing else. That is the point: the ceiling
+    keys each fragment by ``pixel * (surface_bound + 2) + surface``, which here
+    passes 2**24 with only two surfaces. The ids are computed on the CPU,
+    because MPS also rounds an int64 ``//`` (DESIGN_mps_support.md §2.3b).
+    """
+    width = call["width"]
+    coverage = dict(call["coverage"])
+    n, covered = coverage["num_fragments"], coverage["num_covered"]
+    x0, y0 = _WINDOW_ORIGIN
+
+    def place(pix):
+        assert int(pix.max()) < width * call["height"], "one frame, not a chunk"
+        return (y0 + pix // width) * _FRAME_4K[0] + x0 + pix % width
+
+    key = coverage["frag_key"][:n]
+    host = key.cpu()
+    coverage["frag_key"] = ((place(host >> 32) << 32) | (host & 0xFFFFFFFF)).to(
+        key.device
+    )
+    ids = coverage["covered_idx"][:covered]
+    coverage["covered_idx"] = place(ids.cpu().to(torch.int64)).to(ids)
+    return {**call, "coverage": coverage, "width": _FRAME_4K[0], "height": _FRAME_4K[1]}
+
+
+def _ceiling_keys_one_float_holds(call):
+    """How many pixels hold two closed surfaces whose ceiling keys round to one
+    float32, and the largest key: what makes this stream a test of the gathers.
+
+    The keys are ``compact_sheets``' own, ``pix * K + sid`` with ``K`` the
+    batch's largest surface id plus two, rebuilt on the CPU.
+    """
+    coverage, merged = call["coverage"], call["merged"]
+    n = coverage["num_fragments"]
+    tri_obj, tri_closed = merged["tri_obj"].cpu(), merged["tri_closed"].cpu()
+    assert tri_obj.shape[0] == tri_closed.shape[0] == 1, "a still frame's tables"
+    ref = coverage["frag_ref"][:n].cpu().to(torch.int64)
+    safe = ref.clamp_min(0)
+    closed = (ref >= 0) & (tri_closed[0, safe] > 0.5)
+    K = int(tri_obj.max()) + 2
+    pix = coverage["frag_key"][:n].cpu() >> 32
+    keys = torch.unique((pix * K + tri_obj[0, safe].to(torch.int64))[closed])
+    same_pixel = keys[1:] // K == keys[:-1] // K
+    one_float = keys[1:].to(torch.float32) == keys[:-1].to(torch.float32)
+    return int((same_pixel & one_float).sum()), int(keys.max())
+
+
+def _compact(call, *, ceiling_kernel, pixel_sort):
+    """The captured compaction, run again with the ceiling's arms chosen.
+
+    ``ceiling_kernel`` picks the ceiling's spend (the kernel or its torch arm),
+    and ``pixel_sort`` how its segments are ordered (each pixel's run sorted by
+    ``key_run_order``, or ``_lexsort``'s torch fallback over the stream). Each
+    run gets its own copy of the merged tables, so no run reuses a table
+    another one cached on them.
+    """
+    arguments = {
+        **call,
+        "merged": dict(call["merged"]),
+        "memory": None,
+        "persist_output": False,
+        "resolve_only": False,
+    }
+    with SETTINGS.raytracing.experimental.override(
+        sheet_shell_ceiling_kernel=ceiling_kernel, sheet_pixel_sort=pixel_sort
+    ):
+        return sheets.compact_sheets(**arguments)
+
+
+def _rows_differing(a, b):
+    """How many leading-dimension rows of ``a`` and ``b`` differ in any bit."""
+    if a.dtype.is_floating_point:
+        bits = torch.int32 if a.dtype == torch.float32 else torch.int64
+        a, b = a.view(bits), b.view(bits)
+    ne = a != b
+    return int(ne.reshape(ne.shape[0] if ne.dim() else 1, -1).any(1).sum())
+
+
+def _assert_same_sheets(got, want, *, bitwise, what):
+    """``got`` makes ``want``'s sheets: every output bit for bit, or, where the
+    device sums in no fixed order or the arms add a segment's areas in a
+    different order, the same sheets with coverage within float32 noise.
+    """
+    assert set(got) == set(want), what
+    assert got["num_sheets"] == want["num_sheets"], what
+    names = sorted(want) if bitwise else ["sheet_key", "sheet_offsets"]
+    moved = []
+    for name in names:
+        a, b = got[name], want[name]
+        if not torch.is_tensor(b):
+            assert a == b, f"{what} {name}"
+            continue
+        assert a.dtype == b.dtype, f"{what} {name}"
+        assert a.shape == b.shape, f"{what} {name}"
+        if not _bits_equal(a, b):
+            by = ""
+            if a.dtype.is_floating_point:
+                by = f" by up to {float((a.double() - b.double()).abs().max()):.3g}"
+            moved.append(f"{name} in {_rows_differing(a, b)}{by}")
+    off = (got["sheet_cov"].double() - want["sheet_cov"].double()).abs()
+    if not bitwise and bool((off > 1e-5).any()):
+        moved.append(
+            f"sheet_cov in {int((off > 1e-5).sum())} by up to {float(off.max()):.3g}"
+        )
+    assert not moved, f"{what} {', '.join(moved)} of {want['num_sheets']} sheets"
+
+
+@pytest.mark.parametrize(
+    ("ceiling_kernel", "pixel_sort"),
+    [(False, True), (False, False), (True, False)],
+    ids=["torch-ceiling", "torch-ceiling-torch-sort", "torch-sort"],
+)
+def test_the_shell_ceiling_keeps_its_segments_past_the_mps_gather_ceiling(
+    monkeypatch, cubes_in_a_4k_window, ceiling_kernel, pixel_sort
+):
+    """MPS's ``index_select`` returns an integer as ``float32(value)``, exact
+    only through 2**24 (``mps_compat._MPS_EXACT_INT_BITS``), and the closed-shell
+    ceiling's segment key passes that: it is ``pixel * (surface_bound + 2) +
+    surface``, so two solids in one pixel of a 4K frame's last third of pixel
+    rows, or of a 1080p frame's last tenth with eight surfaces, can have keys
+    one float32 cannot tell apart.
+    Gathered that way, the torch arm merges the two segments and spends one
+    allowance across both solids: the near one keeps its far shell, and the
+    far one is dropped. ``_lexsort``'s torch fallback, which orders the
+    segments when the per-pixel sort kernel is off, gathers the key too, and
+    with it rounded the segments interleave, so even the kernel arm clamps
+    each crossing on its own.
+
+    A real frame's fragments, moved into a 4K window (``_in_a_4k_window``), in
+    MPS-friendly mode with integer gathers rounding as on MPS
+    (``round_integer_gathers``): each arm must compact them exactly as it does
+    with exact gathers, and as the kernel arm over the per-pixel sort does,
+    within float32 noise (in that mode the torch arm adds a segment's areas
+    in a different order from the kernel). That holds only while every
+    integer gather on the ceiling's path goes through ``gather_exact``. Run on
+    MPS tensors where MPS is the render device, where the gathers round of
+    their own accord.
+    """
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    call = cubes_in_a_4k_window
+    merging, widest = _ceiling_keys_one_float_holds(call)
+    assert widest > 2**24, "no ceiling key passes 2**24 here"
+    assert merging > 0, (
+        "no two surfaces' ceiling keys round to one float32 here, so this "
+        "proves nothing"
+    )
+
+    want = _compact(call, ceiling_kernel=True, pixel_sort=True)
+    exact = _compact(call, ceiling_kernel=ceiling_kernel, pixel_sort=pixel_sort)
+    round_integer_gathers(monkeypatch)
+    got = _compact(call, ceiling_kernel=ceiling_kernel, pixel_sort=pixel_sort)
+
+    # The ceiling clipped the far shells, so the comparisons are not vacuous.
+    raw = float(call["coverage"]["frag_cov"].double().sum())
+    assert float(want["sheet_cov"].double().sum()) < raw - 100.0
+
+    # Bit for bit on the CPU; elsewhere the float32 sums have no fixed order.
+    bitwise = want["sheet_cov"].device.type == "cpu"
+    _assert_same_sheets(got, exact, bitwise=bitwise, what="rounding the gathers moved")
+    _assert_same_sheets(got, want, bitwise=False, what="the arms disagree on")
 
 
 # ------------------------------------------------------- band stats fusion
