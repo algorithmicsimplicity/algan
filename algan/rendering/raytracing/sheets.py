@@ -3407,10 +3407,14 @@ def compact_sheets(
     # runs and the outputs above are exactly what they were.
     if sample_depths is not None:
         ppf = int(width) * int(height)
+        # Exact: on MPS ``index_select`` rounds a triangle index past 2**24 to
+        # a neighbour (``raster_pipeline._gather_fragment_arrays``), and the
+        # neighbour's surface would then be ``sheet_sid`` below, so a subject
+        # could miss an enforcer of another surface or cede to its own.
         rep_ref = (
             final_records["sheet_ref"]
             if final_records is not None
-            else frag_ref.index_select(0, rep_final)
+            else gather_exact(frag_ref, rep_final)
         )
         is_tri_sheet = rep_ref >= 0
         low = sheet_msk_final & AA_MASK_ALL
@@ -3516,7 +3520,11 @@ def compact_sheets(
             del sheet_msk_final
         out = {
             "sheet_key": sheet_key,
-            "sheet_ref": frag_ref.index_select(0, rep_final),
+            # Exact: from a batch's 65,536th circuit on a circuit's ref passes
+            # 2**24, and through MPS's ``index_select`` a filled sheet would
+            # shade as the previous circuit's border
+            # (``raster_pipeline._gather_fragment_arrays``).
+            "sheet_ref": gather_exact(frag_ref, rep_final),
             "sheet_ab": frag_ab.index_select(0, rep_final),
             "sheet_wgt": sheet_wgt,
             "sheet_wmsk": sheet_wmsk,
@@ -3557,9 +3565,10 @@ def compact_sheets(
     out = {
         "sheet_key": sheet_key,
         "sheet_pix": sheet_pix,
+        # Exact, as in the ``resolve_only`` return above.
         "sheet_ref": final_records["sheet_ref"]
         if final_records is not None
-        else frag_ref.index_select(0, rep_final),
+        else gather_exact(frag_ref, rep_final),
         "sheet_ab": final_records["sheet_ab"]
         if final_records is not None
         else frag_ab.index_select(0, rep_final),

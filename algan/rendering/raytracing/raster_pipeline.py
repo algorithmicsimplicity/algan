@@ -2113,15 +2113,22 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
         or not kernel_extents_fit(ab.numel(), 2 * m)
     ):
         # ``key`` is the packed 64-bit fragment key and takes the split gather
-        # (see ``gather_packed_key``), and ``msk`` the exact one too: its
-        # emission flags reach bit 29 (``_AA_NEAR_CUT_BIT``), past the 2**24
-        # an MPS ``index_select`` carries exactly, and a rounded mask word has
-        # lost its sample bits (``sheets.compact_sheets``, ``msk_o``). The
-        # other four go straight through. Off MPS-friendly mode all are
+        # (see ``gather_packed_key``), and ``ref`` and ``msk`` the exact one
+        # too, because both pass the 2**24 an MPS ``index_select`` carries
+        # exactly. ``msk``'s emission flags reach bit 29 (``_AA_NEAR_CUT_BIT``),
+        # and a rounded mask word has lost its sample bits
+        # (``sheets.compact_sheets``, ``msk_o``). ``ref`` is a triangle index
+        # or a circuit's ``-((circuit << 8) + border weight + 1)``
+        # (``raster_taichi._pack_bez_ref``), which passes 2**24 from a batch's
+        # 65,536th circuit on. Rounded, a filled fragment (weight 0) decodes
+        # as the previous circuit's border and is shaded as that, and a
+        # triangle index moves to a neighbour or one past the last. The other
+        # three go straight through. Off MPS-friendly mode all are
         # ``index_select``.
         return (
             gather_packed_key(key, idx),
-            *(t.index_select(0, idx) for t in (ref, ab, cov)),
+            gather_exact(ref, idx),
+            *(t.index_select(0, idx) for t in (ab, cov)),
             gather_exact(msk, idx),
             opq.index_select(0, idx),
         )
@@ -3289,7 +3296,9 @@ def prepare_sparse_raster_coverage(
                 # here than the fused gather's traffic saving (see its
                 # docstring).
                 key_s = gather_packed_key(key_s, keep_idx)
-                ref_s = ref_s.index_select(0, keep_idx)
+                # Exact: a circuit's ref passes 2**24 from the batch's 65,536th
+                # circuit on (``_gather_fragment_arrays``).
+                ref_s = gather_exact(ref_s, keep_idx)
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)
                 # Exact: a near-cut word passes 2**24 (``_gather_fragment_arrays``).
@@ -4015,12 +4024,17 @@ def shade_sparse_raster_coverage(
             # kernel reads as "no identity" and traces with the old epsilon).
             identity_on = bool(rt_settings.shadow_identity_reject)
             if identity_on:
+                # Exact, as in ``_gather_fragment_arrays``: a triangle index
+                # passes 2**24 once a frame holds that many triangle columns.
+                # Rounded, it names a neighbouring triangle, so the self-hit
+                # floor goes to that one and a hit on the event's own triangle
+                # near ``t = 0`` can shadow it, or it names one past the last
+                # and the trace reads ``tri_obj`` out of range.
+                slice_refs = coverage["sheet_ref"][s_start:s_end]
                 ev_src_prim = (
                     ordered_sources
                     if ordered_sources is not None
-                    else coverage["sheet_ref"][s_start:s_end]
-                    .index_select(0, acc_idx)
-                    .to(torch.int32)
+                    else gather_exact(slice_refs, acc_idx).to(torch.int32)
                 )
                 eps_self, eps_near = _shadow_identity_epsilons(merged)
             else:
