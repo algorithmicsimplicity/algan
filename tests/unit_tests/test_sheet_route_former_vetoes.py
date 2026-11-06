@@ -35,7 +35,14 @@ from algan import (
     Square,
     VideoSettings,
 )
+from algan.rendering import fragment_capture
 from algan.rendering.raytracing import raster_pipeline, tracer
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MASK_ALL as MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_NEAR_CUT_BIT as NEAR_CUT,
+)
 from algan.scene_manager import SceneManager
 
 RES = (96, 54)
@@ -234,6 +241,78 @@ def test_the_near_plane_opens_a_translucent_flat_solid(routes):
     assert float(off.max()) <= 48, (
         f"{int((off > 48).sum())} pixels off by up to {float(off.max()):.0f}"
     )
+
+
+def _rounding(gather):
+    """``gather`` as MPS answers it: an integer comes back as ``float32(value)``,
+    exact only through 2**24 (DESIGN_mps_support.md §2.3b).
+    """
+
+    def rounded(*args, **kwargs):
+        out = gather(*args, **kwargs)
+        if out.dtype in (torch.int32, torch.int64):
+            out.copy_(out.to(torch.float32).to(out.dtype))
+        return out
+
+    return rounded
+
+
+def _captured_frame(build, near):
+    fragment_capture.arm()
+    try:
+        image = _frame(build, near=near)
+    finally:
+        records = fragment_capture.disarm()
+    return image, records
+
+
+@pytest.mark.parametrize(
+    ("build", "near"),
+    [(_translucent_cube, 18.5), (_cut_sphere, 18.0)],
+    ids=["translucent_cube", "opaque_sphere"],
+)
+def test_a_near_cut_mask_word_survives_the_mps_integer_gather(monkeypatch, build, near):
+    """MPS's ``index_select`` and ``torch.gather`` round an integer through a
+    float32, and the near cut's flag (bit 29) lifts a cut fragment's mask word
+    past the 2**24 that carries exactly: rounded, the word's low six bits are
+    gone, and with them most of its sample set. On the Apple GPU that moved
+    142 cut fragments' samples on the cube above and took one of its rim
+    pixels 58 levels off the reference. The sphere's fragments are
+    material-opaque and keep the bit into the sheet compaction, whose own
+    gathers round it again.
+
+    The CPU gathers exactly, so this reproduces the defect: MPS-friendly mode
+    with both gathers rounding integers must give exactly the frame, sheet
+    keys and sheet masks the exact gathers give. That holds only while every
+    gather of a mask word goes through ``mps_compat.gather_exact``.
+    """
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    want, want_records = _captured_frame(build, near)
+
+    for owner in (torch.Tensor, torch):
+        for name in ("index_select", "gather"):
+            monkeypatch.setattr(owner, name, _rounding(getattr(owner, name)))
+    word = torch.tensor([NEAR_CUT | MASK_ALL], dtype=torch.int32)
+    assert int(word.index_select(0, torch.zeros(1, dtype=torch.int64))) != int(word), (
+        "the simulated MPS rounding is not in effect, so this test proves nothing"
+    )
+
+    got, got_records = _captured_frame(build, near)
+    moved = _off(got, want)
+    same = torch.equal(got, want)
+    assert same, (
+        f"{int((moved > 0).sum())} pixels moved, by up to {float(moved.max()):.0f}"
+    )
+    assert len(got_records) == len(want_records) == 1
+    # The records the rounding corrupts, exactly. Not the sheet weights: in
+    # this mode they are float32 sums (``accumulate_dtype``), which an Apple
+    # GPU adds in no fixed order (DESIGN_mps_support.md §2.4). There each of
+    # 25 renders of the sphere moved 57 to 75 of its 1973 weights against the
+    # first, by up to 2.4e-7, while its frame, keys and masks held to the bit.
+    for field in ("sheet_key", "sheet_mask"):
+        same = torch.equal(got_records[0][field], want_records[0][field])
+        assert same, f"the rounded gathers moved the sheets' {field}"
 
 
 def _three_depths():
