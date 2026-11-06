@@ -122,15 +122,27 @@ def _expand_intervals(
         return empty, empty
 
     selected_counts = counts[source]
-    expanded_source = torch.repeat_interleave(source, selected_counts)
+    # Not repeat_interleave(values, counts): torch computes that as
+    # values.index_select(0, repeat_interleave(counts)), and MPS's index_select
+    # hands an integer back as float32(value) (mps_compat._MPS_EXACT_INT_BITS).
+    # The interval starts pass 2**24 once a chunk expands to that many entries,
+    # which 2**22 pairs reach at four bins apiece, and a rounded start shifts
+    # its entries' local offsets into a neighbouring bin. With 6000 triangles
+    # moving over 100 frames that changed 1.5 million of the 77 million bin
+    # entries, and 64,789 of 1.8 million points inside the triangles read as
+    # outside. So the rows are expanded once, as indices, and both columns
+    # gathered with gather_exact, which off MPS-friendly mode is that same
+    # index_select.
+    rows = torch.repeat_interleave(selected_counts)
+    expanded_source = gather_exact(source, rows)
     total = expanded_source.numel()
     if total == 0:
         empty = torch.empty((0,), dtype=torch.long, device=source.device)
         return empty, empty
 
     interval_starts = selected_counts.cumsum(dim=0) - selected_counts
-    local_offsets = torch.arange(total, device=source.device) - torch.repeat_interleave(
-        interval_starts, selected_counts
+    local_offsets = torch.arange(total, device=source.device) - gather_exact(
+        interval_starts, rows
     )
     return expanded_source, local_offsets
 

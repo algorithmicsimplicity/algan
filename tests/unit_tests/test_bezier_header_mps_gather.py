@@ -1,4 +1,4 @@
-"""The Bezier edge tables' header, through MPS's integer gather.
+"""The Bezier edge tables, through MPS's integer gather.
 
 ``build_bezier_edge_acceleration`` gives every (frame, circuit) group a
 header -- its edge range, bounds, inverse bin sizes and bin offsets -- and
@@ -8,15 +8,19 @@ writes all of them with one gather of a compact int32 table. On an Apple GPU
 24 bits. The bounds and inverse bin sizes are float32 bit patterns, past 2**24
 for every float of magnitude between 2**-125 and 2**127, and the bin offsets
 pass it once the buffer does. ``mps_compat.gather_exact`` is the gather that
-carries them.
+carries them. The bins themselves are listed by ``_expand_intervals``, whose
+interval starts pass 2**24 in a large chunk; ``repeat_interleave`` with a
+tensor of counts is that same gather inside torch, so they are gathered the
+same way.
 
 The ordinary MPS route builds these tables on the CPU, since the merge moves
 to the render device only on CUDA (``settings.merge_on_gpu_active``), and
-uploads them byte for byte. So the first three tests reproduce the defect the
-way the rest of this family does: ``mps_rounding.round_integer_gathers`` makes
-the CPU's gathers round as MPS's do, and in MPS-friendly mode the tables must
-come back exactly as the exact gathers build them. The last test builds them
-on the Apple GPU whenever the machine has one.
+uploads them byte for byte. So most of these tests reproduce the defect the
+way the rest of this family does: ``mps_rounding.round_integer_gathers``, or
+:func:`_round_integer_repeats`, makes the CPU's gathers round as MPS's do, and
+in MPS-friendly mode the tables must come back exactly as the exact gathers
+build them. The two ``apple_gpu`` tests build them on the Apple GPU whenever
+the machine has one.
 """
 
 # No ``from __future__ import annotations``: it would turn the probe kernel's
@@ -250,6 +254,79 @@ def test_a_point_inside_a_circuit_reads_inside_through_the_mps_integer_gather(
     assert outside == 0, f"{outside} of {v.numel()} inside points read outside"
 
 
+def _round_integer_repeats(monkeypatch):
+    """Make ``repeat_interleave`` with a tensor of counts round every integer
+    it returns through a float32, as MPS's does, until ``monkeypatch`` undoes
+    it.
+
+    torch computes that form as ``values.index_select(0,
+    repeat_interleave(counts))``, so on an Apple GPU it inherits the gather's
+    rounding: run 42299224973 measured 4087 int64 values in [2**24, 2**26)
+    moved, 55104562 to 55104560. ``round_integer_gathers`` cannot reach it,
+    because torch's own index_select never goes through Python. A
+    whole-number count is an expand and a copy, and the counts alone come
+    back as indices; both are left exact.
+    """
+    for owner in (torch, torch.Tensor):
+        real = owner.repeat_interleave
+
+        def rounded(values, repeats=None, *args, _real=real, **kwargs):
+            if repeats is None:
+                return _real(values, *args, **kwargs)
+            out = _real(values, repeats, *args, **kwargs)
+            if torch.is_tensor(repeats) and out.dtype in (torch.int32, torch.int64):
+                out = out.to(torch.float32).to(out.dtype)
+            return out
+
+        monkeypatch.setattr(owner, "repeat_interleave", rounded)
+    word = torch.tensor([FIRST_ROUNDED])
+    if int(torch.repeat_interleave(word, torch.ones(1, dtype=torch.long))) == (
+        FIRST_ROUNDED
+    ):
+        raise AssertionError(
+            "the simulated MPS rounding is not in effect, so the test proves nothing"
+        )
+
+
+def _intervals_past_the_ceiling():
+    """One chunk's scanline intervals, expanding past 2**24 bin entries.
+
+    2.4 million edge rows, nine in ten of them filed, each spanning 1 to 16
+    bins: a chunk holds up to 2**22 pairs, and these 2,159,942 expand to
+    18,359,815 entries. 186,529 intervals start past 2**24, and 92,865 of
+    those starts are odd numbers a float32 cannot hold.
+    """
+    generator = torch.Generator().manual_seed(3)
+    counts = torch.randint(1, 17, (2_400_000,), generator=generator)
+    filed = torch.rand(counts.shape, generator=generator) < 0.9
+    return torch.nonzero(filed).flatten(), counts
+
+
+def _differ(got, want, name, where):
+    return f"{int((got != want).sum())} of {want.numel()} {name} {where}"
+
+
+def test_the_bin_intervals_survive_the_mps_repeat_interleave(mps_friendly, monkeypatch):
+    """Expanding a chunk's bin intervals keeps every entry's offset.
+
+    ``_expand_intervals`` gives each bin entry its edge's row and its offset
+    from the edge's first bin: the entry's index less its interval's start.
+    Through repeat_interleave's rounding the starts past 2**24 moved, and
+    with them 789,747 offsets of :func:`_intervals_past_the_ceiling`, 46,449
+    to before the edge's first bin and 46,416 past its last. In a build that
+    files an edge in bins it does not cross: 6000 triangles moving over 100
+    frames changed 1.5 million of their 77 million bin entries, and 64,789 of
+    1.8 million points inside them read as outside.
+    """
+    source, counts = _intervals_past_the_ceiling()
+    want = ba._expand_intervals(source, counts)
+    assert want[0].numel() > FIRST_ROUNDED, "the entries should pass 2**24"
+    _round_integer_repeats(monkeypatch)
+    got = ba._expand_intervals(source, counts)
+    for name, g, w in zip(("rows", "offsets"), got, want):
+        assert torch.equal(g, w), _differ(g, w, name, "moved through the expansion")
+
+
 @pytest.mark.parametrize("case", ["few_frames", "past_the_ceiling"])
 def test_the_header_built_on_the_apple_gpu_is_the_cpu_header(mps_friendly, case):
     """Bit for bit, the tables an Apple GPU builds are the CPU's.
@@ -281,3 +358,19 @@ def test_the_header_built_on_the_apple_gpu_is_the_cpu_header(mps_friendly, case)
         f"{_moved(got, want, groups)} of {groups * BEZIER_ACCEL_HEADER_SIZE} "
         f"header words built on {device} differ from the CPU's"
     )
+
+
+def test_the_bin_intervals_expanded_on_the_apple_gpu_are_the_cpu_ones(mps_friendly):
+    """Bit for bit, the intervals an Apple GPU expands are the CPU's.
+
+    The intervals of :func:`_intervals_past_the_ceiling`, on
+    ``torch.backends.mps``'s device whenever the machine has one, as in
+    :func:`test_the_header_built_on_the_apple_gpu_is_the_cpu_header`.
+    """
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    source, counts = _intervals_past_the_ceiling()
+    want = ba._expand_intervals(source, counts)
+    got = ba._expand_intervals(source.to(device), counts.to(device))
+    for name, g, w in zip(("rows", "offsets"), got, want):
+        g = g.cpu()
+        assert torch.equal(g, w), _differ(g, w, name, f"expanded on {device} differ")
