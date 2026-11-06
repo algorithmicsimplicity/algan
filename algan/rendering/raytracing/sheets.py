@@ -2093,6 +2093,18 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
     the triangle pixels did. The kernels stay off on MPS unless
     ``sheet_split_kernel_mps`` asks for them.
 
+    The torch arm gathers every integer array through
+    ``mps_compat.gather_exact``. MPS's ``index_select`` rounds an integer
+    through a float32 above 2**24 (``mps_compat._MPS_EXACT_INT_BITS``): the
+    fragment key (``pixel << 32 |`` the depth's bits) and the mask word (flags
+    up to bit 30) are always past it, and a row position or prefix is once a
+    stream holds 2**24 fragments. Through plain gathers, a real frame's split
+    (at 320x180, on the Mac runner) came back with its sheet keys' depth words
+    rounded off, and compacted its triangle pixels into 24 fewer sheets than
+    the unsplit compaction made of them. That is why
+    ``tests/unit_tests/test_stroke_sheets.py``'s split tests also run on MPS
+    tensors when MPS is the render device.
+
     Returns ``None`` (the caller then compacts the whole stream) when more
     than ``_STROKE_SPLIT_MAX_MIXED`` of the fragments sit in triangle pixels.
     """
@@ -2131,8 +2143,7 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
         tri_prefix = torch.zeros(n + 1, dtype=torch.int32, device=device)
         torch.cumsum((frag_ref >= 0).to(torch.int32), 0, out=tri_prefix[1:])
         mixed_pix = (
-            tri_prefix.index_select(0, run64[1:])
-            - tri_prefix.index_select(0, run64[:-1])
+            gather_exact(tri_prefix, run64[1:]) - gather_exact(tri_prefix, run64[:-1])
         ) > 0
         del tri_prefix
         mixed_counts = torch.where(mixed_pix, counts, torch.zeros_like(counts))
@@ -2288,6 +2299,11 @@ def _interleave_split(
 
     ``seg`` / ``sidx`` -- each fragment's covered pixel and the stroke
     fragments' rows -- are rebuilt when the caller gathered without them.
+
+    Every integer gather goes through ``gather_exact``, as in
+    ``_split_stroke_pixels``: on MPS ``index_select`` rounds an integer
+    through a float32 above 2**24. The ``index_copy_`` scatters at the end are
+    exact there (measured on torch 2.13.0, the version the MPS arm pins).
     """
     device = frags[0].device
     n = frags[0].shape[0]
@@ -2302,9 +2318,9 @@ def _interleave_split(
 
     # Destinations: a stroke fragment keeps its place within its pixel; a
     # triangle pixel's sheets keep the general path's walk order.
-    seg_s = seg.index_select(0, sidx)
-    dst_s = sheet_offsets.index_select(0, seg_s) + (
-        sidx - run_offsets.index_select(0, seg_s)
+    seg_s = gather_exact(seg, sidx)
+    dst_s = gather_exact(sheet_offsets, seg_s) + (
+        sidx - gather_exact(run_offsets, seg_s)
     )
     del seg_s, seg
     if sub is not None:
@@ -2317,9 +2333,9 @@ def _interleave_split(
             output_size=sub_nb,
         )
         mp_global = mixed_pix.nonzero().squeeze(1)
-        dst_m = sheet_offsets.index_select(0, mp_global.index_select(0, sheet_q)) + (
+        dst_m = gather_exact(sheet_offsets, gather_exact(mp_global, sheet_q)) + (
             torch.arange(sub_nb, dtype=torch.int64, device=device)
-            - sub_sheet_offsets.index_select(0, sheet_q)
+            - gather_exact(sub_sheet_offsets, sheet_q)
         )
         del sub_counts, sheet_q, mp_global
 
