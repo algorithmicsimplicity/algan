@@ -557,7 +557,12 @@ def _assert_same_sheets(got, want, *, bitwise, what):
     """``got`` makes ``want``'s sheets: every output bit for bit, or, where the
     device sums in no fixed order or the arms add a segment's areas in a
     different order, the same sheets with coverage within float32 noise.
+    Measured on the CPU, because an MPS tensor has no float64.
     """
+    got, want = (
+        {k: v.cpu() if torch.is_tensor(v) else v for k, v in out.items()}
+        for out in (got, want)
+    )
     assert set(got) == set(want), what
     assert got["num_sheets"] == want["num_sheets"], what
     names = sorted(want) if bitwise else ["sheet_key", "sheet_offsets"]
@@ -595,13 +600,12 @@ def test_the_shell_ceiling_keeps_its_segments_past_the_mps_gather_ceiling(
     ceiling's segment key passes that: it is ``pixel * (surface_bound + 2) +
     surface``, so two solids in one pixel of a 4K frame's last third of pixel
     rows, or of a 1080p frame's last tenth with eight surfaces, can have keys
-    one float32 cannot tell apart.
-    Gathered that way, the torch arm merges the two segments and spends one
-    allowance across both solids: the near one keeps its far shell, and the
-    far one is dropped. ``_lexsort``'s torch fallback, which orders the
-    segments when the per-pixel sort kernel is off, gathers the key too, and
-    with it rounded the segments interleave, so even the kernel arm clamps
-    each crossing on its own.
+    one float32 cannot tell apart. Gathered that way, the torch arm merges the
+    two segments and spends one allowance across both solids: the near one
+    keeps its far shell, and the far one is dropped. ``_lexsort``'s torch
+    fallback, which orders the segments when the per-pixel sort kernel is off,
+    gathers the key too, and with it rounded the segments interleave, so even
+    the kernel arm clamps each crossing on its own.
 
     A real frame's fragments, moved into a 4K window (``_in_a_4k_window``), in
     MPS-friendly mode with integer gathers rounding as on MPS
@@ -629,8 +633,8 @@ def test_the_shell_ceiling_keeps_its_segments_past_the_mps_gather_ceiling(
     got = _compact(call, ceiling_kernel=ceiling_kernel, pixel_sort=pixel_sort)
 
     # The ceiling clipped the far shells, so the comparisons are not vacuous.
-    raw = float(call["coverage"]["frag_cov"].double().sum())
-    assert float(want["sheet_cov"].double().sum()) < raw - 100.0
+    raw = float(call["coverage"]["frag_cov"].cpu().double().sum())
+    assert float(want["sheet_cov"].cpu().double().sum()) < raw - 100.0
 
     # Bit for bit on the CPU; elsewhere the float32 sums have no fixed order.
     bitwise = want["sheet_cov"].device.type == "cpu"
