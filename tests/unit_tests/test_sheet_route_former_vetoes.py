@@ -244,8 +244,9 @@ def test_the_near_plane_opens_a_translucent_flat_solid(routes):
 
 
 def _rounding(gather):
-    """``gather`` as MPS answers it: an integer comes back as ``float32(value)``,
-    exact only through 2**24 (DESIGN_mps_support.md §2.3b).
+    """``gather`` as MPS's ``index_select`` answers it: an integer comes back
+    as ``float32(value)``, exact only through 2**24 (DESIGN_mps_support.md
+    §2.3b and §4.9).
     """
 
     def rounded(*args, **kwargs):
@@ -272,8 +273,10 @@ def _captured_frame(build, near):
     ids=["translucent_cube", "opaque_sphere"],
 )
 def test_a_near_cut_mask_word_survives_the_mps_integer_gather(monkeypatch, build, near):
-    """MPS's ``index_select`` and ``torch.gather`` round an integer through a
-    float32, and the near cut's flag (bit 29) lifts a cut fragment's mask word
+    """MPS's ``index_select`` rounds an integer through a float32 (on torch
+    2.13.0; ``torch.gather`` did too on the build DESIGN_mps_support.md §2.3b
+    measured, so both are patched here), and the near cut's flag (bit 29)
+    lifts a cut fragment's mask word
     past the 2**24 that carries exactly: rounded, the word's low six bits are
     gone, and with them most of its sample set. On the Apple GPU that moved
     142 cut fragments' samples on the cube above and took one of its rim
