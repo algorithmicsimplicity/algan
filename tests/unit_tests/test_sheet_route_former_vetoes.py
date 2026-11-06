@@ -44,6 +44,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_NEAR_CUT_BIT as NEAR_CUT,
 )
 from algan.scene_manager import SceneManager
+from tests.unit_tests.mps_rounding import round_integer_gathers
 
 RES = (96, 54)
 
@@ -243,21 +244,6 @@ def test_the_near_plane_opens_a_translucent_flat_solid(routes):
     )
 
 
-def _rounding(gather):
-    """``gather`` as MPS's ``index_select`` answers it: an integer comes back
-    as ``float32(value)``, exact only through 2**24 (DESIGN_mps_support.md
-    §2.3b and §4.9).
-    """
-
-    def rounded(*args, **kwargs):
-        out = gather(*args, **kwargs)
-        if out.dtype in (torch.int32, torch.int64):
-            out.copy_(out.to(torch.float32).to(out.dtype))
-        return out
-
-    return rounded
-
-
 def _captured_frame(build, near):
     fragment_capture.arm()
     try:
@@ -293,9 +279,7 @@ def test_a_near_cut_mask_word_survives_the_mps_integer_gather(monkeypatch, build
     SETTINGS.computing.set(mps_friendly=True)
     want, want_records = _captured_frame(build, near)
 
-    for owner in (torch.Tensor, torch):
-        for name in ("index_select", "gather"):
-            monkeypatch.setattr(owner, name, _rounding(getattr(owner, name)))
+    round_integer_gathers(monkeypatch)
     word = torch.tensor([NEAR_CUT | MASK_ALL], dtype=torch.int32)
     assert int(word.index_select(0, torch.zeros(1, dtype=torch.int64))) != int(word), (
         "the simulated MPS rounding is not in effect, so this test proves nothing"
