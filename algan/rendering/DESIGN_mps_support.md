@@ -1166,6 +1166,7 @@ section to update when one changes.
 | [42226130722](https://github.com/algorithmicsimplicity/algan/actions/runs/42226130722) (2026-11-06, `test_sheet_resolve_shading.py` with cause J's gathers exact) | 6 passed — the 344 moved pixels are back |
 | [42232166078](https://github.com/algorithmicsimplicity/algan/actions/runs/42232166078) (2026-11-06, `test_sheet_route_former_vetoes.py` with cause J's gathers exact, and the walk test) | 9 passed — the near-plane rim is 31 levels off its reference, as on the CPU, against 58 before |
 | [42236806653](https://github.com/algorithmicsimplicity/algan/actions/runs/42236806653) (2026-11-06, `test_stroke_sheets.py` and `test_sheet_chain_kernels.py` with cause K fixed and the split's gathers exact) | 186 passed, 20 skipped — the six `closed_solid` cases among them; a 320x180 frame's split and unsplit compactions agree row for row |
+| [42244121369](https://github.com/algorithmicsimplicity/algan/actions/runs/42244121369) (2026-11-06, the full scope with J and K fixed, on the fix branch, #249) | **0 failed**, 8717 passed, 378 skipped, 3 xfailed in 3579 s — the weekly run's 8646 and 8 plus the 63 tests the fixes added; the other three arms green too |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
