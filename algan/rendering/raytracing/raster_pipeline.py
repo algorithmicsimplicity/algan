@@ -2113,12 +2113,17 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
         or not kernel_extents_fit(ab.numel(), 2 * m)
     ):
         # ``key`` is the packed 64-bit fragment key and takes the split gather
-        # (see ``gather_packed_key``); the other five are 32 bits or narrower
-        # and go straight through. Off MPS-friendly mode both are
+        # (see ``gather_packed_key``), and ``msk`` the exact one too: its
+        # emission flags reach bit 29 (``_AA_NEAR_CUT_BIT``), past the 2**24
+        # an MPS ``index_select`` carries exactly, and a rounded mask word has
+        # lost its sample bits (``sheets.compact_sheets``, ``msk_o``). The
+        # other four go straight through. Off MPS-friendly mode all are
         # ``index_select``.
         return (
             gather_packed_key(key, idx),
-            *(t.index_select(0, idx) for t in (ref, ab, cov, msk, opq)),
+            *(t.index_select(0, idx) for t in (ref, ab, cov)),
+            gather_exact(msk, idx),
+            opq.index_select(0, idx),
         )
     from algan.rendering.raytracing.sheet_compact_taichi import (
         gather_fragment_arrays,
@@ -3287,7 +3292,8 @@ def prepare_sparse_raster_coverage(
                 ref_s = ref_s.index_select(0, keep_idx)
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)
-                msk_s = msk_s.index_select(0, keep_idx)
+                # Exact: a near-cut word passes 2**24 (``_gather_fragment_arrays``).
+                msk_s = gather_exact(msk_s, keep_idx)
                 mat_opaque_s = mat_opaque_s.index_select(0, keep_idx)
                 del keep_idx
                 if not device_runs:

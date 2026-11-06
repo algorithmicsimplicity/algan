@@ -73,6 +73,7 @@ from algan.rendering.mps_compat import (
     band_class_groups,
     clamp_floor,
     cummax_values,
+    gather_exact,
     gather_packed_key,
     index_copy_rows,
     kernel_index,
@@ -1345,7 +1346,10 @@ def _conflict_rank(band_start, order, msk, positions):
     ):
         band_first = torch.where(band_start, positions, torch.zeros_like(positions))
         band_first = cummax_values(band_first, 0)
-        bits_pre = (msk.index_select(0, order) & AA_MASK_ALL).to(torch.int32)
+        # Exact before the mask: a word with flags above 2**24 would come
+        # back from an MPS ``index_select`` rounded (``compact_sheets``,
+        # ``msk_o``).
+        bits_pre = (gather_exact(msk, order) & AA_MASK_ALL).to(torch.int32)
         rank = torch.zeros(n, dtype=torch.int32, device=device)
         for b in range(AA_NUM_SAMPLES):
             lane = (bits_pre >> b) & 1
@@ -2157,7 +2161,10 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
         midx = in_mixed.nonzero().squeeze(1)
         sidx = (~in_mixed).nonzero().squeeze(1)
         del in_mixed
-        sub_frags = [f.index_select(0, midx) for f in frags]
+        # The arm MPS takes (the kernels are off there), so the integer arrays
+        # gather exactly: the packed key, and the mask with its flags above
+        # 2**24 (``compact_sheets``, ``msk_o``). Floats are ``index_select``.
+        sub_frags = [gather_exact(f, midx) for f in frags]
         del midx
     sub_cov = dict(zip(names, sub_frags))
     del sub_frags
@@ -2316,13 +2323,14 @@ def _interleave_split(
         )
         del sub_counts, sheet_q, mp_global
 
+    # Exact for the integer arrays, as the triangle pixels' gather above is.
     stroke = _stroke_sheets(
         {
-            "frag_key": frags[0].index_select(0, sidx),
-            "frag_ref": frags[1].index_select(0, sidx),
+            "frag_key": gather_exact(frags[0], sidx),
+            "frag_ref": gather_exact(frags[1], sidx),
             "frag_ab": frags[2].index_select(0, sidx),
             "frag_cov": frags[3].index_select(0, sidx),
-            "frag_msk": frags[4].index_select(0, sidx),
+            "frag_msk": gather_exact(frags[4], sidx),
             "frag_cap": frags[5].index_select(0, sidx),
             # Unread: the merged CSR is built by the caller.
             "run_offsets": torch.zeros(1, dtype=torch.int32, device=device),
@@ -2860,7 +2868,15 @@ def compact_sheets(
     # ---- P2: segmented reduction over bands --------------------------------
     if not fused_stream:
         cov_o = frag_cov.index_select(0, order)
-        msk_o = frag_msk.index_select(0, order)
+        # ``gather_exact``, as every gather of a mask word must be: its flags
+        # reach bit 29 (``AA_NEAR_CUT_BIT``) and bit 30 (``AA_ONE_SOLID_BIT``),
+        # past the 2**24 an MPS ``index_select`` carries exactly
+        # (``mps_compat._MPS_EXACT_INT_BITS``). There the word comes back as
+        # ``float32(word)``, a multiple of 128, so a flagged sheet's sample
+        # bits are gone: ``0x400000ff`` (all eight samples) read ``0x40000100``,
+        # the union came out empty and the sheet a sliver. Off MPS-friendly
+        # mode this is ``index_select``.
+        msk_o = gather_exact(frag_msk, order)
     pos_o = order  # original stream position of each sorted fragment
 
     # ---- The ceiling, applied ----------------------------------------------
@@ -3291,7 +3307,8 @@ def compact_sheets(
     # dominant fragment (uniform per pixel / per emission policy); the sliver
     # bit FORCED on for an empty union, which is an areal positionless sheet
     # whatever its dominant fragment carried.
-    rep_msk = frag_msk.index_select(0, rep_orig)
+    # Exact for the reason ``msk_o`` is: a rounded word can carry into bit 8.
+    rep_msk = gather_exact(frag_msk, rep_orig)
     flags = rep_msk & (~AA_MASK_ALL)
     del rep_msk
     empty_union = union == 0
@@ -3340,7 +3357,8 @@ def compact_sheets(
         sheet_pix = final_records["sheet_pix"]
     else:
         sheet_cov_final = sheet_cov.index_select(0, final)
-        sheet_msk_final = sheet_msk.index_select(0, final)
+        # The union with the flags above it: exact, as ``msk_o`` is.
+        sheet_msk_final = gather_exact(sheet_msk, final)
         sheet_band_final = (
             sheet_band.index_select(0, final) if sheet_band is not None else None
         )
