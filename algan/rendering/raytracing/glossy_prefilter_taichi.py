@@ -18,7 +18,9 @@ frames and these buffers would otherwise be the render's dominant allocation):
 in ONE launch (``ALGAN_OPT_DISABLE=glossfuse`` restores the separate ones), and
 ``gloss_clear`` is the reset alone. Every kernel here computes a texel or a
 pixel through the same ``ti.func``, so the fused launch does the same
-arithmetic, in the same order, as the launches it replaces. It does it only
+arithmetic, in the same order, as the launches it replaces (under
+``fast_math`` the same ``ti.func`` alone does not fix the order of a sum --
+``_gloss_reduce_texel`` has what does). It does it only
 inside the frame's glossy bounding box (``gl_box``), on a pyramid that is zero
 everywhere else -- which is what the separate launches compute there.
 
@@ -601,6 +603,15 @@ def gloss_scatter(
 
 
 @ti.func
+def _sealed(v, zero):
+    """``v`` itself, through an XOR with ``zero``. ``zero`` is zero at run
+    time, but the compiler cannot prove it, so it cannot see that this
+    returns ``v`` either. ``_gloss_reduce_texel`` has why that matters.
+    """
+    return ti.bit_cast(ti.bit_cast(v, ti.i32) ^ zero, ti.f32)
+
+
+@ti.func
 def _gloss_reduce_texel(src, dst, x, y, level_meta: ti.template(),
                         gl_pyr: ti.template()):
     """Texel ``(x, y)`` of level ``dst``: the 2x2 weighted box of level ``src``.
@@ -614,10 +625,24 @@ def _gloss_reduce_texel(src, dst, x, y, level_meta: ti.template(),
     column, which is only sound because the level table halves by CEILING --
     see ``tracer._gloss_pyramid_levels``, where the comment records what a
     floor-halved chain silently did to the top of the pyramid.
+
+    Every kernel that calls this sums the taps in source order,
+    ``((t00 + t10) + t01) + t11`` (``t<dx><dy>``): ``gloss_finish`` is held
+    to the ``gloss_pyramid_level`` launches bit for bit. ``fast_math`` lets
+    LLVM re-pair a chain of adds, and its aarch64 backend does -- after the
+    IR, which keeps the source order in both kernels, and by each kernel's
+    own schedule. On an Apple M1 ``gloss_pyramid_level`` summed
+    ``(t00 + t01) + (t10 + t11)`` and ``gloss_finish``
+    ``(t00 + t10) + (t01 + t11)``, and the fused finish moved by up to six
+    ulps on a frame's glossy pixels. So the first two partial sums pass
+    through ``_sealed``, and no two adds are left chained to re-pair. x86
+    folds each tap's load into its add, which keeps the chain as written:
+    there the seal changes nothing.
     """
     off_s = level_meta[src, 0]
     ws = level_meta[src, 1]
     hs = level_meta[src, 2]
+    zero = ws >> 31  # a width is positive
     acc = ti.Vector([0.0] * GL_PYR_WIDTH)
     for dy in ti.static(range(2)):
         for dx in ti.static(range(2)):
@@ -626,6 +651,8 @@ def _gloss_reduce_texel(src, dst, x, y, level_meta: ti.template(),
             s = off_s + sy * ws + sx
             for k in ti.static(range(GL_PYR_WIDTH)):
                 acc[k] += gl_pyr[s, k]
+                if ti.static(dx + dy == 1):
+                    acc[k] = _sealed(acc[k], zero)
     d = level_meta[dst, 0] + y * level_meta[dst, 1] + x
     for k in ti.static(range(GL_PYR_WIDTH)):
         gl_pyr[d, k] = acc[k] * 0.25
