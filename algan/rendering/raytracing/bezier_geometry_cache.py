@@ -8,6 +8,8 @@ from threading import Lock
 import numpy as np
 import torch
 
+from algan.rendering.mps_compat import repeat_interleave_exact
+
 
 class _BezierGeometryCache:
     # Outside the arena: retain at most 16 MiB of keys and device geometry,
@@ -251,7 +253,12 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
     total = sum(edges.shape[1] for _, edges, _ in parts)
     result = corners.new_empty((num_frames, total, 6))
     for circuits, edges, part_offsets in parts:
-        destinations = torch.repeat_interleave(
+        # Each circuit's shift from its slots in the part to its slots in the
+        # whole table, repeated over its edges. A shift passes 2**24 once the
+        # table holds that many edges, and repeat_interleave(values, counts)
+        # would round it on MPS, writing edges over their neighbours and
+        # leaving slots of new_empty garbage; repeat_interleave_exact does not.
+        destinations = repeat_interleave_exact(
             offsets[circuits] - part_offsets[:-1],
             part_offsets[1:] - part_offsets[:-1],
             output_size=edges.shape[1],
@@ -377,7 +384,9 @@ def _build_frame_local_circuit_edges(scene, build, args, inward_signs, cache=Tru
         edges = edges[0]
         own_offsets = own_offsets.long()
         result[index] = _padding_edges(edges, own_offsets)[slot_circuit]
-        destinations = torch.repeat_interleave(
+        # The padding before each circuit, repeated over its edges: exactly,
+        # as in _build_cached_circuit_edges.
+        destinations = repeat_interleave_exact(
             offsets[:-1] - own_offsets[:-1], counts[index]
         ) + torch.arange(edges.shape[0], device=edges.device)
         result[index, destinations] = edges

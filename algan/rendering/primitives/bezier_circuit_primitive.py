@@ -17,16 +17,20 @@ import torch
 
 from algan.constants.color import BLUE
 from algan.environment import env_float
+from algan.rendering.mps_compat import repeat_interleave_exact
 from algan.rendering.primitives.primitive import RenderPrimitive
 from algan.utils.tensor_utils import broadcast_all
 
 
 def batch_arange(lengths, memory=None):
+    # Every run's start is repeated across the run, and the starts pass 2**24
+    # once the lengths add up to that many; repeat_interleave_exact keeps them
+    # exact on MPS, where a rounded start shifts its whole run's indices.
     if memory is None:
         offsets = lengths.cumsum(0)
         n = offsets[-1].clone()
         offsets -= lengths
-        offsets = torch.repeat_interleave(offsets, lengths, output_size=n)
+        offsets = repeat_interleave_exact(offsets, lengths, output_size=n)
         return torch.arange(n, device=lengths.device) - offsets
 
     start_pointer = memory.current_pointer
@@ -36,7 +40,7 @@ def batch_arange(lengths, memory=None):
     )
     n = offsets[-1].long()
     offsets -= lengths
-    offsets = torch.repeat_interleave(offsets, lengths, output_size=n)
+    offsets = repeat_interleave_exact(offsets, lengths, output_size=n)
     inds = torch.arange(
         n,
         device=lengths.device,

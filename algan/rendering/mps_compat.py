@@ -318,10 +318,12 @@ def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
 #: **It is a torch dispatch defect, not a Metal limit.** In the same run, over
 #: the same values at 2**40, ``index_select`` and ``torch.gather`` are wrong
 #: while **advanced indexing ``v[i]`` is exact**, and so is a
-#: ``repeat_interleave`` slice (``torch.take`` is not implemented on MPS at
-#: all). The hardware can clearly move those bits; two particular aten paths
-#: do not. Storing, moving, comparing, shifting, masking and multiply-add are
-#: exact at every rung.
+#: ``repeat_interleave`` slice with a whole-number count, which is an expand
+#: and a copy (``torch.take`` is not implemented on MPS at all). The hardware
+#: can clearly move those bits; two particular aten paths do not. Storing,
+#: moving, comparing, shifting, masking and multiply-add are exact at every
+#: rung. ``repeat_interleave`` with a tensor of counts is not:
+#: torch computes it with ``index_select`` (:func:`repeat_interleave_exact`).
 #:
 #: So :func:`gather_packed_key` uses ``v[i]``: one gather, exact, and the
 #: narrowest possible change. What it costs is a **dependency on a dispatch**
@@ -445,6 +447,28 @@ def gather_exact(
     if out is None:
         return tensor[index]
     return out.copy_(tensor[index])
+
+
+def repeat_interleave_exact(
+    values: torch.Tensor, counts: torch.Tensor, *, output_size=None
+) -> torch.Tensor:
+    """``torch.repeat_interleave(values, counts)`` for a 1-D integer ``values``
+    whose low bits matter, with one count per value.
+
+    torch computes that call as ``values.index_select(0,
+    repeat_interleave(counts))``, so on MPS it is the gather
+    ``_MPS_EXACT_INT_BITS`` describes, and it rounds the same way: run
+    42299224973 measured 4087 int64 values in [2**24, 2**26) moved, 55104562
+    to 55104560. The values that pass 2**24 are the starts of runs -- a run's
+    first vertex, bin or slot -- which do once the counts add up to that many.
+    The counts alone come back as indices, which is exact, so this expands
+    them and gathers with :func:`gather_exact`: off MPS-friendly mode the same
+    ``index_select`` torch would have run, so CPU and CUDA get the same tensor.
+
+    Unlike torch's, it does not stretch a single count over every value.
+    """
+    rows = torch.repeat_interleave(counts, output_size=output_size)
+    return gather_exact(values, rows)
 
 
 def unique_consecutive_exact(keys: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
