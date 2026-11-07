@@ -111,6 +111,27 @@ ALWAYS_CI = (
     "tests/unit_tests/test_bezier_header_mps_gather.py::test_a_point_inside_a_circuit_reads_inside_through_the_mps_integer_gather",
     "tests/unit_tests/test_bezier_header_mps_gather.py::test_the_bin_intervals_survive_the_mps_repeat_interleave",
     "tests/unit_tests/test_mps_friendly.py::test_advanced_indexing_is_exact_above_the_mps_ceiling",
+    # More of the same, and the ops MPS gets wrong around it, emulated on the
+    # CPU and, on an Apple machine, run through the real op: a BVH level's
+    # ranges and the sliver strips, the depth-order scan's owners, the depth
+    # gate's surfaces and the edge tables' circuits, the exact unique and the
+    # two tables built on it, and the int64 extrema MPS cannot reduce.
+    "tests/unit_tests/test_bvh_mps_gathers.py::",
+    "tests/unit_tests/test_depth_order_warning.py::test_owners_past_2_24_stay_apart_through_the_mps_gather",
+    "tests/unit_tests/test_ids_mps_gathers.py::test_the_depth_gate_tells_surfaces_apart_past_the_ceiling",
+    "tests/unit_tests/test_ids_mps_gathers.py::test_the_edge_tables_file_each_edge_under_its_circuit_past_the_ceiling",
+    "tests/unit_tests/test_mps_friendly.py::test_the_exact_unique_matches_unique",
+    "tests/unit_tests/test_mps_friendly.py::test_the_exact_unique_handles_empty_and_single_tables",
+    "tests/unit_tests/test_mps_friendly.py::test_the_exact_unique_does_not_go_through_unique",
+    "tests/unit_tests/test_mps_friendly.py::test_the_exact_unique_is_exact_above_the_mps_ceiling",
+    "tests/unit_tests/test_hybrid_transport.py::test_shell_table_keeps_surface_ids_past_2_24_apart_through_mps_unique",
+    "tests/unit_tests/test_hybrid_transport.py::test_shell_table_keeps_surface_ids_past_2_24_apart_on_the_device",
+    "tests/unit_tests/test_sheet_rank_groups.py::test_the_torch_arm_keeps_keys_past_2_24_apart_through_mps_unique",
+    "tests/unit_tests/test_sheet_rank_groups.py::test_the_torch_arm_keeps_keys_past_2_24_apart_on_the_device",
+    "tests/unit_tests/test_mps_int64_reductions.py::",
+    # A sheet's float32 area, and the weights pooled from it, come back bit
+    # for bit across the stroke split's arms and across replays of a frame.
+    "tests/unit_tests/test_sheet_area_order.py::",
     # Which batches the sheet route takes, and which fall back.
     "tests/unit_tests/test_sheet_route_vetoes.py::",
     # The sheet route's tile out-of-memory retry: a stand-in arena, no kernel.
@@ -140,6 +161,15 @@ ALWAYS_CI = (
     # survives the reset real pressure brings: files and stubs, no kernel.
     "tests/unit_tests/test_manual_memory.py::test_a_cgroup_counts_its_working_set_not_its_page_cache",
     "tests/unit_tests/test_trace_counters.py::test_a_reading_spans_a_program_teardown",
+    # A render on MPS holds torch's allocator to Metal's working set and gives
+    # torch its own limit back after, a failed render too; and import algan
+    # starts that allocator with the low watermark the hold relies on, unless
+    # the user chose one or the allocator already started: stubs, no GPU.
+    "tests/unit_tests/test_mps_working_set_hold.py::test_a_render_on_mps_holds_torch_to_the_working_set_until_it_ends",
+    "tests/unit_tests/test_mps_working_set_hold.py::test_a_render_that_fails_still_gives_the_limit_back",
+    "tests/unit_tests/test_mps_working_set_hold.py::test_algan_gives_torchs_mps_allocator_a_low_watermark_before_it_starts",
+    "tests/unit_tests/test_mps_working_set_hold.py::test_a_watermark_already_chosen_stands",
+    "tests/unit_tests/test_mps_working_set_hold.py::test_an_allocator_that_already_started_is_left_alone",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
@@ -184,6 +214,10 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_frame_local_edges_keep_their_slots_past_the_ceiling",
     "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_the_vertex_parameters_survive_the_mps_repeat_interleave",
     "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_the_cache_places_every_edge_past_the_ceiling",
+    # And the ids the scene build gathers or repeats past 2**24, each test in
+    # a batch past the ceiling: a member's surface, a circuit's edges, gaps,
+    # bounds and z bias, a promoted group's triangle and a sampled vertex.
+    "tests/unit_tests/test_ids_mps_gathers.py::",
     # The zero-copy cache evicts an owner the garbage collector frees while its
     # lock is held, instead of deadlocking: a subprocess, with a timeout.
     "tests/unit_tests/test_mps_zero_copy.py::test_an_owner_freed_while_the_cache_lock_is_held_is_evicted_without_deadlock",

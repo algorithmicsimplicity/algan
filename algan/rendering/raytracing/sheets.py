@@ -24,8 +24,10 @@ the §6.6.4 pattern: accumulate in float64 and round to float32, which was
 measured bitwise-stable across runs where a float32 ``scatter_add_`` was not.
 The shipping implementation combines host orchestration with optional fused
 kernels in ``sheet_compact_taichi.py``. The PyTorch arms remain comparison
-references. On MPS, accumulation uses float32 instead; the historical float64
-stability measurement does not establish bitwise reproducibility there.
+references. On MPS, accumulation uses float32 instead (Metal has no float64),
+and a float32 atomic sum rounds by the order the device lands its terms in, so
+the kernel arm sums each band in stream order there (``_band_reduce``'s
+``runs``): the same terms in the same order on every run, whatever the device.
 
 Band rules (``DESIGN_sheet_resolve.md`` §4.2, open parameter §10.1): within
 ``(pixel, mesh, facing)`` and sorted by depth, a gap larger than a RELATIVE
@@ -79,6 +81,7 @@ from algan.rendering.mps_compat import (
     kernel_index,
     mps_friendly,
     reduction_index_dtype,
+    scatter_reduce_,
     taichi_accumulate_dtype,
     unique_consecutive_exact,
 )
@@ -776,11 +779,11 @@ def _sheet_rank_groups(parent, rank, parents=None, deepest=None):
 
     The kernel arm is asked for wherever a launch stages nothing, which since
     ``taichi_launch_is_local`` learned about the Metal adoption includes an
-    Apple GPU. That is worth more there than the sort time: the torch arm's
-    ``parent * radix + rank`` (``_rank_key_base``) reaches 2**25 on a 4K frame,
-    past where an MPS integer gather stops being exact
-    (``mps_compat._MPS_EXACT_INT_BITS``), and the kernel never builds a
-    composite key at all.
+    Apple GPU. The torch arm's ``parent * radix + rank`` (``_rank_key_base``)
+    reaches 2**25 on a 4K frame, past the 2**24 through which MPS's ``unique``
+    keeps distinct integers apart, and the kernel never builds a composite key
+    at all. Neither does the torch arm in MPS-friendly mode, which is what an
+    Apple GPU runs with ``ALGAN_SHEET_RANK_GROUPS=0`` or before Taichi is up.
     """
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
@@ -797,7 +800,7 @@ def _sheet_rank_groups(parent, rank, parents=None, deepest=None):
         if parents is None:
             parents = int(parent[-1]) + 1
         counts = torch.zeros(parents, dtype=torch.int32, device=parent.device)
-        counts.scatter_reduce_(0, parent, rank, reduce="amax", include_self=True)
+        scatter_reduce_(counts, 0, parent, rank, reduce="amax", include_self=True)
         counts.add_(1)
         ends = torch.cumsum(counts, 0, dtype=torch.int32)
         del counts
@@ -810,6 +813,22 @@ def _sheet_rank_groups(parent, rank, parents=None, deepest=None):
     if deepest is None:
         deepest = int(rank.amax()) if n else 0
     base = _rank_key_base(deepest)
+    if mps_friendly():
+        # The key below passes 2**24 from 2**20 bands on (the radix is at
+        # least 16), which a 1080p frame reaches, and MPS's ``unique`` with an
+        # inverse merges distinct integers past 2**24: over 1,114,112 bands
+        # this arm lost 49,130 of 2,784,430 sub-bands on the Apple GPU, merged
+        # into a neighbouring rank or band (run 42351444222). So the mode
+        # groups the pairs themselves, with ``band_class_groups``, which
+        # never forms the key or divides it and numbers the groups in the
+        # same (parent, rank) order. A rank stands where its class would; any
+        # minor key below ``base`` can. Off the mode the key is what runs.
+        nb, groups, cid_band = band_class_groups(parent.to(torch.int64), rank, base)
+        # Every fragment of a group has the group's rank, so the scatter's
+        # write order does not matter.
+        rank_of_cid = torch.empty(nb, dtype=torch.int64, device=parent.device)
+        rank_of_cid.scatter_(0, groups, rank.to(torch.int64))
+        return groups, cid_band, rank_of_cid
     keys, groups = torch.unique(
         parent.to(torch.int64) * base + rank, sorted=True, return_inverse=True
     )
@@ -1229,7 +1248,19 @@ def _popcount_lanes(bits):
     return pop
 
 
-def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
+#: In float32 -- MPS-friendly mode, where Metal has no float64 to widen into
+#: -- sum each band's area in stream order (``sheet_compact_taichi.
+#: sheet_band_reduce_runs``) instead of in the order ``sheet_band_reduce``'s
+#: atomics land, which the GPU does not fix: a band of three or more
+#: fragments then rounds differently from one launch to the next. Float64
+#: arms never take it: their sums, rounded to float32, were measured stable
+#: from run to run (the module docstring). Off restores the unordered
+#: atomics, which is what ``benchmarks/_sheet_area_replay.py`` flips to
+#: measure both in one process.
+sheet_area_fixed_order = True
+
+
+def _band_reduce(band_id, msk, cov, nbands, *, want_sliver, runs=None):
     """Per-band ``(area, union, fused, sliver)`` over the sorted fragments.
 
     ``area`` is the exact-area sum (float32, unclamped -- the caller owns the
@@ -1258,6 +1289,13 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
     value feeds thresholds. Measured on a real frame, 81% of sheets hold one
     fragment and 17% hold two -- order-independent at any width -- but the
     remaining 1.6% run to eleven, which is enough.
+
+    In MPS-friendly mode the accumulator is float32, and an atomic float32
+    sum is not reproducible on a GPU. ``runs`` -- a bool per fragment, set
+    where a run of the stream starts such that no band's fragments span two
+    runs -- then has the kernel sum each band in stream order instead
+    (``sheet_area_fixed_order``). ``compact_sheets`` passes its (pixel,
+    surface, facing) group starts.
     """
     device = msk.device
     n = int(msk.numel())
@@ -1267,6 +1305,7 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
     if rt_settings.sheet_mask_kernel and n and kernel_extents_fit(n, nbands):
         from algan.rendering.raytracing.sheet_compact_taichi import (
             sheet_band_reduce,
+            sheet_band_reduce_runs,
         )
 
         union = torch.zeros(nbands, dtype=torch.int32, device=device)
@@ -1274,7 +1313,7 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
         sliver = torch.zeros(
             nbands if want_sliver else 1, dtype=torch.int32, device=device
         )
-        sheet_band_reduce(
+        args = (
             kernel_index(band_id.contiguous()),
             msk.contiguous(),
             cov.contiguous(),
@@ -1288,6 +1327,10 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
             bool(want_sliver),
             taichi_accumulate_dtype(),
         )
+        if acc is torch.float32 and runs is not None and sheet_area_fixed_order:
+            sheet_band_reduce_runs(runs.contiguous().view(torch.uint8), *args)
+        else:
+            sheet_band_reduce(*args)
         fused = dup != 0
         del dup
         area = area64.to(torch.float32)
@@ -1310,7 +1353,8 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
     sliver = None
     if want_sliver:
         sliver = torch.zeros(nbands, dtype=torch.int32, device=device)
-        sliver.scatter_reduce_(
+        scatter_reduce_(
+            sliver,
             0,
             band_id,
             ((msk & AA_SLIVER_BIT) != 0).to(torch.int32),
@@ -1516,7 +1560,7 @@ def _prim_split_after(
     return (t_o[1:] - t_o[:-1]) > thr
 
 
-def _band_composite(band_of_frag, nbands, cov_o, msk_o):
+def _band_composite(band_of_frag, nbands, cov_o, msk_o, runs=None):
     """Per-band aggregates and the §4.4 sibling-split gate.
 
     A band is what the compaction emits as ONE sheet with ``shade_split``
@@ -1536,10 +1580,11 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o):
     its last sheet, so rule B's residue redistributes over the same unowned
     samples it always did.
 
-    Returns ``(area, union, corr, split)``, one entry per band.
+    Returns ``(area, union, corr, split)``, one entry per band. ``runs`` is
+    ``_band_reduce``'s.
     """
     area, union, _fused, sliver = _band_reduce(
-        band_of_frag, msk_o, cov_o, nbands, want_sliver=True
+        band_of_frag, msk_o, cov_o, nbands, want_sliver=True, runs=runs
     )
     del _fused
 
@@ -1558,7 +1603,15 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o):
 
 
 def _rank_pool_groups(
-    cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb, parents, deepest=None
+    cid_band,
+    rank_of_cid,
+    band_of_frag,
+    cov_o,
+    msk_o,
+    nb,
+    parents,
+    deepest=None,
+    runs=None,
 ):
     """Which conflict-rank sub-bands composite as §4.4 siblings of one band.
 
@@ -1587,7 +1640,9 @@ def _rank_pool_groups(
     count is ``parents``. Both used to be recomputed here with a
     ``unique_consecutive`` -- one host sync per chunk to learn a number the
     caller had. ``deepest`` is the chunk's deepest conflict rank, which the
-    caller holds for the same reason; it sizes the key's radix.
+    caller holds for the same reason; it sizes the key's radix. ``runs`` is
+    ``_band_reduce``'s: the pooling threshold reads this area sum, so in
+    float32 an unordered sum could pool a band in one launch and not the next.
     """
     n_pool = int(parents)
     if n_pool == nb:
@@ -1599,7 +1654,7 @@ def _rank_pool_groups(
     # gathers exactly (``compact_sheets``, ``pix_o``).
     pool_of_frag = gather_exact(pool_of_cid, band_of_frag)
     area, union, _fused, _sliver = _band_reduce(
-        pool_of_frag, msk_o, cov_o, n_pool, want_sliver=False
+        pool_of_frag, msk_o, cov_o, n_pool, want_sliver=False, runs=runs
     )
     del pool_of_frag, _fused, _sliver
     # A FULL union at about unit area: the band owns every sub-pixel sample and
@@ -1864,8 +1919,8 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
         masked = torch.where(owns, positions, big)
         del owns
         first_sorted = torch.full((nb + 1,), n, dtype=idx_dtype, device=device)
-        first_sorted.scatter_reduce_(
-            0, target, masked, reduce="amin", include_self=True
+        scatter_reduce_(
+            first_sorted, 0, target, masked, reduce="amin", include_self=True
         )
         first_sorted = first_sorted[:nb].to(torch.int64)
         del masked
@@ -1939,8 +1994,12 @@ def _sample_depth_lose_reference(
             + lanes.view(1, -1)
         ).reshape(-1)
         edepth = sample_depths.index_select(0, enf).reshape(-1)
+        # The surface ids gather exactly too. They pass 2**24 once a scene
+        # holds that many surfaces, and rounded, two neighbouring surfaces
+        # share an id: an enforcer of the other one is taken for the subject's
+        # own surface, and the subject's own floor for another's.
         esid = (
-            sheet_sid.index_select(0, enf)
+            gather_exact(sheet_sid, enf)
             .unsqueeze(1)
             .expand(-1, AA_NUM_SAMPLES)
             .reshape(-1)
@@ -1948,7 +2007,7 @@ def _sample_depth_lose_reference(
         ord_e = _lexsort(epk, edepth)
         epk = gather_exact(epk, ord_e)
         edepth = edepth.index_select(0, ord_e)
-        esid = esid.index_select(0, ord_e)
+        esid = gather_exact(esid, ord_e)
         del ord_e
         new_group_e = torch.ones_like(epk, dtype=torch.bool)
         if epk.numel() > 1:
@@ -1957,7 +2016,7 @@ def _sample_depth_lose_reference(
         uniq_pk = epk[new_group_e]
         best_d = edepth[new_group_e]
         best_sid = esid[new_group_e]
-        diff_sid = esid != best_sid.index_select(0, grp)
+        diff_sid = esid != gather_exact(best_sid, grp)
         sec_d = torch.full(
             (int(uniq_pk.numel()),),
             float("inf"),
@@ -1965,7 +2024,8 @@ def _sample_depth_lose_reference(
             device=device,
         )
         if bool(diff_sid.any()):
-            sec_d.scatter_reduce_(
+            scatter_reduce_(
+                sec_d,
                 0,
                 grp[diff_sid],
                 edepth[diff_sid],
@@ -1978,7 +2038,7 @@ def _sample_depth_lose_reference(
         loc = torch.searchsorted(uniq_pk, qpk).clamp_max(int(uniq_pk.numel()) - 1)
         found = gather_exact(uniq_pk, loc) == qpk
         bd = best_d.index_select(0, loc)
-        bsid = best_sid.index_select(0, loc)
+        bsid = gather_exact(best_sid, loc)
         sd = sec_d.index_select(0, loc)
         own_here = (
             bsid == sheet_sid.unsqueeze(1).expand(-1, AA_NUM_SAMPLES).reshape(-1)
@@ -2028,7 +2088,32 @@ def _opt_disabled_sheets(name):
     return _opt_disabled(name)
 
 
-def _stroke_sheets(coverage, n, num_covered, band_rule, band_c, resolve_only):
+def _stroke_area_bits(cov):
+    """``_stroke_sheets``' area rule, ``(cov + 0.0).clamp_min_(0.0)``, worked
+    on the float32 bits as ``sheet_compact_taichi.split_merge_sheets`` works
+    it: a set sign bit (-0.0, a negative, -inf) becomes +0.0, a NaN comes back
+    quieted with its sign and payload, and everything else -- a denormal
+    included -- keeps its bits.
+
+    A float add returns those only where the arithmetic keeps denormals and
+    NaN payloads, and two places it runs do not: under flush-to-zero, which
+    Taichi's initialization turns on for the CPU thread, the add makes a
+    denormal a zero of its sign, and on the Apple GPU (torch 2.13.0) the add,
+    ``clamp_min`` and ``scatter_add_`` each made every denormal a zero and a
+    signaling NaN the canonical 0x7FC00000, where ``index_select`` and
+    ``index_copy_`` copied both bit for bit (run 42355084729,
+    ``benchmarks/_mps_denormal_area_probe.py``). The split's torch arm takes
+    this, so that its stroke pixels match its kernel arm's on every device.
+    """
+    bits = cov.view(torch.int32)
+    nan = (bits & 0x7FFFFFFF) > 0x7F800000
+    area = torch.where(bits < 0, torch.zeros_like(bits), bits)
+    return torch.where(nan, bits | 0x00400000, area).view(torch.float32)
+
+
+def _stroke_sheets(
+    coverage, n, num_covered, band_rule, band_c, resolve_only, *, area_bits=False
+):
     """``compact_sheets`` of a stream holding no triangle fragment.
 
     Every bezier fragment is its own group (``gkey`` is unique per fragment),
@@ -2048,6 +2133,11 @@ def _stroke_sheets(coverage, n, num_covered, band_rule, band_c, resolve_only):
       its flags) with the sliver bit forced on for an empty union, and a
       one-sheet band's sibling weights are its own area and mask.
 
+    The area is a float add here, as the general path's sum is.
+    ``area_bits`` works the rule on the bits instead (``_stroke_area_bits``),
+    for the stroke split's torch arm, which must match a kernel arm that
+    never adds.
+
     ``tests/unit_tests/test_stroke_sheets.py`` compares the two paths bit for
     bit; ``ALGAN_OPT_DISABLE=strokesheets`` restores the general path.
     """
@@ -2056,7 +2146,10 @@ def _stroke_sheets(coverage, n, num_covered, band_rule, band_c, resolve_only):
     frag_key = coverage["frag_key"][:n]
     frag_msk = coverage["frag_msk"][:n]
     device = frag_key.device
-    area = (coverage["frag_cov"][:n] + 0.0).clamp_min_(0.0)
+    if area_bits:
+        area = _stroke_area_bits(coverage["frag_cov"][:n])
+    else:
+        area = (coverage["frag_cov"][:n] + 0.0).clamp_min_(0.0)
     sliver = torch.where(
         (frag_msk & AA_MASK_ALL) == 0,
         torch.full((), AA_SLIVER_BIT, dtype=frag_msk.dtype, device=device),
@@ -2348,7 +2441,12 @@ def _interleave_split(
     Every integer gather goes through ``gather_exact``, as in
     ``_split_stroke_pixels``: on MPS ``index_select`` rounds an integer
     through a float32 above 2**24. The ``index_copy_`` scatters at the end are
-    exact there (measured on torch 2.13.0, the version the MPS arm pins).
+    exact there (measured on torch 2.13.0, the version the MPS arm pins), and
+    so are the float gathers, a denormal and a NaN's payload included, where
+    MPS's float arithmetic is not (run 42355084729). So the one float this
+    arm computes rather than moves, the stroke pixels' area, is worked on its
+    bits (``_stroke_area_bits``), and the arm writes what
+    ``split_merge_sheets`` writes, bit for bit.
     """
     device = frags[0].device
     n = frags[0].shape[0]
@@ -2379,7 +2477,9 @@ def _interleave_split(
         )
         del sub_counts, sheet_q, mp_global
 
-    # Exact for the integer arrays, as the triangle pixels' gather above is.
+    # Exact for the integer arrays, as the triangle pixels' gather above is,
+    # and the stroke pixels' area worked on its bits, as the kernel arm works
+    # it (``_stroke_area_bits``).
     stroke = _stroke_sheets(
         {
             "frag_key": gather_exact(frags[0], sidx),
@@ -2396,6 +2496,7 @@ def _interleave_split(
         compact_kwargs["band_rule"],
         compact_kwargs["band_c"],
         resolve_only,
+        area_bits=True,
     )
     del sidx
 
@@ -3113,7 +3214,15 @@ def compact_sheets(
     n_group, group_of_cid = nb, None
     if sheet_rank_pool and nb:
         n_group, group_of_cid = _rank_pool_groups(
-            cid_band, rank_of_cid, band_id, cov_o, msk_o, nb, parents, deepest
+            cid_band,
+            rank_of_cid,
+            band_id,
+            cov_o,
+            msk_o,
+            nb,
+            parents,
+            deepest,
+            runs=new_group,
         )
     del rank_of_cid
     # Every sheet its band's only one: no group holds two shading classes (the
@@ -3142,7 +3251,7 @@ def compact_sheets(
             band_id if group_of_cid is None else gather_exact(group_of_cid, band_id)
         )
         band_area, band_union, band_corr, band_split = _band_composite(
-            band_of_frag, n_group, cov_o, msk_o
+            band_of_frag, n_group, cov_o, msk_o, runs=new_group
         )
         cls_eff = torch.where(
             band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
@@ -3164,7 +3273,11 @@ def compact_sheets(
         # weights -- and the multi-sheet-band exemption below -- exactly as
         # they were.
         band_area, band_union, band_corr, _split = _band_composite(
-            gather_exact(group_of_cid, band_id), n_group, cov_o, msk_o
+            gather_exact(group_of_cid, band_id),
+            n_group,
+            cov_o,
+            msk_o,
+            runs=new_group,
         )
         del _split
         sheet_band = group_of_cid
@@ -3172,9 +3285,11 @@ def compact_sheets(
 
     # The band's aggregates in one walk of the sorted stream: exact area
     # (float64 accumulate, float32 round -- §6.6.4), the sample-mask union,
-    # and the fusion detector.
+    # and the fusion detector. Every sheet, compositing group and pool lies
+    # inside one (pixel, surface, facing) group, so the group starts are the
+    # runs a float32 sum walks in order (``_band_reduce``).
     sheet_cov, union, fused, _ = _band_reduce(
-        band_id, msk_o, cov_o, nb, want_sliver=False
+        band_id, msk_o, cov_o, nb, want_sliver=False, runs=new_group
     )
     sheet_cov.clamp_min_(0.0)
 
@@ -3259,15 +3374,15 @@ def compact_sheets(
         pos_src = pos_o.to(idx_dtype)
         positions_src = positions.to(idx_dtype)
         first_sorted = torch.full((nb,), n, dtype=idx_dtype, device=device)
-        first_sorted.scatter_reduce_(
-            0, band_id, positions_src, reduce="amin", include_self=True
+        scatter_reduce_(
+            first_sorted, 0, band_id, positions_src, reduce="amin", include_self=True
         )
         first_sorted = first_sorted.to(torch.int64)
         # Exact, as in the kernel arm above.
         nearest_orig = gather_exact(pos_o, first_sorted)
         sheet_pix = gather_exact(pix_o, first_sorted)
         min_pos = torch.full((nb,), n, dtype=idx_dtype, device=device)
-        min_pos.scatter_reduce_(0, band_id, pos_src, reduce="amin", include_self=True)
+        scatter_reduce_(min_pos, 0, band_id, pos_src, reduce="amin", include_self=True)
         min_pos = min_pos.to(torch.int64)
 
         # Under ``positioned_depth`` the same two quantities, restricted to the
@@ -3287,8 +3402,8 @@ def compact_sheets(
             posn = (msk_o & AA_MASK_ALL) != 0
             masked = torch.where(posn, positions_src, big)
             first_sorted_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
-            first_sorted_p.scatter_reduce_(
-                0, band_id, masked, reduce="amin", include_self=True
+            scatter_reduce_(
+                first_sorted_p, 0, band_id, masked, reduce="amin", include_self=True
             )
             first_sorted_p = first_sorted_p.to(torch.int64)
             del masked
@@ -3302,8 +3417,8 @@ def compact_sheets(
             masked = torch.where(posn, pos_src, big)
             del posn, big
             min_pos_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
-            min_pos_p.scatter_reduce_(
-                0, band_id, masked, reduce="amin", include_self=True
+            scatter_reduce_(
+                min_pos_p, 0, band_id, masked, reduce="amin", include_self=True
             )
             min_pos_p = min_pos_p.to(torch.int64)
             del masked
@@ -3362,14 +3477,16 @@ def compact_sheets(
     else:
         idx_dtype = reduction_index_dtype()
         cmax = torch.zeros(nb, dtype=torch.float32, device=device)
-        cmax.scatter_reduce_(0, band_id, cov_o, reduce="amax", include_self=True)
+        scatter_reduce_(cmax, 0, band_id, cov_o, reduce="amax", include_self=True)
         is_max = cov_o >= cmax.index_select(0, band_id)
         del cmax, cov_o
         big = torch.full((n,), n, dtype=idx_dtype, device=device)
         cand_pos = torch.where(is_max, pos_o.to(idx_dtype), big)
         del is_max, big
         rep_orig = torch.full((nb,), n, dtype=idx_dtype, device=device)
-        rep_orig.scatter_reduce_(0, band_id, cand_pos, reduce="amin", include_self=True)
+        scatter_reduce_(
+            rep_orig, 0, band_id, cand_pos, reduce="amin", include_self=True
+        )
         rep_orig = rep_orig.to(torch.int64)
         del cand_pos
 

@@ -33,6 +33,7 @@ import torch
 from algan.environment import env_float, env_int
 from algan.settings import SETTINGS
 from algan.settings._startup import render_device
+from algan.utils import mps_low_watermark
 
 
 class InsufficientMemoryException(Exception):
@@ -311,6 +312,142 @@ def get_num_available_bytes(device=torch.device("cuda")):
         return free_bytes
     else:
         return SETTINGS.computing.cpu_render_memory_budget
+
+
+#: The most torch's MPS allocator may let the device hold while Algan renders,
+#: as a share of Metal's ``recommendedMaxWorkingSetSize``.
+#:
+#: Metal refuses no allocation past the working set, nor past the machine's
+#: RAM; it fails the work that needs more memory resident than the machine can
+#: give it. torch raises nothing (``MPSStream::commitAndWait`` waits for the
+#: command buffer and reads only the kernels' own error buffer, never the
+#: command buffer's status), every output of the failed work holds whatever
+#: its buffer held, and MPS may print "Insufficient Memory
+#: (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)" to stderr or may
+#: print nothing. Quadrants' Metal stream (``MetalStream::command_sync``,
+#: 1.3.3) waits on its command buffers without reading their status either.
+#: torch's own limit is 1.7 times the working set
+#: (``default_high_watermark_ratio`` in aten/src/ATen/mps/MPSAllocator.h),
+#: more RAM than the 7 GB Mac runner has. There, run 42351612808 built the
+#: Bezier header of 5500 triangles over 100 frames on the GPU: the device
+#: reached 7.26 G against a working set of 4.67 G, Metal failed two command
+#: buffers and said so, nothing raised, and 102,317,937 of the 121,000,000
+#: words came back wrong. In run 42355691483 one ``torch.add`` of two 2 GiB
+#: tensors into a third (6.0 G, 1.29 working sets, still less than the
+#: runner's RAM) left its output all zeros and printed nothing; at 4.5 G the
+#: same add was right.
+#:
+#: Held at the working set, torch refuses a request that would take the
+#: device's total past it. It hands its cached blocks back and retries first,
+#: and only then raises "MPS backend out of memory", which :func:`is_cuda_oom`
+#: matches, so the render's retries split the window as they do on CUDA; the
+#: Bezier build above raised it after 11.7 s with the device at 4.42 G. The
+#: total torch compares is the device's ``currentAllocatedSize``, which
+#: counts the native arena (a 1 GiB arena showed up as "other allocations:
+#: 1.00 GiB" in the refusal), Quadrants' buffers and MPSGraph's own as well as
+#: torch's.
+#:
+#: A limit at the working set kept the device within a heap of it rather than
+#: 1.7 times it, and a heap is too much. Metal fails a command buffer once the
+#: heaps holding the buffers it uses come within 20 to 30 MiB of the working
+#: set: on the runner one add over exact-size heaps was right at 0.994
+#: working sets and wrong, in every element and with nothing printed, at
+#: 0.996 and 0.998 (runs 42378512143 and 42381446368). And torch checks the
+#: request alone: while the device is under torch's low watermark, a request
+#: of 10 MiB to 512 MiB that finds no room opens a new 1 GiB heap, so under
+#: torch's default low watermark, 1.4 working sets, the device could end up
+#: to 1 GiB past the limit. Held at the working set, 17 buffers of 256 MiB
+#: (0.911 working sets) sat in 5.00 G of heaps (1.07), and one add over all
+#: 17 came back wrong in every buffer (run 42374877006). The same total spread
+#: over many command buffers can be right: a 1M-primitive BVH build, which
+#: reads back to the host every pass, peaked at 5.06 G and matched the CPU's
+#: tree (same run).
+#:
+#: So Algan starts torch's allocator with a low watermark of 0.75 working
+#: sets (:mod:`algan.utils.mps_low_watermark`). Past it torch gives each such
+#: request a heap of its own size, so the last 1 GiB heap ends below 0.75
+#: working sets + 1 GiB (0.964 on the runner), and after that the device ends
+#: no further past the limit than one 32 MiB heap, which torch opens for a
+#: request of 1 to 10 MiB whatever the watermark. The limit sits 2% under the
+#: working set so that such a heap still ends 64 MiB short of it on the
+#: runner, and further short on a larger working set. In run 42385375749 the
+#: same buffers stopped at 18 in 4.50 G of heaps (0.964), torch refused the
+#: 19th, and one add over all 18 was right. With the last heap opened for a
+#: request of 10 MiB, for one of 1.5 MiB, or after a 1 GiB heap opened just
+#: under the low watermark, the device ended at 0.980, 0.986 and 0.985
+#: working sets, and every add was right.
+#:
+#: A process that started MPS before importing Algan keeps torch's default
+#: low watermark, and the hold then leaves the 1 GiB gap open: in the same
+#: run such a process put 17 of those buffers in 5.00 G of heaps (1.07) and
+#: the add came back wrong in all 17. Closing the gap with the limit alone
+#: takes it more than a heap lower: the working set less 1056 MiB held the
+#: worst case to 0.991 and right (run 42381446368), but at the working set
+#: less 1 GiB a 1M-primitive BVH build that is right under a limit at the
+#: working set raised at 4.02 G (run 42378512143). Under this hold the same
+#: build was right with the device at 4.07 G at most (run 42385375749).
+_MPS_RENDER_HIGH_WATERMARK = 0.98
+
+#: torch's limit when ``PYTORCH_MPS_HIGH_WATERMARK_RATIO`` is unset, which is
+#: what :func:`release_mps_allocator_hold` puts back. torch has no getter for
+#: the limit, so this is ``default_high_watermark_ratio`` in torch 2.13's
+#: aten/src/ATen/mps/MPSAllocator.h rather than a reading.
+_TORCH_MPS_HIGH_WATERMARK = 1.7
+
+#: Whether a render job holds torch's MPS allocator to the working set now.
+_MPS_ALLOCATOR_HELD = False
+
+
+def hold_mps_allocator_to_the_working_set():
+    """Hold torch's MPS allocator just under Metal's working set for a render job.
+
+    ``taichi_runtime.render_job_holding_the_arch`` calls this when the
+    outermost render job starts and :func:`release_mps_allocator_hold` when it
+    ends; :data:`_MPS_RENDER_HIGH_WATERMARK` says why. Only an MPS render is
+    held, and only when ``PYTORCH_MPS_HIGH_WATERMARK_RATIO`` is unset: a limit
+    the user chose for torch, 0.0 (none) included, stands as it is. A limit
+    set at runtime with ``torch.mps.set_per_process_memory_fraction`` is out of
+    sight, since torch has no getter: the render replaces it, and its end
+    leaves torch's default.
+
+    The limit relies on the low watermark :mod:`algan.utils.mps_low_watermark`
+    sets at import. Where that could not happen it holds all the same, since
+    the limit is still far under torch's own, and says at debug level that
+    the device can end up to a heap past it.
+
+    Returns whether it holds the allocator now.
+    """
+    global _MPS_ALLOCATOR_HELD
+    import os
+
+    if _MPS_ALLOCATOR_HELD:
+        return True
+    if render_device().type != "mps" or not torch.backends.mps.is_available():
+        return False
+    if os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO") is not None:
+        return False
+    if not mps_low_watermark.in_effect():
+        from algan.logging.logger import get_logger
+
+        get_logger().debug(
+            "torch's MPS allocator started without a low watermark of %s working "
+            "sets or less (MPS was in use before algan was imported, or "
+            "PYTORCH_MPS_LOW_WATERMARK_RATIO says otherwise), so this render's "
+            "limit on it can be overshot by up to 1 GiB.",
+            mps_low_watermark.LOW_WATERMARK,
+        )
+    torch.mps.set_per_process_memory_fraction(_MPS_RENDER_HIGH_WATERMARK)
+    _MPS_ALLOCATOR_HELD = True
+    return True
+
+
+def release_mps_allocator_hold():
+    """Give torch's MPS allocator its own limit back after a render job."""
+    global _MPS_ALLOCATOR_HELD
+    if not _MPS_ALLOCATOR_HELD:
+        return
+    _MPS_ALLOCATOR_HELD = False
+    torch.mps.set_per_process_memory_fraction(_TORCH_MPS_HIGH_WATERMARK)
 
 
 #: PyTorch's caching allocator rounds a request above this many bytes up to a

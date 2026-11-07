@@ -36,6 +36,7 @@ from algan.rendering.mps_compat import (
     kernel_index,
     reduction_index_dtype,
     reduction_index_sentinel,
+    scatter_reduce_,
     taichi_accumulate_dtype,
 )
 from algan.rendering.projection import kernel_projection
@@ -2210,7 +2211,8 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         # 2**24 an MPS ``index_select`` carries once a chunk covers, or holds,
         # that many. Rounded, a pixel's first opaque hit lands on a neighbour's
         # segment, and a pixel keeps its neighbour's prefix length.
-        first_opaque.scatter_reduce_(
+        scatter_reduce_(
+            first_opaque,
             0,
             gather_exact(segments, opaque_pos),
             opaque_pos.to(idx_dtype),
@@ -2400,8 +2402,8 @@ def _one_mesh_pixel_caps(
             (num_covered,), reduction_index_sentinel(), dtype=idx_dtype, device=device
         )
         hi = torch.full((num_covered,), -1, dtype=idx_dtype, device=device)
-        lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
-        hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
+        scatter_reduce_(lo, 0, seg, sid, reduce="amin", include_self=True)
+        scatter_reduce_(hi, 0, seg, sid, reduce="amax", include_self=True)
         return (lo == hi) & (lo >= 0)
 
     # A bezier fragment has ref < 0 and no surface id; a pixel holding

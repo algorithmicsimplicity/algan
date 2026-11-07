@@ -92,7 +92,7 @@ def _ops(device):
     """
     import torch
 
-    from algan.rendering.mps_compat import accumulate_dtype
+    from algan.rendering.mps_compat import accumulate_dtype, scatter_reduce_
 
     # The renderer's wide accumulators, through the one module allowed to name
     # float64 (test_mps_friendly enforces it); float64 on CUDA, where this runs.
@@ -129,7 +129,7 @@ def _ops(device):
         (
             "scatter_reduce",
             lambda: [
-                n.i32.clone().scatter_reduce_(0, n.i, n.i32, reduce)
+                scatter_reduce_(n.i32.clone(), 0, n.i, n.i32, reduce)
                 for reduce in ("amax", "amin", "sum")
             ],
         ),

@@ -27,7 +27,7 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_int
-from algan.rendering.mps_compat import clamp_floor, gather_exact
+from algan.rendering.mps_compat import clamp_floor, gather_exact, scatter_reduce_
 
 # Resolution of the two indices. Both are pure acceleration: a query that a
 # coarser index sends more edges to still exact-tests every one of them, so
@@ -233,7 +233,7 @@ def _build_group_tables(
         initial = inf if reduce == "amin" else neg_inf
         prepared = torch.where(finite, values, initial)
         out = torch.full((num_groups,), initial, dtype=edges_2d.dtype, device=device)
-        out.scatter_reduce_(0, group_ids, prepared, reduce=reduce, include_self=True)
+        scatter_reduce_(out, 0, group_ids, prepared, reduce=reduce, include_self=True)
         return out
 
     min_u = reduce_bounds(edge_lo_u, "amin")
@@ -404,9 +404,11 @@ def build_bezier_edge_acceleration(
     if bool((edge_counts < 0).any()):
         raise ValueError("edge_offsets must be monotonically non-decreasing")
 
-    circuit_of_edge = torch.repeat_interleave(
-        torch.arange(num_circuits, device=device), edge_counts
-    )
+    # Each edge's circuit, expanded from the counts alone. Not
+    # repeat_interleave(arange, counts), which gathers the arange (see
+    # _expand_intervals): on MPS that rounds a circuit id past 2**24, and the
+    # edges of an odd-numbered circuit there are filed under its neighbour.
+    circuit_of_edge = torch.repeat_interleave(edge_counts)
     if circuit_of_edge.numel() != num_edges:
         raise ValueError("edge_offsets do not describe every sampled edge")
 

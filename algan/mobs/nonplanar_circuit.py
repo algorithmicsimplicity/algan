@@ -83,7 +83,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.environment import env_flag
-from algan.rendering.mps_compat import reduction_index_dtype
+from algan.rendering.mps_compat import reduction_index_dtype, scatter_reduce_
 from algan.rendering.projection import ray_origins_for_points, view_directions
 from algan.rendering.raytracing.utils import _circuit_scale, _cubics_disconnected
 from algan.utils.python_utils import callable_signature
@@ -305,8 +305,13 @@ def _window_sagittae(points, starts, ends, covariances):
     counts = (ends - starts).clamp_min(1).double().view(-1, 1)
     centres = torch.zeros_like(normals).index_add_(0, owner, selected) / counts
     offset = ((selected - centres[owner]) * normals[owner]).sum(-1).abs()
-    return torch.zeros(starts.shape[0], dtype=offset.dtype).scatter_reduce_(
-        0, owner, offset, "amax", include_self=True
+    return scatter_reduce_(
+        torch.zeros(starts.shape[0], dtype=offset.dtype),
+        0,
+        owner,
+        offset,
+        "amax",
+        include_self=True,
     )
 
 
@@ -600,17 +605,23 @@ def _extremal_within_group(values, scores, groups, num_groups):
     frames = values.shape[0]
     limit = values.shape[1]
     spread = groups.unsqueeze(0).expand(frames, -1)
-    best = torch.full(
-        (frames, num_groups), -1.0, device=values.device, dtype=scores.dtype
-    ).scatter_reduce_(1, spread, scores, "amax", include_self=True)
+    best = scatter_reduce_(
+        torch.full(
+            (frames, num_groups), -1.0, device=values.device, dtype=scores.dtype
+        ),
+        1,
+        spread,
+        scores,
+        "amax",
+        include_self=True,
+    )
     # int32 in MPS-friendly mode, where an int64 amin ``scatter_reduce_`` is
     # unimplemented; a control-point index is bounded by ``limit``, so the
     # narrow tie-break picks the same winner.
     idx_dtype = reduction_index_dtype()
     index = torch.arange(limit, device=values.device, dtype=idx_dtype).expand_as(scores)
-    chosen = torch.full(
-        (frames, num_groups), limit, device=values.device, dtype=idx_dtype
-    ).scatter_reduce_(
+    chosen = scatter_reduce_(
+        torch.full((frames, num_groups), limit, device=values.device, dtype=idx_dtype),
         1,
         spread,
         torch.where(scores >= best[:, groups], index, limit),

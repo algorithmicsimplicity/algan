@@ -284,12 +284,16 @@ def split_merge_sheets(
     ``(cov + 0.0).clamp_min_(0.0)`` and the mask with the sliver bit forced
     on for an empty union. The area rule is spelled on the bits, so fast_math
     has no float arithmetic to rewrite: a set sign bit (-0.0, a negative,
-    -inf) becomes +0.0, and a NaN comes back quieted, as the CPU's add
-    returns it. That is the torch arm bit for bit on the CPU, with two
-    exceptions no real area reaches: a GPU's add returns its one canonical
-    NaN, and under flush-to-zero (which Taichi's initialization turns on for
-    the CPU thread) the torch add turns a denormal into a zero of its sign,
-    where this keeps a positive one and zeroes a negative one like any other.
+    -inf) becomes +0.0, a NaN comes back quieted, as the CPU's add returns
+    it, and a denormal keeps its bits. The torch arm works the same rule on
+    the same bits (``sheets._stroke_area_bits``) rather than adding, because
+    an add does not return those everywhere: a GPU's returns its one
+    canonical NaN, flush-to-zero (which Taichi's initialization turns on for
+    the CPU thread) turns a denormal into a zero of its sign, and on the
+    Apple GPU every float op measured that ran, torch's and Metal's (an add,
+    a max, an atomic add; Metal compiled an ``x + 0.0`` away), made a
+    denormal a zero, where a copy kept its bits (runs 42355084729 and
+    42357151096, ``benchmarks/_mps_denormal_area_probe.py``).
     """
     for p in range(nc):
         hit = ti.cast(mixed[p], ti.i32)
@@ -360,9 +364,10 @@ def sheet_band_reduce(
     read once.
 
     ``acc_t`` is that width, and it is ``ti.f32`` in MPS-friendly mode because
-    Metal has no f64 to widen into (``mps_compat``). It must match ``area``'s
-    own dtype: a narrower array with a wider add warns and silently rounds
-    every atomic.
+    Metal has no f64 to widen into (``mps_compat``); the compaction then
+    sums in ``sheet_band_reduce_runs`` instead, whose order is fixed. It must
+    match ``area``'s own dtype: a narrower array with a wider add warns and
+    silently rounds every atomic.
     """
     for i in range(n):
         b = ti.cast(band[i], ti.i32)
@@ -375,6 +380,69 @@ def sheet_band_reduce(
         if ti.static(want_sliver):
             if (word & sliver_bit) != 0:
                 ti.atomic_or(sliver[b], 1)
+
+
+@ti.kernel
+def sheet_band_reduce_runs(
+    run_start: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
+    band: ti.types.ndarray(),  # [n] i64 -- band/sheet index of each fragment
+    msk: ti.types.ndarray(),  # [n] i32 -- fragment mask word
+    cov: ti.types.ndarray(),  # [n] f32 -- fragment exact area
+    n: ti.i32,
+    mask_all: ti.i32,  # _AA_MASK_ALL
+    sliver_bit: ti.i32,  # _AA_SLIVER_BIT
+    area: ti.types.ndarray(),  # [nb] `acc_t`, PRE-ZEROED
+    union: ti.types.ndarray(),  # [nb] i32, PRE-ZEROED
+    dup: ti.types.ndarray(),  # [nb] i32, PRE-ZEROED
+    sliver: ti.types.ndarray(),  # [nb] i32 PRE-ZEROED, or a [1] dummy
+    want_sliver: ti.template(),  # compile-time: is `sliver` real?
+    acc_t: ti.template(),  # compile-time: `area`'s element type
+):
+    """``sheet_band_reduce``, with each band's area summed in stream order.
+
+    The float32 arm of the compaction's area sums (MPS-friendly mode; Metal
+    has no float64 to widen into). There ``sheet_band_reduce``'s
+    ``atomic_add`` rounds after every fragment, in whatever order the
+    hardware lands the atomics, and a band of three or more fragments can
+    then come back an ulp apart from one launch to the next. On the Mac
+    runner (run 42355084729, ``benchmarks/_sheet_area_replay.py``) each of
+    five replays of an HD explainer frame's compaction moved 6 to 8 of its
+    168,675 sheets off the first's, and of an HD solids frame's 1,843,088,
+    283 to 309; this kernel's replays were bit-identical. Integer atomics
+    are exact under any order, and Metal has no 64-bit ones to make the sum
+    fixed-point, so the order itself is fixed instead.
+
+    ``run_start`` marks where a run of the stream starts, row 0 always
+    included, and the caller guarantees that every band's fragments lie in
+    one run (the compaction passes its (pixel, surface, facing) group starts,
+    and every band, sub-band and compositing group is part of one group).
+    One thread per run walks it in stream order, so each band's sum is the
+    plain left-to-right float sum of its fragments' areas, the same in every
+    launch. A thread owns every band of its run, so the
+    reads and writes are plain, and the union, the doubly-claimed lanes and
+    the sliver flag come out exactly as the atomic arm's: ``seen & bits`` is
+    the lanes an earlier fragment of the band claimed, which is what
+    ``atomic_or``'s return value told the atomic arm.
+    """
+    for i in range(n):
+        if i == 0 or run_start[i] != 0:
+            j = i
+            while j < n:
+                if j > i and run_start[j] != 0:
+                    break
+                b = ti.cast(band[j], ti.i32)
+                word = msk[j]
+                bits = word & mask_all
+                seen = union[b]
+                union[b] = seen | bits
+                shared = seen & bits
+                if shared != 0:
+                    dup[b] = dup[b] | shared
+                area[b] = area[b] + ti.cast(cov[j], acc_t)
+                if ti.static(want_sliver):
+                    if (word & sliver_bit) != 0:
+                        sliver[b] = 1
+                j += 1
 
 
 @ti.kernel

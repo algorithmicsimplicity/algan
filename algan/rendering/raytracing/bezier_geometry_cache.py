@@ -8,7 +8,7 @@ from threading import Lock
 import numpy as np
 import torch
 
-from algan.rendering.mps_compat import repeat_interleave_exact
+from algan.rendering.mps_compat import repeat_interleave_exact, scatter_reduce_
 
 
 class _BezierGeometryCache:
@@ -153,20 +153,20 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
         return build(*args, inward_signs)
     corners, samples, segments, next_inds, centers, basis_u, basis_v = args
     device = corners.device
-    circuit_ids = torch.repeat_interleave(
-        torch.arange(len(segments), device=device),
-        segments,
-        output_size=corners.shape[1],
-    )
+    # Each segment's circuit, expanded from the counts alone. The form with an
+    # arange gathers it, and MPS's gather rounds an integer past 2**24
+    # (mps_compat._MPS_EXACT_INT_BITS), which a circuit id passes once a batch
+    # holds that many circuits: an odd-numbered circuit's segments would count
+    # towards its neighbour's stillness. Every circuit numbering in this module
+    # is expanded this way.
+    circuit_ids = torch.repeat_interleave(segments.long(), output_size=corners.shape[1])
     static = _constant_rows(basis_u) & _constant_rows(basis_v)
     segment_static = _rigid_segments(corners, centers, circuit_ids) & _constant_rows(
         next_inds
     )
-    static = (
-        static.int()
-        .scatter_reduce_(0, circuit_ids, segment_static.int(), "amin")
-        .bool()
-    )
+    static = scatter_reduce_(
+        static.int(), 0, circuit_ids, segment_static.int(), "amin"
+    ).bool()
     # Every decision below in one readback: none, all, or a partition the
     # circuits' own links respect.
     segment_static = static[circuit_ids]
@@ -288,12 +288,16 @@ def _padding_edges(edges, offsets):
     if num_edges == 0:
         return sentinel.clone()
     real = (edges[:, :4].abs() < 1e8).all(-1)
-    circuit = torch.repeat_interleave(
-        torch.arange(num_circuits, device=edges.device), counts
-    )
+    # From the counts alone, as in _build_cached_circuit_edges.
+    circuit = torch.repeat_interleave(counts)
     position = torch.arange(num_edges, device=edges.device)
-    first = torch.full_like(counts, num_edges).scatter_reduce_(
-        0, circuit[real], position[real], "amin", include_self=True
+    first = scatter_reduce_(
+        torch.full_like(counts, num_edges),
+        0,
+        circuit[real],
+        position[real],
+        "amin",
+        include_self=True,
     )
     start = edges[first.clamp(max=num_edges - 1), :2]
     padding = torch.cat((start, start, torch.zeros_like(start)), -1)
@@ -351,9 +355,8 @@ def _build_frame_local_circuit_edges(scene, build, args, inward_signs, cache=Tru
             _bezier_connection_visibility,
         )
 
-        circuit_ids = torch.repeat_interleave(
-            torch.arange(len(segments), device=corners.device), segments
-        )
+        # From the counts alone, as in _build_cached_circuit_edges.
+        circuit_ids = torch.repeat_interleave(segments.long())
         closing = ~_bezier_connection_visibility(corners, next_inds, circuit_ids)
         if bool(_constant_rows(closing).all()):
             # The rest of a batched build is per-frame arithmetic, element for
@@ -377,9 +380,9 @@ def _build_frame_local_circuit_edges(scene, build, args, inward_signs, cache=Tru
     offsets = torch.cat((widths.new_zeros(1), widths.cumsum(0)))
     first_edges = built[0][0]
     result = first_edges.new_empty((num_frames, int(offsets[-1]), 6))
-    slot_circuit = torch.repeat_interleave(
-        torch.arange(widths.numel(), device=widths.device), widths
-    )
+    # Each slot's circuit, from the widths alone, as in
+    # _build_cached_circuit_edges.
+    slot_circuit = torch.repeat_interleave(widths)
     for index, (edges, own_offsets) in enumerate(built):
         edges = edges[0]
         own_offsets = own_offsets.long()
