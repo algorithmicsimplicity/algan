@@ -20,7 +20,8 @@ way the rest of this family does: ``mps_rounding.round_integer_gathers``
 makes the CPU's gathers round as MPS's do, with :func:`_round_integer_repeats`
 for the gather inside ``repeat_interleave``, and in MPS-friendly mode the
 tables must come back exactly as the exact gathers build them. The two
-``apple_gpu`` tests build them on the Apple GPU whenever the machine has one.
+``apple_gpu`` tests build on the Apple GPU: the intervals whenever the
+machine has one, and the whole header when MPS is the render device.
 """
 
 # No ``from __future__ import annotations``: it would turn the probe kernel's
@@ -340,12 +341,13 @@ def test_the_header_built_on_the_apple_gpu_is_the_cpu_header(mps_friendly, case)
     from its own edges, and its header is short of the ceiling;
     ``past_the_ceiling`` is the 185,000-group batch.
 
-    **It only bites on a Mac**, like the gather guards in
-    ``test_mps_friendly.py``: it runs on ``torch.backends.mps``'s device rather
-    than Algan's configured one, so any Apple machine checks the real gather,
-    and everywhere else it compares the CPU with itself.
+    **It only bites where MPS is the render device**, and everywhere else it
+    compares the CPU with itself. The builder needs the torch that arm
+    installs (2.13): the macOS CPU arm keeps the locked 2.7.1, whose MPS has
+    no int64 ``index_add_`` for ``_static_circuits``, and Algan renders
+    nothing on MPS with that torch.
     """
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "mps" if SETTINGS.computing.render_device.type == "mps" else "cpu"
     if case == "few_frames":
         edges, offsets = _page_of_glyphs(frames=6, circuits=40, seed=1)
         edges[1:, :, :4] += torch.arange(1, 6).view(-1, 1, 1).float() / 2**10
@@ -366,8 +368,9 @@ def test_the_bin_intervals_expanded_on_the_apple_gpu_are_the_cpu_ones(mps_friend
     """Bit for bit, the intervals an Apple GPU expands are the CPU's.
 
     The intervals of :func:`_intervals_past_the_ceiling`, on
-    ``torch.backends.mps``'s device whenever the machine has one, as in
-    :func:`test_the_header_built_on_the_apple_gpu_is_the_cpu_header`.
+    ``torch.backends.mps``'s device whenever the machine has one, like the
+    gather guards in ``test_mps_friendly.py``, so any Apple machine checks the
+    real gather.
     """
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     source, counts = _intervals_past_the_ceiling()
