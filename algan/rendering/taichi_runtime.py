@@ -1282,6 +1282,21 @@ def render_job_holding_the_arch():
     global _PRESSURE_RESET_PENDING, _RENDER_JOBS_ACTIVE
     _RENDER_JOBS_ACTIVE += 1
     if _RENDER_JOBS_ACTIVE == 1:
+        # On MPS, torch must refuse memory past Metal's working set rather
+        # than let a command buffer fail silently there; see
+        # memory_utils._MPS_RENDER_HIGH_WATERMARK. Warned rather than raised:
+        # an exception before the `try` would leave the job count stuck.
+        try:
+            from algan.utils.memory_utils import hold_mps_allocator_to_the_working_set
+
+            hold_mps_allocator_to_the_working_set()
+        except Exception as exc:  # noqa: BLE001
+            get_logger().warning(
+                "Could not hold torch's MPS allocator to Metal's working set "
+                "for this render (%s); an out-of-memory failure on the GPU may "
+                "go unreported.",
+                exc,
+            )
         # Optimizations and reporting: nothing here may fail a render, and an
         # exception before the `try` would leave the job count stuck.
         with contextlib.suppress(Exception):
@@ -1304,6 +1319,12 @@ def render_job_holding_the_arch():
     finally:
         _RENDER_JOBS_ACTIVE -= 1
         if _RENDER_JOBS_ACTIVE == 0:
+            # First, so that a failing step below cannot leave torch held to
+            # the render's limit for the rest of the process.
+            with contextlib.suppress(Exception):
+                from algan.utils.memory_utils import release_mps_allocator_hold
+
+                release_mps_allocator_hold()
             with contextlib.suppress(Exception):
                 from algan.rendering import kernel_precompile, kernel_progress
 

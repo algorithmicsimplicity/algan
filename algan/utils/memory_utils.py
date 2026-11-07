@@ -313,6 +313,89 @@ def get_num_available_bytes(device=torch.device("cuda")):
         return SETTINGS.computing.cpu_render_memory_budget
 
 
+#: The most torch's MPS allocator may let the device hold while Algan renders,
+#: as a share of Metal's ``recommendedMaxWorkingSetSize``.
+#:
+#: Metal refuses no allocation past the working set, nor past the machine's
+#: RAM; it fails the work that needs more memory resident than the machine can
+#: give it. torch raises nothing (``MPSStream::commitAndWait`` waits for the
+#: command buffer and reads only the kernels' own error buffer, never the
+#: command buffer's status), every output of the failed work holds whatever
+#: its buffer held, and MPS may print "Insufficient Memory
+#: (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)" to stderr or may
+#: print nothing. Quadrants' Metal stream (``MetalStream::command_sync``,
+#: 1.3.3) waits on its command buffers without reading their status either.
+#: torch's own limit is 1.7 times the working set
+#: (``default_high_watermark_ratio`` in aten/src/ATen/mps/MPSAllocator.h),
+#: more RAM than the 7 GB Mac runner has. There, run 42351612808 built the
+#: Bezier header of 5500 triangles over 100 frames on the GPU: the device
+#: reached 7.26 G against a working set of 4.67 G, Metal failed two command
+#: buffers and said so, nothing raised, and 102,317,937 of the 121,000,000
+#: words came back wrong. In run 42355691483 one ``torch.add`` of two 2 GiB
+#: tensors into a third (6.0 G, 1.29 working sets, still less than the
+#: runner's RAM) left its output all zeros and printed nothing; at 4.5 G the
+#: same add was right.
+#:
+#: Held at the working set, torch refuses the allocation that would take the
+#: device past it. It hands its cached blocks back and retries first, and
+#: only then raises "MPS backend out of memory", which :func:`is_cuda_oom`
+#: matches, so the render's retries split the window as they do on CUDA; the
+#: Bezier build above raised it after 11.7 s with the device at 4.42 G. The
+#: figure torch compares is the device's ``currentAllocatedSize``, which
+#: counts the native arena (a 1 GiB arena showed up as "other allocations:
+#: 1.00 GiB" in the refusal), Quadrants' buffers and MPSGraph's own as well as
+#: torch's. It is not exact: torch checks the request, then carves it from
+#: heaps of up to 1 GiB, so the device can end a little past the limit
+#: (5.00 G against 4.67 G in run 42351612808).
+_MPS_RENDER_HIGH_WATERMARK = 1.0
+
+#: torch's limit when ``PYTORCH_MPS_HIGH_WATERMARK_RATIO`` is unset, which is
+#: what :func:`release_mps_allocator_hold` puts back. torch has no getter for
+#: the limit, so this is ``default_high_watermark_ratio`` in torch 2.13's
+#: aten/src/ATen/mps/MPSAllocator.h rather than a reading.
+_TORCH_MPS_HIGH_WATERMARK = 1.7
+
+#: Whether a render job holds torch's MPS allocator to the working set now.
+_MPS_ALLOCATOR_HELD = False
+
+
+def hold_mps_allocator_to_the_working_set():
+    """Hold torch's MPS allocator to Metal's working set for a render job.
+
+    ``taichi_runtime.render_job_holding_the_arch`` calls this when the
+    outermost render job starts and :func:`release_mps_allocator_hold` when it
+    ends; :data:`_MPS_RENDER_HIGH_WATERMARK` says why. Only an MPS render is
+    held, and only when ``PYTORCH_MPS_HIGH_WATERMARK_RATIO`` is unset: a limit
+    the user chose for torch, 0.0 (none) included, stands as it is. A limit
+    set at runtime with ``torch.mps.set_per_process_memory_fraction`` is out of
+    sight, since torch has no getter: the render replaces it, and its end
+    leaves torch's default.
+
+    Returns whether it holds the allocator now.
+    """
+    global _MPS_ALLOCATOR_HELD
+    import os
+
+    if _MPS_ALLOCATOR_HELD:
+        return True
+    if render_device().type != "mps" or not torch.backends.mps.is_available():
+        return False
+    if os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO") is not None:
+        return False
+    torch.mps.set_per_process_memory_fraction(_MPS_RENDER_HIGH_WATERMARK)
+    _MPS_ALLOCATOR_HELD = True
+    return True
+
+
+def release_mps_allocator_hold():
+    """Give torch's MPS allocator its own limit back after a render job."""
+    global _MPS_ALLOCATOR_HELD
+    if not _MPS_ALLOCATOR_HELD:
+        return
+    _MPS_ALLOCATOR_HELD = False
+    torch.mps.set_per_process_memory_fraction(_TORCH_MPS_HIGH_WATERMARK)
+
+
 #: PyTorch's caching allocator rounds a request above this many bytes up to a
 #: whole number of ``_CUDA_LARGE_SEGMENT_ROUND`` and gives it a segment of its
 #: own (``get_allocation_size`` in c10/cuda/CUDACachingAllocator.cpp).
