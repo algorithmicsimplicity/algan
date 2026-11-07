@@ -400,22 +400,30 @@ def _note_failure(arm, exc):
 
 
 def _stroke_area_rule():
-    """The torch arm's stroke-pixel area, ``(cov + 0.0).clamp_min_(0.0)``, on
-    the render device against the CPU, over values a real area can take and a
-    few it cannot. The kernel arm spells the same rule on the bits.
+    """The stroke-pixel area rule on the render device against the CPU, over
+    values a real area can take and a few it cannot: as the float add the
+    stroke-only shortcut takes, ``(cov + 0.0).clamp_min_(0.0)``, and as the
+    bit rule both arms of the split take (``sheets._stroke_area_bits``). The
+    host's add is IEEE here, because this runs before the first render
+    initializes Taichi, which turns flush-to-zero on for the thread.
     """
     values = [0.0, -0.0, 1e-9, 1e-30, 1.4e-45, 5.9604645e-8, 3e-8, -1e-9, 0.5, 1.0]
     host = torch.tensor(values, dtype=torch.float32)
-    want = (host + 0.0).clamp_min_(0.0)
-    got = (host.to(render_device()) + 0.0).clamp_min_(0.0).cpu()
-    same = torch.equal(want.view(torch.int32), got.view(torch.int32))
-    print(
-        f"stroke area rule (cov + 0.0).clamp_min_(0.0) on the device: {'exact' if same else 'DIFFERS'}"
-    )
-    if not same:
-        for v, w, g in zip(values, want.tolist(), got.tolist()):
-            if w != g or str(w) != str(g):
-                print(f"    {v!r}: cpu {w!r} device {g!r}")
+    rules = {
+        "(cov + 0.0).clamp_min_(0.0)": lambda x: (x + 0.0).clamp_min_(0.0),
+        "sheets._stroke_area_bits": sheets._stroke_area_bits,
+    }
+    for name, rule in rules.items():
+        want = rule(host.clone())
+        got = rule(host.to(render_device())).cpu()
+        same = torch.equal(want.view(torch.int32), got.view(torch.int32))
+        print(
+            f"stroke area rule {name} on the device: {'exact' if same else 'DIFFERS'}"
+        )
+        if not same:
+            for v, w, g in zip(values, want.tolist(), got.tolist()):
+                if w != g or str(w) != str(g):
+                    print(f"    {v!r}: cpu {w!r} device {g!r}")
 
 
 def main(argv=None) -> int:

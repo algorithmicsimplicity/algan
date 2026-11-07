@@ -371,11 +371,10 @@ def test_stroke_pixel_split_holds_with_a_closed_solid(
 
 def _edge_areas_on_stroke_pixels(stream, seed):
     """``stream`` with edge-case areas written over fragments of stroke-only
-    pixels: -0.0, a negative, -inf, +inf and NaNs, quiet and signaling, of
-    either sign. Stroke pixels compact one fragment to one sheet, so these
-    reach ``_stroke_sheets``' area rule unaltered. (Not denormals: the torch
-    arm's add flushes those or not as the thread's flush-to-zero mode says,
-    and initializing Taichi turns it on.)
+    pixels: -0.0, a negative, -inf, +inf, NaNs, quiet and signaling, of
+    either sign, and denormals of either sign, the smallest (1.4e-45) and the
+    largest. Stroke pixels compact one fragment to one sheet, so these reach
+    ``_stroke_sheets``' area rule unaltered.
     """
     coverage = dict(stream[0])
     n = coverage["num_fragments"]
@@ -388,6 +387,7 @@ def _edge_areas_on_stroke_pixels(stream, seed):
     rows = (~tri_pixel[pixel]).nonzero().squeeze(1)
     patterns = [0x80000000, 0xBE800000, 0xFF800000, 0x7F800000]
     patterns += [0x7FC00000, 0xFFC00000, 0x7FA00000, 0xFFA00000]
+    patterns += [0x00000001, 0x007FFFFF, 0x80000001, 0x807FFFFF]
     bits = torch.tensor(
         [b - (1 << 32) if b >= 1 << 31 else b for b in patterns], dtype=torch.int32
     )
@@ -426,25 +426,25 @@ def test_stroke_pixel_split_kernels_match_the_torch_arm(
 
     The split moves rows rather than computing them, apart from the stroke
     pixels' area and mask rules, so the two arms must agree bit for bit --
-    on edge-case areas too. NaN payloads are only compared on the CPU, whose
-    add keeps them (``split_merge_sheets``). On MPS the kernels run only when
-    ``sheet_split_kernel_mps`` asks for them, so this asks, and on 6000
-    covered pixels rather than 200: torch picks an MPS scan kernel by length
-    as well as layout, and the split's first prefix ran up to 1023 pixels and
-    raised from 1024 on (``sheets._split_stroke_pixels``).
+    on edge-case areas too, denormals and NaN payloads included, and on every
+    device: the torch arm works the area rule on the bits, as the kernel does
+    (``sheets._stroke_area_bits``), where an add would flush a denormal on
+    MPS, or on the CPU under the flush-to-zero Taichi turns on. On MPS the
+    kernels run only when ``sheet_split_kernel_mps`` asks for them, so this
+    asks, and on 6000 covered pixels rather than 200: torch picks an MPS scan
+    kernel by length as well as layout, and the split's first prefix ran up
+    to 1023 pixels and raised from 1024 on (``sheets._split_stroke_pixels``).
 
-    Both arms hand their triangle pixels to the general path, which on MPS
-    sums each sheet's area in float32 atomics (``mps_compat.
-    accumulate_dtype``): two runs of it need not round a sheet of three or
-    more fragments alike. So the kernel arm first gets the torch arm's own
-    general-path result, once it has handed the general path the same
-    fragments, bit for bit, and what is compared is the split's own work.
-    Where the sums are float64, and so reproducible, the kernel arm then
-    also runs end to end.
+    Both arms hand their triangle pixels to the general path. The kernel arm
+    first gets the torch arm's own general-path result, once it has handed
+    the general path the same fragments, bit for bit, so that what is
+    compared is the split's own work; then it runs end to end. That holds in
+    float32 too (MPS-friendly mode, ``mps_compat.accumulate_dtype``), where
+    the general path sums each sheet's area in stream order, and so the same
+    way on every run (``sheets._band_reduce``).
     """
     import algan.rendering.raytracing.sheet_compact_taichi as kernels
     import algan.rendering.raytracing.sheets as sheets_mod
-    from algan.rendering.mps_compat import accumulate_dtype
     from algan.rendering.taichi_runtime import init_taichi
 
     init_taichi()
@@ -461,8 +461,7 @@ def test_stroke_pixel_split_kernels_match_the_torch_arm(
         closed=closed,
         **size,
     )
-    if device == "cpu":
-        stream = _edge_areas_on_stroke_pixels(stream, seed)
+    stream = _edge_areas_on_stroke_pixels(stream, seed)
     flags = {"shade_split": True, "positioned_depth": True, "sample_depth": True}
     real_compact = sheets_mod.compact_sheets
     general = {}
@@ -497,7 +496,7 @@ def test_stroke_pixel_split_kernels_match_the_torch_arm(
 
         monkeypatch.setattr(kernels, name, spy)
     monkeypatch.setattr(sheets_mod, "sheet_split_kernel", True)
-    for shared in [True] + ([False] if accumulate_dtype() == torch.float64 else []):
+    for shared in (True, False):
         if not shared:
             monkeypatch.setattr(sheets_mod, "compact_sheets", real_compact)
         launched.clear()
