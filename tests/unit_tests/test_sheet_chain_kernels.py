@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from algan.rendering.mps_compat import kernel_index
 from algan.rendering.raytracing.raster_pipeline import (
     _class_pairs_flat,
     raster_chunk,
@@ -150,6 +151,56 @@ def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments(
             key, o2, back.contiguous().view(torch.uint8), n, got, ACC_F64
         )
         assert _bits_equal(want, got), f"n={n}"
+
+
+def test_solid_shell_ceiling_returns_what_it_does_not_clip_bit_for_bit():
+    """A fragment the allowance covers comes back as it went in, on any arch.
+
+    Two kinds, both common in a real stream: a fragment of an undeclared
+    surface, which reaches the kernel as a one-fragment segment whose
+    allowance is its own area, and the nearer crossing of a closed shell's
+    front/back pair. Neither is the ceiling's to change, and the stroke-pixel
+    split (``_split_stroke_pixels``) holds only because a stroke pixel's
+    fragments come back unchanged when they do pass through here. On an Apple
+    GPU they did not: the kernel wrote ``denom * min(left / denom, 1)``,
+    Metal's division put ``c / c`` under 1 for about one area in seventy, and
+    those came back an ulp low (which is how
+    ``test_stroke_sheets.py::test_stroke_pixel_split_holds_with_a_closed_solid``
+    failed there). The f32 arm is the one Metal runs, so this runs on every
+    render device; the f64 arm is checked wherever it compiles.
+    """
+    g = torch.Generator().manual_seed(3)
+    n = 1 << 16
+    half = n // 2
+    cov = torch.rand(n, generator=g) * 0.98 + 0.01
+    key = torch.empty(n, dtype=torch.int64)
+    # The first half undeclared: a unique negative key each, as compact_sheets
+    # keys them.
+    key[:half] = -(torch.arange(half) + 1)
+    # The second half closed: (pixel, surface) pairs of a front and a back
+    # crossing of one area, the nearer first, so the cap is that area.
+    key[half:] = torch.arange(half) // 2
+    cov[half + 1 :: 2] = cov[half::2]
+    back = torch.zeros(n, dtype=torch.bool)
+    back[half + 1 :: 2] = True
+    o2 = _lexsort(key, torch.arange(n, dtype=torch.float32))
+    kept = torch.cat([torch.arange(half), torch.arange(half, n, 2)])
+    arms = {"f32": ACC_F32}
+    if str(SETTINGS.computing.render_device) != "mps":
+        arms["f64"] = ACC_F64
+    for name, acc in arms.items():
+        got = cov.clone()
+        # As compact_sheets passes them: the stream order narrowed for Metal
+        # (``kernel_index``), the identity off MPS-friendly mode.
+        solid_shell_ceiling(key, kernel_index(o2), back.view(torch.uint8), n, got, acc)
+        moved = got[kept].view(torch.int32) != cov[kept].view(torch.int32)
+        assert not bool(moved.any()), (
+            f"{name}: {int(moved.sum())} of {kept.numel()} fragments the allowance "
+            "covers came back changed"
+        )
+        # The farther crossing of each pair is what the ceiling does govern:
+        # nothing is left for it (bar the f64 spend's sub-quantum remainder).
+        assert bool((got[half + 1 :: 2] < 1e-9).all()), name
 
 
 def _large_shell_stream(nseg, seed):

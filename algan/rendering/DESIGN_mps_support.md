@@ -775,7 +775,15 @@ Both of Algan's wide int64s are composite keys, so both were hit:
 The general rule this leaves: **on MPS, do not put a value above 2**24 through a
 gather, a division or a `unique`, at any integer width.** Composite keys are
 where a renderer builds such values, and they are exactly the values whose low
-bits carry the meaning.
+bits carry the meaning. So are bitmasks with a flag above bit 24: a fragment's
+mask word became one on 2026-10-30, when the near cut (bit 29) and the one-solid
+ceiling (bit 30) gave it flags there, and every `index_select` of it went wrong
+on this arm (§4.9).
+
+On torch 2.13.0, the version the MPS arm pins, the same probe found
+`torch.gather` exact (run 42226130722); `index_select` still rounds, at int32
+and int64 alike. The rule stands either way: `mps_compat.gather_exact` is the
+gather for such a value.
 
 `mps_compat.gather_packed_key` gathers with `v[i]`, which is one operation and
 exact. Two earlier forms are worth knowing about because they bound the problem:
@@ -1154,6 +1162,11 @@ section to update when one changes.
 | [40306266933](https://github.com/algorithmicsimplicity/algan/actions/runs/40306266933) (2026-10-26, the weekly full run) | **12 failed**, 8472 passed, 360 skipped, 3 xfailed in 4445 s — one a path-tracer bias every arm shared (#247), eleven this arm's own from four causes (§4.8) |
 | [41159788488](https://github.com/algorithmicsimplicity/algan/actions/runs/41159788488) (2026-10-31, the four files of those eleven, on the fix branch) | 74 passed, 2 skipped, 4 xfailed in 347 s — the xfails are cause I's entries |
 | [41164965493](https://github.com/algorithmicsimplicity/algan/actions/runs/41164965493) (2026-10-31, the caustic files with the walk in a kernel of its own, on the fix branch) | 41 passed, 2 skipped in 313 s — all ten caustic renders pass, cause I's four among them; the skips are the CPU-only comparison of the split with the single kernel |
+| [41446470532](https://github.com/algorithmicsimplicity/algan/actions/runs/41446470532) (2026-11-02, the weekly full run, master at 757e0f0) | **8 failed**, 8646 passed, 378 skipped, 3 xfailed in 5425 s — two causes, J and K, both in code added on 2026-10-30 that had not run on this arm (§4.9) |
+| [42226130722](https://github.com/algorithmicsimplicity/algan/actions/runs/42226130722) (2026-11-06, `test_sheet_resolve_shading.py` with cause J's gathers exact) | 6 passed — the 344 moved pixels are back |
+| [42232166078](https://github.com/algorithmicsimplicity/algan/actions/runs/42232166078) (2026-11-06, `test_sheet_route_former_vetoes.py` with cause J's gathers exact, and the walk test) | 9 passed — the near-plane rim is 31 levels off its reference, as on the CPU, against 58 before |
+| [42236806653](https://github.com/algorithmicsimplicity/algan/actions/runs/42236806653) (2026-11-06, `test_stroke_sheets.py` and `test_sheet_chain_kernels.py` with cause K fixed and the split's gathers exact) | 186 passed, 20 skipped — the six `closed_solid` cases among them; a 320x180 frame's split and unsplit compactions agree row for row |
+| [42244121369](https://github.com/algorithmicsimplicity/algan/actions/runs/42244121369) (2026-11-06, the full scope with J and K fixed, on the fix branch, #249) | **0 failed**, 8717 passed, 378 skipped, 3 xfailed in 3579 s — the weekly run's 8646 and 8 plus the 63 tests the fixes added; the other three arms green too |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1178,6 +1191,8 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
 | H | one fragment lands in the wrong pixel | 1 | 0 | **fixed** — §2.3f |
 | I | the caustic `pt_shade` is too large for Apple's shader compiler | 8 | 0 | **fixed**: the walk runs in a kernel of its own on Metal — §4.8 |
+| J | a mask word with a flag above bit 24 goes through `index_select` | 2 | 0 | **fixed**: every such gather is `gather_exact` — §4.9 |
+| K | the shell ceiling divides a fragment it does not clip, and Metal's division is not correctly rounded | 6 | 0 | **fixed** — §4.9 |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
 **Two fixes took thirty of the thirty-two**, and neither was aimed at most of
@@ -1654,3 +1669,78 @@ Run 41158150876 put the last three on the Mac arm: they pass (or skip, the
 counters and the glue) with the rest of their files. Run 41159788488 then ran
 all four files with the decline in: 74 passed, 2 skipped, and the four entries
 under I strict-xfailed, with the decline's warning printed once.
+
+### 4.9 The 2026-11-02 eight: mask words past the gather ceiling, and a division Metal rounds
+
+The weekly full run 41446470532 failed this arm on eight tests, two causes
+between them. Both were in code merged on 2026-10-30, between two weekly runs,
+and pull requests run only the CI group on Linux and the macOS CPU arm, so
+neither had run on an Apple GPU before. (The macOS CPU arm failed six of its
+own in the same run, which have nothing to do with Metal: the CPU backend's
+aarch64 code generation summed the glossy prefilter's four taps in a different
+order in the fused finish than in the launches it replaces.
+`glossy_prefilter_taichi._sealed` has the measurement and the fix.)
+
+**J: a mask word with a flag above bit 24 (2 tests).** A fragment's mask word
+keeps its eight sample bits in bits 0-7, and two flags added that day sit far
+above them: `_AA_NEAR_CUT_BIT` (bit 29, on every fragment the near plane cuts)
+and `_AA_ONE_SOLID_BIT` (bit 30, on a refracting batch's one-solid fragments).
+With either set, the word is past the ceiling of §2.3b, and an `index_select`
+returns `float32(word)`: the probe in run 42226130722 read `0x400000ff` back as
+`0x40000100`, all eight samples gone and a carry into bit 8. The word went
+through `index_select` in `raster_pipeline._gather_fragment_arrays`' torch arm
+(the one MPS takes), the opaque-prefix truncation, `sheets._conflict_rank`'s
+torch arm, and three places in `compact_sheets` (`msk_o`, `rep_msk`,
+`sheet_msk_final`). Two renders showed it:
+
+* `test_the_near_plane_opens_a_translucent_flat_solid`: 142 cut fragments came
+  back with their low sample bits rounded away (`0x3B` read `0x40`, `0xFF`
+  read `0x100`), the GPU built 2839 sheets where the CPU builds 2833, and a rim
+  pixel landed 58 levels off its reference against a bound of 48 (run
+  42224167488). With the fix it is 31, the CPU's own figure.
+* `test_solids_the_walk_does_not_refract_render_as_before`: every sheet of a
+  pixel the one-solid ceiling flagged came out with a rounded sample union,
+  often an empty one, which the compaction forces to a sliver (`0x000000c4`
+  became `0x40020100`), and 344 pixels of the four spheres moved, 304 of them
+  on the glass sphere at opacity 0.6.
+
+The stroke-pixel split's torch arm, which MPS also takes, gathered its keys,
+mask words and row positions the same way, and no test saw it, because the
+split's tests ran on CPU tensors only. On a 320x180 frame of solids and strokes
+its sheet keys came back with their depth words rounded (`0x633f419b7891` read
+`0x633f41800000`) and it made 5051 sheets where the unsplit compaction made
+5075 (run 42228352763).
+
+Every one of those gathers is now `mps_compat.gather_exact`, which is
+`index_select` off MPS-friendly mode, so CPU and CUDA output does not change.
+`test_sheet_route_former_vetoes.py::test_a_near_cut_mask_word_survives_the_mps_integer_gather`
+reproduces the defect on any machine, by making `index_select` and
+`torch.gather` round integers through a float32 in MPS-friendly mode, and
+fails on the CPU without the fix. `test_stroke_sheets.py`'s split tests also
+run on MPS tensors when MPS is the render device; with the old gathers all
+sixty of those cases fail.
+
+**K: the shell ceiling divides a fragment it does not clip (6 tests).** The six
+failures of `test_stroke_pixel_split_holds_with_a_closed_solid` were its
+`ceiling_kernel=True` cases on CPU tensors. On this arm Quadrants is
+initialised for Metal, so `sheet_compact_taichi.solid_shell_ceiling` ran on the
+Apple GPU with its CPU tensors staged to it. It wrote every fragment back as
+`denom * min(left / denom, 1)`, and Metal's f32 division is not correctly
+rounded, with `fast_math` on or off: `c / c` came back below 1 for 15,249 of
+2**20 areas in [0.05, 0.95] (run 42228352763). A fragment of an undeclared
+surface reaches the ceiling as a one-fragment segment whose allowance is its
+own area, so the unsplit compaction wrote some of the stroke pixels'
+fragments an ulp low, and the split, which never sends a stroke pixel to the
+ceiling, did not. Repeated launches were bit-identical; it was the division,
+not an atomic or an order. The kernel now writes back a fragment the allowance
+covers unchanged and divides only one it clips. Wherever division is correctly
+rounded that is the old expression bit for bit (1440 old/new pairs on the CPU,
+both accumulator widths), and
+`test_sheet_chain_kernels.py::test_solid_shell_ceiling_returns_what_it_does_not_clip_bit_for_bit`
+holds it on every device. A fragment the ceiling does clip still divides, so on
+Metal it can sit an ulp from the CPU's; it is the same split or unsplit, which
+is what the compaction promises.
+
+Runs 42226130722, 42232166078 and 42236806653 put the four affected files on
+this arm with the fixes in: 6, 9 and 186 passed (20 skipped, as on master), and
+the 320x180 frame's split and unsplit compactions agree row for row.

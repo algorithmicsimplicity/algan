@@ -26,8 +26,18 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as SLIVER,
 )
 from algan.rendering.raytracing.sheets import compact_sheets
+from algan.settings import SETTINGS
 
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+# The stroke-pixel split's equivalence tests also run on the Apple GPU when it
+# is the render device, as conftest's MPS hook reads it at collection. MPS runs
+# the split's torch arm (its kernels stay off there), and the gathers that arm
+# makes are the ones MPS rounds through a float32 above 2**24
+# (``mps_compat._MPS_EXACT_INT_BITS``) -- which a CPU tensor never reaches,
+# even in a process rendering on MPS.
+_SPLIT_DEVICES = _DEVICES + (
+    ["mps"] if SETTINGS.computing.render_device.type == "mps" else []
+)
 
 
 def _stroke_stream(seed, device, pixels=300, width=64, height=32, frames=2):
@@ -263,7 +273,7 @@ def test_solo_band_skip_matches_sibling_weights(
             assert got[name] == want, name
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", _SPLIT_DEVICES)
 @pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("resolve_only", [True, False])
 @pytest.mark.parametrize("sample_depth", [True, False])
@@ -305,7 +315,7 @@ def test_stroke_pixel_split_matches_general_path(
             assert got[name] == want, name
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", _SPLIT_DEVICES)
 @pytest.mark.parametrize("ceiling_kernel", [True, False])
 @pytest.mark.parametrize("sample_depth", [True, False])
 @pytest.mark.parametrize("seed", [0, 1, 2])
@@ -345,7 +355,7 @@ def test_stroke_pixel_split_holds_with_a_closed_solid(
     assert calls == [True]  # the split was taken, not declined
     # The ceiling did clamp something, so the comparison is not vacuous.
     raw = stream[0]["frag_cov"].sum().item()
-    assert got["sheet_cov"].double().sum().item() < raw - 1e-3
+    assert got["sheet_cov"].cpu().double().sum().item() < raw - 1e-3
     assert set(got) == set(ref)
     for name, want in ref.items():
         if torch.is_tensor(want):

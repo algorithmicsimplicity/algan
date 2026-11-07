@@ -671,9 +671,14 @@ def solid_shell_ceiling(
     same order in both arms: clamp/div/clamp chain, the f64 -> f32 -> f64
     rounding of the cap, and the ``1e-12`` denominator floor -- which the
     torch side clamps INTO ITS OWN COPY, so the closing multiply writes the
-    floored value, not the raw area. Each output slot is written by exactly
-    one walk because ``o2`` is a permutation, which is what made the torch
-    side's clone + ``index_copy_`` equivalent to in-place.
+    floored value, not the raw area. The kernel runs that chain only for a
+    fragment the allowance clips (``left < denom``) and writes one it covers
+    its floored area outright, which is what the chain gives wherever
+    division is correctly rounded: ``left >= denom`` puts the quotient at 1
+    or above, the clamp makes it 1, and ``denom * 1`` is ``denom``. Each
+    output slot is written by exactly one walk because ``o2`` is a
+    permutation, which is what made the torch side's clone + ``index_copy_``
+    equivalent to in-place.
 
     A fragment count never approaches 2**31, so rows narrow to i32 for
     indexing.
@@ -687,6 +692,18 @@ def solid_shell_ceiling(
     arm on a synthetic 3.2M-fragment stream) and, like the fixed point, never
     reads another segment. The torch arm does the same with a segmented scan
     (``sheets._segment_exclusive_prefix``).
+
+    One thing does hold on every arch: a fragment the allowance covers comes
+    back bit for bit, and on Metal that is the covered-fragment shortcut's
+    doing. Metal's f32 division is not correctly rounded, with Quadrants'
+    ``fast_math`` on or off -- on the Mac runner ``c / c`` came back below 1
+    for 15,249 of 2**20 areas in [0.05, 0.95] -- so through the chain those
+    fragments were written an ulp low. Every fragment of an undeclared
+    surface reaches this kernel as a one-fragment segment whose allowance is
+    its own area, so the ceiling altered fragments it does not govern, and
+    the unsplit compaction stopped matching ``sheets._split_stroke_pixels``,
+    which never brings a stroke pixel here
+    (``test_stroke_sheets.py::test_stroke_pixel_split_holds_with_a_closed_solid``).
     """
     for i in range(n):
         ii = ti.cast(o2[i], ti.i32)
@@ -727,11 +744,12 @@ def solid_shell_ceiling(
                 # byte identity still demands they write the SAME zero.
                 c = ti.cast(cov[jj], acc_t)
                 denom = ti.max(c, ti.cast(1e-12, acc_t))
+                # What the allowance has left when this fragment's turn comes.
                 # Declared outside the static branches: a name first bound
                 # inside one is out of scope after it.
-                scale = ti.cast(0.0, acc_t)
+                left = ti.cast(0.0, acc_t)
                 if ti.static(acc_t != ti.f32):
-                    scale = ti.max(
+                    left = ti.max(
                         cap
                         - ti.cast(spent_q, acc_t)
                         * ti.cast(SHELL_SPEND_QUANTUM, acc_t),
@@ -739,11 +757,17 @@ def solid_shell_ceiling(
                     )
                     spent_q += ti.cast(c * ti.cast(SHELL_SPEND_ONE, acc_t), ti.i64)
                 else:
-                    scale = ti.max(cap - spent, ti.cast(0.0, acc_t))
+                    left = ti.max(cap - spent, ti.cast(0.0, acc_t))
                     spent += c
-                scale = scale / denom
-                scale = ti.min(scale, ti.cast(1.0, acc_t))
-                cov[jj] = ti.cast(denom * scale, ti.f32)
+                # A fragment the allowance covers keeps its floored area
+                # outright and only one it clips divides: the torch arm's
+                # ``denom * min(left / denom, 1)`` bit for bit wherever
+                # division is correctly rounded, which Metal's is not (see
+                # the docstring).
+                kept = denom
+                if left < denom:
+                    kept = denom * ti.min(left / denom, ti.cast(1.0, acc_t))
+                cov[jj] = ti.cast(kept, ti.f32)
                 j += 1
 
 

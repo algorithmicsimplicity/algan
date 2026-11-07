@@ -110,6 +110,24 @@ Do not edit a kernel file while a process is preparing to compile it: source
 inspection occurs lazily, and mixing old imports with new source text can make a
 validation result meaningless.
 
+## Bit-identity between two kernels is per architecture
+
+Kernels compile with `fast_math`, so a shared `ti.func` does not fix the order
+of its arithmetic: the backend may re-pair a chain of adds by each kernel's own
+schedule. x86-64 kept the source order where Apple's aarch64 did not. On the
+macOS CPU arm the glossy prefilter's fused finish and the launches it replaces
+summed the same four taps as `(t00 + t10) + (t01 + t11)` and
+`(t00 + t01) + (t10 + t11)`, and a test that held the two bit for bit failed
+only there. `glossy_prefilter_taichi._sealed` is the remedy that worked: an
+exact XOR with a zero the compiler cannot prove is zero, on each partial sum,
+so no two adds are left chained. Metal adds its own gap: f32 division is not
+correctly rounded there, `fast_math` or not (`c / c` can come back below 1), so
+an expression that is exact on the CPU only because a quotient rounds to 1
+needs its own branch on Metal (`sheet_compact_taichi.solid_shell_ceiling`). A
+new bit-for-bit test between two kernels, or between a kernel and a torch arm,
+is a claim about every arm, and only the weekly run or the `full-ci` label puts
+it on the two macOS ones (`DESIGN_mps_support.md` §4.9).
+
 ## Precompiling, progress, and the source memo
 
 Three pieces cut first-run and fresh-process start-up; all three are
