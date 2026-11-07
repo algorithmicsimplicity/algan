@@ -162,9 +162,14 @@ ALWAYS_CI = (
     "tests/unit_tests/test_manual_memory.py::test_a_cgroup_counts_its_working_set_not_its_page_cache",
     "tests/unit_tests/test_trace_counters.py::test_a_reading_spans_a_program_teardown",
     # A render on MPS holds torch's allocator to Metal's working set and gives
-    # torch its own limit back after, a failed render too: stubs, no GPU.
+    # torch its own limit back after, a failed render too; and import algan
+    # starts that allocator with the low watermark the hold relies on, unless
+    # the user chose one or the allocator already started: stubs, no GPU.
     "tests/unit_tests/test_mps_working_set_hold.py::test_a_render_on_mps_holds_torch_to_the_working_set_until_it_ends",
     "tests/unit_tests/test_mps_working_set_hold.py::test_a_render_that_fails_still_gives_the_limit_back",
+    "tests/unit_tests/test_mps_working_set_hold.py::test_algan_gives_torchs_mps_allocator_a_low_watermark_before_it_starts",
+    "tests/unit_tests/test_mps_working_set_hold.py::test_a_watermark_already_chosen_stands",
+    "tests/unit_tests/test_mps_working_set_hold.py::test_an_allocator_that_already_started_is_left_alone",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

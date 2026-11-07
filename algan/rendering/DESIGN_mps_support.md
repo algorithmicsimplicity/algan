@@ -1188,7 +1188,7 @@ section to update when one changes.
 | [42308885414](https://github.com/algorithmicsimplicity/algan/actions/runs/42308885414) (2026-11-06, cause O on an M2 Pro) | the split kernel test's 12 MPS cases failed, then passed twice; both split files 198 passed, 20 skipped with the kernel arm on and off |
 | [42329686918](https://github.com/algorithmicsimplicity/algan/actions/runs/42329686918) (2026-11-07, pixel ids and stream positions past 2**24, cause Q) | 5 failed, then 5 passed; the six related files 294 passed, 20 skipped; no default render on the runner plans a chunk past 2**24 pixels |
 | [42351444222](https://github.com/algorithmicsimplicity/algan/actions/runs/42351444222), [42355723203](https://github.com/algorithmicsimplicity/algan/actions/runs/42355723203), [42371919983](https://github.com/algorithmicsimplicity/algan/actions/runs/42371919983) (2026-11-07, `unique` past 2**24, cause U, and the GPU's extra sheets) | 8,192 values from 2**24 came back as 4,097; the device tests failed, then 46 passed; the related files 222 passed, 10 skipped; the 8 extra sheets trace to an ulp of the camera ray's direction, with fast math on or off |
-| [42351612808](https://github.com/algorithmicsimplicity/algan/actions/runs/42351612808), [42353661819](https://github.com/algorithmicsimplicity/algan/actions/runs/42353661819), [42355691483](https://github.com/algorithmicsimplicity/algan/actions/runs/42355691483), [42370277126](https://github.com/algorithmicsimplicity/algan/actions/runs/42370277126), [42372132733](https://github.com/algorithmicsimplicity/algan/actions/runs/42372132733), [42374877006](https://github.com/algorithmicsimplicity/algan/actions/runs/42374877006), [42378512143](https://github.com/algorithmicsimplicity/algan/actions/runs/42378512143), [42381446368](https://github.com/algorithmicsimplicity/algan/actions/runs/42381446368) (2026-11-07, the silent out-of-memory, cause X) | §4.10's header build reproduced at 7.26 G, two command buffers failed and 102,317,937 of 121,000,000 words wrong, with nothing raised; held to the working set it raised after 11.7 s at 4.42 G; the hold's tests failed 3, then 105 passed, 2 skipped; the heavy renders peaked the same with the hold on and off, and every frame matched; the unsynced BVH builds and an int32 sum that came back 0 were the same failure, one command buffer whose heaps came within 20 to 30 MiB of the working set |
+| [42351612808](https://github.com/algorithmicsimplicity/algan/actions/runs/42351612808), [42353661819](https://github.com/algorithmicsimplicity/algan/actions/runs/42353661819), [42355691483](https://github.com/algorithmicsimplicity/algan/actions/runs/42355691483), [42370277126](https://github.com/algorithmicsimplicity/algan/actions/runs/42370277126), [42372132733](https://github.com/algorithmicsimplicity/algan/actions/runs/42372132733), [42374877006](https://github.com/algorithmicsimplicity/algan/actions/runs/42374877006), [42378512143](https://github.com/algorithmicsimplicity/algan/actions/runs/42378512143), [42381446368](https://github.com/algorithmicsimplicity/algan/actions/runs/42381446368), [42385375749](https://github.com/algorithmicsimplicity/algan/actions/runs/42385375749), [42388655058](https://github.com/algorithmicsimplicity/algan/actions/runs/42388655058) (2026-11-07, the silent out-of-memory, cause X) | §4.10's header build reproduced at 7.26 G, two command buffers failed and 102,317,937 of 121,000,000 words wrong, with nothing raised; held to the working set it raised after 11.7 s at 4.42 G; the hold's tests failed 3, then 105 passed, 2 skipped; the heavy renders peaked the same with the hold on and off, and every frame matched; the unsynced BVH builds and an int32 sum that came back 0 were the same failure, one command buffer whose heaps came within 20 to 30 MiB of the working set; held at 1.0, torch's 1 GiB heaps let 17 buffers into 1.07 working sets and an add over them came back wrong, and with the low watermark at 0.75 and the hold at 0.98 the same buffers stopped at 0.964 and the add was right, with the reference renders' frames unchanged |
 | [42352045841](https://github.com/algorithmicsimplicity/algan/actions/runs/42352045841), [42354063716](https://github.com/algorithmicsimplicity/algan/actions/runs/42354063716), [42356233755](https://github.com/algorithmicsimplicity/algan/actions/runs/42356233755), [42370479770](https://github.com/algorithmicsimplicity/algan/actions/runs/42370479770), [42372352869](https://github.com/algorithmicsimplicity/algan/actions/runs/42372352869) (2026-11-07, the BVH builders and the int64 extrema, causes R and T) | `index_select` of 1,048,576 range starts past 2**24 wrong for all; every int64 `amin`/`amax` scatter raised, one case to a process, flipping its output's sign bits, and a second failure left a process that aborted on its next new kernel; the new tests failed on the device, then 15 passed; a root level of 17,825,793 primitives built on the GPU is the CPU's; the fast render's frames matched before and after |
 | [42355084729](https://github.com/algorithmicsimplicity/algan/actions/runs/42355084729), [42357151096](https://github.com/algorithmicsimplicity/algan/actions/runs/42357151096) (2026-11-07, the stroke split's denormal area and the sheet areas' order, causes V and W) | the area tests failed 20 of 20, then passed 20 of 20; replays moved 6 to 12 of an HD frame's 168,675 sheets and 283 to 309 of a solids frame's 1,843,088, then none; the split's six MPS weight cases failed, then passed; the five related files 346 passed, 23 skipped |
 
@@ -1229,7 +1229,7 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | U | `unique` asked for an inverse merges integers past 2**24 | latent | 0 | **fixed** — §4.11 |
 | V | the stroke split's torch arm flushes a denormal area | latent | 0 | **fixed** — §4.11 |
 | W | the sheet areas' float32 atomics sum in no fixed order | replay noise | 0 | **fixed**: summed in stream order — §4.11 |
-| X | work past Metal's working set fails its command buffer, and nothing raises | latent | 0 | **fixed**: a render holds torch to the working set — §4.11 |
+| X | work past Metal's working set fails its command buffer, and nothing raises | latent | 0 | **fixed**: a render holds torch under the working set, and a low watermark keeps its heaps there — §4.11 |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
 **L to Q failed no weekly run.** L, M, N and Q were found by reading for J's
@@ -2159,13 +2159,14 @@ wrong (run 42351612808). One `torch.add` of two 2 GiB tensors into a third, at
 6.0 G or 1.29 working sets, less than the runner's RAM, left its output all
 zeros and printed nothing; at 4.5 G it was right (run 42355691483).
 `taichi_runtime.render_job_holding_the_arch` now holds torch to the working
-set, `torch.mps.set_per_process_memory_fraction(1.0)`
+set with `torch.mps.set_per_process_memory_fraction`
 (`memory_utils.hold_mps_allocator_to_the_working_set`), from the start of the
-outermost render job to its end, and puts torch's default back after it. An
-allocation that would cross the working set is then refused: torch frees its
-cache and retries, then raises "MPS backend out of memory", which
-`is_cuda_oom` matches, so the render's retries split the window as they do on
-CUDA. The same header build raised after 11.7 s at 4.42 G. The environment
+outermost render job to its end, and puts torch's default back after it; the
+hold was first 1.0 working sets and is 0.98 now, for the reason below. An
+allocation that would cross the limit is then refused: torch frees its cache
+and retries, then raises "MPS backend out of memory", which `is_cuda_oom`
+matches, so the render's retries split the window as they do on CUDA. Held
+at 1.0, the same header build raised after 11.7 s at 4.42 G. The environment
 variable would not do: `PYTORCH_MPS_HIGH_WATERMARK_RATIO=1.0` alone breaks
 torch's init ("invalid low watermark ratio 1.4"), and a ratio a user sets
 there stands. The heavy reference renders peak at 2.4 to 3.3 G, and rendered
@@ -2191,6 +2192,39 @@ exact-size heaps was right at 0.994 working sets and wrong from 0.996 (run
 42381446368). No default render reaches the BVH case, since the torch builder
 runs on MPS only for a deferred tree of more than 8,192 columns, in a scene
 that builds BVHs, and it needs about 1M primitives on this runner.
+
+**A limit on requests is not a limit on heaps, so the hold needed a low
+watermark.** Torch checks each request against its limit, not the heap the
+request opens, and while the device is under the allocator's low watermark,
+1.4 working sets by default, a request of 10 MiB to 512 MiB that finds no
+room opens a new 1 GiB heap. Held at the working set, the device could
+therefore end up to 1 GiB past it: 17 buffers of 256 MiB were let into 5.00 G
+of heaps, 1.07 working sets, and one add over all 17 came back wrong in every
+buffer with nothing printed (run 42374877006). Past the low watermark torch
+counts the device as under pressure and gives each such request a heap of its
+own size. Torch reads `PYTORCH_MPS_LOW_WATERMARK_RATIO` only when its
+allocator starts, at the first MPS allocation or `torch.mps` memory call, so
+`import algan` sets it to 0.75 on macOS before then
+(`algan/utils/mps_low_watermark.py`), and leaves alone a watermark the user
+set or an allocator that has already started. The last 1 GiB heap then opens
+below 0.75 working sets and ends below 0.964 of them on this runner, and after
+it only a 32 MiB heap, opened for a 1 to 10 MiB request, can pass the limit,
+which is why the hold sits at 0.98. The same 256 MiB buffers then stopped at
+18 in 4.50 G, 0.964 working sets, torch refused the 19th, and the add over all
+18 was right. In three worst cases the device ended at 0.980, 0.986 and 0.985
+working sets, and every add was right, and the 1M device BVH build matched
+the CPU's tree at 4.07 G, against 5.06 G under the hold at 1.0 (run
+42385375749). Holding 1,056 MiB under the working set instead also closed the
+worst case measured (run 42381446368), but it gave up a gigabyte on every Mac
+and refused that build. The reference renders never reached 0.75 working
+sets, so they ran as before: the same peaks, times within the run-to-run
+spread, and every frame compared identical. So did a UHD render with the
+watermark at 0.5, past which it spent nearly all its time (runs 42385375749
+and 42388655058).
+`test_mps_working_set_hold.py::test_one_command_buffer_over_all_an_mps_render_holds_comes_back_right`
+fills a render's hold with 256 MiB buffers and adds over all of them: it
+failed at 1.0716 working sets before and passes, and three stub tests check
+the import's rules on any platform.
 
 **The GPU's extra circuit sheets are not a defect.** L's frame makes 2,063
 sheets on the GPU and 2,055 on the CPU because the raster keeps 8 more
@@ -2222,15 +2256,12 @@ measurement:
   MPS-friendly mode, so with `ALGAN_MPS_FRIENDLY=0` on an MPS device every
   site of §4.9 to §4.11 rounds again. T's route also checks the device and
   stays exact.
-* X's hold checks torch's requests, and Metal fails on heaps. A request of
-  10 MiB to 512 MiB that finds no room opens a new 1 GiB heap, so under the
-  hold the device can sit up to 1 GiB past the working set, and a command
-  buffer that reads most of it fails silently: under the hold, 17 buffers of
-  256 MiB were allowed, and one add over all 17 came back wrong in every
-  buffer (run 42374877006). Holding at the working set less 1088 MiB closed
-  the worst case measured (run 42381446368), at the cost of 1.06 GiB before
-  torch refuses, and the 1M device BVH build, right at the working set,
-  raises under it.
+* A process that started MPS before importing Algan keeps torch's default
+  low watermark, and with it the 1 GiB overshoot: 17 buffers in 5.00 G, all
+  wrong (run 42385375749). The hold still applies there, and says at debug
+  level that it can be overshot. Falling back to 1,056 MiB under the working
+  set in such a process would close it, at the cost of refusing the 1M device
+  build there; it is not done.
 * X's hold is torch's alone. Torch counts the whole device, the native arena,
   Quadrants' buffers and MPSGraph's included, but refuses only its own
   allocations, and pressure from elsewhere below the limit stays silent:
@@ -2241,6 +2272,15 @@ measurement:
 * A UHD render at the default host share (0.4 of RAM) raises
   `OutOfRenderMemory` on the 7 GB runner, with the hold and without it (run
   42351612808). It is loud, so it is a limit rather than a defect.
+* Three UHD renders of 40 on the runner segfaulted, under the old hold and
+  the new alike: all on the main thread, in `index_select_out_mps` calling
+  `+[NSDictionary dictionaryWithObjects:forKeys:count:]`, with
+  `EXC_BAD_ACCESS`, while the prefetch worker ran CPU torch work for the next
+  batch (runs 42385375749 and 42388655058). The rate rose with how often a
+  probe thread called `torch.mps.driver_allocated_memory()`: none in 16
+  renders sampled every 0.5 s, one in 9 at 0.1 s and two in 15 at 20 ms. So a
+  thread asking the driver for its memory during MPS work may provoke it,
+  which is not proven.
 * On MPS a denormal stroke area is kept by both split arms now, but the
   unsplit general path's float32 sum flushes it, so split and unsplit can
   give that sheet different weights. The resolve cannot tell them apart.
