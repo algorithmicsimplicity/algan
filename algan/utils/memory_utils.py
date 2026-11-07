@@ -336,17 +336,36 @@ def get_num_available_bytes(device=torch.device("cuda")):
 #: runner's RAM) left its output all zeros and printed nothing; at 4.5 G the
 #: same add was right.
 #:
-#: Held at the working set, torch refuses the allocation that would take the
-#: device past it. It hands its cached blocks back and retries first, and
-#: only then raises "MPS backend out of memory", which :func:`is_cuda_oom`
+#: Held at the working set, torch refuses a request that would take the
+#: device's total past it. It hands its cached blocks back and retries first,
+#: and only then raises "MPS backend out of memory", which :func:`is_cuda_oom`
 #: matches, so the render's retries split the window as they do on CUDA; the
 #: Bezier build above raised it after 11.7 s with the device at 4.42 G. The
-#: figure torch compares is the device's ``currentAllocatedSize``, which
+#: total torch compares is the device's ``currentAllocatedSize``, which
 #: counts the native arena (a 1 GiB arena showed up as "other allocations:
 #: 1.00 GiB" in the refusal), Quadrants' buffers and MPSGraph's own as well as
-#: torch's. It is not exact: torch checks the request, then carves it from
-#: heaps of up to 1 GiB, so the device can end a little past the limit
-#: (5.00 G against 4.67 G in run 42351612808).
+#: torch's.
+#:
+#: That keeps the device within a heap of the working set rather than 1.7
+#: times it, but it does not keep every command buffer right. Metal fails one
+#: once the heaps holding the buffers it uses come within 20 to 30 MiB of the
+#: working set: on the runner one add over exact-size heaps was right at
+#: 0.994 working sets and wrong, in every element and with nothing printed,
+#: at 0.996 and 0.998 (runs 42378512143 and 42381446368). And torch checks
+#: the request alone: one of 10 MiB to 512 MiB that finds no room opens a new
+#: 1 GiB heap, so the device can end up to 1 GiB past the limit. Under this
+#: hold 17 buffers of 256 MiB (0.911 working sets) sat in 5.00 G of heaps
+#: (1.07), and one add over all 17 came back wrong in every buffer (run
+#: 42374877006). The same total spread over many command buffers is right: a
+#: 1M-primitive BVH build, which reads back to the host every pass, peaked at
+#: 5.06 G and matched the CPU's tree (same run).
+#:
+#: Closing the gap takes a limit more than a heap lower: the working set less
+#: 1 GiB still let the device reach 0.998 working sets and fail, and less
+#: 1056 MiB held the worst case to 0.991 and right (run 42381446368). The
+#: limit stays at the working set because a limit that low refuses the BVH
+#: build above outright: at the working set less 1 GiB it raised at 4.02 G
+#: (run 42378512143).
 _MPS_RENDER_HIGH_WATERMARK = 1.0
 
 #: torch's limit when ``PYTORCH_MPS_HIGH_WATERMARK_RATIO`` is unset, which is
