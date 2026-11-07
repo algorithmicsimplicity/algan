@@ -330,6 +330,12 @@ def test_advanced_indexing_is_exact_above_the_mps_ceiling(computing_settings):
     anything, and the frame comes back flat. This is what turns that into a
     loud test failure instead.
 
+    It also gathers whole rows of a 2-D table, at both widths, because that is
+    a second shape of the same call: ``bezier_acceleration`` assembles the
+    Bezier header as rows of an int32 table, float32 bit patterns and bin
+    offsets past the ceiling, written through ``gather_exact``'s ``out=`` into
+    the buffer its edge lists follow.
+
     **It only bites on a Mac**, and deliberately so: it selects the device from
     ``torch.backends.mps.is_available()`` rather than from Algan's configured
     render device, so it guards on any Apple machine -- including one without
@@ -379,6 +385,42 @@ def test_advanced_indexing_is_exact_above_the_mps_ceiling(computing_settings):
         "and report the regression upstream"
     )
     assert torch.equal(gather_packed_key(on_device, moved).cpu(), want)
+
+    # The rows of a 2-D table, which is how the Bezier edge tables' header is
+    # assembled (bezier_acceleration): a row per (frame, circuit) group, 91
+    # words wide at the default bins -- an edge range, seven float32 bit
+    # patterns and the bin offsets -- gathered into a view of the buffer the
+    # edge lists follow. Header-like values at int32, and the same gather at
+    # int64, since gather_exact routes both widths through v[i].
+    g = torch.Generator().manual_seed(4)
+    rows, width = 512, 91
+    table = torch.cat(
+        (
+            torch.randint(0, 1 << 26, (rows, 2), generator=g),
+            (torch.randn(rows, 7, generator=g) * 3).view(torch.int32).long(),
+            torch.randint((1 << 24) + 1, 1 << 30, (rows, width - 9), generator=g),
+        ),
+        1,
+    )
+    pick = torch.randint(0, rows, (2048,), generator=g)
+    for dtype in (torch.int32, torch.int64):
+        values = table.to(dtype)
+        want = values.index_select(0, pick)
+        on_device = values.to(device)
+        moved = pick.to(device)
+        assert torch.equal(values, on_device.cpu())
+        assert torch.equal(on_device[moved].cpu(), want), (
+            f"advanced indexing v[i] is no longer exact on {device} for the rows "
+            f"of a {dtype} table. mps_compat.gather_exact depends on it for the "
+            "Bezier header; gather the table as 16-bit lanes and report the "
+            "regression upstream"
+        )
+        buffer = torch.zeros(pick.numel() * width + 5, dtype=dtype, device=device)
+        rows_out = buffer[: pick.numel() * width].view(pick.numel(), width)
+        returned = mps_compat.gather_exact(on_device, moved, out=rows_out)
+        assert returned.data_ptr() == rows_out.data_ptr()
+        assert torch.equal(rows_out.cpu(), want)
+        assert not bool(buffer[pick.numel() * width :].any())
 
 
 @pytest.mark.fast

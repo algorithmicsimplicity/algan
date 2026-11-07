@@ -31,10 +31,13 @@ from algan.settings import SETTINGS
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 # The stroke-pixel split's equivalence tests also run on the Apple GPU when it
 # is the render device, as conftest's MPS hook reads it at collection. MPS runs
-# the split's torch arm (its kernels stay off there), and the gathers that arm
-# makes are the ones MPS rounds through a float32 above 2**24
-# (``mps_compat._MPS_EXACT_INT_BITS``) -- which a CPU tensor never reaches,
-# even in a process rendering on MPS.
+# the split's torch arm by default, and the gathers that arm makes are the ones
+# MPS rounds through a float32 above 2**24 (``mps_compat._MPS_EXACT_INT_BITS``)
+# -- which a CPU tensor never reaches, even in a process rendering on MPS. The
+# kernel arm, which MPS takes only under ``sheet_split_kernel_mps``, is held to
+# the torch arm there too, on MPS tensors: its prefix sums are torch scans, and
+# torch 2.13 has no Metal kernel for the one it first made (``sheets.
+# _split_stroke_pixels``), which only an MPS tensor reaches.
 _SPLIT_DEVICES = _DEVICES + (
     ["mps"] if SETTINGS.computing.render_device.type == "mps" else []
 )
@@ -398,7 +401,21 @@ def _edge_areas_on_stroke_pixels(stream, seed):
     return (coverage, *stream[1:])
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+def _assert_same_bits(got, want):
+    """``got`` holds the entries ``want`` does, each equal bit for bit."""
+    assert set(got) == set(want)
+    for name, w in want.items():
+        g = got[name]
+        if torch.is_tensor(w):
+            assert torch.is_tensor(g), name
+            assert g.dtype == w.dtype, name
+            assert g.shape == w.shape, name
+            assert torch.equal(_bits(g), _bits(w)), name
+        else:
+            assert g == w, name
+
+
+@pytest.mark.parametrize("device", _SPLIT_DEVICES)
 @pytest.mark.parametrize("resolve_only", [True, False])
 @pytest.mark.parametrize("closed", [False, True])
 @pytest.mark.parametrize("seed", [0, 1, 2])
@@ -410,23 +427,66 @@ def test_stroke_pixel_split_kernels_match_the_torch_arm(
     The split moves rows rather than computing them, apart from the stroke
     pixels' area and mask rules, so the two arms must agree bit for bit --
     on edge-case areas too. NaN payloads are only compared on the CPU, whose
-    add keeps them (``split_merge_sheets``).
+    add keeps them (``split_merge_sheets``). On MPS the kernels run only when
+    ``sheet_split_kernel_mps`` asks for them, so this asks, and on 6000
+    covered pixels rather than 200: torch picks an MPS scan kernel by length
+    as well as layout, and the split's first prefix ran up to 1023 pixels and
+    raised from 1024 on (``sheets._split_stroke_pixels``).
+
+    Both arms hand their triangle pixels to the general path, which on MPS
+    sums each sheet's area in float32 atomics (``mps_compat.
+    accumulate_dtype``): two runs of it need not round a sheet of three or
+    more fragments alike. So the kernel arm first gets the torch arm's own
+    general-path result, once it has handed the general path the same
+    fragments, bit for bit, and what is compared is the split's own work.
+    Where the sums are float64, and so reproducible, the kernel arm then
+    also runs end to end.
     """
     import algan.rendering.raytracing.sheet_compact_taichi as kernels
     import algan.rendering.raytracing.sheets as sheets_mod
+    from algan.rendering.mps_compat import accumulate_dtype
     from algan.rendering.taichi_runtime import init_taichi
 
     init_taichi()
     if not sheets_mod._launches_locally(torch.zeros(1, device=device)):
         pytest.skip("no local Taichi launch on this device")
+    monkeypatch.setattr(sheets_mod, "sheet_split_kernel_mps", True)
+    size = {"pixels": 6000, "width": 128, "height": 64} if device == "mps" else {}
     stream = _mixed_stream(
-        seed, device, True, False, tri_share=0.2 if closed else 0.08, closed=closed
+        seed,
+        device,
+        True,
+        False,
+        tri_share=0.2 if closed else 0.08,
+        closed=closed,
+        **size,
     )
     if device == "cpu":
         stream = _edge_areas_on_stroke_pixels(stream, seed)
     flags = {"shade_split": True, "positioned_depth": True, "sample_depth": True}
+    real_compact = sheets_mod.compact_sheets
+    general = {}
+
+    def shared_general_path(coverage, *args, **kwargs):
+        # The split's own call: recorded in the torch arm; in the kernel arm,
+        # held to that record and answered from it.
+        if kwargs.get("_split", True):
+            return real_compact(coverage, *args, **kwargs)
+        if "out" not in general:
+            general["in"] = {
+                k: v.clone() if torch.is_tensor(v) else v for k, v in coverage.items()
+            }
+            general["out"] = real_compact(coverage, *args, **kwargs)
+            return general["out"]
+        _assert_same_bits(coverage, general["in"])
+        return {
+            k: v.clone() if torch.is_tensor(v) else v for k, v in general["out"].items()
+        }
+
+    monkeypatch.setattr(sheets_mod, "compact_sheets", shared_general_path)
     monkeypatch.setattr(sheets_mod, "sheet_split_kernel", False)
     ref = _run(stream, shortcut=False, resolve_only=resolve_only, **flags)
+    assert "out" in general  # the torch arm took the split
     launched = []
     for name in ("split_gather_pixels", "split_merge_sheets"):
         real = getattr(kernels, name)
@@ -437,15 +497,12 @@ def test_stroke_pixel_split_kernels_match_the_torch_arm(
 
         monkeypatch.setattr(kernels, name, spy)
     monkeypatch.setattr(sheets_mod, "sheet_split_kernel", True)
-    got = _run(stream, shortcut=False, resolve_only=resolve_only, **flags)
-    assert launched == ["split_gather_pixels"] + (
-        ["split_merge_sheets"] if resolve_only else []
-    )
-    assert set(got) == set(ref)
-    for name, want in ref.items():
-        if torch.is_tensor(want):
-            assert got[name].dtype == want.dtype, name
-            assert got[name].shape == want.shape, name
-            assert torch.equal(_bits(got[name]), _bits(want)), name
-        else:
-            assert got[name] == want, name
+    for shared in [True] + ([False] if accumulate_dtype() == torch.float64 else []):
+        if not shared:
+            monkeypatch.setattr(sheets_mod, "compact_sheets", real_compact)
+        launched.clear()
+        got = _run(stream, shortcut=False, resolve_only=resolve_only, **flags)
+        assert launched == ["split_gather_pixels"] + (
+            ["split_merge_sheets"] if resolve_only else []
+        )
+        _assert_same_bits(got, ref)

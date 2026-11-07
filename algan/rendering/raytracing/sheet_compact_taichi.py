@@ -171,15 +171,20 @@ def split_mixed_pixels(
     frag_ref: ti.types.ndarray(),  # [n] i32 -- negative for a circuit fragment
     nc: ti.i32,
     mixed: ti.types.ndarray(),  # [nc] u8 OUT -- 1 where the pixel holds a triangle
-    tally: ti.types.ndarray(),  # [nc, 2] i32 OUT -- (mixed, its fragments if mixed)
+    tally: ti.types.ndarray(),  # [2, nc] i32 OUT -- rows: mixed, its fragments if mixed
 ):
     """``_split_stroke_pixels``' classification: which covered pixels hold a
     triangle fragment, and how many fragments each such pixel brings.
 
     One thread per covered pixel scans its run until the first triangle
-    fragment. ``tally``'s two columns are what the caller's single ``cumsum``
-    turns into each pixel's triangle-pixel rank and its run's end in the
-    triangle pixels' stream -- and, in its last row, the two totals.
+    fragment. ``tally``'s two rows are what the caller's prefix sums turn into
+    each pixel's triangle-pixel rank and its run's end in the triangle pixels'
+    stream -- and, in its last column, the two totals.
+
+    Rows, not columns, so that each prefix is a 1-D int32 scan. From 1024
+    pixels on, torch 2.13 scans an ``[nc, 2]`` int32 along dim 0 on MPS with
+    ``cumsum_vec_block_reduce_2_int``, which its Metal library does not
+    contain, and raises (``sheets._split_stroke_pixels`` has the measurement).
     """
     for p in range(nc):
         s = ti.cast(run_offsets[p], ti.i32)
@@ -192,14 +197,14 @@ def split_mixed_pixels(
                 break
             i += 1
         mixed[p] = ti.cast(hit, ti.u8)
-        tally[p, 0] = hit
-        tally[p, 1] = hit * (e - s)
+        tally[0, p] = hit
+        tally[1, p] = hit * (e - s)
 
 
 @ti.kernel
 def split_gather_pixels(
     mixed: ti.types.ndarray(),  # [nc] u8 -- ``split_mixed_pixels``' flags
-    ends: ti.types.ndarray(),  # [nc, 2] i32 -- ``tally``'s inclusive prefix
+    ends: ti.types.ndarray(),  # [2, nc] i32 -- ``tally``'s inclusive prefix, by row
     run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
     nc: ti.i32,
     in_key: ti.types.ndarray(),  # [n] i64
@@ -219,7 +224,7 @@ def split_gather_pixels(
     of every covered pixel holding a triangle fragment, copied run by run.
 
     One thread per covered pixel; a stroke pixel copies nothing, and a
-    triangle pixel's run lands so that it ends at ``ends[p, 1]``. Copies of
+    triangle pixel's run lands so that it ends at ``ends[1, p]``. Copies of
     the stored bits, so exact. Replaces a per-fragment pixel map, its gather,
     a ``nonzero`` and six ``index_select`` s.
     """
@@ -227,7 +232,7 @@ def split_gather_pixels(
         if mixed[p] != 0:
             s = ti.cast(run_offsets[p], ti.i32)
             e = ti.cast(run_offsets[p + 1], ti.i32)
-            d = ends[p, 1] - e
+            d = ends[1, p] - e
             for i in range(s, e):
                 out_key[d + i] = in_key[i]
                 out_ref[d + i] = in_ref[i]
@@ -241,7 +246,7 @@ def split_gather_pixels(
 @ti.kernel
 def split_merge_sheets(
     mixed: ti.types.ndarray(),  # [nc] u8 -- ``split_mixed_pixels``' flags
-    ends: ti.types.ndarray(),  # [nc, 2] i32 -- ``tally``'s inclusive prefix
+    ends: ti.types.ndarray(),  # [2, nc] i32 -- ``tally``'s inclusive prefix, by row
     run_offsets: ti.types.ndarray(),  # [nc + 1] -- the stream's CSR
     sub_frags: ti.types.ndarray(),  # [m + 1] i32 -- the triangle pixels' CSR
     sub_sheets: ti.types.ndarray(),  # [m + 1] i64 -- their sheets' CSR
@@ -288,7 +293,7 @@ def split_merge_sheets(
     """
     for p in range(nc):
         hit = ti.cast(mixed[p], ti.i32)
-        k = ends[p, 0] - hit
+        k = ends[0, p] - hit
         s = ti.cast(run_offsets[p], ti.i32)
         e = ti.cast(run_offsets[p + 1], ti.i32)
         d = s + ti.cast(sub_sheets[k], ti.i32) - sub_frags[k]

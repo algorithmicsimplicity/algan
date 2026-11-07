@@ -37,6 +37,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as SLIVER,
 )
 from algan.rendering.raytracing.sheets import compact_sheets
+from algan.settings import SETTINGS
 
 
 def _key(pix, t):
@@ -1723,3 +1724,70 @@ def test_the_raster_fragment_passes_past_the_extent_limit_take_torch(monkeypatch
         (*got[0], got[1], *got[2]), (*want[0], want[1], *want[2]), strict=True
     ):
         assert torch.equal(g, w)
+
+
+#: The CPU with MPS's integer rounding emulated, and an Apple GPU when it is
+#: the render device.
+_ROUNDING_DEVICES = ["cpu"] + (
+    ["mps"] if SETTINGS.computing.render_device.type == "mps" else []
+)
+
+
+def _a_stream_covering_more_than_2_24_pixels(device):
+    """A sorted stream's per-pixel counts and opaque flags, and the keep mask
+    the opaque-prefix truncation must make of them.
+
+    One fragment in each of the first 2**24 + 1 pixels, then two in each of
+    2**16 more, the nearer opaque: every pixel keeps its fragments but the far
+    one of each pair. The pairs' pixel ordinals, odd and even in turn, and
+    their opaque fragments' positions, all odd, are past 2**24, where a
+    float32 holds only even integers. The pixel count is odd, so the last
+    pixel's ordinal is even and a float32 holds it: rounded, no ordinal lands
+    past the last pixel, and an emulated or real rounding shows up as a wrong
+    mask rather than an out-of-range read.
+    """
+    low, high = (1 << 24) + 1, 1 << 16
+    counts = torch.ones(low + high, dtype=torch.int64, device=device)
+    counts[low:] = 2
+    n = low + 2 * high
+    opaque = torch.zeros(n, dtype=torch.bool, device=device)
+    opaque[low::2] = True
+    keep = torch.ones(n, dtype=torch.bool, device=device)
+    keep[low + 1 :: 2] = False
+    return counts, opaque, keep
+
+
+@pytest.mark.parametrize("device", _ROUNDING_DEVICES)
+def test_the_opaque_prefix_keeps_each_pixels_own_past_2_24_covered_pixels(
+    device, monkeypatch
+):
+    """The opaque-prefix truncation's torch arm (``raster_opaque_trunc_kernel``
+    off) maps each fragment to its covered pixel with ``repeat_interleave``,
+    files each opaque fragment's position under its pixel, and reads each
+    fragment's pixel's keep end back. A pixel ordinal passes 2**24 once a
+    chunk covers that many pixels, and on MPS ``index_select`` returns an
+    integer as ``float32(value)`` (``mps_compat._MPS_EXACT_INT_BITS``), as
+    does ``repeat_interleave`` with a tensor of values, which torch computes
+    through it. Rounded, an opaque fragment is filed under the pixel beside
+    its own, which then keeps too little while its own keeps its far fragment.
+
+    In MPS-friendly mode, on the CPU with both roundings emulated and on an
+    Apple GPU when it is the render device: the mask must be the stream's.
+    """
+    from algan.rendering.raytracing import raster_pipeline as rp
+
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    counts, opaque, want = _a_stream_covering_more_than_2_24_pixels(device)
+    if device == "cpu":
+        from tests.unit_tests.mps_rounding import round_integer_gathers
+        from tests.unit_tests.test_bezier_header_mps_gather import (
+            _round_integer_repeats,
+        )
+
+        round_integer_gathers(monkeypatch)
+        _round_integer_repeats(monkeypatch)
+    with SETTINGS.raytracing.experimental.override(raster_opaque_trunc_kernel=False):
+        got = rp._opaque_prefix_keep(opaque, counts, opaque.numel())
+    moved = int((got != want).sum())
+    assert moved == 0, f"{moved} of {want.numel()} fragments' keep flags moved"

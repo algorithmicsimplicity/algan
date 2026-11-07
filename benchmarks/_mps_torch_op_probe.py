@@ -20,11 +20,11 @@ value distribution that matches what the renderer actually feeds it (packed
 [0, 1]). An op that is only wrong on realistic data is exactly the one a
 synthetic probe misses.
 
-    uv run python benchmarks/_mps_torch_op_probe.py
+    uv run python benchmarks/_mps_torch_op_probe.py [scan_layouts ...]
 
-Prints one line per case and exits non-zero if any of them disagrees. On a
-machine with no MPS it reports that and exits 0 -- it is a probe, and the
-absence of an Apple GPU is not a failure.
+Names run only those probes. Prints one line per case and exits non-zero if
+any of them disagrees. On a machine with no MPS it reports that and exits 0 --
+it is a probe, and the absence of an Apple GPU is not a failure.
 """
 
 from __future__ import annotations
@@ -253,6 +253,138 @@ def probe_scans(device):
         )
 
 
+#: ``probe_scan_layouts``' spellings, as the renderer's call sites write them.
+#: The in-place and ``dtype=`` forms keep an int32 scan in int32 all the way
+#: through; the plain call promotes it to int64, and on MPS that is a different
+#: kernel.
+_SCAN_SPELLINGS = (
+    ("int32 cumsum_ in place", torch.int32, lambda x, d: x.cumsum_(d)),
+    (
+        "int32 -> int32 (dtype=)",
+        torch.int32,
+        lambda x, d: torch.cumsum(x, d, dtype=torch.int32),
+    ),
+    ("int32 -> int64 (default)", torch.int32, lambda x, d: torch.cumsum(x, d)),
+    ("int64", torch.int64, lambda x, d: torch.cumsum(x, d)),
+    ("bool -> int32", torch.bool, lambda x, d: torch.cumsum(x, d, dtype=torch.int32)),
+    ("float32", torch.float32, lambda x, d: torch.cumsum(x, d)),
+)
+
+
+def _scan_layouts():
+    """``(label, base shape, view, scan dim, n, w)`` for every layout swept.
+
+    ``w`` is the layout's width: the extent beside the scan, which is what an
+    MPS scan picks its kernel by.
+    """
+    whole = lambda t: t  # noqa: E731
+    layouts = []
+    for n in (1, 7, 200, 4097, 100_003, 1_000_003):
+        layouts.append(("1-D [n]", (n,), whole, 0, n, 1))
+    # 1023 and 1024 straddle where an int32 [n, 2] stopped running (Mac run
+    # 42303103954).
+    for n in (1, 7, 200, 1023, 1024, 4097, 100_003):
+        for w in (1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 16, 24, 32):
+            layouts.append(("[n, w] along dim 0", (n, w), whole, 0, n, w))
+        for w in (1, 2, 3, 8):
+            layouts.append(("[w, n] along dim 1", (w, n), whole, 1, n, w))
+            # One row of it, which is 1-D with a storage offset.
+            last = lambda t: t[-1]  # noqa: E731
+            layouts.append(("row t[-1] of [w, n]", (w, n), last, 0, n, w))
+        for w in (2, 3, 8):
+            transposed = lambda t: t.t()  # noqa: E731
+            layouts.append(("[n, w].t() along dim 1", (n, w), transposed, 1, n, w))
+        for w in (2, 6):
+            layouts.append(("[3, n, w] along dim 1", (3, n, w), whole, 1, n, w))
+    return layouts
+
+
+def probe_scan_layouts(device):
+    """``cumsum`` by layout and dtype: which ones MPS runs at all, and exactly.
+
+    ``probe_scans`` asks a 1-D question. The renderer also scans 2-D tensors
+    -- ``sheets._split_stroke_pixels``' kernel arm prefixed an ``[nc, 2]``
+    int32 tally in place along dim 0 until it scanned the rows of a ``[2,
+    nc]`` instead, ``refit_bvh`` scans int64 bin counts along the outer dim
+    -- and on MPS the scan is not one kernel but a family chosen by layout,
+    dtype and length, so a 1-D answer says nothing about them. With
+    ``ALGAN_SHEET_SPLIT_KERNEL_MPS=1`` the split's old prefix raised ``Failed
+    to create function state object for: cumsum_vec_block_reduce_2_int``.
+
+    Every spelling the call sites use, over 1-D, ``[n, w]`` along dim 0, ``[w,
+    n]`` along dim 1, a row of it, a transposed view and a 3-D middle dim, at
+    widths 1-32 and lengths up to a million. The values are small integers, so
+    a float32 scan is exact too and every case compares bit for bit; the
+    second part repeats the shapes the split and the 1-D compaction prefixes
+    use with totals past 2**24, where a scan that went through a float32 would
+    round. Failures are grouped by layout, width and message.
+    """
+    print("\ncumsum by layout and dtype (the stroke split's tallies, refit_bvh's bins)")
+    g = torch.Generator().manual_seed(5)
+    bases = {}
+    for spelling, dtype, fn in _SCAN_SPELLINGS:
+        groups: dict[tuple, list] = {}
+        for label, shape, view, dim, n, w in _scan_layouts():
+            if shape not in bases:
+                bases[shape] = torch.randint(
+                    0, 4, shape, generator=g, dtype=torch.int64
+                )
+            base = bases[shape].to(dtype)
+            want = fn(view(base.clone()), dim)
+            try:
+                got = fn(view(base.to(device)), dim).cpu()
+                ok = got.dtype == want.dtype and torch.equal(got, want)
+                outcome = "" if ok else f"wrong answer ({got.dtype})"
+            except Exception as exc:  # noqa: BLE001
+                outcome = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+            groups.setdefault((label, w, outcome), []).append(n)
+        by_layout: dict[str, list] = {}
+        for (label, w, outcome), ns in groups.items():
+            by_layout.setdefault(label, []).append((w, outcome, ns))
+        for label, rows in by_layout.items():
+            bad = [r for r in rows if r[1]]
+            if not bad:
+                cases = sum(len(ns) for _, _, ns in rows)
+                _report(f"{spelling:<26} {label}: {cases} shapes exact", True)
+                continue
+            for w, outcome, ns in bad:
+                _report(
+                    f"{spelling:<26} {label} w={w}",
+                    False,
+                    f"n={','.join(map(str, ns))}: {outcome}",
+                )
+
+    print("  totals past 2**24, where a float32 round trip would show")
+    big = torch.randint(0, 64, (1_000_003,), generator=g, dtype=torch.int64)
+    rows = torch.randint(0, 64, (2, 1_000_003), generator=g, dtype=torch.int64)
+
+    def into_a_slice(x):
+        # ``torch.cumsum(..., out=tri_prefix[1:])``, the split's torch arm.
+        out = torch.zeros(x.numel() + 1, dtype=torch.int32, device=x.device)
+        torch.cumsum(x, 0, out=out[1:])
+        return out
+
+    for label, host, fn in (
+        ("1-D int32 -> int32, out= a slice", big.to(torch.int32), into_a_slice),
+        ("1-D int64", big, lambda x: torch.cumsum(x, 0)),
+        (
+            "rows of a [2, n] int32, in place",
+            rows.to(torch.int32),
+            lambda x: (x[0].cumsum_(0), x[1].cumsum_(0), x)[-1],
+        ),
+        (
+            "[n, 2] int32 -> int64 along dim 0",
+            rows.t().contiguous().to(torch.int32),
+            lambda x: torch.cumsum(x, 0),
+        ),
+    ):
+        want = fn(host.clone())
+        try:
+            _check(f"{label} (total {int(want.max()):,})", want, fn(host.to(device)))
+        except Exception as exc:  # noqa: BLE001
+            _report(label, False, f"{type(exc).__name__}: {str(exc).splitlines()[0]}")
+
+
 def probe_segmented(device):
     """The segmented reductions the band aggregates are made of."""
     print("\nscatter_add_ / scatter_reduce_ (sheets.py:1619, 1698 and P2)")
@@ -437,6 +569,32 @@ def probe_gather_isolated(device):
                     f"vs mps {int(got[where])}"
                 )
             _report(f"int32 sign-bit mask via {label}", bad == 0, detail)
+
+    # A boolean mask, which is how ``sheets._split_stroke_pixels`` gathers its
+    # triangle pixels' run ends (int32) and counts (``counts[mixed_pix]``,
+    # int64) and scatters their sheet counts back (``sheet_counts[mixed_pix]
+    # = ...``). Past the ceiling, so a float32 round trip would show.
+    keep_c = torch.rand(n, generator=g) < 0.5
+    keep_m = keep_c.to(device)
+    for name, dtype, bits in (
+        ("int32 2**25", torch.int32, 25),
+        ("int64 2**40", torch.int64, 40),
+    ):
+        low, high = 1 << (bits - 1), (1 << bits) - 1
+        values_c = torch.randint(low, high, (n,), generator=g).to(dtype)
+        got = values_c.to(device)[keep_m].cpu()
+        _report(
+            f"{name} via a boolean mask v[m]",
+            bool(torch.equal(values_c[keep_c], got)),
+        )
+        into_c = torch.zeros(n, dtype=dtype)
+        into_m = into_c.to(device)
+        into_c[keep_c] = values_c[keep_c]
+        into_m[keep_m] = values_c[keep_c].to(device)
+        _report(
+            f"{name} into a boolean mask v[m] = x",
+            bool(torch.equal(into_c, into_m.cpu())),
+        )
 
 
 def probe_lookup(device):
@@ -843,7 +1001,10 @@ def probe_epsilon_clamp(device):
     )
 
 
-def main() -> int:
+def main(names=()) -> int:
+    """Run every probe, or only those ``names`` gives (with or without the
+    ``probe_`` prefix, e.g. ``scan_layouts``).
+    """
     print(f"torch {torch.__version__}")
     if not torch.backends.mps.is_available():
         print("no MPS on this machine -- nothing to probe")
@@ -851,19 +1012,28 @@ def main() -> int:
     device = torch.device("mps")
     print(f"probing {device} against cpu, fallback disabled\n")
 
-    for probe in (
+    probes = (
         probe_bit_packing,
         probe_int64_arithmetic,
         probe_sort,
         probe_unique,
         probe_scans,
+        probe_scan_layouts,
         probe_segmented,
         probe_lookup,
         probe_frame_bounds,
         probe_index_reduce,
         probe_gather_isolated,
         probe_epsilon_clamp,
-    ):
+    )
+    if names:
+        wanted = {name.removeprefix("probe_") for name in names}
+        unknown = wanted - {p.__name__.removeprefix("probe_") for p in probes}
+        if unknown:
+            print(f"no such probe: {', '.join(sorted(unknown))}")
+            return 2
+        probes = tuple(p for p in probes if p.__name__.removeprefix("probe_") in wanted)
+    for probe in probes:
         try:
             probe(device)
         except Exception as exc:  # noqa: BLE001
@@ -883,4 +1053,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

@@ -318,10 +318,12 @@ def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
 #: **It is a torch dispatch defect, not a Metal limit.** In the same run, over
 #: the same values at 2**40, ``index_select`` and ``torch.gather`` are wrong
 #: while **advanced indexing ``v[i]`` is exact**, and so is a
-#: ``repeat_interleave`` slice (``torch.take`` is not implemented on MPS at
-#: all). The hardware can clearly move those bits; two particular aten paths
-#: do not. Storing, moving, comparing, shifting, masking and multiply-add are
-#: exact at every rung.
+#: ``repeat_interleave`` slice with a whole-number count, which is an expand
+#: and a copy (``torch.take`` is not implemented on MPS at all). The hardware
+#: can clearly move those bits; two particular aten paths do not. Storing,
+#: moving, comparing, shifting, masking and multiply-add are exact at every
+#: rung. ``repeat_interleave`` with a tensor of counts is not:
+#: torch computes it with ``index_select`` (:func:`repeat_interleave_exact`).
 #:
 #: So :func:`gather_packed_key` uses ``v[i]``: one gather, exact, and the
 #: narrowest possible change. What it costs is a **dependency on a dispatch**
@@ -391,8 +393,11 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     return gather_exact(tensor, index)
 
 
-def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
-    """``tensor.index_select(0, index)`` for an integer whose low bits matter.
+def gather_exact(
+    tensor: torch.Tensor, index: torch.Tensor, *, out: torch.Tensor | None = None
+) -> torch.Tensor:
+    """``torch.index_select(tensor, 0, index, out=out)`` for an integer whose low
+    bits matter.
 
     :func:`gather_packed_key` is this function applied to the fragment key, and
     the ceiling it documents is a property of the **gather**, not of that key:
@@ -418,10 +423,52 @@ def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
     Restricted to int32 and int64 because those are the widths measured. A
     narrower integer cannot reach the ceiling and takes ``index_select``, which
     is one op rather than a dispatch this module has to keep vouching for.
+
+    A 2-D ``tensor`` gathers whole rows, as ``index_select(0, index)`` does.
+    The Bezier header is such a table (``bezier_acceleration``): one int32 row
+    per (frame, circuit) group, whose float bounds and bin scales are stored as
+    float32 bit patterns, past 2**24 for every float of magnitude between
+    2**-125 and 2**127, and whose bin offsets pass 2**24 once the header and
+    its edge lists do.
+    ``test_mps_friendly.py``'s
+    ``test_advanced_indexing_is_exact_above_the_mps_ceiling`` checks the 2-D
+    gather on the Apple GPU as well as the 1-D one.
+
+    ``out`` is ``index_select``'s: the rows are written into it, and it is
+    returned. Off the mode it goes straight to ``index_select``, so a caller
+    that writes into a preallocated buffer keeps doing exactly that. Advanced
+    indexing has no ``out=``, so in the mode the rows are gathered and then
+    copied in, which holds one transient copy of the result.
     """
     if not mps_friendly() or tensor.dtype not in (torch.int32, torch.int64):
-        return tensor.index_select(0, index)
-    return tensor[index]
+        if out is None:
+            return tensor.index_select(0, index)
+        return torch.index_select(tensor, 0, index, out=out)
+    if out is None:
+        return tensor[index]
+    return out.copy_(tensor[index])
+
+
+def repeat_interleave_exact(
+    values: torch.Tensor, counts: torch.Tensor, *, output_size=None
+) -> torch.Tensor:
+    """``torch.repeat_interleave(values, counts)`` for a 1-D integer ``values``
+    whose low bits matter, with one count per value.
+
+    torch computes that call as ``values.index_select(0,
+    repeat_interleave(counts))``, so on MPS it is the gather
+    ``_MPS_EXACT_INT_BITS`` describes, and it rounds the same way: run
+    42299224973 measured 4087 int64 values in [2**24, 2**26) moved, 55104562
+    to 55104560. The values that pass 2**24 are the starts of runs -- a run's
+    first vertex, bin or slot -- which do once the counts add up to that many.
+    The counts alone come back as indices, which is exact, so this expands
+    them and gathers with :func:`gather_exact`: off MPS-friendly mode the same
+    ``index_select`` torch would have run, so CPU and CUDA get the same tensor.
+
+    Unlike torch's, it does not stretch a single count over every value.
+    """
+    rows = torch.repeat_interleave(counts, output_size=output_size)
+    return gather_exact(values, rows)
 
 
 def unique_consecutive_exact(keys: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -433,8 +480,10 @@ def unique_consecutive_exact(keys: torch.Tensor) -> tuple[torch.Tensor, torch.Te
     ``_MPS_EXACT_INT_BITS``. ``codex/metal-sheet-grouping`` reported MPSGraph's
     ``unique`` merging adjacent distinct keys above 2**24, which is the
     ``band_class_groups`` failure again: two sheets that differ only in their
-    low bits become one. That report is the branch's; it has not been
-    re-measured on an Apple GPU here.
+    low bits become one. On torch 2.13.0 the Mac runner measured ``unique``
+    doing that past 2**24, and ``unique_consecutive`` not doing it for the same
+    input (run 42329686918, ``DESIGN_mps_support.md`` §4.10); one input is not
+    a guarantee.
 
     So this never lets a key through anything that might round it. A group
     starts wherever a key differs from the one before it, and comparing two

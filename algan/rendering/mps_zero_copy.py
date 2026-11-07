@@ -83,10 +83,17 @@ Taichi an object pointer with an integer added to it.
 
 from __future__ import annotations
 
+import collections
+import contextlib
 import threading
 import weakref
 
 _LOCK = threading.Lock()
+#: ``(owner_ref, key, owner_id)`` for each source tensor that has died, until
+#: ``_evict_dead_owners_locked`` applies it. A tensor's death is queued here
+#: rather than applied in its weakref callback, which may run while this
+#: thread already holds ``_LOCK`` (see ``_owner_gone``).
+_DEAD_OWNERS: collections.deque = collections.deque()
 #: (buffer handle, dtype, outer shape, element shape, byte offset)
 #: -> ``_ImportEntry``. The entry is strongly cached only while at least one
 #: source tensor object for that slice survives. The ndarray itself also keeps
@@ -111,14 +118,70 @@ class _ImportEntry:
 
 
 def _owner_gone(owner_ref, key, owner_id):
-    """Evict ``key`` once its last tensor view has died."""
-    with _LOCK:
+    """Evict ``key`` once its last tensor view has died.
+
+    This is a weakref callback, so it runs inside whichever allocation frees
+    the tensor, and that can be one made while this thread holds ``_LOCK``. A
+    tensor in a reference cycle dies only in the cyclic collector, which runs
+    on the allocation that crosses its threshold, such as the ``weakref.ref``
+    that ``_track_owner_locked`` makes under the lock. ``_LOCK`` is not
+    reentrant, so a callback that waited for it there would wait forever. On
+    the Mac (run 42308885414) that hung a pytest session after a failed MPS
+    test, whose traceback kept its tensors in cycles. A reentrant lock would
+    not do either, because the callback could then change ``_IMPORTS`` while
+    the holder iterates it (``cache_stats``).
+
+    So the death is queued and never waited on: it is applied here only if
+    the lock is free, and otherwise by the holder, before it lets go
+    (``_locked``).
+    """
+    _DEAD_OWNERS.append((owner_ref, key, owner_id))
+    _evict_if_unlocked()
+
+
+def _evict_dead_owners_locked():
+    """Apply every queued owner death, while ``_LOCK`` is held."""
+    while _DEAD_OWNERS:
+        owner_ref, key, owner_id = _DEAD_OWNERS.popleft()
         entry = _IMPORTS.get(key)
+        # A later tensor can reuse a dead one's id; its own ref then owns the
+        # slot, and the dead one's eviction does not apply.
         if entry is None or entry.owners.get(owner_id) is not owner_ref:
-            return
+            continue
         del entry.owners[owner_id]
         if not entry.owners:
             _IMPORTS.pop(key, None)
+
+
+def _evict_if_unlocked():
+    """Apply the queued deaths unless another holder of ``_LOCK`` will.
+
+    The loop closes the gap between a holder's last drain and its release:
+    a death queued in that gap by another thread finds the lock free on the
+    next pass.
+    """
+    while _DEAD_OWNERS and _LOCK.acquire(blocking=False):
+        try:
+            _evict_dead_owners_locked()
+        finally:
+            _LOCK.release()
+
+
+@contextlib.contextmanager
+def _locked():
+    """``_LOCK``, with the queued owner deaths applied on entry and on exit.
+
+    On entry so that the cache reads as current, and on exit so that a death
+    queued while the lock was held is not left pinning its storage until the
+    next import.
+    """
+    with _LOCK:
+        _evict_dead_owners_locked()
+        try:
+            yield
+        finally:
+            _evict_dead_owners_locked()
+    _evict_if_unlocked()
 
 
 def _track_owner_locked(key, entry, tensor):
@@ -135,7 +198,7 @@ def _track_owner_locked(key, entry, tensor):
 
 def _cached_import(key, tensor):
     """Return and retain an existing import for ``tensor``, or None."""
-    with _LOCK:
+    with _locked():
         entry = _IMPORTS.get(key)
         if entry is None:
             return None
@@ -149,7 +212,7 @@ def _store_import(key, tensor, array, storage):
     # storage on the ndarray itself makes direct/in-flight users safe even if
     # the weak source owner disappears and the lookup entry is evicted.
     array._algan_storage = storage
-    with _LOCK:
+    with _locked():
         entry = _IMPORTS.get(key)
         if entry is None:
             entry = _ImportEntry(array, storage)
@@ -443,7 +506,7 @@ def clear_import_cache():
     Mac runner that pressure was enough to make framework/compaction work
     dominate a UHD render despite fast Metal traversal.
     """
-    with _LOCK:
+    with _locked():
         _IMPORTS.clear()
 
 
@@ -456,7 +519,7 @@ def cache_stats():
     arena, sliced at a different offset for every argument), so summing per
     entry would report the arena dozens of times over.
     """
-    with _LOCK:
+    with _locked():
         storages = {}
         for entry in _IMPORTS.values():
             storage = entry.storage

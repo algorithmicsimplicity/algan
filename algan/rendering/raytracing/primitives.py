@@ -31,6 +31,7 @@ from algan.rendering.mps_compat import (
     accumulate_dtype,
     clamp_floor,
     index_copy_rows,
+    repeat_interleave_exact,
 )
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
@@ -3149,8 +3150,11 @@ def _packed_uniform_cubic_parameters(
     repeated_counts = torch.repeat_interleave(
         chord_counts, vertex_counts, output_size=total
     )
-    # ``batch_arange`` with the size known: the same integers.
-    starts = torch.repeat_interleave(
+    # ``batch_arange`` with the size known: the same integers. The segments'
+    # first vertices pass 2**24 once a batch samples that many vertices, so
+    # they are repeated exactly (``mps_compat.repeat_interleave_exact``); a
+    # chord count is far below 2**24.
+    starts = repeat_interleave_exact(
         vertex_counts.cumsum(0) - vertex_counts, vertex_counts, output_size=total
     )
     steps = torch.arange(total, device=vertex_counts.device) - starts

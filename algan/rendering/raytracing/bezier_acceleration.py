@@ -27,7 +27,7 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_int
-from algan.rendering.mps_compat import clamp_floor
+from algan.rendering.mps_compat import clamp_floor, gather_exact
 
 # Resolution of the two indices. Both are pure acceleration: a query that a
 # coarser index sends more edges to still exact-tests every one of them, so
@@ -122,15 +122,27 @@ def _expand_intervals(
         return empty, empty
 
     selected_counts = counts[source]
-    expanded_source = torch.repeat_interleave(source, selected_counts)
+    # Not repeat_interleave(values, counts): torch computes that as
+    # values.index_select(0, repeat_interleave(counts)), and MPS's index_select
+    # hands an integer back as float32(value) (mps_compat._MPS_EXACT_INT_BITS).
+    # The interval starts pass 2**24 once a chunk expands to that many entries,
+    # which 2**22 pairs reach at four bins apiece, and a rounded start shifts
+    # its entries' local offsets into a neighbouring bin. With 6000 triangles
+    # moving over 100 frames that changed 1.5 million of the 77 million bin
+    # entries, and 64,789 of 1.8 million points inside the triangles read as
+    # outside. So the rows are expanded once, as indices, and both columns
+    # gathered with gather_exact, which off MPS-friendly mode is that same
+    # index_select.
+    rows = torch.repeat_interleave(selected_counts)
+    expanded_source = gather_exact(source, rows)
     total = expanded_source.numel()
     if total == 0:
         empty = torch.empty((0,), dtype=torch.long, device=source.device)
         return empty, empty
 
     interval_starts = selected_counts.cumsum(dim=0) - selected_counts
-    local_offsets = torch.arange(total, device=source.device) - torch.repeat_interleave(
-        interval_starts, selected_counts
+    local_offsets = torch.arange(total, device=source.device) - gather_exact(
+        interval_starts, rows
     )
     return expanded_source, local_offsets
 
@@ -524,9 +536,19 @@ def build_bezier_edge_acceleration(
     compact[:, BEZIER_SPATIAL_OFFSET_BASE:BEZIER_ACCEL_HEADER_SIZE] += spatial_base
 
     out = torch.empty((total_words,), dtype=torch.int32, device=device)
-    torch.index_select(
+    # Every header word goes through this gather, and few of them fit in 24
+    # bits: the bounds and inverse bin sizes are float32 bit patterns, past
+    # 2**24 for every float of magnitude between 2**-125 and 2**127, and the
+    # bin offsets pass it once the buffer does (the header alone does from
+    # 184,366 groups at the default bins). MPS's index_select hands an int32
+    # back as float32(value) (mps_compat._MPS_EXACT_INT_BITS). That moves a
+    # bound or a scale by up to 64 ulps, enough to send a scanline query to a
+    # bin that does not hold the edge it crosses, and a bin's begin or end onto
+    # a neighbouring entry of the edge lists. So the rows are gathered with
+    # gather_exact, which off MPS-friendly mode is this same index_select into
+    # ``out``.
+    gather_exact(
         compact,
-        0,
         compact_of_group,
         out=out[:header_words].view(num_groups, BEZIER_ACCEL_HEADER_SIZE),
     )

@@ -541,8 +541,12 @@ def _class_pairs(mask, x0, x1, y0, y1, f, device):
     area = bw * bh
     nch = (area + (raster_chunk - 1)) // raster_chunk
     # Avoid an explicit GPU scalar read. repeat_interleave determines the
-    # dynamic output length; subsequent shape metadata is host-visible.
-    rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
+    # dynamic output length; subsequent shape metadata is host-visible. From
+    # the counts alone: an arange as the values would be gathered through
+    # ``index_select``, which on MPS rounds an ordinal past 2**24
+    # (``mps_compat.repeat_interleave_exact``), here a frame holding that many
+    # primitives of one class. The counts alone come back as indices, exactly.
+    rep = torch.repeat_interleave(nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
@@ -1556,7 +1560,10 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None, circuits
     bh = y1.reshape(-1)[idx] - by0 + 1
     area = bw * bh
     nch = (area + (raster_chunk - 1)) // raster_chunk
-    rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
+    # From the counts alone, as in ``_class_pairs``: a pair's ordinal here
+    # counts over every frame of the window, so it passes 2**24 once the
+    # window's frames hold that many candidate pairs.
+    rep = torch.repeat_interleave(nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
@@ -1908,8 +1915,12 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles, num_bins=N
     depth_order = torch.argsort(primary_key, stable=True)
     del primary_key
     # Named so the two permutations are freed before the caller's gathers
-    # run: at 4K they are 56 MB each and this is the discovery peak.
-    order = layer_order.index_select(0, depth_order)
+    # run: at 4K they are 56 MB each and this is the discovery peak. Composed
+    # with ``gather_exact``: the order holds stream positions, which pass the
+    # 2**24 an MPS ``index_select`` carries exactly once a chunk holds that
+    # many fragments, and a rounded one would gather a neighbour's fragment
+    # twice and drop its own. Off MPS-friendly mode this is ``index_select``.
+    order = gather_exact(layer_order, depth_order)
     del layer_order, depth_order
     return order
 
@@ -2113,15 +2124,22 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
         or not kernel_extents_fit(ab.numel(), 2 * m)
     ):
         # ``key`` is the packed 64-bit fragment key and takes the split gather
-        # (see ``gather_packed_key``), and ``msk`` the exact one too: its
-        # emission flags reach bit 29 (``_AA_NEAR_CUT_BIT``), past the 2**24
-        # an MPS ``index_select`` carries exactly, and a rounded mask word has
-        # lost its sample bits (``sheets.compact_sheets``, ``msk_o``). The
-        # other four go straight through. Off MPS-friendly mode all are
+        # (see ``gather_packed_key``), and ``ref`` and ``msk`` the exact one
+        # too, because both pass the 2**24 an MPS ``index_select`` carries
+        # exactly. ``msk``'s emission flags reach bit 29 (``_AA_NEAR_CUT_BIT``),
+        # and a rounded mask word has lost its sample bits
+        # (``sheets.compact_sheets``, ``msk_o``). ``ref`` is a triangle index
+        # or a circuit's ``-((circuit << 8) + border weight + 1)``
+        # (``raster_taichi._pack_bez_ref``), which passes 2**24 from a batch's
+        # 65,536th circuit on. Rounded, a filled fragment (weight 0) decodes
+        # as the previous circuit's border and is shaded as that, and a
+        # triangle index moves to a neighbour or one past the last. The other
+        # three go straight through. Off MPS-friendly mode all are
         # ``index_select``.
         return (
             gather_packed_key(key, idx),
-            *(t.index_select(0, idx) for t in (ref, ab, cov)),
+            gather_exact(ref, idx),
+            *(t.index_select(0, idx) for t in (ab, cov)),
             gather_exact(msk, idx),
             opq.index_select(0, idx),
         )
@@ -2175,9 +2193,11 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         or not kernel_extents_fit(num_frags)
     ):
         positions = torch.arange(num_frags, dtype=torch.int64, device=device)
-        segments = torch.repeat_interleave(
-            torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
-        )
+        # Each fragment's covered pixel, from the counts alone: an arange as
+        # the values would be gathered through ``index_select``, which on MPS
+        # rounds an ordinal past 2**24 (``mps_compat.repeat_interleave_exact``),
+        # and a chunk can cover that many pixels.
+        segments = torch.repeat_interleave(counts)
         starts = torch.cumsum(counts, 0) - counts
         ends = starts + counts - 1
         idx_dtype = reduction_index_dtype()
@@ -2185,9 +2205,14 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
             (counts.numel(),), num_frags, dtype=idx_dtype, device=device
         )
         opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
+        # Both gathers are exact (``gather_exact``): a segment is a covered
+        # pixel's ordinal and a keep end a stream position, and each passes the
+        # 2**24 an MPS ``index_select`` carries once a chunk covers, or holds,
+        # that many. Rounded, a pixel's first opaque hit lands on a neighbour's
+        # segment, and a pixel keeps its neighbour's prefix length.
         first_opaque.scatter_reduce_(
             0,
-            segments.index_select(0, opaque_pos),
+            gather_exact(segments, opaque_pos),
             opaque_pos.to(idx_dtype),
             reduce="amin",
             include_self=True,
@@ -2196,7 +2221,7 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         del opaque_pos, starts
         keep_end = torch.minimum(first_opaque, ends)
         del first_opaque, ends
-        keep = positions <= keep_end.index_select(0, segments)
+        keep = positions <= gather_exact(keep_end, segments)
         return keep
     from algan.rendering.raytracing.sheet_compact_taichi import opaque_prefix_keep
 
@@ -2365,9 +2390,9 @@ def _one_mesh_pixel_caps(
     idx_dtype = reduction_index_dtype()
     sid_all = tri_obj[frame_of, safe_ref].to(idx_dtype)
     del frame_of, safe_ref
-    seg = torch.repeat_interleave(
-        torch.arange(num_covered, dtype=torch.int64, device=device), counts
-    )
+    # Each fragment's covered pixel, from the counts alone: exact on MPS past
+    # 2**24 covered pixels, as in ``_opaque_prefix_keep``.
+    seg = torch.repeat_interleave(counts)
 
     def single_surface(sid_all, usable):
         sid = torch.where(usable, sid_all, torch.full_like(sid_all, -1))
@@ -3289,7 +3314,9 @@ def prepare_sparse_raster_coverage(
                 # here than the fused gather's traffic saving (see its
                 # docstring).
                 key_s = gather_packed_key(key_s, keep_idx)
-                ref_s = ref_s.index_select(0, keep_idx)
+                # Exact: a circuit's ref passes 2**24 from the batch's 65,536th
+                # circuit on (``_gather_fragment_arrays``).
+                ref_s = gather_exact(ref_s, keep_idx)
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)
                 # Exact: a near-cut word passes 2**24 (``_gather_fragment_arrays``).
@@ -3624,7 +3651,11 @@ def _sheet_slice_bounds(coverage, c0, c1):
             )
         )
         positions = [c0, *range(c1, n, step), n]
-        known.update(zip(positions, so.index_select(0, index).tolist()))
+        # ``gather_exact``: an offset is a sheet position, past the 2**24 an
+        # MPS ``index_select`` carries once a chunk holds that many sheets, and
+        # a rounded bound would resolve a slice's edge sheets twice or not at
+        # all.
+        known.update(zip(positions, gather_exact(so, index).tolist()))
     return int(known[c0]), int(known[c1])
 
 
@@ -4015,12 +4046,17 @@ def shade_sparse_raster_coverage(
             # kernel reads as "no identity" and traces with the old epsilon).
             identity_on = bool(rt_settings.shadow_identity_reject)
             if identity_on:
+                # Exact, as in ``_gather_fragment_arrays``: a triangle index
+                # passes 2**24 once a frame holds that many triangle columns.
+                # Rounded, it names a neighbouring triangle, so the self-hit
+                # floor goes to that one and a hit on the event's own triangle
+                # near ``t = 0`` can shadow it, or it names one past the last
+                # and the trace reads ``tri_obj`` out of range.
+                slice_refs = coverage["sheet_ref"][s_start:s_end]
                 ev_src_prim = (
                     ordered_sources
                     if ordered_sources is not None
-                    else coverage["sheet_ref"][s_start:s_end]
-                    .index_select(0, acc_idx)
-                    .to(torch.int32)
+                    else gather_exact(slice_refs, acc_idx).to(torch.int32)
                 )
                 eps_self, eps_near = _shadow_identity_epsilons(merged)
             else:
