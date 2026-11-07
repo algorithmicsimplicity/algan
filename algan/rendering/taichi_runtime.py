@@ -1262,6 +1262,14 @@ _ARCH_READY_FOR = None
 #: post-process and nested previews without releasing the arch early.
 _RENDER_JOBS_ACTIVE = 0
 
+#: ``threading.get_ident()`` of the thread that entered the outermost render
+#: job, while one is active. That thread runs the job's MPSGraph ops: on a Mac
+#: the batch-prep worker projects and merges on the CPU
+#: (``project_on_gpu_active`` and ``merge_on_gpu_active`` are CUDA-only).
+#: ``memory_utils.drain_mps_caches`` keeps its drains to this thread, because
+#: a drain deletes the graph an MPS op on another thread may be using.
+_RENDER_JOB_THREAD = None
+
 #: A host-pressure reclaim asked to reset Quadrants while a render still held
 #: the live Program. The request is completed when the outermost render job
 #: releases the arch, but only if host/cgroup pressure is still present then.
@@ -1279,9 +1287,10 @@ def render_job_holding_the_arch():
     the render thread is inside one. ``SETTINGS.computing.set(render_device=...)``
     consults :func:`render_is_active` and refuses instead.
     """
-    global _PRESSURE_RESET_PENDING, _RENDER_JOBS_ACTIVE
+    global _PRESSURE_RESET_PENDING, _RENDER_JOBS_ACTIVE, _RENDER_JOB_THREAD
     _RENDER_JOBS_ACTIVE += 1
     if _RENDER_JOBS_ACTIVE == 1:
+        _RENDER_JOB_THREAD = threading.get_ident()
         # On MPS, torch must refuse memory past Metal's working set rather
         # than let a command buffer fail silently there; see
         # memory_utils._MPS_RENDER_HIGH_WATERMARK. Warned rather than raised:
@@ -1319,6 +1328,7 @@ def render_job_holding_the_arch():
     finally:
         _RENDER_JOBS_ACTIVE -= 1
         if _RENDER_JOBS_ACTIVE == 0:
+            _RENDER_JOB_THREAD = None
             # First, so that a failing step below cannot leave torch held to
             # the render's limit for the rest of the process.
             with contextlib.suppress(Exception):
@@ -1352,6 +1362,19 @@ def render_job_holding_the_arch():
             from algan.rendering.mps_zero_copy import clear_import_cache
 
             clear_import_cache()
+            # A drain of torch's MPS caches the batch-prep worker asked for
+            # after this thread's last reclaim (memory_utils.drain_mps_caches
+            # deferred it). The worker is done: ``_get_frames_impl`` shuts its
+            # executor down, waiting, inside the job. Housekeeping, so it never
+            # fails the job.
+            with contextlib.suppress(Exception):
+                from algan.utils.memory_utils import (
+                    drain_mps_caches,
+                    mps_drain_deferred,
+                )
+
+                if mps_drain_deferred():
+                    drain_mps_caches()
             # The source-keyed index's hit/miss/poison counters, beside the
             # per-kernel compile records they summarize.
             from algan.utils.taichi_source_key import (
@@ -1393,6 +1416,16 @@ def render_job_holding_the_arch():
 def render_is_active():
     """Whether a render job currently depends on the live arch."""
     return _RENDER_JOBS_ACTIVE > 0
+
+
+def on_the_render_job_thread():
+    """Whether no render job is active, or the calling thread entered it.
+
+    ``memory_utils.drain_mps_caches`` drains torch's MPS caches only when this
+    holds; :data:`_RENDER_JOB_THREAD` says why.
+    """
+    thread = _RENDER_JOB_THREAD
+    return thread is None or thread == threading.get_ident()
 
 
 #: Set when a kernel specialization went through the full front end in this

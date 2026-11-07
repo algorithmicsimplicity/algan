@@ -270,10 +270,11 @@ def get_num_available_bytes(device=torch.device("cuda")):
             free_bytes, _ = torch.cuda.mem_get_info(device)
         return free_bytes
     elif device.type == "mps":
-        from algan.rendering.mps_zero_copy import clear_import_cache
-
-        clear_import_cache()
-        torch.mps.empty_cache()
+        # Measured without the drain on any thread but a running render job's
+        # (drain_mps_caches says why). Only the job's own thread sizes an MPS
+        # arena while a job runs, so every figure a render sizes by is still
+        # measured after a drain.
+        drain_mps_caches()
 
         from algan.rendering.mps_arena import allocated_bytes as external_mps_bytes
 
@@ -901,6 +902,84 @@ def _coalesced_memory_reclamation():
             release_torch_memory(force_gc=False)
 
 
+#: A drain of torch's MPS caches that :func:`drain_mps_caches` was asked for
+#: off the render job's thread and that the job's thread has not made yet.
+_MPS_DRAIN_DEFERRED = False
+_MPS_DRAIN_LOCK = threading.Lock()
+
+#: What :func:`drain_mps_caches` has done in this process: ``drained`` counts
+#: its drains, ``deferred`` the requests it handed to the render job's thread,
+#: and ``taken`` the drains that served at least one of those. For the tests,
+#: and for the Mac probes that count how often a render drains and where.
+MPS_DRAIN_STATS = {"drained": 0, "deferred": 0, "taken": 0}
+
+
+def _on_the_render_job_thread():
+    """Whether this thread may drain torch's MPS caches now.
+
+    Looked up in ``sys.modules`` rather than imported: a process that has not
+    imported the runtime has no render job, and the import would load
+    Quadrants into a process that does not otherwise need it.
+    """
+    runtime = sys.modules.get("algan.rendering.taichi_runtime")
+    return runtime is None or runtime.on_the_render_job_thread()
+
+
+def drain_mps_caches():
+    """Clear the MPS zero-copy import cache, then drain torch's MPS caches.
+
+    While a render job runs, only the thread that entered it drains. A request
+    from any other thread is recorded instead, and the job's thread makes the
+    drain at its next :func:`release_torch_memory`, or when the job ends:
+    one drain however many requests came in meanwhile. Returns whether this
+    call drained.
+
+    ``torch.mps.empty_cache()`` does more than hand cached buffers back: torch
+    2.13's ``MPSHooks::emptyCache`` also clears its ``MPSGraphCache``, which
+    deletes every cached MPSGraph, and an MPS op holds its graph by a raw
+    pointer from the cache lookup until it has encoded the graph. The
+    batch-prep worker drained under host pressure (after each primitive it
+    projected, and in its merge) while the render thread ran ``index_select``
+    on the GPU, and on the 7 GB Mac runner 3 of 40 UHD renders died of it:
+    EXC_BAD_ACCESS inside ``index_select_out_mps``, building its feeds
+    dictionary from a graph that had just been deleted. With host pressure
+    forced on, so that the worker drained in every render, 1 of 4 processes
+    died that way, and with a second thread also draining every 0.25 s, 4 of
+    4 did; the same schedules with torch's allocator-only drain
+    (``torch.accelerator.empty_cache``, which leaves the graphs alone) killed
+    none of 3 (run 42422403489). On a Mac the worker's own torch work runs on
+    the CPU (``project_on_gpu_active`` and ``merge_on_gpu_active`` are
+    CUDA-only): in a UHD render of ``benchmarks/_mps_warm_regression.py`` it
+    ran one op on MPS, a ``zeros``, which torch fills with a Metal kernel and
+    no graph, and every Quadrants launch was the job thread's (run
+    42424700295). So the job's thread is the only one using a cached graph,
+    and a drain between its own ops meets none.
+
+    With no render job active, any thread drains at once, as before.
+    """
+    global _MPS_DRAIN_DEFERRED
+    if not _on_the_render_job_thread():
+        with _MPS_DRAIN_LOCK:
+            _MPS_DRAIN_DEFERRED = True
+            MPS_DRAIN_STATS["deferred"] += 1
+        return False
+    with _MPS_DRAIN_LOCK:
+        if _MPS_DRAIN_DEFERRED:
+            _MPS_DRAIN_DEFERRED = False
+            MPS_DRAIN_STATS["taken"] += 1
+        MPS_DRAIN_STATS["drained"] += 1
+    from algan.rendering.mps_zero_copy import clear_import_cache
+
+    clear_import_cache()
+    torch.mps.empty_cache()
+    return True
+
+
+def mps_drain_deferred():
+    """Whether a drain :func:`drain_mps_caches` deferred is still waiting."""
+    return _MPS_DRAIN_DEFERRED
+
+
 def release_torch_memory(force_gc=True):
     """Reclaim freed memory back to the allocators.
 
@@ -977,7 +1056,13 @@ def release_torch_memory(force_gc=True):
         and (force_gc or _reclaimable_cuda_bytes() >= _MIN_RECLAIMABLE_BYTES)
     ):
         torch.cuda.empty_cache()
-    if torch.mps.is_available() and pressured:
+    if torch.mps.is_available() and (
+        pressured or (_MPS_DRAIN_DEFERRED and _on_the_render_job_thread())
+    ):
+        # While a render job runs, drain_mps_caches drains only on the job's
+        # thread and defers a drain asked for on any other one; this is where
+        # the job's thread makes a deferred drain, pressured or not.
+        #
         # Before the cache drain, not after: the MPS zero-copy import cache
         # holds a torch storage per buffer it has ever handed a kernel (it must
         # -- Taichi's imported ndarray keeps no reference, so nothing else
@@ -995,10 +1080,7 @@ def release_torch_memory(force_gc=True):
         # batches) is a pressure phenomenon by construction, so it is still
         # cleared exactly when it matters, and every failure and retry path
         # passes ``force_gc=True``. A no-op off MPS and on a stock build.
-        from algan.rendering.mps_zero_copy import clear_import_cache
-
-        clear_import_cache()
-        torch.mps.empty_cache()
+        drain_mps_caches()
 
     # CPU/native allocations live outside torch's device caches. Only pay the
     # expensive process-wide reclamation when host capacity is genuinely tight.

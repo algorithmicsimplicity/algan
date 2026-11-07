@@ -170,6 +170,9 @@ ALWAYS_CI = (
     "tests/unit_tests/test_mps_working_set_hold.py::test_algan_gives_torchs_mps_allocator_a_low_watermark_before_it_starts",
     "tests/unit_tests/test_mps_working_set_hold.py::test_a_watermark_already_chosen_stands",
     "tests/unit_tests/test_mps_working_set_hold.py::test_an_allocator_that_already_started_is_left_alone",
+    # While a render job runs, only its thread drains torch's MPS caches, and a
+    # drain the batch-prep worker asks for waits for that thread: stubs, no GPU.
+    "tests/unit_tests/test_mps_cache_drains.py::test_a_drain_asked_for_off_the_render_thread_waits_for_the_render_thread",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
