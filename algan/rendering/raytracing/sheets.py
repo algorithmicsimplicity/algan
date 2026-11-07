@@ -2142,13 +2142,27 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
         )
 
         mixed = torch.empty(num_covered, dtype=torch.uint8, device=device)
-        # Per pixel: (is a triangle pixel, its fragments if so). The prefix
-        # is each pixel's triangle-pixel rank and its run's end among the
-        # triangle pixels' fragments; the last row holds both totals.
-        ends = torch.empty((num_covered, 2), dtype=torch.int32, device=device)
+        # Per pixel, one row each: is it a triangle pixel, and its fragments
+        # if so. The prefix of each row is each pixel's triangle-pixel rank
+        # and its run's end among the triangle pixels' fragments; the last
+        # column holds both totals.
+        #
+        # Two 1-D scans, not one of ``[num_covered, 2]`` along dim 0, which
+        # MPS cannot run on 1024 pixels or more. torch 2.13 picks the MPS
+        # scan kernel by layout, dtype and length: for an int32 result along
+        # dim 0 of a 2-, 3-, 4- or 8-wide tensor it runs up to 1023 rows, and
+        # from 1024 on asks for ``cumsum_vec_block_reduce_<w>_int``, which its
+        # Metal library builds for floats and int64 results only. An HD
+        # frame's split raised ``Failed to create function state object for:
+        # cumsum_vec_block_reduce_2_int`` (Mac runs 42297623070 and
+        # 42303103954; ``benchmarks/_mps_torch_op_probe.py scan_layouts``
+        # sweeps the layouts). Each row of a ``[2, n]`` int32 scans in place
+        # on MPS, exactly, at every length measured, up to n = 5,000,000.
+        ends = torch.empty((2, num_covered), dtype=torch.int32, device=device)
         split_mixed_pixels(run_offsets, frags[1], num_covered, mixed, ends)
-        ends.cumsum_(0)
-        n_mpix, n_mixed = ends[-1].tolist()
+        ends[0].cumsum_(0)
+        ends[1].cumsum_(0)
+        n_mpix, n_mixed = ends[:, -1].tolist()
         mixed_pix = mixed.view(torch.bool)
     else:
         run64 = run_offsets.to(torch.int64)
@@ -2168,7 +2182,10 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
     # The triangle pixels, compacted by the general path.
     sub_offsets = torch.zeros(n_mpix + 1, dtype=torch.int32, device=device)
     if kernel:
-        sub_offsets[1:] = ends[:, 1][mixed_pix]
+        # A boolean-mask gather, which MPS keeps exact past 2**24 where
+        # ``index_select`` rounds (Mac run 42297623070,
+        # ``benchmarks/_mps_torch_op_probe.py gather_isolated``).
+        sub_offsets[1:] = ends[1][mixed_pix]
         sub_frags = [
             torch.empty((n_mixed, *f.shape[1:]), dtype=f.dtype, device=device)
             for f in frags

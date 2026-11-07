@@ -303,13 +303,13 @@ def probe_scan_layouts(device):
     """``cumsum`` by layout and dtype: which ones MPS runs at all, and exactly.
 
     ``probe_scans`` asks a 1-D question. The renderer also scans 2-D tensors
-    -- ``sheets._split_stroke_pixels``' kernel arm prefixes an ``[nc, 2]``
-    int32 tally in place along dim 0, ``refit_bvh`` scans int64 bin counts
-    along the outer dim -- and on MPS the scan is not one kernel but a family
-    chosen by layout, dtype and length, so a 1-D answer says nothing about
-    them. With ``ALGAN_SHEET_SPLIT_KERNEL_MPS=1`` the split's prefix raised
-    ``Failed to create function state object for:
-    cumsum_vec_block_reduce_2_int``.
+    -- ``sheets._split_stroke_pixels``' kernel arm prefixed an ``[nc, 2]``
+    int32 tally in place along dim 0 until it scanned the rows of a ``[2,
+    nc]`` instead, ``refit_bvh`` scans int64 bin counts along the outer dim
+    -- and on MPS the scan is not one kernel but a family chosen by layout,
+    dtype and length, so a 1-D answer says nothing about them. With
+    ``ALGAN_SHEET_SPLIT_KERNEL_MPS=1`` the split's old prefix raised ``Failed
+    to create function state object for: cumsum_vec_block_reduce_2_int``.
 
     Every spelling the call sites use, over 1-D, ``[n, w]`` along dim 0, ``[w,
     n]`` along dim 1, a row of it, a transposed view and a 3-D middle dim, at
