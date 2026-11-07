@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from algan.rendering.mps_compat import unique_exact
 from algan.rendering.raytracing import settings as rt_settings
 
 
@@ -21,7 +22,14 @@ def _build_closed_shell_table(memory, merged):
     if closed is not None and merged.get("tri_has_translucent", True):
         obj = merged["tri_obj"].to(torch.int32)
         shell = torch.where((closed > 0.5) & (obj >= 0), obj, -1)
-        ids, inverse = torch.unique(shell, sorted=True, return_inverse=True)
+        # ``unique_exact``, not ``torch.unique``: on MPS the inverse form
+        # merges surface ids past 2**24, and two merged shells would share one
+        # bit. The Apple GPU numbered ids 16777214 .. 16777219 as four shells
+        # where the CPU numbers five (run 42351444222). Only a batch of more
+        # than 2**24 surfaces has such ids, but this runs on the render
+        # device, so MPS is where it would meet them. Off MPS-friendly mode
+        # this is ``torch.unique``.
+        ids, inverse = unique_exact(shell, return_inverse=True)
         missing = int(ids.numel() > 0 and int(ids[0].item()) < 0)
         count = int(ids.numel()) - missing
         if count:

@@ -939,6 +939,146 @@ def test_the_mps_sorted_id_grouping_does_not_go_through_unique_consecutive(
     assert torch.equal(got_inverse, want_inverse)
 
 
+# ------------------------------------------------- the exact unique
+
+
+def _scrambled_keys(dtype, base, seed):
+    """``_adjacent_keys`` out of order, as an unsorted id table holds them."""
+    keys = _adjacent_keys(dtype, base, seed)
+    return keys[
+        torch.randperm(keys.numel(), generator=torch.Generator().manual_seed(seed))
+    ]
+
+
+_UNIQUE_OUTPUTS = {
+    "values": {},
+    "inverse": {"return_inverse": True},
+    "counts": {"return_counts": True},
+    "both": {"return_inverse": True, "return_counts": True},
+}
+
+
+@pytest.mark.parametrize("outputs", list(_UNIQUE_OUTPUTS))
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        (torch.int32, 1 << 24),
+        (torch.int32, (1 << 25) + 1),
+        (torch.int32, (1 << 31) - 7),
+        (torch.int64, 1 << 24),
+        (torch.int64, 1 << 32),
+        (torch.int64, (1 << 62) + 5),
+    ],
+    ids=["i32-2^24", "i32-2^25", "i32-max", "i64-2^24", "i64-2^32", "i64-2^62"],
+)
+def test_the_exact_unique_matches_unique(computing_settings, dtype, base, outputs):
+    """``unique_exact`` in the mode answers what the CPU's ``unique`` does.
+
+    Keys one apart around each base, out of order, at the magnitudes where
+    MPS's inverse form came back rounded (2**24, 2**25) or as low words
+    (2**32 and up), and as a 2-D table, whose inverse keeps the table's
+    shape. Every output, and their dtypes, since the inverse indexes
+    per-group tables downstream.
+    """
+    keys = _scrambled_keys(dtype, base, seed=base % 991).reshape(-1, 1)
+    kwargs = _UNIQUE_OUTPUTS[outputs]
+    want = torch.unique(keys, sorted=True, **kwargs)
+
+    computing_settings.set(mps_friendly=True)
+    got = mps_compat.unique_exact(keys, **kwargs)
+
+    want = want if isinstance(want, tuple) else (want,)
+    got = got if isinstance(got, tuple) else (got,)
+    assert len(got) == len(want)
+    for w, g in zip(want, got):
+        assert g.dtype == w.dtype
+        assert torch.equal(g, w)
+
+
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("values", [[], [(1 << 24) + 1]], ids=["empty", "single"])
+def test_the_exact_unique_handles_empty_and_single_tables(
+    computing_settings, dtype, values
+):
+    """A batch can declare no closed shell, or one."""
+    keys = torch.tensor(values, dtype=dtype)
+    want = torch.unique(keys, sorted=True, return_inverse=True, return_counts=True)
+
+    computing_settings.set(mps_friendly=True)
+    got = mps_compat.unique_exact(keys, return_inverse=True, return_counts=True)
+
+    for w, g in zip(want, got):
+        assert g.dtype == w.dtype
+        assert torch.equal(g, w)
+
+
+def test_the_exact_unique_does_not_go_through_unique(computing_settings, monkeypatch):
+    """In the mode the answer holds against a ``unique`` that merges as MPS's.
+
+    ``merge_wide_uniques`` makes the CPU's ``unique`` answer as the Apple GPU
+    measured it. Off the mode ``unique_exact`` is that ``unique`` and merges
+    with it, which shows the simulation is in effect and that CPU and CUDA
+    still run the plain op; in the mode it must not.
+    """
+    from tests.unit_tests.mps_rounding import merge_wide_uniques
+
+    keys = torch.cat(
+        (
+            _scrambled_keys(torch.int64, 1 << 25, seed=3),
+            _scrambled_keys(torch.int64, 1 << 40, seed=4),
+        )
+    )
+    want = torch.unique(keys, sorted=True, return_inverse=True, return_counts=True)
+    merge_wide_uniques(monkeypatch)
+
+    computing_settings.set(mps_friendly=False)
+    plain = mps_compat.unique_exact(keys, return_inverse=True, return_counts=True)
+    assert plain[0].numel() < want[0].numel()
+
+    computing_settings.set(mps_friendly=True)
+    got = mps_compat.unique_exact(keys, return_inverse=True, return_counts=True)
+    for w, g in zip(want, got):
+        assert torch.equal(g, w)
+
+
+def test_the_exact_unique_is_exact_above_the_mps_ceiling(computing_settings):
+    """The sort ``unique_exact`` stands on, checked on real hardware.
+
+    MPS's ``unique`` with an inverse merged 8192 consecutive int64s from 2**24
+    into 4097 (run 42351444222); the stable sort, the compares, the int32
+    scan and the scatter this helper uses instead matched the CPU in the same
+    run, from 0 to 2**62. Nothing in torch promises the sort stays exact, so
+    this asks the GPU whenever there is one. Like the gather guard above it
+    selects the device from ``torch.backends.mps``, so a green run off an
+    Apple machine does not clear it.
+    """
+    computing_settings.set(mps_friendly=True)
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    for dtype, base in (
+        (torch.int32, 1 << 24),
+        (torch.int32, (1 << 30) + 3),
+        (torch.int64, 1 << 24),
+        (torch.int64, (1 << 40) + 5),
+        (torch.int64, (1 << 62) + 5),
+    ):
+        keys = torch.cat(
+            [_scrambled_keys(dtype, base + 64 * k, seed=k) for k in range(64)]
+        ).reshape(1, -1)
+        want = torch.unique(keys, sorted=True, return_inverse=True, return_counts=True)
+        on_device = keys.to(device)
+        assert torch.equal(on_device.cpu(), keys)
+        got = mps_compat.unique_exact(
+            on_device, return_inverse=True, return_counts=True
+        )
+        for name, w, g in zip(("values", "inverse", "counts"), want, got):
+            assert torch.equal(g.cpu(), w), (
+                f"unique_exact's {name} is not exact on {device} for {dtype} "
+                f"keys from {base}: the stable torch.sort it groups after no "
+                "longer keeps them apart, and shell_alpha's closed-shell table "
+                "is built with it"
+            )
+
+
 # ------------------------------------------------- the narrowed kernel arms
 
 

@@ -628,6 +628,67 @@ def unique_consecutive_exact(keys: torch.Tensor) -> tuple[torch.Tensor, torch.Te
     return unique, inverse
 
 
+def unique_exact(
+    keys: torch.Tensor, *, return_inverse: bool = False, return_counts: bool = False
+):
+    """``torch.unique(keys, sorted=True, ...)`` for integers whose low bits
+    matter.
+
+    On torch 2.13.0's MPS, ``unique`` asked for an inverse (or given a
+    ``dim``) answers for ``float32(int32(keys))``: an int64 keeps only its low
+    32 bits, and distinct values past 2**24 merge and come back rounded.
+    8192 consecutive int64s from 2**24 came back as 4097, each one
+    ``float32(value)``; from 2**32 they came back as their low words
+    (``benchmarks/_mps_unique_probe.py``, run 42351444222). The values-only
+    and counts-only forms were exact in the same run, and nothing here leans
+    on that.
+
+    In MPS-friendly mode this sorts instead (``torch.sort``, stable), starts a
+    group wherever a value differs from the one before it, numbers the groups
+    with an int32 scan and gathers their values with ``v[i]``; the inverse is
+    the group numbers scattered back through the sort's order. That route
+    matched the CPU's ``unique`` on the same Apple GPU at int32 and int64,
+    from 0 to 2**62 and up to 4,194,304 rows, and the scan, ``nonzero``,
+    stable sort and scatter it is made of stayed exact over 2**25 + 4099 rows,
+    where their own outputs pass 2**24 (run 42355723203). The scan refuses
+    2**31 rows or more rather than wrap.
+
+    Off the mode, and for any dtype but int32 and int64, this is
+    ``torch.unique`` itself, so CPU and CUDA get the tensors they always got.
+    Returns what that call returns: the values in ``keys``' dtype, then an
+    int64 inverse shaped like ``keys`` and int64 counts when asked for.
+    """
+    if not mps_friendly() or keys.dtype not in (torch.int32, torch.int64):
+        return torch.unique(
+            keys,
+            sorted=True,
+            return_inverse=return_inverse,
+            return_counts=return_counts,
+        )
+    flat = keys.reshape(-1)
+    n = flat.numel()
+    if n >= 2**31:
+        raise ValueError(
+            f"unique_exact counts groups in int32 and needs fewer than 2**31 "
+            f"rows, got {n}"
+        )
+    values, order = torch.sort(flat, stable=True)
+    starts = torch.ones(n, dtype=torch.bool, device=keys.device)
+    if n > 1:
+        starts[1:] = values[1:] != values[:-1]
+    first = torch.nonzero(starts).flatten()
+    out = (values[first],)
+    if return_inverse:
+        group = torch.cumsum(starts, 0, dtype=torch.int32).to(torch.int64) - 1
+        inverse = torch.empty(n, dtype=torch.int64, device=keys.device)
+        inverse.scatter_(0, order, group)
+        out += (inverse.reshape(keys.shape),)
+    if return_counts:
+        ends = torch.full((1,), n, dtype=first.dtype, device=keys.device)
+        out += (torch.cat((first[1:], ends)) - first,)
+    return out if len(out) > 1 else out[0]
+
+
 def band_class_groups(band_of_frag, cls_eff, base):
     """Group the fragments by ``(band, shading class)``, without a wide key.
 

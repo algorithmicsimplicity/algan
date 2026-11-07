@@ -779,11 +779,11 @@ def _sheet_rank_groups(parent, rank, parents=None, deepest=None):
 
     The kernel arm is asked for wherever a launch stages nothing, which since
     ``taichi_launch_is_local`` learned about the Metal adoption includes an
-    Apple GPU. That is worth more there than the sort time: the torch arm's
-    ``parent * radix + rank`` (``_rank_key_base``) reaches 2**25 on a 4K frame,
-    past where an MPS integer gather stops being exact
-    (``mps_compat._MPS_EXACT_INT_BITS``), and the kernel never builds a
-    composite key at all.
+    Apple GPU. The torch arm's ``parent * radix + rank`` (``_rank_key_base``)
+    reaches 2**25 on a 4K frame, past the 2**24 through which MPS's ``unique``
+    keeps distinct integers apart, and the kernel never builds a composite key
+    at all. Neither does the torch arm in MPS-friendly mode, which is what an
+    Apple GPU runs with ``ALGAN_SHEET_RANK_GROUPS=0`` or before Taichi is up.
     """
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
@@ -813,6 +813,22 @@ def _sheet_rank_groups(parent, rank, parents=None, deepest=None):
     if deepest is None:
         deepest = int(rank.amax()) if n else 0
     base = _rank_key_base(deepest)
+    if mps_friendly():
+        # The key below passes 2**24 from 2**20 bands on (the radix is at
+        # least 16), which a 1080p frame reaches, and MPS's ``unique`` with an
+        # inverse merges distinct integers past 2**24: over 1,114,112 bands
+        # this arm lost 49,130 of 2,784,430 sub-bands on the Apple GPU, merged
+        # into a neighbouring rank or band (run 42351444222). So the mode
+        # groups the pairs themselves, with ``band_class_groups``, which
+        # never forms the key or divides it and numbers the groups in the
+        # same (parent, rank) order. A rank stands where its class would; any
+        # minor key below ``base`` can. Off the mode the key is what runs.
+        nb, groups, cid_band = band_class_groups(parent.to(torch.int64), rank, base)
+        # Every fragment of a group has the group's rank, so the scatter's
+        # write order does not matter.
+        rank_of_cid = torch.empty(nb, dtype=torch.int64, device=parent.device)
+        rank_of_cid.scatter_(0, groups, rank.to(torch.int64))
+        return groups, cid_band, rank_of_cid
     keys, groups = torch.unique(
         parent.to(torch.int64) * base + rank, sorted=True, return_inverse=True
     )

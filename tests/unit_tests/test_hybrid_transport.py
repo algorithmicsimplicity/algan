@@ -58,6 +58,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 from algan.rendering.taichi_runtime import init_taichi
 from algan.taichi_compat import ti
 from algan.utils.memory_utils import ManualMemory
+from tests.unit_tests.mps_rounding import merge_wide_uniques
 
 
 def _array(values, dtype=ti.f32):
@@ -435,6 +436,57 @@ def test_shell_table_is_dense_broadcast_and_arena_backed(monkeypatch):
     assert (
         table.untyped_storage().data_ptr() == memory.data.untyped_storage().data_ptr()
     )
+
+
+#: Surface ids either side of 2**24, two of them one apart past it, and a
+#: triangle of no closed surface: five shells, numbered in id order.
+_WIDE_SURFACE_IDS = [2**24 - 2, 2**24 - 1, 2**24, 2**24 + 1, 2**24 + 3, -1]
+
+
+def _wide_shell_table(device):
+    merged = {
+        "tri_obj": torch.tensor([_WIDE_SURFACE_IDS], dtype=torch.int32, device=device),
+        "tri_closed": torch.ones((1, len(_WIDE_SURFACE_IDS)), device=device),
+        "tri_has_translucent": True,
+    }
+    memory = ManualMemory(0, device=device, num_bytes=4096)
+    table, count = _build_closed_shell_table(memory, merged)
+    return table.cpu().tolist(), count
+
+
+def test_shell_table_keeps_surface_ids_past_2_24_apart_through_mps_unique(
+    monkeypatch,
+):
+    """Two surfaces one id apart past 2**24 keep a shell bit each.
+
+    On the Apple GPU, ``unique`` with an inverse answers for ``float32(id)``
+    and merged 2**24 with 2**24 + 1, numbering these ids as four shells
+    (run 42351444222). ``merge_wide_uniques`` makes the CPU's ``unique``
+    answer the same way, and the table must still hold five.
+    """
+    monkeypatch.setattr(rt_settings, "solid_shell_alpha", True)
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    merge_wide_uniques(monkeypatch)
+    table, count = _wide_shell_table("cpu")
+    assert count == 5
+    assert table == [[0, 1, 2, 3, 4, -1]]
+
+
+def test_shell_table_keeps_surface_ids_past_2_24_apart_on_the_device(monkeypatch):
+    """The same, through the real op on an Apple GPU.
+
+    The device comes from ``torch.backends.mps.is_available()``, so any Apple
+    machine builds the table on its GPU; elsewhere this checks the CPU, where
+    ``unique`` was never wrong, and a green run there does not clear it.
+    """
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    monkeypatch.setattr(rt_settings, "solid_shell_alpha", True)
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    table, count = _wide_shell_table(device)
+    assert count == 5, f"{count} shells on {device}: {table}"
+    assert table == [[0, 1, 2, 3, 4, -1]]
 
 
 @pytest.mark.parametrize("disable", ["setting", "opaque", "no_closed"])
