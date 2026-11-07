@@ -1908,8 +1908,12 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles, num_bins=N
     depth_order = torch.argsort(primary_key, stable=True)
     del primary_key
     # Named so the two permutations are freed before the caller's gathers
-    # run: at 4K they are 56 MB each and this is the discovery peak.
-    order = layer_order.index_select(0, depth_order)
+    # run: at 4K they are 56 MB each and this is the discovery peak. Composed
+    # with ``gather_exact``: the order holds stream positions, which pass the
+    # 2**24 an MPS ``index_select`` carries exactly once a chunk holds that
+    # many fragments, and a rounded one would gather a neighbour's fragment
+    # twice and drop its own. Off MPS-friendly mode this is ``index_select``.
+    order = gather_exact(layer_order, depth_order)
     del layer_order, depth_order
     return order
 
@@ -2192,9 +2196,14 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
             (counts.numel(),), num_frags, dtype=idx_dtype, device=device
         )
         opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
+        # Both gathers are exact (``gather_exact``): a segment is a covered
+        # pixel's ordinal and a keep end a stream position, and each passes the
+        # 2**24 an MPS ``index_select`` carries once a chunk covers, or holds,
+        # that many. Rounded, a pixel's first opaque hit lands on a neighbour's
+        # segment, and a pixel keeps its neighbour's prefix length.
         first_opaque.scatter_reduce_(
             0,
-            segments.index_select(0, opaque_pos),
+            gather_exact(segments, opaque_pos),
             opaque_pos.to(idx_dtype),
             reduce="amin",
             include_self=True,
@@ -2203,7 +2212,7 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         del opaque_pos, starts
         keep_end = torch.minimum(first_opaque, ends)
         del first_opaque, ends
-        keep = positions <= keep_end.index_select(0, segments)
+        keep = positions <= gather_exact(keep_end, segments)
         return keep
     from algan.rendering.raytracing.sheet_compact_taichi import opaque_prefix_keep
 
@@ -3633,7 +3642,11 @@ def _sheet_slice_bounds(coverage, c0, c1):
             )
         )
         positions = [c0, *range(c1, n, step), n]
-        known.update(zip(positions, so.index_select(0, index).tolist()))
+        # ``gather_exact``: an offset is a sheet position, past the 2**24 an
+        # MPS ``index_select`` carries once a chunk holds that many sheets, and
+        # a rounded bound would resolve a slice's edge sheets twice or not at
+        # all.
+        known.update(zip(positions, gather_exact(so, index).tolist()))
     return int(known[c0]), int(known[c1])
 
 

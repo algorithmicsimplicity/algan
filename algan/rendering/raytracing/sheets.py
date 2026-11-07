@@ -927,7 +927,8 @@ def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
     bands_per_group = torch.zeros(
         max(nb, 1), dtype=torch.int64, device=new_group.device
     )
-    sheet_group = group_id.index_select(0, first_sorted)
+    # A group id, up to the fragment count: exact (``compact_sheets``, ``pix_o``).
+    sheet_group = gather_exact(group_id, first_sorted)
     del group_id
     bands_per_group.scatter_add_(0, sheet_group, torch.ones_like(sheet_group))
     tri_group = is_tri.index_select(0, order).index_select(0, first_sorted)
@@ -1367,7 +1368,9 @@ def _conflict_rank(band_start, order, msk, positions):
         for b in range(AA_NUM_SAMPLES):
             lane = (bits_pre >> b) & 1
             excl = torch.cumsum(lane, 0, dtype=torch.int32) - lane
-            prior = excl - excl.index_select(0, band_first)
+            # A prefix count reaches the fragment count, so it gathers exactly
+            # too: rounded, a rank counts another band's claimants as its own.
+            prior = excl - gather_exact(excl, band_first)
             del excl
             rank = torch.maximum(
                 rank, torch.where(lane > 0, prior, torch.zeros_like(prior))
@@ -1592,7 +1595,9 @@ def _rank_pool_groups(
         # reduction pass to pay for.
         return nb, None
     pool_of_cid = cid_band
-    pool_of_frag = pool_of_cid.index_select(0, band_of_frag)
+    # A band id, which passes 2**24 once a chunk holds that many bands, so it
+    # gathers exactly (``compact_sheets``, ``pix_o``).
+    pool_of_frag = gather_exact(pool_of_cid, band_of_frag)
     area, union, _fused, _sliver = _band_reduce(
         pool_of_frag, msk_o, cov_o, n_pool, want_sliver=False
     )
@@ -1922,8 +1927,15 @@ def _sample_depth_lose_reference(
     enf = enforcer.nonzero(as_tuple=True)[0]
     if int(enf.numel()) > 0:
         lanes = torch.arange(AA_NUM_SAMPLES, device=device)
+        # The (pixel, sample) keys and the pixel ids they are built from gather
+        # exactly (``compact_sheets``, ``pix_o``). A key is ``pixel * 8 +
+        # lane``, so it passes 2**24 within a single 4K frame, past where an
+        # MPS ``index_select`` carries an integer: rounded, a sample's key
+        # matches its neighbour's, and a subject is judged against another
+        # sample's enforcer (on a real frame in a 4K window, 41 of 2394 sheets'
+        # lose words moved).
         epk = (
-            sheet_pix.index_select(0, enf).unsqueeze(1) * AA_NUM_SAMPLES
+            gather_exact(sheet_pix, enf).unsqueeze(1) * AA_NUM_SAMPLES
             + lanes.view(1, -1)
         ).reshape(-1)
         edepth = sample_depths.index_select(0, enf).reshape(-1)
@@ -1934,7 +1946,7 @@ def _sample_depth_lose_reference(
             .reshape(-1)
         )
         ord_e = _lexsort(epk, edepth)
-        epk = epk.index_select(0, ord_e)
+        epk = gather_exact(epk, ord_e)
         edepth = edepth.index_select(0, ord_e)
         esid = esid.index_select(0, ord_e)
         del ord_e
@@ -1964,7 +1976,7 @@ def _sample_depth_lose_reference(
         del new_group_e, epk, edepth, esid
         qpk = (sheet_pix.unsqueeze(1) * AA_NUM_SAMPLES + lanes.view(1, -1)).reshape(-1)
         loc = torch.searchsorted(uniq_pk, qpk).clamp_max(int(uniq_pk.numel()) - 1)
-        found = uniq_pk.index_select(0, loc) == qpk
+        found = gather_exact(uniq_pk, loc) == qpk
         bd = best_d.index_select(0, loc)
         bsid = best_sid.index_select(0, loc)
         sd = sec_d.index_select(0, loc)
@@ -2711,8 +2723,20 @@ def compact_sheets(
             order, pix, gkey, t, frag_cov, frag_msk, memory=memory
         )
     else:
-        pix_o = pix.index_select(0, order)
-        g_o = gkey.index_select(0, order)
+        # ``gather_exact`` for the pixel ids and the group keys: MPS's
+        # ``index_select`` returns an integer as ``float32(value)``, exact only
+        # through 2**24 (``mps_compat._MPS_EXACT_INT_BITS``). A pixel id is
+        # chunk-relative, ``frame * width * height + pixel``, so it passes that
+        # from a chunk's ninth 1080p frame or its third 4K one, and a bezier
+        # group key, ``-(position + 2)``, once a stream holds 2**24 fragments.
+        # Rounded, neighbouring pixels read as one: their fragments group into
+        # one band, the ceiling spends one allowance across both, and the
+        # sheets are filed under the wrong pixel (a real frame's fragments in
+        # a chunk's third 4K frame: 518 of 1065 pixels' sheet offsets moved).
+        # The depths are floats and gather exactly. Off MPS-friendly mode this
+        # is ``index_select``.
+        pix_o = gather_exact(pix, order)
+        g_o = gather_exact(gkey, order)
         t_o = t.index_select(0, order)
         new_group = torch.ones(n, dtype=torch.bool, device=device)
         if n > 1:
@@ -3113,8 +3137,11 @@ def compact_sheets(
         del cls_o
         sheet_band = torch.arange(nb, dtype=torch.int64, device=device)
     elif shade_split:
+        # Group ids, like the band and sheet ids below, count up to the
+        # stream's fragment count, so past 2**24 they gather exactly too
+        # (``pix_o``).
         band_of_frag = (
-            band_id if group_of_cid is None else group_of_cid.index_select(0, band_id)
+            band_id if group_of_cid is None else gather_exact(group_of_cid, band_id)
         )
         band_area, band_union, band_corr, band_split = _band_composite(
             band_of_frag, n_group, cov_o, msk_o
@@ -3130,9 +3157,7 @@ def compact_sheets(
         )
         del cls_eff
         sheet_band = (
-            sheet_cid
-            if group_of_cid is None
-            else group_of_cid.index_select(0, sheet_cid)
+            sheet_cid if group_of_cid is None else gather_exact(group_of_cid, sheet_cid)
         )
         del sheet_cid
     elif group_of_cid is not None:
@@ -3141,7 +3166,7 @@ def compact_sheets(
         # weights -- and the multi-sheet-band exemption below -- exactly as
         # they were.
         band_area, band_union, band_corr, _split = _band_composite(
-            group_of_cid.index_select(0, band_id), n_group, cov_o, msk_o
+            gather_exact(group_of_cid, band_id), n_group, cov_o, msk_o
         )
         del _split
         sheet_band = group_of_cid
@@ -3211,13 +3236,16 @@ def compact_sheets(
             bool(positioned_depth),
             template_dtype(ti.i32),
         )
-        nearest_orig = pos_o.index_select(0, first_sorted)
-        sheet_pix = pix_o.index_select(0, first_sorted)
+        # Stream positions and pixel ids, both past 2**24 in a long chunk, so
+        # both gather exactly (``pix_o``): a rounded position names another
+        # fragment, whose key and record the sheet would then carry.
+        nearest_orig = gather_exact(pos_o, first_sorted)
+        sheet_pix = gather_exact(pix_o, first_sorted)
         if positioned_depth:
             has_pos = first_sorted_p < n
             # Each ``where`` writes over an input that dies with it, so the
             # fallback costs no table beyond the gather.
-            positioned = pos_o.index_select(0, first_sorted_p.clamp_max_(max(n - 1, 0)))
+            positioned = gather_exact(pos_o, first_sorted_p.clamp_max_(max(n - 1, 0)))
             nearest_orig = torch.where(
                 has_pos, positioned, nearest_orig, out=positioned
             )
@@ -3237,8 +3265,9 @@ def compact_sheets(
             0, band_id, positions_src, reduce="amin", include_self=True
         )
         first_sorted = first_sorted.to(torch.int64)
-        nearest_orig = pos_o.index_select(0, first_sorted)
-        sheet_pix = pix_o.index_select(0, first_sorted)
+        # Exact, as in the kernel arm above.
+        nearest_orig = gather_exact(pos_o, first_sorted)
+        sheet_pix = gather_exact(pix_o, first_sorted)
         min_pos = torch.full((nb,), n, dtype=idx_dtype, device=device)
         min_pos.scatter_reduce_(0, band_id, pos_src, reduce="amin", include_self=True)
         min_pos = min_pos.to(torch.int64)
@@ -3268,7 +3297,7 @@ def compact_sheets(
             has_pos = first_sorted_p < n
             nearest_orig = torch.where(
                 has_pos,
-                pos_o.index_select(0, first_sorted_p.clamp_max(max(n - 1, 0))),
+                gather_exact(pos_o, first_sorted_p.clamp_max(max(n - 1, 0))),
                 nearest_orig,
             )
             del first_sorted_p
@@ -3303,8 +3332,10 @@ def compact_sheets(
             nb,
             coverage.get("num_tri_fragments"),
         )
+        # A row is a triangle sheet's ordinal, so past 2**24 sheets it gathers
+        # exactly (``pix_o``).
         sample_depths = _lane_first_owners(
-            depth_row.index_select(0, band_id), msk_o, t_o, depth_rows, n
+            gather_exact(depth_row, band_id), msk_o, t_o, depth_rows, n
         )
     del t_o
     del positions, msk_o
@@ -3421,12 +3452,16 @@ def compact_sheets(
         sheet_cov_final = sheet_cov.index_select(0, final)
         # The union with the flags above it: exact, as ``msk_o`` is.
         sheet_msk_final = gather_exact(sheet_msk, final)
+        # A group id, a pixel id and a stream position: each exact, as
+        # ``pix_o`` is. ``rep_final`` picks the fragment whose ref, barycentrics
+        # and cap each sheet carries, so a rounded one gives a sheet a
+        # neighbouring fragment's record.
         sheet_band_final = (
-            sheet_band.index_select(0, final) if sheet_band is not None else None
+            gather_exact(sheet_band, final) if sheet_band is not None else None
         )
         sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
-        sheet_pix = sheet_pix.index_select(0, final)
-        rep_final = rep_orig.index_select(0, final)
+        sheet_pix = gather_exact(sheet_pix, final)
+        rep_final = gather_exact(rep_orig, final)
     # Everything read in sheet order has now been gathered into walk order;
     # the sheet-order copies go before the walk-order work below piles up.
     has_sheet_band = sheet_band is not None
@@ -3470,7 +3505,8 @@ def compact_sheets(
         nonareal_s = positioned_s & ((sheet_msk_final & AA_SLIVER_BIT) == 0)
         # The depth table's rows were assigned in sheet order; everything
         # below works in the final (walk) order, so its row map follows.
-        depth_row = depth_row.index_select(0, final)
+        # Exact, as above.
+        depth_row = gather_exact(depth_row, final)
         # Band identity and the multi-sheet-band exemption: a band split into
         # siblings (shade-class split, conflict-rank split) claims against
         # band-pooled arithmetic whose single occlusion write ignores slots,
@@ -3486,7 +3522,8 @@ def compact_sheets(
             band_of_sheet = sheet_band_final
             n_bands = n_group
         else:
-            band_of_sheet = cid_band.index_select(0, final)
+            # A band id: exact past 2**24 bands, as ``pix_o`` is.
+            band_of_sheet = gather_exact(cid_band, final)
             n_bands = parents
         members = torch.zeros(n_bands, dtype=torch.int64, device=device)
         members.scatter_add_(

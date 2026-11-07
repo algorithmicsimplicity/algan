@@ -165,9 +165,15 @@ ALWAYS_PRE_PR = (
     # window, and a float32 spend over 2**24 rows.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_the_shell_ceiling_keeps_its_segments_past_the_mps_gather_ceiling",
     "tests/unit_tests/test_sheet_chain_kernels.py::test_the_float32_segment_prefix_finds_its_rows_past_the_mps_gather_ceiling",
-    # The same where it takes a render or a header past 2**24 words: four
-    # squares drawn as circuits 65,536 on, a near cut's mask word, the Bezier
-    # header's bin offsets, and the polylines' repeated run starts.
+    # The compaction keeps pixel ids exact past MPS's 2**24: a real frame's
+    # fragments in a chunk's third 4K frame, and the reference depth gate's
+    # sample keys inside one 4K frame.
+    "tests/unit_tests/test_sheet_chain_kernels.py::test_the_compaction_keeps_neighbouring_pixels_apart_past_the_mps_gather_ceiling",
+    "tests/unit_tests/test_sheet_chain_kernels.py::test_the_reference_depth_gate_keeps_its_samples_apart_in_a_4k_frame",
+    # More integer gathers MPS rounds past 2**24, where a test takes a render
+    # or a header past 2**24 words: four squares drawn as circuits 65,536 on,
+    # a near cut's mask word, the Bezier header's bin offsets, and the
+    # polylines' repeated run starts.
     "tests/unit_tests/test_mps_fragment_refs.py::test_circuits_past_the_65536th_render_as_they_do_with_small_ids",
     "tests/unit_tests/test_sheet_route_former_vetoes.py::test_a_near_cut_mask_word_survives_the_mps_integer_gather",
     "tests/unit_tests/test_bezier_header_mps_gather.py::test_bin_offsets_past_the_ceiling_survive_the_mps_integer_gather",

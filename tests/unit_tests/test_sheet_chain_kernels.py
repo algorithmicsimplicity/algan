@@ -39,6 +39,7 @@ from algan.rendering.raytracing.raster_pipeline import (
     _class_pairs_flat,
     raster_chunk,
 )
+from algan.rendering.raytracing.raster_taichi import _AA_LOSE_SHIFT as AA_LOSE_SHIFT
 from algan.rendering.raytracing.raster_taichi import _AA_MASK_ALL as MASK_ALL
 from algan.rendering.raytracing.sheet_compact_taichi import (
     SHELL_SPEND_ONE,
@@ -471,24 +472,29 @@ def cubes_in_a_4k_window():
     return _in_a_4k_window(_captured_compaction(_two_overlapping_cubes_and_a_pane))
 
 
-def _in_a_4k_window(call):
-    """The captured compaction, its pixels moved into a window of a 4K frame.
+def _in_a_4k_window(call, frame=0):
+    """The captured compaction, its pixels moved into a window of a 4K frame:
+    the chunk's first frame, or with ``frame`` a later one.
 
     ``compact_sheets`` reads a pixel id only to find its frame and to group by
     it, and the band rule reads per-frame tables rather than pixel coordinates,
     so this changes the ids and nothing else. That is the point: the ceiling
     keys each fragment by ``pixel * (surface_bound + 2) + surface``, which here
-    passes 2**24 with only two surfaces. The ids are computed on the CPU,
-    because MPS also rounds an int64 ``//`` (DESIGN_mps_support.md §2.3b).
+    passes 2**24 with only two surfaces, and a pixel id is chunk-relative,
+    ``frame * 3840 * 2160 + pixel``, so from the third frame on the ids
+    themselves pass it. A captured frame's tables have one row, which every
+    frame of the chunk reads. The ids are computed on the CPU, because MPS also
+    rounds an int64 ``//`` (DESIGN_mps_support.md §2.3b).
     """
     width = call["width"]
     coverage = dict(call["coverage"])
     n, covered = coverage["num_fragments"], coverage["num_covered"]
     x0, y0 = _WINDOW_ORIGIN
+    first = frame * _FRAME_4K[0] * _FRAME_4K[1]
 
     def place(pix):
         assert int(pix.max()) < width * call["height"], "one frame, not a chunk"
-        return (y0 + pix // width) * _FRAME_4K[0] + x0 + pix % width
+        return first + (y0 + pix // width) * _FRAME_4K[0] + x0 + pix % width
 
     key = coverage["frag_key"][:n]
     host = key.cpu()
@@ -553,11 +559,14 @@ def _rows_differing(a, b):
     return int(ne.reshape(ne.shape[0] if ne.dim() else 1, -1).any(1).sum())
 
 
-def _assert_same_sheets(got, want, *, bitwise, what):
+def _assert_same_sheets(
+    got, want, *, bitwise, what, exact=("sheet_key", "sheet_offsets")
+):
     """``got`` makes ``want``'s sheets: every output bit for bit, or, where the
     device sums in no fixed order or the arms add a segment's areas in a
-    different order, the same sheets with coverage within float32 noise.
-    Measured on the CPU, because an MPS tensor has no float64.
+    different order, the same sheets with coverage within float32 noise. Then
+    the outputs named in ``exact`` must still match bit for bit. Measured on
+    the CPU, because an MPS tensor has no float64.
     """
     got, want = (
         {k: v.cpu() if torch.is_tensor(v) else v for k, v in out.items()}
@@ -565,7 +574,7 @@ def _assert_same_sheets(got, want, *, bitwise, what):
     )
     assert set(got) == set(want), what
     assert got["num_sheets"] == want["num_sheets"], what
-    names = sorted(want) if bitwise else ["sheet_key", "sheet_offsets"]
+    names = sorted(want) if bitwise else list(exact)
     moved = []
     for name in names:
         a, b = got[name], want[name]
@@ -640,6 +649,138 @@ def test_the_shell_ceiling_keeps_its_segments_past_the_mps_gather_ceiling(
     bitwise = want["sheet_cov"].device.type == "cpu"
     _assert_same_sheets(got, exact, bitwise=bitwise, what="rounding the gathers moved")
     _assert_same_sheets(got, want, bitwise=False, what="the arms disagree on")
+
+
+# ------------------------- pixel ids past MPS's integer gather ceiling
+
+
+def _a_solid_a_glass_and_a_pane():
+    """An opaque cube and a translucent one passing through each other, and a
+    translucent pane in front of both. Besides two closed surfaces sharing
+    pixels and a circuit, the opaque cube makes full, material-opaque sheets:
+    the enforcers the sample-depth gate judges the glass's sheets against.
+    """
+    solid = Cube(size=3.0, color=RED, fill_opacity=1.0)
+    solid.rotate(30, UP).rotate(20, RIGHT).move_to((-0.7, 0.0, 0.0))
+    solid.spawn(animate=False)
+    glass = Cube(size=3.0, color=BLUE, opacity=0.5)
+    glass.rotate(-25, UP).rotate(15, RIGHT).move_to((0.8, 0.3, -0.5))
+    glass.spawn(animate=False)
+    pane = Square(size=3.0, color=GREEN, fill_opacity=0.4, stroke_width=0)
+    pane.move_to((0.0, -0.8, 2.0)).spawn(animate=False)
+
+
+@pytest.fixture(scope="module")
+def solid_and_glass():
+    """``_a_solid_a_glass_and_a_pane``'s compaction, as the renderer called it."""
+    return _captured_compaction(_a_solid_a_glass_and_a_pane)
+
+
+def _on_the_cpu(value):
+    """A captured compaction's arguments, every tensor in them on the CPU."""
+    if isinstance(value, dict):
+        return {k: _on_the_cpu(v) for k, v in value.items()}
+    return value.cpu() if torch.is_tensor(value) else value
+
+
+def _exact_and_rounded(monkeypatch, call, arms):
+    """``call`` compacted twice in MPS-friendly mode with ``arms`` set: on the
+    CPU with exact gathers, then where it lives with integer gathers rounding
+    as on MPS (``round_integer_gathers``). On MPS tensors they round of their
+    own accord too.
+    """
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    with EXPERIMENTAL.override(**arms):
+        want = _compact(_on_the_cpu(call), ceiling_kernel=True, pixel_sort=True)
+        round_integer_gathers(monkeypatch)
+        got = _compact(call, ceiling_kernel=True, pixel_sort=True)
+    return want, got
+
+
+_PIXEL_ARMS = {
+    "default": {},
+    "torch-band-stats": {"sheet_band_stats_kernel": False},
+    "reference-depth-gate": {"sheet_depth_reduce_kernel": False},
+}
+
+
+@pytest.mark.parametrize("arms", list(_PIXEL_ARMS.values()), ids=list(_PIXEL_ARMS))
+def test_the_compaction_keeps_neighbouring_pixels_apart_past_the_mps_gather_ceiling(
+    monkeypatch, solid_and_glass, arms
+):
+    """MPS's ``index_select`` returns an integer as ``float32(value)``, exact
+    only through 2**24 (``mps_compat._MPS_EXACT_INT_BITS``), and a pixel id
+    passes that in a chunk of a few frames: it is chunk-relative, ``frame *
+    width * height + pixel``, so a 4K chunk's ids pass it from its third frame
+    on (above that frame's bottom 49 pixel rows), and a 1080p chunk's from its
+    ninth (above the bottom 98). The compaction gathers pixel ids into its
+    sorted stream, onto its sheets and into walk order. Rounded, two
+    neighbouring pixels read as one: their fragments band together, the shell
+    ceiling spends one allowance across both, and the sheets are filed under
+    the wrong pixels.
+
+    A real frame's fragments, moved into the third frame of a 4K chunk
+    (``_in_a_4k_window``), in MPS-friendly mode: with integer gathers rounding
+    as on MPS, each arm must make the sheets it makes on the CPU with exact
+    ones. That holds only while every gather of a pixel id in the compaction
+    goes through ``gather_exact``. The stream positions and sheet ids here stay
+    far below 2**24, so this does not test their gathers. Run on MPS tensors
+    where MPS is the render device, and compared there with the integer
+    outputs bit for bit and the coverage within float32 noise.
+    """
+    call = _in_a_4k_window(solid_and_glass, frame=2)
+    coverage = call["coverage"]
+    ids = coverage["covered_idx"][: coverage["num_covered"]].cpu().to(torch.int64)
+    assert int(ids.min()) > 2**24, "a pixel id here is below 2**24"
+    merging = int((ids[1:].to(torch.float32) == ids[:-1].to(torch.float32)).sum())
+    assert merging > 0, (
+        "no two neighbouring pixels' ids round to one float32 here, so this "
+        "proves nothing"
+    )
+
+    want, got = _exact_and_rounded(monkeypatch, call, arms)
+
+    _assert_same_sheets(
+        got,
+        want,
+        bitwise=got["sheet_cov"].device.type == "cpu",
+        what="rounding the gathers moved",
+        exact=("sheet_key", "sheet_offsets", "sheet_pix", "sheet_nfrag"),
+    )
+
+
+def test_the_reference_depth_gate_keeps_its_samples_apart_in_a_4k_frame(
+    monkeypatch, solid_and_glass
+):
+    """The sample-depth gate's reference arm (``_sample_depth_lose_reference``,
+    taken with ``sheet_depth_reduce_kernel`` off) keys each enforcer's samples
+    by ``pixel * 8 + lane``. That passes 2**24 within a single 4K frame, above
+    its bottom quarter of pixel rows, and the arm sorted and searched the keys
+    through MPS's ``index_select``, which rounds an integer past 2**24
+    (``mps_compat._MPS_EXACT_INT_BITS``): a sample's key matched its
+    neighbour's, and a subject was judged against another sample's enforcer.
+
+    A real frame's fragments, moved into a 4K window, in MPS-friendly mode with
+    integer gathers rounding as on MPS: the gate must set the lose words it
+    sets on the CPU with exact gathers. Run on MPS tensors where MPS is the
+    render device.
+    """
+    call = _in_a_4k_window(solid_and_glass)
+    want, got = _exact_and_rounded(
+        monkeypatch, call, {"sheet_depth_reduce_kernel": False}
+    )
+
+    # The gate set lose bits, so the comparison is not vacuous.
+    lose = (want["sheet_msk"].cpu() >> AA_LOSE_SHIFT) & 0xFF
+    assert int((lose != 0).sum()) > 0, "no sheet lost a sample here"
+    _assert_same_sheets(
+        got,
+        want,
+        bitwise=got["sheet_cov"].device.type == "cpu",
+        what="rounding the gathers moved",
+        exact=("sheet_key", "sheet_offsets", "sheet_msk", "sheet_wmsk"),
+    )
 
 
 # ------------------------------------------------------- band stats fusion
