@@ -23,6 +23,17 @@ differ by rounding, and the nearer wall's repeat from the next grid cell then
 took the second slot, so the oriented wedge, handed one wall twice, left the
 corner a half-plane.
 
+With both walls, the wedge takes their intersection (a convex corner) or their
+union (a reflex one) from two side tests, each reading which way one wall
+leaves the apex against the other wall's line. A test whose closest point is
+the apex, with the pixel centre square to its wall there, cannot tell and
+abstains, and at a right angle that is exactly when the centre is on the other
+wall's line. An abstention used to hand the choice to parity at the pixel
+centre, which on that line is a rounding: a square whose edge ran through pixel
+centres drew pixels beside its corners fully covered where they are half, two
+on the CPU and those two and a third on the Apple GPU. The test that can tell
+now decides alone.
+
 ``analytic_aa_bez_anisotropic`` (``ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC``) is a
 ``ti.static`` gate, so one process exercises one arm: the render test asserts
 the default arm and is skipped under the other.
@@ -35,13 +46,15 @@ import pytest
 import torch
 from PIL import Image
 
+from algan import SETTINGS
 from algan.animation_timeline.animation_contexts import Off
-from algan.constants.color import BLACK, WHITE
+from algan.constants.color import BLACK, RED, WHITE
 from algan.constants.spatial import LEFT, OUT, RIGHT
+from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.shapes_2d import Line
 from algan.rendering.raytracing import settings as rt_settings
 from algan.scene import Scene
-from algan.settings.video_settings import LD
+from algan.settings.video_settings import LD, VideoSettings
 
 SMALL = (320, 180)
 SCALE = 4
@@ -186,4 +199,87 @@ def test_a_corner_keeps_both_walls_through_any_screen_map():
     assert repeated.numel() == 0, (
         f"one wall in both slots at {repeated.numel()} rotations, "
         f"from {float(repeated[0]):.3f} rad"
+    )
+
+
+#: A camera-facing square at z = 0, as (x, y, half side). At 320x180 the default
+#: camera puts 22.5 pixels on a unit and the origin at pixel (160, 90), y up, so
+#: its upright edges run down x = 56.5 and 128.5, through pixel centres, and the
+#: others along y = 65.25 and 137.25.
+PIXEL_CENTRE_SQUARE = (-3.0, 0.5, 1.6)
+PIXELS_PER_UNIT = 22.5
+
+
+def _square_outline(x, y, half):
+    """The square's outline as four straight cubic segments.
+
+    Built as ``test_mps_fragment_refs._square`` builds ``_SQUARES[0]``, where
+    the pixels below were found, so that every corner rounds to the same
+    float32: which side of an edge through pixel centres a centre falls on is a
+    rounding.
+    """
+    corners = torch.tensor(
+        [
+            [x - half, y - half, 0.0],
+            [x + half, y - half, 0.0],
+            [x + half, y + half, 0.0],
+            [x - half, y + half, 0.0],
+        ]
+    )
+    t = torch.tensor([0.0, 1 / 3, 2 / 3, 1.0]).view(1, 4, 1)
+    return (corners[:, None] * (1 - t) + corners.roll(-1, 0)[:, None] * t).reshape(
+        -1, 3
+    )
+
+
+def test_an_edge_through_pixel_centres_half_covers_its_pixels_up_to_the_corners():
+    """Every pixel on the square's boundary draws its exact area.
+
+    Beside each corner the upright edge's own side test reads convex and the
+    other wall's abstains. Parity then chose the union in image rows 43 and 44,
+    by the top right corner, on the CPU and on the Apple GPU, and on the Apple
+    GPU in row 113 as well, by the bottom right one: white where half covered,
+    255 against 187 (run 42371919983).
+
+    The boundary's pixels are the stroke's white over the black background, so
+    each one's linear value is its coverage.
+    """
+    if rt_settings.analytic_aa_bez_mode() != 3:
+        pytest.skip("the corners are drawn without the wedge in this arm")
+    # The raster path, where a circuit's coverage is ``_bez_pixel_hit``'s.
+    SETTINGS.raytracing.set(shadows=False, samples_per_pixel=1)
+    SETTINGS.raytracing.experimental.hybrid_raster = True
+    x, y, half = PIXEL_CENTRE_SQUARE
+    video = VideoSettings(resolution=SMALL, frames_per_second=10, supersampling=1)
+    with Scene(video_settings=video) as scene:
+        with Off():
+            scene.set_background(BLACK)
+            BezierCircuitCubic.from_batches(
+                [_square_outline(x, y, half)],
+                color=RED,
+                stroke_width=3,
+                stroke_color=WHITE,
+            ).spawn(animate=False)
+        frames = scene.get_frames(0, 1, post_processes=())
+        frame = torch.cat([f.cpu() for f in frames])[0].numpy()
+    drawn = _linear(frame)
+
+    width, height = SMALL
+    left, right = (width / 2 + PIXELS_PER_UNIT * (x + s * half) for s in (-1, 1))
+    foot, top = (height / 2 + PIXELS_PER_UNIT * (y + s * half) for s in (-1, 1))
+    column = np.arange(width)
+    # Image rows run down from the top; the square's rows count up from the foot.
+    row_up = height - 1 - np.arange(height)
+    across = np.clip(np.minimum(column + 1, right) - np.maximum(column, left), 0, 1)
+    up = np.clip(np.minimum(row_up + 1, top) - np.maximum(row_up, foot), 0, 1)
+    area = up[:, None] * across[None, :]
+    rim = (area > 0) & (area < 1)
+    err = np.abs(drawn - area[..., None]).max(-1)
+    off = np.argwhere(rim & (err > 0.02))
+    assert len(off) == 0, (
+        f"{len(off)} of {int(rim.sum())} boundary pixels off: "
+        + ", ".join(
+            f"({c}, {r}) {frame[r, c, 0]} drawn for area {area[r, c]:.3f}"
+            for r, c in off[:6]
+        )
     )

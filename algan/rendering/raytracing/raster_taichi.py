@@ -2547,9 +2547,24 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                                                         + n1y * e2y)
                                     uni = ti.math.clamp(
                                         a1 + a2 - inter, 0.0, 1.0)
-                                    if (s1 < 0.0) and (s2 < 0.0):
+                                    # A side test left at 0.0 abstains, and
+                                    # the other one decides alone; parity
+                                    # arbitrates only when both abstain or
+                                    # the two disagree. At a right angle a
+                                    # wall abstains exactly when the centre
+                                    # sits on the OTHER wall's line, which is
+                                    # where parity cannot arbitrate: ``b1p``
+                                    # or ``b2p`` is 0 or a rounding either
+                                    # side of it. A square whose edge ran
+                                    # through pixel centres drew pixels by
+                                    # its corners fully covered where they
+                                    # are half (320x180: two on the CPU, and
+                                    # those and a third on the Apple GPU).
+                                    if (s1 <= 0.0) and (s2 <= 0.0) \
+                                            and (s1 + s2 < 0.0):
                                         c = uni
-                                    elif not ((s1 > 0.0) and (s2 > 0.0)):
+                                    elif not ((s1 >= 0.0) and (s2 >= 0.0)
+                                              and (s1 + s2 > 0.0)):
                                         ci = (crossings % 2) == 1
                                         in_i = (b1p < 0.0) and (b2p < 0.0)
                                         in_u = (b1p < 0.0) or (b2p < 0.0)

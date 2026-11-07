@@ -10,7 +10,9 @@ lost to a truncated write). Validates, without a render:
      STORED inward normals via the parity-agreement +/- turn rule (the exact
      logic ``_bez_pixel_hit``'s wedge branch applies), against brute-force
      point sampling of the true polygon. This is the configuration the ss21.6
-     handedness calibration failed on (plain square 0.1093 -> 0.2467).
+     handedness calibration failed on (plain square 0.1093 -> 0.2467). 2b
+     adds right-angle corners whose pixel centre is on one wall's line, where
+     the other wall's side test abstains and parity is a rounding.
   3. SIGMA: ``_circuit_edge_inward_signs`` on synthetic contours -- squares of
      both windings, a ring with a hole (both winding conventions), sub-pixel
      stems, and a self-intersecting bowtie -- asserting the definitional
@@ -146,8 +148,10 @@ def wedge_model(n1, cp1, d1, n2, cp2, d2, centre_inside, ti_area):
     (``q1`` the closest point on wall 1, ``apex`` the line intersection)
     reads convex (>0) or reflex (<0) directly -- and when the closest point
     IS the apex (the query sits past the corner), the clamped-endpoint sign
-    ``cp . d`` says which way the segment leaves it instead. Parity agreement
-    remains the arbiter when both side tests are degenerate, and near-parallel
+    ``cp . d`` says which way the segment leaves it instead. A side test that
+    cannot tell (its closest point is the apex and the query is square to its
+    wall there) abstains with 0, and the other decides alone; parity agreement
+    is the arbiter only when both abstain or they disagree. Near-parallel
     walls are a strip: intersection unconditionally (ss21.6).
 
     Returns (coverage, tag) with tag in {"inter", "union", "single"}.
@@ -177,9 +181,9 @@ def wedge_model(n1, cp1, d1, n2, cp2, d2, centre_inside, ti_area):
 
     s1 = side(cp1, d1, n2)
     s2 = side(cp2, d2, n1)
-    if s1 > 0 and s2 > 0:
+    if s1 >= 0 and s2 >= 0 and s1 + s2 > 0:
         return inter, "inter"
-    if s1 < 0 and s2 < 0:
+    if s1 <= 0 and s2 <= 0 and s1 + s2 < 0:
         return uni, "union"
     in_i = (sd1 > 0) and (sd2 > 0)
     in_u = (sd1 > 0) or (sd2 > 0)
@@ -190,9 +194,8 @@ def wedge_model(n1, cp1, d1, n2, cp2, d2, centre_inside, ti_area):
     return inter, "inter"
 
 
-def part2():
-    print("2. corner coverage: parity-agreement wedge vs true polygon")
-    rng = np.random.default_rng(11)
+def _area_probe():
+    """``ti_area`` for ``wedge_model``: the kernel's clip areas, one pair a call."""
     h_one = np.zeros((1, 6), np.float32)
     out_one = np.zeros((1, 3), np.float32)
 
@@ -201,10 +204,58 @@ def part2():
         wedge_areas(h_one, out_one)
         return float(out_one[0, 0]), float(out_one[0, 1]), float(out_one[0, 2])
 
-    res = 128
+    return ti_area
+
+
+def _pixel_samples(res=128):
+    """Sample points over the pixel square, centred on the origin."""
     t = (np.arange(res) + 0.5) / res - 0.5
     gx, gy = np.meshgrid(t, t)
-    grid = np.stack((gx, gy), -1)
+    return np.stack((gx, gy), -1)
+
+
+def _corner_walls(poly):
+    """The corner's two walls as the kernel sees them, from the pixel centre.
+
+    Contour directions, stored inward signs from a probe just off each wall's
+    midpoint, and the closest point to the centre (the origin): one
+    ``(n, sd, d, cp, sg)`` per wall.
+    """
+    walls = []
+    for p0, p1 in ((poly[0], poly[1]), (poly[1], poly[2])):
+        d = p1 - p0
+        d = d / np.linalg.norm(d)
+        left = np.array([-d[1], d[0]])
+        mid = (p0 + p1) / 2
+        sg = 0.0
+        for eps in (0.05, 0.025, 0.0125):
+            pl = _point_in_poly((mid + eps * left)[None], poly)[0]
+            pr = _point_in_poly((mid - eps * left)[None], poly)[0]
+            if pl != pr:
+                sg = 1.0 if pl else -1.0
+                break
+        n = left * sg
+        # Closest point on the segment from the pixel centre (the query).
+        seg = p1 - p0
+        tt = np.clip(np.dot(-p0, seg) / np.dot(seg, seg), 0, 1)
+        cp = p0 + tt * seg  # centre is the origin
+        sd = -np.dot(n, cp)
+        walls.append((n, sd, d, cp, sg))
+    return walls
+
+
+def _is_reflex(apex, d_in, d_out, poly):
+    """Classify by the point just inside the wedge between the wall rays."""
+    w = -d_in + d_out
+    w = w / np.linalg.norm(w)
+    return not bool(_point_in_poly((apex + 0.05 * w)[None], poly)[0])
+
+
+def part2():
+    print("2. corner coverage: parity-agreement wedge vs true polygon")
+    rng = np.random.default_rng(11)
+    ti_area = _area_probe()
+    grid = _pixel_samples()
 
     worst = {"convex": 0.0, "reflex": 0.0}
     fell_back = 0
@@ -221,34 +272,8 @@ def part2():
         poly = _corner_polygon(apex, d_in, d_out)
         inside = _point_in_poly(grid, poly)
         true_cov = float(inside.mean())
-        # Classify by the point just inside the wedge between the wall rays.
-        w = -d_in + d_out
-        w = w / np.linalg.norm(w)
-        reflex = not bool(_point_in_poly((apex + 0.05 * w)[None], poly)[0])
-
-        # The two walls as the kernel sees them: contour directions, stored
-        # inward signs from a probe just off each wall's midpoint.
-        walls = []
-        for p0, p1 in ((poly[0], poly[1]), (poly[1], poly[2])):
-            d = p1 - p0
-            d = d / np.linalg.norm(d)
-            left = np.array([-d[1], d[0]])
-            mid = (p0 + p1) / 2
-            sg = 0.0
-            for eps in (0.05, 0.025, 0.0125):
-                pl = _point_in_poly((mid + eps * left)[None], poly)[0]
-                pr = _point_in_poly((mid - eps * left)[None], poly)[0]
-                if pl != pr:
-                    sg = 1.0 if pl else -1.0
-                    break
-            n = left * sg
-            # Closest point on the segment from the pixel centre (the query).
-            seg = p1 - p0
-            tt = np.clip(np.dot(-p0, seg) / np.dot(seg, seg), 0, 1)
-            cp = p0 + tt * seg  # centre is the origin
-            sd = -np.dot(n, cp)
-            walls.append((n, sd, d, cp, sg))
-        (n1, sd1, d1, cp1, sg1), (n2, sd2, d2, cp2, sg2) = walls
+        reflex = _is_reflex(apex, d_in, d_out, poly)
+        (n1, sd1, d1, cp1, sg1), (n2, sd2, d2, cp2, sg2) = _corner_walls(poly)
         if sg1 == 0.0 or sg2 == 0.0:
             fell_back += 1
             continue
@@ -272,6 +297,40 @@ def part2():
         f"     ({n_class['convex']} convex / {n_class['reflex']} reflex,"
         f" fell back on {fell_back})"
     )
+
+
+def part2b():
+    print("2b. right-angle corners with the pixel centre on one wall's line")
+    # The other wall's closest point is then the apex, square to the centre, so
+    # its side test abstains; the wall the centre is on reads the corner alone.
+    # Parity at the centre is a rounding on that line, so each corner runs with
+    # the centre counted inside and outside, and the answer may not depend on
+    # it. A square whose edge ran through pixel centres drew the pixels beside
+    # its corners fully covered where they are half while parity arbitrated.
+    ti_area = _area_probe()
+    grid = _pixel_samples()
+    worst = {"convex": 0.0, "reflex": 0.0}
+    for ang in np.linspace(0.0, 2 * np.pi, 24, endpoint=False):
+        d_in = np.array([np.cos(ang), np.sin(ang)])
+        for turn in (90.0, -90.0):
+            c, s = np.cos(np.deg2rad(turn)), np.sin(np.deg2rad(turn))
+            d_out = np.array([[c, -s], [s, c]]) @ d_in
+            # How far the apex is from the centre, along the wall it is on:
+            # 0.75 and 1.75 are the two pixels beside a corner on that line.
+            for ahead in (0.25, 0.75, 1.75):
+                # The centre on the incoming wall, then on the outgoing one.
+                for apex in (ahead * d_in, -ahead * d_out):
+                    poly = _corner_polygon(apex, d_in, d_out)
+                    true_cov = float(_point_in_poly(grid, poly).mean())
+                    key = "reflex" if _is_reflex(apex, d_in, d_out, poly) else "convex"
+                    (n1, _, d1, cp1, _), (n2, _, d2, cp2, _) = _corner_walls(poly)
+                    for centre_inside in (False, True):
+                        cov, _ = wedge_model(
+                            n1, cp1, d1, n2, cp2, d2, centre_inside, ti_area
+                        )
+                        worst[key] = max(worst[key], abs(cov - true_cov))
+    check(worst["convex"] < 0.08, f"convex corners, worst |err| {worst['convex']:.4f}")
+    check(worst["reflex"] < 0.08, f"reflex corners, worst |err| {worst['reflex']:.4f}")
 
 
 def _parity_torch(edges, q):
@@ -340,6 +399,7 @@ def part3():
 def main():
     part1()
     part2()
+    part2b()
     part3()
     print()
     if FAILS:
