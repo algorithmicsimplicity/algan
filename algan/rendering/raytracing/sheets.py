@@ -2205,11 +2205,14 @@ def _split_stroke_pixels(coverage, n, num_covered, compact_kwargs, resolve_only)
         split_gather_pixels(mixed, ends, run_offsets, num_covered, *frags, *sub_frags)
     else:
         torch.cumsum(counts[mixed_pix].to(torch.int32), 0, out=sub_offsets[1:])
-        seg = torch.repeat_interleave(
-            torch.arange(num_covered, dtype=torch.int64, device=device),
-            counts,
-            output_size=n,
-        )
+        # Each fragment's covered pixel, expanded from the counts alone. With
+        # an arange of the pixels as its values, repeat_interleave gathers
+        # them through ``index_select``, which on MPS rounds an ordinal past
+        # 2**24 (``mps_compat.repeat_interleave_exact``), and a chunk covering
+        # that many pixels has such ordinals: a fragment would be read as its
+        # neighbour pixel's and split to the wrong side. The counts alone come
+        # back as indices, exactly, and are the same tensor everywhere.
+        seg = torch.repeat_interleave(counts, output_size=n)
         in_mixed = mixed_pix.index_select(0, seg)
         midx = in_mixed.nonzero().squeeze(1)
         sidx = (~in_mixed).nonzero().squeeze(1)
@@ -2349,13 +2352,10 @@ def _interleave_split(
     """
     device = frags[0].device
     n = frags[0].shape[0]
-    num_covered = counts.numel()
     if seg is None:
-        seg = torch.repeat_interleave(
-            torch.arange(num_covered, dtype=torch.int64, device=device),
-            counts,
-            output_size=n,
-        )
+        # From the counts alone, as in ``_split_stroke_pixels``: exact on MPS
+        # past 2**24 covered pixels.
+        seg = torch.repeat_interleave(counts, output_size=n)
         sidx = (~mixed_pix.index_select(0, seg)).nonzero().squeeze(1)
 
     # Destinations: a stroke fragment keeps its place within its pixel; a
@@ -2369,11 +2369,9 @@ def _interleave_split(
         sub_nb = int(sub["num_sheets"])
         sub_sheet_offsets = sub["sheet_offsets"].to(torch.int64)
         sub_counts = sub_sheet_offsets[1:] - sub_sheet_offsets[:-1]
-        sheet_q = torch.repeat_interleave(
-            torch.arange(sub_counts.numel(), dtype=torch.int64, device=device),
-            sub_counts,
-            output_size=sub_nb,
-        )
+        # Each general-path sheet's triangle pixel, from the counts alone:
+        # exact past 2**24 such pixels, as ``seg`` is.
+        sheet_q = torch.repeat_interleave(sub_counts, output_size=sub_nb)
         mp_global = mixed_pix.nonzero().squeeze(1)
         dst_m = gather_exact(sheet_offsets, gather_exact(mp_global, sheet_q)) + (
             torch.arange(sub_nb, dtype=torch.int64, device=device)

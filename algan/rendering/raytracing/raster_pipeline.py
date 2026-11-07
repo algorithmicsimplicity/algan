@@ -541,8 +541,12 @@ def _class_pairs(mask, x0, x1, y0, y1, f, device):
     area = bw * bh
     nch = (area + (raster_chunk - 1)) // raster_chunk
     # Avoid an explicit GPU scalar read. repeat_interleave determines the
-    # dynamic output length; subsequent shape metadata is host-visible.
-    rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
+    # dynamic output length; subsequent shape metadata is host-visible. From
+    # the counts alone: an arange as the values would be gathered through
+    # ``index_select``, which on MPS rounds an ordinal past 2**24
+    # (``mps_compat.repeat_interleave_exact``), here a frame holding that many
+    # primitives of one class. The counts alone come back as indices, exactly.
+    rep = torch.repeat_interleave(nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
@@ -1556,7 +1560,10 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None, circuits
     bh = y1.reshape(-1)[idx] - by0 + 1
     area = bw * bh
     nch = (area + (raster_chunk - 1)) // raster_chunk
-    rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
+    # From the counts alone, as in ``_class_pairs``: a pair's ordinal here
+    # counts over every frame of the window, so it passes 2**24 once the
+    # window's frames hold that many candidate pairs.
+    rep = torch.repeat_interleave(nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
@@ -2186,9 +2193,11 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         or not kernel_extents_fit(num_frags)
     ):
         positions = torch.arange(num_frags, dtype=torch.int64, device=device)
-        segments = torch.repeat_interleave(
-            torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
-        )
+        # Each fragment's covered pixel, from the counts alone: an arange as
+        # the values would be gathered through ``index_select``, which on MPS
+        # rounds an ordinal past 2**24 (``mps_compat.repeat_interleave_exact``),
+        # and a chunk can cover that many pixels.
+        segments = torch.repeat_interleave(counts)
         starts = torch.cumsum(counts, 0) - counts
         ends = starts + counts - 1
         idx_dtype = reduction_index_dtype()
@@ -2381,9 +2390,9 @@ def _one_mesh_pixel_caps(
     idx_dtype = reduction_index_dtype()
     sid_all = tri_obj[frame_of, safe_ref].to(idx_dtype)
     del frame_of, safe_ref
-    seg = torch.repeat_interleave(
-        torch.arange(num_covered, dtype=torch.int64, device=device), counts
-    )
+    # Each fragment's covered pixel, from the counts alone: exact on MPS past
+    # 2**24 covered pixels, as in ``_opaque_prefix_keep``.
+    seg = torch.repeat_interleave(counts)
 
     def single_surface(sid_all, usable):
         sid = torch.where(usable, sid_all, torch.full_like(sid_all, -1))
