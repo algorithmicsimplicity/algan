@@ -476,11 +476,13 @@ def test_shell_table_keeps_surface_ids_past_2_24_apart_through_mps_unique(
 def test_shell_table_keeps_surface_ids_past_2_24_apart_on_the_device(monkeypatch):
     """The same, through the real op on an Apple GPU.
 
-    The device comes from ``torch.backends.mps.is_available()``, so any Apple
-    machine builds the table on its GPU; elsewhere this checks the CPU, where
-    ``unique`` was never wrong, and a green run there does not clear it.
+    The table is built on the GPU when MPS is the render device; elsewhere
+    this checks the CPU, where ``unique`` was never wrong, and a green run
+    there does not clear it. The build imports Metal storage, which needs the
+    torch the MPS arm installs (2.13), and the macOS CPU arm keeps the locked
+    2.7.1 (run 42382117024).
     """
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "mps" if SETTINGS.computing.render_device.type == "mps" else "cpu"
     monkeypatch.setattr(rt_settings, "solid_shell_alpha", True)
     monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
     SETTINGS.computing.set(mps_friendly=True)

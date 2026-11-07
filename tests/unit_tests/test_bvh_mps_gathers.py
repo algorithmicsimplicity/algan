@@ -18,8 +18,9 @@ Rounded, a range slides onto its neighbour's primitives and the tree loses
 some and holds others twice; a strip slides along its sliver or tests the
 wrong triangle. The CPU tests round the gathers as MPS does
 (``mps_rounding.round_integer_gathers``) and ask, in MPS-friendly mode, for
-exactly what the exact gathers give; the ``apple_gpu`` tests build on the
-Apple GPU whenever the machine has one.
+exactly what the exact gathers give. The ``apple_gpu`` tests build on the
+Apple GPU: the strips whenever the machine has one, and the BVH level when MPS
+is the render device.
 """
 
 import pytest
@@ -98,13 +99,19 @@ def test_a_bvh_level_keeps_its_ranges_past_the_ceiling(mps_friendly, monkeypatch
 
 
 def test_a_bvh_level_on_the_apple_gpu_keeps_its_ranges(mps_friendly):
-    """The same, built on the Apple GPU whenever the machine has one.
+    """The same, built on the Apple GPU when MPS is the render device.
 
     Both levels are built on the one device, so the two differ only in the
-    integer positions, never in how the device divides.
+    integer positions, never in how the device divides. Elsewhere this
+    compares the CPU with itself. The level step needs the torch the MPS arm
+    installs (2.13): the macOS CPU arm keeps the locked 2.7.1, whose MPS has no
+    int64 ``index_add_`` (run 42382117024), and Algan renders nothing on MPS
+    with that torch. The strips' plain ops run on 2.7.1's MPS too, so their
+    test below asks any Apple machine.
     """
-    want = _level(0, DEVICE)
-    got = _level(FIRST_ROUNDED, DEVICE)
+    device = "mps" if SETTINGS.computing.render_device.type == "mps" else "cpu"
+    want = _level(0, device)
+    got = _level(FIRST_ROUNDED, device)
     assert not _differences(got, want), _differences(got, want)
 
 

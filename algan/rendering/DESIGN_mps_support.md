@@ -1188,7 +1188,7 @@ section to update when one changes.
 | [42308885414](https://github.com/algorithmicsimplicity/algan/actions/runs/42308885414) (2026-11-06, cause O on an M2 Pro) | the split kernel test's 12 MPS cases failed, then passed twice; both split files 198 passed, 20 skipped with the kernel arm on and off |
 | [42329686918](https://github.com/algorithmicsimplicity/algan/actions/runs/42329686918) (2026-11-07, pixel ids and stream positions past 2**24, cause Q) | 5 failed, then 5 passed; the six related files 294 passed, 20 skipped; no default render on the runner plans a chunk past 2**24 pixels |
 | [42351444222](https://github.com/algorithmicsimplicity/algan/actions/runs/42351444222), [42355723203](https://github.com/algorithmicsimplicity/algan/actions/runs/42355723203), [42371919983](https://github.com/algorithmicsimplicity/algan/actions/runs/42371919983) (2026-11-07, `unique` past 2**24, cause U, and the GPU's extra sheets) | 8,192 values from 2**24 came back as 4,097; the device tests failed, then 46 passed; the related files 222 passed, 10 skipped; the 8 extra sheets trace to an ulp of the camera ray's direction, with fast math on or off |
-| [42351612808](https://github.com/algorithmicsimplicity/algan/actions/runs/42351612808), [42353661819](https://github.com/algorithmicsimplicity/algan/actions/runs/42353661819), [42355691483](https://github.com/algorithmicsimplicity/algan/actions/runs/42355691483), [42370277126](https://github.com/algorithmicsimplicity/algan/actions/runs/42370277126) (2026-11-07, the silent out-of-memory, cause X) | §4.10's header build reproduced at 7.26 G, two command buffers failed and 102,317,937 of 121,000,000 words wrong, with nothing raised; held to the working set it raised after 11.7 s at 4.42 G; the hold's tests failed 3, then 105 passed, 2 skipped; the heavy renders peaked the same with the hold on and off, and every frame matched |
+| [42351612808](https://github.com/algorithmicsimplicity/algan/actions/runs/42351612808), [42353661819](https://github.com/algorithmicsimplicity/algan/actions/runs/42353661819), [42355691483](https://github.com/algorithmicsimplicity/algan/actions/runs/42355691483), [42370277126](https://github.com/algorithmicsimplicity/algan/actions/runs/42370277126), [42372132733](https://github.com/algorithmicsimplicity/algan/actions/runs/42372132733), [42374877006](https://github.com/algorithmicsimplicity/algan/actions/runs/42374877006), [42378512143](https://github.com/algorithmicsimplicity/algan/actions/runs/42378512143), [42381446368](https://github.com/algorithmicsimplicity/algan/actions/runs/42381446368) (2026-11-07, the silent out-of-memory, cause X) | §4.10's header build reproduced at 7.26 G, two command buffers failed and 102,317,937 of 121,000,000 words wrong, with nothing raised; held to the working set it raised after 11.7 s at 4.42 G; the hold's tests failed 3, then 105 passed, 2 skipped; the heavy renders peaked the same with the hold on and off, and every frame matched; the unsynced BVH builds and an int32 sum that came back 0 were the same failure, one command buffer whose heaps came within 20 to 30 MiB of the working set |
 | [42352045841](https://github.com/algorithmicsimplicity/algan/actions/runs/42352045841), [42354063716](https://github.com/algorithmicsimplicity/algan/actions/runs/42354063716), [42356233755](https://github.com/algorithmicsimplicity/algan/actions/runs/42356233755), [42370479770](https://github.com/algorithmicsimplicity/algan/actions/runs/42370479770), [42372352869](https://github.com/algorithmicsimplicity/algan/actions/runs/42372352869) (2026-11-07, the BVH builders and the int64 extrema, causes R and T) | `index_select` of 1,048,576 range starts past 2**24 wrong for all; every int64 `amin`/`amax` scatter raised, one case to a process, flipping its output's sign bits, and a second failure left a process that aborted on its next new kernel; the new tests failed on the device, then 15 passed; a root level of 17,825,793 primitives built on the GPU is the CPU's; the fast render's frames matched before and after |
 | [42355084729](https://github.com/algorithmicsimplicity/algan/actions/runs/42355084729), [42357151096](https://github.com/algorithmicsimplicity/algan/actions/runs/42357151096) (2026-11-07, the stroke split's denormal area and the sheet areas' order, causes V and W) | the area tests failed 20 of 20, then passed 20 of 20; replays moved 6 to 12 of an HD frame's 168,675 sheets and 283 to 309 of a solids frame's 1,843,088, then none; the split's six MPS weight cases failed, then passed; the five related files 346 passed, 23 skipped |
 
@@ -1998,7 +1998,9 @@ frame measured has shown; and X needs a build larger than the runner's working
 set. As in §4.10, each fix
 has a test that fails without it, a gather's test emulates the rounding on the
 CPU (`tests/unit_tests/mps_rounding.py`), and a test of an op MPS gets wrong
-also runs that op on an Apple machine's GPU.
+also runs that op on the Apple GPU: on any Apple machine where the op runs
+under the macOS CPU arm's torch 2.7.1, and otherwise when MPS is the render
+device.
 
 **R: the BVH builders' positions past 2**24.** The torch BVH builder moves
 each level's ranges with integer gathers: a range's start and count are
@@ -2173,6 +2175,23 @@ were no slower, and every frame was identical (run 42370277126).
 that fails, and on the MPS arm that a render job cannot allocate past the
 working set and can again after it.
 
+Two more silent failures seen on 2026-11-07 were X as well. R's device BVH
+builds, run without a sync after each op, went wrong where the same builds
+synced after each op were the CPU's: a build of 1M primitives raised `index 4
+is out of bounds` at 6.06 G (run 42356233755), and the level of 17,825,793
+`index 17825793 is out of bounds` at 6.28 G. Committed after every op without
+waiting, both were right even at 7.01 G, since no one command buffer then
+needs that much resident, and under the hold the 1M build is right and the
+level raises "MPS backend out of memory" (run 42374877006). And an int32 sum
+that returned 0 at 0.9 working sets (run 42353661819) was one command buffer
+reading 17 buffers of 256 MiB whose 1 GiB heaps came to 1.07 working sets;
+each sum alone was right (run 42372132733). What fails is one command buffer
+whose heaps come within 20 to 30 MiB of the working set: an add over
+exact-size heaps was right at 0.994 working sets and wrong from 0.996 (run
+42381446368). No default render reaches the BVH case, since the torch builder
+runs on MPS only for a deferred tree of more than 8,192 columns, in a scene
+that builds BVHs, and it needs about 1M primitives on this runner.
+
 **The GPU's extra circuit sheets are not a defect.** L's frame makes 2,063
 sheets on the GPU and 2,055 on the CPU because the raster keeps 8 more
 fragments there. In column 30 the front circuit's coverage is 0.9999976 on
@@ -2203,20 +2222,20 @@ measurement:
   MPS-friendly mode, so with `ALGAN_MPS_FRIENDLY=0` on an MPS device every
   site of §4.9 to §4.11 rounds again. T's route also checks the device and
   stays exact.
-* Run unsynced on the GPU, the level of 17,825,793 primitives that R's fix
-  builds exactly with a sync after each op raised `index 17825793 is out of
-  bounds` at 6.28 GiB on the driver (runs 42370479770 and 42372352869), and a
-  full build of 1M primitives, no value of which passes 2**24, raised the same
-  way (run 42356233755). So it is not R's rounding.
-* An int32 sum over 64M-element MPS buffers returned 0, with no error, at 0.9
-  working sets (run 42353661819).
+* X's hold checks torch's requests, and Metal fails on heaps. A request of
+  10 MiB to 512 MiB that finds no room opens a new 1 GiB heap, so under the
+  hold the device can sit up to 1 GiB past the working set, and a command
+  buffer that reads most of it fails silently: under the hold, 17 buffers of
+  256 MiB were allowed, and one add over all 17 came back wrong in every
+  buffer (run 42374877006). Holding at the working set less 1088 MiB closed
+  the worst case measured (run 42381446368), at the cost of 1.06 GiB before
+  torch refuses, and the 1M device BVH build, right at the working set,
+  raises under it.
 * X's hold is torch's alone. Torch counts the whole device, the native arena,
   Quadrants' buffers and MPSGraph's included, but refuses only its own
   allocations, and pressure from elsewhere below the limit stays silent:
   only torch or Quadrants reading a command buffer's status would catch it.
-  Torch checks a request before carving it from heaps of up to 1 GiB, so the
-  device can end a little past the limit (5.00 G against 4.67 G). A fraction
-  a user set at runtime is replaced during a render, and the release writes
+  A fraction a user set at runtime is replaced during a render, and the release writes
   torch's default of 1.7, since torch has no getter. Only render jobs are
   held.
 * A UHD render at the default host share (0.4 of RAM) raises
@@ -2230,6 +2249,12 @@ measurement:
   (M's noise).
 * `unique_consecutive` returns `int32(x)` as its values for an int64 of 2**31
   or more on MPS. No call site comes near that.
+* Under torch 2.7.1, the locked version the macOS CPU arm keeps, `unique_exact`
+  is not exact on MPS either: its values for int32 keys from 2**24 came back
+  wrong, and the BVH level step has no int64 `index_add_` there (run
+  42382117024). Algan renders nothing on MPS with that torch, so no MPS tensor
+  reaches either, and their device tests ask the GPU only when MPS is the
+  render device.
 * Arange expansions remain on the animation device, in
   `mobs/bezier_circuit.py`, `mobs/nonplanar_circuit.py`,
   `animation_timeline/timeline.py` and `animatable_base/mob_morph.py`. That

@@ -1048,12 +1048,16 @@ def test_the_exact_unique_is_exact_above_the_mps_ceiling(computing_settings):
     into 4097 (run 42351444222); the stable sort, the compares, the int32
     scan and the scatter this helper uses instead matched the CPU in the same
     run, from 0 to 2**62. Nothing in torch promises the sort stays exact, so
-    this asks the GPU whenever there is one. Like the gather guard above it
-    selects the device from ``torch.backends.mps``, so a green run off an
-    Apple machine does not clear it.
+    this asks the GPU, and a green run off the MPS arm does not clear it.
+
+    Unlike the gather guard above, it asks only when MPS is the render device.
+    The route is not exact on the MPS of torch 2.7.1, the locked version the
+    macOS CPU arm keeps: its values for int32 keys from 2**24 came back wrong
+    there (run 42382117024). Algan renders nothing on MPS with that torch, so
+    no MPS tensor ever reaches the route under it.
     """
     computing_settings.set(mps_friendly=True)
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "mps" if SETTINGS.computing.render_device.type == "mps" else "cpu"
     for dtype, base in (
         (torch.int32, 1 << 24),
         (torch.int32, (1 << 30) + 3),
