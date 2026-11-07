@@ -1630,11 +1630,16 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self._obj_keys = getattr(self, "_obj_ids_keys", None)
             numbering = "ids"
         elif counts:
+            # Each triangle's member, expanded from the counts alone. The form
+            # with an arange gathers it, and MPS's gather rounds an integer
+            # past 2**24 (mps_compat._MPS_EXACT_INT_BITS): past that many
+            # members an odd-numbered one would share its neighbour's id and
+            # be resolved as the same surface.
             self._rt_tri_obj = (
                 torch.repeat_interleave(
-                    torch.arange(len(counts), dtype=torch.int32, device=corners.device),
-                    torch.tensor(counts, dtype=torch.int64, device=corners.device),
+                    torch.tensor(counts, dtype=torch.int64, device=corners.device)
                 )
+                .to(torch.int32)
                 .view(1, -1)
                 .contiguous()
             )
@@ -2752,10 +2757,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             self._logical_pn_tri_obj_n = int(self._obj_ids_n)
             self._logical_pn_obj_src = "ids"
         elif counts_src:
+            # From the counts alone, as in ``_pack_projected_flat_geometry``.
             patch_source = torch.repeat_interleave(
-                torch.arange(len(counts_src), dtype=torch.int32, device=device),
-                torch.tensor(counts_src, dtype=torch.int64, device=device),
-            )
+                torch.tensor(counts_src, dtype=torch.int64, device=device)
+            ).to(torch.int32)
             self._logical_pn_tri_obj_n = len(counts_src)
             self._logical_pn_obj_src = "counts"
         else:
@@ -3708,10 +3713,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             forward.unsqueeze(-2),
         )  # [T, C, 3]
         num_segments = self.num_segments_per_object.to(corners.device).view(-1).long()
+        # From the counts alone, as in ``_sample_circuit_edges``.
         circuit_of_segment = torch.repeat_interleave(
-            torch.arange(num_segments.shape[0], device=corners.device),
-            num_segments,
-            output_size=corners.shape[-3],
+            num_segments, output_size=corners.shape[-3]
         )
         # [T, S, 3] * [1, S, 1] -> [T, S, 3], one displacement per segment.
         offset = direction[:, circuit_of_segment, :] * bias[..., circuit_of_segment, :]
@@ -3917,8 +3921,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         C = len(num_segments)
         # Every expansion below is given its output size, which the host
         # already holds or reads back once, rather than reading it back itself.
+        # Each segment's circuit, from the counts alone. The form with an
+        # arange gathers it, and MPS's gather rounds an integer past 2**24
+        # (mps_compat._MPS_EXACT_INT_BITS), which a circuit id passes once a
+        # batch holds that many circuits.
         circuit_of_segment = torch.repeat_interleave(
-            torch.arange(C, device=device), num_segments, output_size=corners.shape[1]
+            num_segments.long(), output_size=corners.shape[1]
         )
         # A redirected edge is an invisible fill closure only when the cubic's
         # true endpoint and the selected next cubic's start are discontinuous.
@@ -3945,7 +3953,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         needs_endpoint = (~connection_visible).any(0).long()
         verts_per_segment = num_samples + needs_endpoint
         V = int(verts_per_segment.sum())
-        vert_circuit = torch.repeat_interleave(
+        # Those ids spread over each segment's vertices, which gathers them, so
+        # through repeat_interleave_exact: rounded, a vertex would be placed in
+        # its neighbour circuit's plane.
+        vert_circuit = repeat_interleave_exact(
             circuit_of_segment, verts_per_segment, output_size=V
         )
 
@@ -4088,9 +4099,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         num_segments = self.num_segments_per_object.to(device).view(-1).long()
         C = num_segments.shape[0]
 
-        circuit_of_segment = torch.repeat_interleave(
-            torch.arange(C, device=device), num_segments, output_size=S
-        )
+        # From the counts alone, as in ``_sample_circuit_edges``: the frame
+        # bounds reduce each segment's box into this circuit, and a rounded id
+        # would leave an odd-numbered circuit past 2**24 with an empty box, so
+        # it would never be drawn.
+        circuit_of_segment = torch.repeat_interleave(num_segments, output_size=S)
 
         nsi = (
             self.next_segment_inds.to(device)

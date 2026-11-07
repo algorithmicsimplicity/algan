@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.environment import env_flag, env_int
-from algan.rendering.mps_compat import scatter_reduce_
+from algan.rendering.mps_compat import gather_exact, scatter_reduce_
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
@@ -868,7 +868,11 @@ def _split_promotable(
         reduce="amin",
         include_self=True,
     )
-    reps = promo_all.index_select(0, first_pos)  # [G] first triangle per group
+    # [G] first triangle per group. A triangle's position passes 2**24 in a
+    # primitive of that many triangles, where MPS's index_select would hand
+    # it back rounded and the group would take a neighbour's color and
+    # material, so it is gathered exactly.
+    reps = gather_exact(promo_all, first_pos)
     cmap_all = colors[:, reps, 0, :]  # [Tc, G, 5]
     e0 = extra[:, reps, :]  # [Te, G, W]
     mmap_all = torch.stack(

@@ -1994,8 +1994,12 @@ def _sample_depth_lose_reference(
             + lanes.view(1, -1)
         ).reshape(-1)
         edepth = sample_depths.index_select(0, enf).reshape(-1)
+        # The surface ids gather exactly too. They pass 2**24 once a scene
+        # holds that many surfaces, and rounded, two neighbouring surfaces
+        # share an id: an enforcer of the other one is taken for the subject's
+        # own surface, and the subject's own floor for another's.
         esid = (
-            sheet_sid.index_select(0, enf)
+            gather_exact(sheet_sid, enf)
             .unsqueeze(1)
             .expand(-1, AA_NUM_SAMPLES)
             .reshape(-1)
@@ -2003,7 +2007,7 @@ def _sample_depth_lose_reference(
         ord_e = _lexsort(epk, edepth)
         epk = gather_exact(epk, ord_e)
         edepth = edepth.index_select(0, ord_e)
-        esid = esid.index_select(0, ord_e)
+        esid = gather_exact(esid, ord_e)
         del ord_e
         new_group_e = torch.ones_like(epk, dtype=torch.bool)
         if epk.numel() > 1:
@@ -2012,7 +2016,7 @@ def _sample_depth_lose_reference(
         uniq_pk = epk[new_group_e]
         best_d = edepth[new_group_e]
         best_sid = esid[new_group_e]
-        diff_sid = esid != best_sid.index_select(0, grp)
+        diff_sid = esid != gather_exact(best_sid, grp)
         sec_d = torch.full(
             (int(uniq_pk.numel()),),
             float("inf"),
@@ -2034,7 +2038,7 @@ def _sample_depth_lose_reference(
         loc = torch.searchsorted(uniq_pk, qpk).clamp_max(int(uniq_pk.numel()) - 1)
         found = gather_exact(uniq_pk, loc) == qpk
         bd = best_d.index_select(0, loc)
-        bsid = best_sid.index_select(0, loc)
+        bsid = gather_exact(best_sid, loc)
         sd = sec_d.index_select(0, loc)
         own_here = (
             bsid == sheet_sid.unsqueeze(1).expand(-1, AA_NUM_SAMPLES).reshape(-1)
