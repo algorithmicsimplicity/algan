@@ -480,8 +480,10 @@ def unique_consecutive_exact(keys: torch.Tensor) -> tuple[torch.Tensor, torch.Te
     ``_MPS_EXACT_INT_BITS``. ``codex/metal-sheet-grouping`` reported MPSGraph's
     ``unique`` merging adjacent distinct keys above 2**24, which is the
     ``band_class_groups`` failure again: two sheets that differ only in their
-    low bits become one. That report is the branch's; it has not been
-    re-measured on an Apple GPU here.
+    low bits become one. On torch 2.13.0 the Mac runner measured ``unique``
+    doing that past 2**24, and ``unique_consecutive`` not doing it for the same
+    input (run 42329686918, ``DESIGN_mps_support.md`` §4.10); one input is not
+    a guarantee.
 
     So this never lets a key through anything that might round it. A group
     starts wherever a key differs from the one before it, and comparing two

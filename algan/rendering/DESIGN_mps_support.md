@@ -782,8 +782,13 @@ on this arm (§4.9).
 
 On torch 2.13.0, the version the MPS arm pins, the same probe found
 `torch.gather` exact (run 42226130722); `index_select` still rounds, at int32
-and int64 alike. The rule stands either way: `mps_compat.gather_exact` is the
-gather for such a value.
+and int64 alike, and so does `repeat_interleave(values, counts)`, which torch
+builds on it, while the counts-only form is exact (run 42305385094). That
+version's `//`, `%`, floor `div` and `remainder` came back exact past 2**24 at
+both widths, and `torch.unique` still merged distinct values (run
+42329686918). The rule stands either way: `mps_compat.gather_exact` is the
+gather for such a value, and `mps_compat.repeat_interleave_exact` the repeat
+(§4.10).
 
 `mps_compat.gather_packed_key` gathers with `v[i]`, which is one operation and
 exact. Two earlier forms are worth knowing about because they bound the problem:
@@ -1175,6 +1180,7 @@ section to update when one changes.
 | [42303270183](https://github.com/algorithmicsimplicity/algan/actions/runs/42303270183) (2026-11-06, cause M again) | 4 failed, then 4 passed; the four related files 207 passed, 20 skipped |
 | [42305385094](https://github.com/algorithmicsimplicity/algan/actions/runs/42305385094) (2026-11-06, cause N's intervals and polylines) | 6 failed, then 211 passed, 3 skipped — 789,747 interval offsets and 1,020,086 vertex numbers moved, then 0 |
 | [42308885414](https://github.com/algorithmicsimplicity/algan/actions/runs/42308885414) (2026-11-06, cause O on an M2 Pro) | the split kernel test's 12 MPS cases failed, then passed twice; both split files 198 passed, 20 skipped with the kernel arm on and off |
+| [42329686918](https://github.com/algorithmicsimplicity/algan/actions/runs/42329686918) (2026-11-07, pixel ids and stream positions past 2**24, cause Q) | 5 failed, then 5 passed; the six related files 294 passed, 20 skipped; no default render on the runner plans a chunk past 2**24 pixels |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1206,9 +1212,10 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | N | the Bezier header, its bin intervals and the polylines' run starts go through `index_select` | latent | 0 | **fixed** — §4.10 |
 | O | the stroke split's kernel arm scans an int32 layout torch 2.13's metallib lacks | latent | 0 | **fixed** — §4.10 |
 | P | the zero-copy cache's weakref callback waits on a lock its own thread holds | a hang | 0 | **fixed** — §4.10 |
+| Q | a pixel id or stream position past 2**24, from a 4K chunk's third frame, goes through `index_select` | latent | 0 | **fixed** — §4.10 |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
-**L to P failed no weekly run.** L, M and N were found by reading for J's
+**L to Q failed no weekly run.** L, M, N and Q were found by reading for J's
 pattern after §4.9, and O and P by putting the stroke split's kernel arm on
 the Apple GPU. Each was made to fail there before it was fixed (§4.10).
 
@@ -1762,20 +1769,21 @@ Runs 42226130722, 42232166078 and 42236806653 put the four affected files on
 this arm with the fixes in: 6, 9 and 186 passed (20 skipped, as on master), and
 the 320x180 frame's split and unsplit compactions agree row for row.
 
-### 4.10 What J's pattern still reached: refs, the ceiling's keys, the Bezier header, a scan, and a deadlock
+### 4.10 What J's pattern still reached: refs, the ceiling's keys, the Bezier header, pixel ids, a scan, and a deadlock
 
 §4.9 made every gather of a mask word exact. The renderer was then read for
 the rest of that pattern, an integer that can pass 2**24 going through
 `index_select` or through an op torch builds on it, and every site found was
-put on the Apple GPU before and after its fix (§4.1, 2026-11-06). Three more
-causes were gathers (L, M, N). Running the stroke split's kernel arm on the
-GPU found a scan torch 2.13 cannot run there (O), and a hang in one of those
-runs was a deadlock in the zero-copy cache (P). None of them failed a weekly
-run, each for its own reason: L needs a batch of 65,536 circuits, which no
-test drew; M and O sit behind settings whose defaults avoid them
+put on the Apple GPU before and after its fix (§4.1, 2026-11-06 and 07). Four
+more causes were gathers (L, M, N, Q). Running the stroke split's kernel arm
+on the GPU found a scan torch 2.13 cannot run there (O), and a hang in one of
+those runs was a deadlock in the zero-copy cache (P). None of them failed a
+weekly run, each for its own reason: L needs a batch of 65,536 circuits,
+which no test drew; M and O sit behind settings whose defaults avoid them
 (`sheet_shell_ceiling_kernel` on, `sheet_split_kernel_mps` off); N's code runs
-on the CPU on a Mac's default route; and P needs an imported tensor freed by
-the cyclic garbage collector, which a failing MPS test arranges. Each fix has
+on the CPU on a Mac's default route; P needs an imported tensor freed by the
+cyclic garbage collector, which a failing MPS test arranges; and Q needs a
+chunk of more than 2**24 pixels, which the runner never plans. Each fix has
 a test that fails without it. Where the defect is a gather the test emulates
 the rounding on the CPU (`tests/unit_tests/mps_rounding.py`), and when MPS is
 the render device it runs on MPS tensors too.
@@ -1881,6 +1889,41 @@ own work.
 frees an owner under the lock in a subprocess, which hung before the fix and
 evicts it after.
 
+**Q: pixel ids and stream positions past 2**24.** A fragment's pixel id is
+chunk-relative, frame * width * height + pixel, so it passes 2**24 from a 4K
+chunk's third frame and a 1080p chunk's ninth, and the compaction gathered
+pixel ids through `index_select` on the default route: into the sorted
+stream (`pix_o`), onto the sheets (`sheet_pix`) and into walk order. The
+reference depth gate's sample keys, pixel * 8 + lane, pass 2**24 inside one
+4K frame. On the Apple GPU a real 96x54 frame's fragments, moved into a 4K
+chunk's third frame, lost their pixel boundaries in all three arms of the
+compaction: of 2,394 sheets, 513 pixels' sheet offsets, 1,207 sheets' pixels
+and 39 sheets' coverage (by up to 0.43) moved (run 42329686918). Seven sites
+also spread an arange over runs with `repeat_interleave(values, counts)`,
+which rounds the same way (34,044 of 17,498,962 values in that run), and the
+opaque-prefix truncation's torch arm moved 65,536 of its 16,908,289 keep
+flags. Every integer gather of a pixel id, a stream position, or a band,
+group or sheet id in `compact_sheets` and its helpers, and in
+`raster_pipeline`'s `_exact_fragment_order` fallback, `_opaque_prefix_keep`
+and `_sheet_slice_bounds`, is `gather_exact` now. The seven repeats take
+`repeat_interleave(counts)`, which is the arange gathered by those indices,
+and exact. Default renders did not get there on the runner: its 1.2 GB arena
+plans one 4K frame per chunk and at most seven of 1080p, so the largest
+pixel id was 14,462,004 and the longest stream 8,084,938 fragments, and every
+frame matched a render in one-frame chunks. A Mac with 16 GB or more gets the
+largest arena MPS allows, 2**31 - 2**20 bytes
+(`memory_utils._MPS_MAX_ARENA_BYTES`), and there the memory model plans 12
+frames of a light 1080p scene, pixel ids to 24.9 million, while 4K stays at
+two frames, 188,416 ids short. So Q is live for a light 1080p scene on such
+a Mac when it goes through `compact_sheets`: the stroke-only explainer, the
+measured scene that plans that many frames, persists its sheets by a path
+with no rounding op. The tests are
+`test_sheet_chain_kernels.py::test_the_compaction_keeps_neighbouring_pixels_apart_past_the_mps_gather_ceiling`
+and `::test_the_reference_depth_gate_keeps_its_samples_apart_in_a_4k_frame`,
+and `test_sheet_compaction.py::test_the_opaque_prefix_keeps_each_pixels_own_past_2_24_covered_pixels`.
+The stream-position gathers are fixed but untested: they pass 2**24 only in a
+stream of that many fragments.
+
 **Seen and not chased**, recorded so the next reader starts from the
 measurement:
 
@@ -1902,3 +1945,12 @@ measurement:
   and `stbvh.py`'s slot ids (line 418), and the id expansions in
   `refit_bvh.py` (line 253) and `sliver_split.py` (line 137). None was
   measured.
+* `torch.unique` merges distinct values past 2**24 on torch 2.13.0: 2,010,925
+  of 2,091,233 came back (run 42329686918). In the renderer it is reachable
+  on MPS only in `_sheet_rank_groups`' torch arm, whose key reaches 2**25 in a
+  4K frame, and MPS takes the kernel arm by default.
+* An int64 `scatter_reduce_` amin or amax raises on MPS, as §2.3 found (the
+  renderer reduces in int32 there, §1.2), and it then poisons the process:
+  every new MPS kernel after it failed the same way, and the process died in
+  an MPSLibrary `gatherND_base` assertion (run 42329686918). A probe should
+  measure it last, or in a process of its own.
