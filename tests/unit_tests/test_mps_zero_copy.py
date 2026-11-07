@@ -23,8 +23,12 @@ annotations into strings, and Taichi reads them raw
 """
 
 import gc
+import subprocess
+import sys
 import weakref
+from pathlib import Path
 
+import pytest
 import torch
 
 from algan.rendering import mps_zero_copy
@@ -207,6 +211,70 @@ def test_clear_import_cache_is_safe_with_later_owner_finalizers():
 
     assert cache_stats() == (0, 0, 0)
     assert not mps_zero_copy._IMPORTS
+
+
+_CYCLED_OWNER_DIES_UNDER_THE_LOCK = """
+import gc
+
+import torch
+
+from algan.rendering import mps_zero_copy as z
+
+
+class Array:
+    pass
+
+
+class Storage:
+    def data_ptr(self):
+        return 1
+
+    def nbytes(self):
+        return 8
+
+
+key = ("cycled",)
+owner = torch.zeros(1)
+z._store_import(key, owner, Array(), Storage())
+cycle = {"owner": owner}
+cycle["self"] = cycle
+del owner, cycle
+with z._LOCK:
+    gc.collect()
+assert z.cache_stats() == (0, 0, 0), z.cache_stats()
+print("evicted")
+"""
+
+
+def test_an_owner_freed_while_the_cache_lock_is_held_is_evicted_without_deadlock():
+    """A tracked tensor that sits in a reference cycle dies in the cyclic
+    collector, and the collector runs on whatever allocation crosses its
+    threshold. On the Mac (run 42308885414) that was the ``weakref.ref``
+    ``_track_owner_locked`` allocates under the cache's lock: the dead owner's
+    callback ran on the thread holding that lock, waited for it, and never
+    returned. A failed MPS test leaves its tensors in cycles through its
+    traceback, so the next import hung the whole pytest session.
+
+    The child process holds the lock while the collector frees a cycled owner,
+    then needs the owner's entry gone once the lock is free. It runs apart
+    from this session so that a deadlock fails the test on the timeout
+    instead of hanging the suite.
+    """
+    root = Path(__file__).resolve().parents[2]
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", _CYCLED_OWNER_DIES_UNDER_THE_LOCK],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "the owner's eviction waited for the lock its own thread held: deadlock"
+        )
+    assert child.returncode == 0, child.stderr[-2000:]
+    assert child.stdout.strip().endswith("evicted")
 
 
 def test_a_shared_queue_launch_commits_torch_and_waits_on_nothing(monkeypatch):
