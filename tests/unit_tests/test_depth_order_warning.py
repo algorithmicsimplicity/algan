@@ -56,6 +56,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.rendering.raytracing import float32_rounding as fr
 from algan.rendering.raytracing import raster_pipeline
 from tests.unit_tests.distant_camera import pull_back
+from tests.unit_tests.mps_rounding import FIRST_ROUNDED, round_integer_gathers
 
 VIDEO = VideoSettings(resolution=(160, 90), frames_per_second=10, supersampling=1)
 #: ``pull_back(camera, 10000)``: the eye 16,000 units out, where depths are
@@ -209,6 +210,30 @@ def test_a_stream_without_pairs_reads_as_none():
         key[:1], ref[:1], cov[:1], owner_ids, shows, 16000.0, 0, ppf, 8, 1.0
     )
     assert empty[fr._D_COUNT] == 0
+
+
+def test_owners_past_2_24_stay_apart_through_the_mps_gather(monkeypatch):
+    """Two Mobs stay two where MPS's integer gather would round their ids.
+
+    The scan gathers each fragment's owner by its circuit. On an Apple GPU an
+    integer ``index_select`` answers through a float32, so owners 2**24 + 3
+    and 2**24 + 4 would both read as 2**24 + 4, and the pairs between those
+    two Mobs would drop out as one Mob crossing itself.
+    """
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    SETTINGS.computing.set(mps_friendly=True)
+    full = 1.0 - 1e-6
+    key, ref, cov, owner_ids, shows, ppf = _stream(0)
+    expected = fr.depth_order_record(
+        key, ref, cov, owner_ids, shows, 16000.0, 7, ppf, 8, full
+    ).tolist()
+    assert expected[fr._D_COUNT] > 0, "the stream should hold pairs to find"
+    far = torch.where(owner_ids >= 0, owner_ids + FIRST_ROUNDED, owner_ids)
+    round_integer_gathers(monkeypatch)
+    record = fr.depth_order_record(
+        key, ref, cov, far, shows, 16000.0, 7, ppf, 8, full
+    ).tolist()
+    assert record == expected
 
 
 def test_what_a_circuit_draws_reads_alpha_glow_fill_and_border():

@@ -88,7 +88,7 @@ import torch.nn.functional as F
 
 from algan.errors import Float32PrecisionWarning, _user_stacklevel
 from algan.logging.logger import get_logger
-from algan.rendering.mps_compat import accumulate_dtype, clamp_floor
+from algan.rendering.mps_compat import accumulate_dtype, clamp_floor, gather_exact
 from algan.rendering.projection import effective_depth, projection_rows
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
 
@@ -953,7 +953,11 @@ def depth_order_record(
         pair &= flat[1:] & flat[:-1]
         code = (-ref.to(torch.int64) - 1).clamp_min(0)
         circuit = (code >> border_bits).clamp_max(last_circuit)
-        owner = owner_ids.index_select(0, circuit)
+        # An owner id is a Mob index, so it passes 2**24 only past 16.7M Mobs;
+        # exact anyway, since MPS answers an integer index_select through a
+        # float32 and two Mobs would then read as one (DESIGN_mps_support.md
+        # §2.3b).
+        owner = gather_exact(owner_ids, circuit)
         pair &= (owner[1:] != owner[:-1]) & (owner[1:] >= 0) & (owner[:-1] >= 0)
         frame = frame_start + torch.div(pixel, pixels_per_frame, rounding_mode="floor")
         full_share = (1 << border_bits) - 1
