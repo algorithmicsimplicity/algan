@@ -25,6 +25,17 @@ from algan.environment import (
 
 _warn_for_unknown_algan_environment_variables()
 
+# torch's MPS allocator reads its low watermark from the environment once, when
+# it starts, and a render's hold on it relies on that watermark being low (see
+# algan/utils/mps_low_watermark.py). Set here, before anything imports torch or
+# hands this script to a daemon: the daemon runs a script under the client's
+# environment, so the client's copy has to carry the value too.
+from algan.utils.mps_low_watermark import (
+    set_before_torch_starts as _set_mps_low_watermark,
+)
+
+_set_mps_low_watermark()
+
 # If a general daemon is running (`python -m algan.daemon`), hand this script
 # to it and exit with its result -- the point of the daemon is that a warm
 # process has already paid the ~7 s import and ~65 s of Taichi kernel
