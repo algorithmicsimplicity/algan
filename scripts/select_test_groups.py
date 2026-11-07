@@ -97,6 +97,20 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sheet_chain_kernels.py::test_shell_ceiling_clamp_reads_only_its_own_segment",
     "tests/unit_tests/test_stroke_sheets.py::test_stroke_pixel_split_holds_with_a_closed_solid",
     "tests/unit_tests/test_stroke_sheets.py::test_stroke_pixel_split_kernels_match_the_torch_arm",
+    # A fragment the ceiling does not clip comes back bit for bit, which on an
+    # Apple GPU it did not while the kernel divided it by its own area.
+    "tests/unit_tests/test_sheet_chain_kernels.py::test_solid_shell_ceiling_returns_what_it_does_not_clip_bit_for_bit",
+    # Integer gathers that MPS rounds past 2**24, with the rounding emulated on
+    # the CPU: a circuit's or triangle's ref through the compaction, its sample
+    # depth rule and the fragment gather; the Bezier header's bounds, bin sizes
+    # and intervals; and the advanced indexing ``gather_exact`` stands on.
+    "tests/unit_tests/test_mps_fragment_refs.py::test_circuit_refs_past_the_ceiling_leave_the_compaction_exact",
+    "tests/unit_tests/test_mps_fragment_refs.py::test_a_triangle_ref_past_the_ceiling_keeps_its_surface_in_the_sample_depth_rule",
+    "tests/unit_tests/test_mps_fragment_refs.py::test_the_fragment_gather_carries_refs_past_the_ceiling_exactly",
+    "tests/unit_tests/test_bezier_header_mps_gather.py::test_the_bounds_and_bin_sizes_survive_the_mps_integer_gather",
+    "tests/unit_tests/test_bezier_header_mps_gather.py::test_a_point_inside_a_circuit_reads_inside_through_the_mps_integer_gather",
+    "tests/unit_tests/test_bezier_header_mps_gather.py::test_the_bin_intervals_survive_the_mps_repeat_interleave",
+    "tests/unit_tests/test_mps_friendly.py::test_advanced_indexing_is_exact_above_the_mps_ceiling",
     # Which batches the sheet route takes, and which fall back.
     "tests/unit_tests/test_sheet_route_vetoes.py::",
     # The sheet route's tile out-of-memory retry: a stand-in arena, no kernel.
@@ -151,6 +165,20 @@ ALWAYS_PRE_PR = (
     # window, and a float32 spend over 2**24 rows.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_the_shell_ceiling_keeps_its_segments_past_the_mps_gather_ceiling",
     "tests/unit_tests/test_sheet_chain_kernels.py::test_the_float32_segment_prefix_finds_its_rows_past_the_mps_gather_ceiling",
+    # The same where it takes a render or a header past 2**24 words: four
+    # squares drawn as circuits 65,536 on, a near cut's mask word, the Bezier
+    # header's bin offsets, and the polylines' repeated run starts.
+    "tests/unit_tests/test_mps_fragment_refs.py::test_circuits_past_the_65536th_render_as_they_do_with_small_ids",
+    "tests/unit_tests/test_sheet_route_former_vetoes.py::test_a_near_cut_mask_word_survives_the_mps_integer_gather",
+    "tests/unit_tests/test_bezier_header_mps_gather.py::test_bin_offsets_past_the_ceiling_survive_the_mps_integer_gather",
+    "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_frame_local_edges_keep_their_slots_past_the_ceiling",
+    "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_the_vertex_parameters_survive_the_mps_repeat_interleave",
+    "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_the_cache_places_every_edge_past_the_ceiling",
+    # The zero-copy cache evicts an owner the garbage collector frees while its
+    # lock is held, instead of deadlocking: a subprocess, with a timeout.
+    "tests/unit_tests/test_mps_zero_copy.py::test_an_owner_freed_while_the_cache_lock_is_held_is_evicted_without_deadlock",
+    # The glossy pyramid's fused finish sums each texel in its launches' order.
+    "tests/unit_tests/test_glossy_fused_finish.py::test_the_fused_finish_matches_the_launches_it_replaces",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")
