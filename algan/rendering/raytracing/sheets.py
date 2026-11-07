@@ -1237,9 +1237,10 @@ def _popcount_lanes(bits):
 #: sheet_band_reduce_runs``) instead of in the order ``sheet_band_reduce``'s
 #: atomics land, which the GPU does not fix: a band of three or more
 #: fragments then rounds differently from one launch to the next. Float64
-#: arms never take it; their sums round to float32 identically in any order
-#: (the module docstring). Off restores the unordered atomics, which is what
-#: ``benchmarks/_sheet_area_replay.py`` flips to measure both in one process.
+#: arms never take it: their sums, rounded to float32, were measured stable
+#: from run to run (the module docstring). Off restores the unordered
+#: atomics, which is what ``benchmarks/_sheet_area_replay.py`` flips to
+#: measure both in one process.
 sheet_area_fixed_order = True
 
 

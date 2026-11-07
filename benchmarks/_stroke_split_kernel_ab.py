@@ -403,7 +403,8 @@ def _stroke_area_rule():
     """The stroke-pixel area rule on the render device against the CPU, over
     values a real area can take and a few it cannot: as the float add the
     stroke-only shortcut takes, ``(cov + 0.0).clamp_min_(0.0)``, and as the
-    bit rule both arms of the split take (``sheets._stroke_area_bits``). The
+    bit rule both arms of the split take, in the torch arm's spelling
+    (``sheets._stroke_area_bits``). The
     host's add is IEEE here, because this runs before the first render
     initializes Taichi, which turns flush-to-zero on for the thread.
     """

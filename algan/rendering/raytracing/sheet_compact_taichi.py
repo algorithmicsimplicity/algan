@@ -290,9 +290,10 @@ def split_merge_sheets(
     an add does not return those everywhere: a GPU's returns its one
     canonical NaN, flush-to-zero (which Taichi's initialization turns on for
     the CPU thread) turns a denormal into a zero of its sign, and on the
-    Apple GPU every float op measured, torch's and Metal's (an add, a max, an
-    atomic add), made a denormal a zero, where a copy kept its bits (run
-    42355084729, ``benchmarks/_mps_denormal_area_probe.py``).
+    Apple GPU every float op measured that ran, torch's and Metal's (an add,
+    a max, an atomic add; Metal compiled an ``x + 0.0`` away), made a
+    denormal a zero, where a copy kept its bits (runs 42355084729 and
+    42357151096, ``benchmarks/_mps_denormal_area_probe.py``).
     """
     for p in range(nc):
         hit = ti.cast(mixed[p], ti.i32)
