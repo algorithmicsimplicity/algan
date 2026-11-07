@@ -32,6 +32,7 @@ from algan.rendering.mps_compat import (
     clamp_floor,
     index_copy_rows,
     repeat_interleave_exact,
+    scatter_reduce_,
 )
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
@@ -4293,11 +4294,21 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         seg_hi = corners.amax(-2)
         Tb = seg_lo.shape[0]
         idx = circuit_of_segment.view(1, -1, 1).expand(Tb, -1, 3)
-        lo = torch.full((Tb, C, 3), EMPTY_LO, device=device).scatter_reduce_(
-            1, idx, seg_lo, "amin", include_self=True
+        lo = scatter_reduce_(
+            torch.full((Tb, C, 3), EMPTY_LO, device=device),
+            1,
+            idx,
+            seg_lo,
+            "amin",
+            include_self=True,
         )
-        hi = torch.full((Tb, C, 3), EMPTY_HI, device=device).scatter_reduce_(
-            1, idx, seg_hi, "amax", include_self=True
+        hi = scatter_reduce_(
+            torch.full((Tb, C, 3), EMPTY_HI, device=device),
+            1,
+            idx,
+            seg_hi,
+            "amax",
+            include_self=True,
         )
 
         fill_alpha = self._rt_circuit_colors.opacity.squeeze(-1).amax(

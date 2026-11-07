@@ -79,6 +79,7 @@ from algan.rendering.mps_compat import (
     kernel_index,
     mps_friendly,
     reduction_index_dtype,
+    scatter_reduce_,
     taichi_accumulate_dtype,
     unique_consecutive_exact,
 )
@@ -797,7 +798,7 @@ def _sheet_rank_groups(parent, rank, parents=None, deepest=None):
         if parents is None:
             parents = int(parent[-1]) + 1
         counts = torch.zeros(parents, dtype=torch.int32, device=parent.device)
-        counts.scatter_reduce_(0, parent, rank, reduce="amax", include_self=True)
+        scatter_reduce_(counts, 0, parent, rank, reduce="amax", include_self=True)
         counts.add_(1)
         ends = torch.cumsum(counts, 0, dtype=torch.int32)
         del counts
@@ -1310,7 +1311,8 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
     sliver = None
     if want_sliver:
         sliver = torch.zeros(nbands, dtype=torch.int32, device=device)
-        sliver.scatter_reduce_(
+        scatter_reduce_(
+            sliver,
             0,
             band_id,
             ((msk & AA_SLIVER_BIT) != 0).to(torch.int32),
@@ -1864,8 +1866,8 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
         masked = torch.where(owns, positions, big)
         del owns
         first_sorted = torch.full((nb + 1,), n, dtype=idx_dtype, device=device)
-        first_sorted.scatter_reduce_(
-            0, target, masked, reduce="amin", include_self=True
+        scatter_reduce_(
+            first_sorted, 0, target, masked, reduce="amin", include_self=True
         )
         first_sorted = first_sorted[:nb].to(torch.int64)
         del masked
@@ -1965,7 +1967,8 @@ def _sample_depth_lose_reference(
             device=device,
         )
         if bool(diff_sid.any()):
-            sec_d.scatter_reduce_(
+            scatter_reduce_(
+                sec_d,
                 0,
                 grp[diff_sid],
                 edepth[diff_sid],
@@ -3259,15 +3262,15 @@ def compact_sheets(
         pos_src = pos_o.to(idx_dtype)
         positions_src = positions.to(idx_dtype)
         first_sorted = torch.full((nb,), n, dtype=idx_dtype, device=device)
-        first_sorted.scatter_reduce_(
-            0, band_id, positions_src, reduce="amin", include_self=True
+        scatter_reduce_(
+            first_sorted, 0, band_id, positions_src, reduce="amin", include_self=True
         )
         first_sorted = first_sorted.to(torch.int64)
         # Exact, as in the kernel arm above.
         nearest_orig = gather_exact(pos_o, first_sorted)
         sheet_pix = gather_exact(pix_o, first_sorted)
         min_pos = torch.full((nb,), n, dtype=idx_dtype, device=device)
-        min_pos.scatter_reduce_(0, band_id, pos_src, reduce="amin", include_self=True)
+        scatter_reduce_(min_pos, 0, band_id, pos_src, reduce="amin", include_self=True)
         min_pos = min_pos.to(torch.int64)
 
         # Under ``positioned_depth`` the same two quantities, restricted to the
@@ -3287,8 +3290,8 @@ def compact_sheets(
             posn = (msk_o & AA_MASK_ALL) != 0
             masked = torch.where(posn, positions_src, big)
             first_sorted_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
-            first_sorted_p.scatter_reduce_(
-                0, band_id, masked, reduce="amin", include_self=True
+            scatter_reduce_(
+                first_sorted_p, 0, band_id, masked, reduce="amin", include_self=True
             )
             first_sorted_p = first_sorted_p.to(torch.int64)
             del masked
@@ -3302,8 +3305,8 @@ def compact_sheets(
             masked = torch.where(posn, pos_src, big)
             del posn, big
             min_pos_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
-            min_pos_p.scatter_reduce_(
-                0, band_id, masked, reduce="amin", include_self=True
+            scatter_reduce_(
+                min_pos_p, 0, band_id, masked, reduce="amin", include_self=True
             )
             min_pos_p = min_pos_p.to(torch.int64)
             del masked
@@ -3362,14 +3365,16 @@ def compact_sheets(
     else:
         idx_dtype = reduction_index_dtype()
         cmax = torch.zeros(nb, dtype=torch.float32, device=device)
-        cmax.scatter_reduce_(0, band_id, cov_o, reduce="amax", include_self=True)
+        scatter_reduce_(cmax, 0, band_id, cov_o, reduce="amax", include_self=True)
         is_max = cov_o >= cmax.index_select(0, band_id)
         del cmax, cov_o
         big = torch.full((n,), n, dtype=idx_dtype, device=device)
         cand_pos = torch.where(is_max, pos_o.to(idx_dtype), big)
         del is_max, big
         rep_orig = torch.full((nb,), n, dtype=idx_dtype, device=device)
-        rep_orig.scatter_reduce_(0, band_id, cand_pos, reduce="amin", include_self=True)
+        scatter_reduce_(
+            rep_orig, 0, band_id, cand_pos, reduce="amin", include_self=True
+        )
         rep_orig = rep_orig.to(torch.int64)
         del cand_pos
 

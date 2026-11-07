@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import torch
 
+from algan.rendering.mps_compat import scatter_reduce
+
 
 def _flat_frames(x, last_dims):
     """Collapse camera tensors like [T, 1, 1, 3] to [T, *last_dims]."""
@@ -105,11 +107,11 @@ def _circuit_scale(corners, circuit_of_segment=None):
         num_circuits = int(circuit_of_segment.max()) + 1 if lo.shape[-2] else 0
         index = circuit_of_segment.view(-1, 1).expand(lo.shape)
         boxes = lo.shape[:-2] + (num_circuits, 3)
-        circuit_lo = lo.new_full(boxes, float("inf")).scatter_reduce(
-            -2, index, lo, "amin", include_self=True
+        circuit_lo = scatter_reduce(
+            lo.new_full(boxes, float("inf")), -2, index, lo, "amin", include_self=True
         )
-        circuit_hi = hi.new_full(boxes, float("-inf")).scatter_reduce(
-            -2, index, hi, "amax", include_self=True
+        circuit_hi = scatter_reduce(
+            hi.new_full(boxes, float("-inf")), -2, index, hi, "amax", include_self=True
         )
         size = (circuit_hi - circuit_lo).norm(p=2, dim=-1)[..., circuit_of_segment]
     return (size / CIRCUIT_REFERENCE_SIZE).clamp(max=1.0)

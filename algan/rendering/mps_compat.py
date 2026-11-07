@@ -198,13 +198,124 @@ def index_reduce_(out, index, source, reduce):
                 category=UserWarning,
             )
             return out.index_reduce_(0, index, source, reduce, include_self=True)
-    return out.scatter_reduce_(
+    return scatter_reduce_(
+        out,
         0,
         index.reshape(-1, *([1] * (source.ndim - 1))).expand_as(source),
         source,
         reduce,
         include_self=True,
     )
+
+
+#: The int64 reductions whose MPS ``scatter_reduce_`` corrupts its output and
+#: brings the process one failure closer to an abort (see
+#: :func:`scatter_reduce_`).
+_MPS_INT64_EXTREMA = ("amin", "amax")
+
+
+def scatter_reduce_(out, dim, index, src, reduce, *, include_self=True):
+    """``out.scatter_reduce_(dim, index, src, reduce, include_self=...)``,
+    with an int64 ``amin`` or ``amax`` kept away from MPS.
+
+    torch 2.13.0 runs an int64 ``amin``/``amax`` scatter on MPS as a ulong
+    atomic kernel between two passes that flip every element's sign bit
+    (``ScatterGather.mm``), and the Mac runner's GPU cannot compile that
+    kernel. The call raises a failed Metal pipeline compile after the first
+    sign-bit pass is queued and before the second, so ``out`` comes back with
+    every sign bit flipped (1024 of 1024 elements, run 42354063716). One such
+    failure leaves the process working. A second, of either reduction and with
+    any work between, leaves it unable to compile a kernel it has not compiled
+    before, and the next such kernel aborts it (exit -6 in run 42354063716, an
+    MPSLibrary ``gatherND_base`` assertion in run 42329686918). So catching
+    the error and falling back is no use: by then the output is wrong, and the
+    process can afford one failure only. An int64 ``prod`` fails as well, but
+    at function lookup, before anything is queued: it raises with ``out``
+    untouched and does not count toward the abort (run 42354063716), so it is
+    left to raise.
+
+    That is why the renderer reduces in int32 in MPS-friendly mode
+    (:func:`reduction_index_dtype`), and why this is the one way the renderer
+    calls the op: ``tests/unit_tests/test_mps_int64_reductions.py`` fails on a
+    direct call, so a future int64 extremum cannot reach the backend by being
+    written the obvious way.
+
+    Such a reduction is computed exactly from two int32 ones instead. An int64
+    orders like the pair (signed high word, unsigned low word), so the high
+    words are reduced first, then the low words of only the elements whose high
+    word won -- the others are replaced by the reduction's identity, ``2**31 -
+    1`` for ``amin`` and ``-2**31`` for ``amax`` -- with the low words biased
+    by ``-2**31`` so that a signed int32 compares them as unsigned. The words
+    are split with shifts and masks and the winners looked up with ``v[i]``,
+    all exact at every width (§2.3b). ``include_self=False`` keeps torch's
+    meaning: a slot nothing scatters to keeps its value.
+
+    It is taken in MPS-friendly mode on any device, so the CPU tests prove it,
+    and on an MPS tensor whatever the mode says, because there the direct call
+    is the corruption. Only a 1-D ``out`` is supported, which is every int64
+    extremum the renderer has; anything else raises ``NotImplementedError``
+    rather than reach the op. Every other dtype and reduction is the op itself,
+    so a float or int32 caller pays one dtype comparison for the guard, and an
+    int64 one off the mode on the CPU or CUDA a settings read besides.
+    """
+    if (
+        out.dtype == torch.int64
+        and reduce in _MPS_INT64_EXTREMA
+        and (out.device.type == "mps" or mps_friendly())
+    ):
+        return _int64_extremum_(out, dim, index, src, reduce, include_self)
+    return out.scatter_reduce_(dim, index, src, reduce, include_self=include_self)
+
+
+def scatter_reduce(tensor, dim, index, src, reduce, *, include_self=True):
+    """``tensor.scatter_reduce(dim, index, src, reduce, ...)``, the out-of-place
+    form of :func:`scatter_reduce_`, guarded the same way.
+    """
+    if (
+        tensor.dtype == torch.int64
+        and reduce in _MPS_INT64_EXTREMA
+        and (tensor.device.type == "mps" or mps_friendly())
+    ):
+        return _int64_extremum_(tensor.clone(), dim, index, src, reduce, include_self)
+    return tensor.scatter_reduce(dim, index, src, reduce, include_self=include_self)
+
+
+def _int64_extremum_(out, dim, index, src, reduce, include_self):
+    """An int64 ``amin``/``amax`` scatter as two int32 ones (see
+    :func:`scatter_reduce_`), written into ``out``.
+    """
+    # torch also takes a src longer than the index, and reads only its head;
+    # every caller passes the two at one length, so the route asks for that
+    # rather than slice.
+    if out.dim() != 1 or dim not in (0, -1) or index.shape != src.shape:
+        raise NotImplementedError(
+            f"an int64 {reduce} scatter on MPS is computed in two int32 words, "
+            f"which mps_compat.scatter_reduce_ does for a 1-D tensor, with an "
+            f"index and src of one length, only; got {out.dim()}-D over dim "
+            f"{dim}, index {tuple(index.shape)}, src {tuple(src.shape)}. Reduce "
+            "in mps_compat.reduction_index_dtype() instead."
+        )
+    if src.dtype != torch.int64:
+        raise RuntimeError(
+            f"scatter_reduce_: expected src to be int64 like self, got {src.dtype}"
+        )
+    identity = 2**31 - 1 if reduce == "amin" else -(2**31)
+    src_hi = (src >> 32).to(torch.int32)
+    src_lo = ((src & 0xFFFFFFFF) - 2**31).to(torch.int32)
+    out_hi = (out >> 32).to(torch.int32)
+    out_lo = ((out & 0xFFFFFFFF) - 2**31).to(torch.int32)
+    hi = out_hi.clone().scatter_reduce_(
+        0, index, src_hi, reduce, include_self=include_self
+    )
+    # Only an element whose high word won competes on its low word. ``v[i]``
+    # rather than index_select, whose integer gather rounds on MPS past 2**24
+    # (``_MPS_EXACT_INT_BITS``), and rather than gather_exact, which follows the
+    # mode and this runs on an MPS tensor with the mode off too.
+    src_lo = torch.where(src_hi == hi[index], src_lo, identity)
+    if include_self:
+        out_lo = torch.where(out_hi == hi, out_lo, identity)
+    lo = out_lo.scatter_reduce_(0, index, src_lo, reduce, include_self=include_self)
+    return out.copy_(hi.to(torch.int64) * 2**32 + (lo.to(torch.int64) + 2**31))
 
 
 #: Float16's smallest positive subnormal, and the floor every ``clamp_min``

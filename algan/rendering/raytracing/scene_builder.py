@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.environment import env_flag, env_int
+from algan.rendering.mps_compat import scatter_reduce_
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
@@ -859,8 +860,13 @@ def _split_promotable(
     G = int(uniq.shape[0])
     P = int(promo_all.numel())
     first_pos = torch.full((G,), P, dtype=torch.int64, device=device)
-    first_pos.scatter_reduce_(
-        0, inv, torch.arange(P, device=device), reduce="amin", include_self=True
+    scatter_reduce_(
+        first_pos,
+        0,
+        inv,
+        torch.arange(P, device=device),
+        reduce="amin",
+        include_self=True,
     )
     reps = promo_all.index_select(0, first_pos)  # [G] first triangle per group
     cmap_all = colors[:, reps, 0, :]  # [Tc, G, 5]

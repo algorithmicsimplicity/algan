@@ -71,6 +71,7 @@ from algan.rendering.mps_compat import (
     clamp_floor,
     cummax_values,
     cummin_values,
+    gather_exact,
     index_reduce_,
 )
 from algan.rendering.raytracing.stbvh import (
@@ -250,7 +251,12 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     device = order.device
     K = starts.shape[0]
     S = int(counts.sum())
-    seg = torch.repeat_interleave(torch.arange(K, device=device), counts, output_size=S)
+    # Each primitive's range, 0 to K - 1. The counts-only form rather than
+    # repeat_interleave(arange(K), counts), which torch computes as an
+    # index_select of the arange and so, on MPS, rounds a range id past 2**24
+    # to float32 (``mps_compat.repeat_interleave_exact``); the two are the
+    # same tensor wherever both are exact.
+    seg = torch.repeat_interleave(counts, output_size=S)
     base = torch.zeros(K, dtype=torch.long, device=device)
     base[1:] = counts.cumsum(0)[:-1]
     rank = torch.arange(S, device=device) - base[seg]  # pos in range
@@ -794,6 +800,92 @@ def _upload_table(table, device):
     return torch.from_numpy(table).to(device, non_blocking=device.type == "cuda")
 
 
+def _build_level(order, r_start, r_count, depth, first_child, cent, ulo, uhi, a):
+    """One level of :func:`_build_topology`: every node range split into up to
+    ``a`` child ranges, ``order`` partitioned in place to match.
+
+    Node ``i`` of the level is its ``i``-th block and owns ``order[r_start[i] :
+    r_start[i] + r_count[i]]``; ``depth`` is the level's depth, for the depth
+    budget, and ``first_child`` the block index its first internal child gets.
+    Returns ``(kind [K, a] uint8, ref [K, a] long, r_start, r_count)``, the last
+    two the next level's ranges.
+
+    A range's start and count are positions in ``order``, so they reach the
+    tree's primitive count, and past 2**24 an MPS ``index_select`` hands an
+    integer back as ``float32(value)`` (``mps_compat._MPS_EXACT_INT_BITS``): a
+    root count of 2**24 + 1 comes back as 2**24, and the build leaves a
+    primitive out of the tree. So they move with ``gather_exact``, which off
+    MPS-friendly mode is the same ``index_select``.
+    """
+    device = order.device
+    M = order.shape[0]
+    K = r_start.shape[0]
+    s_rounds = a.bit_length() - 1  # log2(arity)
+    # Depth-budget pressure: free SAH splitting guarantees only one
+    # primitive off per level in the worst case, so once a node's
+    # count could exceed what balanced splitting resolves in the
+    # remaining levels, force median splits (children <= ~count/ARITY
+    # per level, resolving within the budget).
+    remaining = MAX_DEPTH - depth
+    forced_blk = r_count > (a ** max(remaining - 1, 0))
+
+    sub_start = r_start
+    sub_count = r_count
+    sub_block = torch.arange(K, device=device)
+    for _ in range(s_rounds):
+        splittable = sub_count >= 2
+        # One host readback partitions the ranges: a stable sort of
+        # the flag puts the kept (count-1) ranges first and the
+        # splittable ones last, each side in its original order --
+        # exactly what six boolean-mask gathers (a device sync each)
+        # produced before. The build is launch-bound, so the syncs
+        # were most of its wall time.
+        n_split = int(splittable.sum())
+        if n_split == 0:
+            break
+        perm = torch.argsort(splittable.to(torch.int8), stable=True)
+        keep_idx = perm[: perm.numel() - n_split]
+        split_idx = perm[perm.numel() - n_split :]
+        ss = gather_exact(sub_start, split_idx)
+        sc = gather_exact(sub_count, split_idx)
+        sb = gather_exact(sub_block, split_idx)
+        nl = _binary_split(
+            order, ss, sc, forced_blk.index_select(0, sb), cent, ulo, uhi
+        )
+        keep_start = gather_exact(sub_start, keep_idx)
+        keep_count = gather_exact(sub_count, keep_idx)
+        keep_block = gather_exact(sub_block, keep_idx)
+        sub_start = torch.cat([keep_start, ss, ss + nl])
+        sub_count = torch.cat([keep_count, nl, sc - nl])
+        sub_block = torch.cat([keep_block, sb, sb])
+    # Canonical child order: left-to-right within each block.
+    skey = torch.argsort(sub_block * (M + 1) + sub_start)
+    sub_start = sub_start[skey]
+    sub_count = sub_count[skey]
+    sub_block = sub_block[skey]
+    slot = torch.arange(sub_block.shape[0], device=device) - torch.searchsorted(
+        sub_block, sub_block, right=False
+    )
+    is_leaf = sub_count == 1
+    kind = torch.zeros((K, a), dtype=torch.uint8, device=device)
+    ref = torch.full((K, a), -1, dtype=torch.long, device=device)
+    kind[sub_block, slot] = torch.where(
+        is_leaf,
+        torch.ones_like(sub_block, dtype=torch.uint8),
+        torch.full_like(sub_block, 2, dtype=torch.uint8),
+    )
+    leaf_ref = order[sub_start]
+    child_ids = torch.cumsum((~is_leaf).long(), 0) - 1 + first_child
+    ref[sub_block, slot] = torch.where(is_leaf, leaf_ref, child_ids)
+    internal = (~is_leaf).nonzero(as_tuple=True)[0]
+    return (
+        kind,
+        ref,
+        gather_exact(sub_start, internal),
+        gather_exact(sub_count, internal),
+    )
+
+
 def _build_topology(M, cent, ulo, uhi, a):
     """The tree's shape over ``M`` ever-visible primitives, on ``cent``'s device.
 
@@ -804,7 +896,6 @@ def _build_topology(M, cent, ulo, uhi, a):
     level's ``(block_start, block_end)``, root first.
     """
     device = cent.device
-    s_rounds = a.bit_length() - 1  # log2(arity)
 
     # ------------------------------------------------------------------
     # Topology: level-synchronous build. Each level splits every current
@@ -836,67 +927,11 @@ def _build_topology(M, cent, ulo, uhi, a):
             lv_start = next_block
             next_block += K
             levels.append((lv_start, next_block))
-            # Depth-budget pressure: free SAH splitting guarantees only one
-            # primitive off per level in the worst case, so once a node's
-            # count could exceed what balanced splitting resolves in the
-            # remaining levels, force median splits (children <= ~count/ARITY
-            # per level, resolving within the budget).
-            remaining = MAX_DEPTH - depth
-            forced_blk = r_count > (a ** max(remaining - 1, 0))
-
-            sub_start = r_start
-            sub_count = r_count
-            sub_block = torch.arange(K, device=device)
-            for _ in range(s_rounds):
-                splittable = sub_count >= 2
-                # One host readback partitions the ranges: a stable sort of
-                # the flag puts the kept (count-1) ranges first and the
-                # splittable ones last, each side in its original order --
-                # exactly what six boolean-mask gathers (a device sync each)
-                # produced before. The build is launch-bound, so the syncs
-                # were most of its wall time.
-                n_split = int(splittable.sum())
-                if n_split == 0:
-                    break
-                perm = torch.argsort(splittable.to(torch.int8), stable=True)
-                keep_idx = perm[: perm.numel() - n_split]
-                split_idx = perm[perm.numel() - n_split :]
-                ss = sub_start.index_select(0, split_idx)
-                sc = sub_count.index_select(0, split_idx)
-                sb = sub_block.index_select(0, split_idx)
-                nl = _binary_split(
-                    order, ss, sc, forced_blk.index_select(0, sb), cent, ulo, uhi
-                )
-                keep_start = sub_start.index_select(0, keep_idx)
-                keep_count = sub_count.index_select(0, keep_idx)
-                keep_block = sub_block.index_select(0, keep_idx)
-                sub_start = torch.cat([keep_start, ss, ss + nl])
-                sub_count = torch.cat([keep_count, nl, sc - nl])
-                sub_block = torch.cat([keep_block, sb, sb])
-            # Canonical child order: left-to-right within each block.
-            skey = torch.argsort(sub_block * (M + 1) + sub_start)
-            sub_start = sub_start[skey]
-            sub_count = sub_count[skey]
-            sub_block = sub_block[skey]
-            slot = torch.arange(sub_block.shape[0], device=device) - torch.searchsorted(
-                sub_block, sub_block, right=False
+            kind, ref, r_start, r_count = _build_level(
+                order, r_start, r_count, depth, next_block, cent, ulo, uhi, a
             )
-            is_leaf = sub_count == 1
-            kind = torch.zeros((K, a), dtype=torch.uint8, device=device)
-            ref = torch.full((K, a), -1, dtype=torch.long, device=device)
-            kind[sub_block, slot] = torch.where(
-                is_leaf,
-                torch.ones_like(sub_block, dtype=torch.uint8),
-                torch.full_like(sub_block, 2, dtype=torch.uint8),
-            )
-            leaf_ref = order[sub_start]
-            child_ids = torch.cumsum((~is_leaf).long(), 0) - 1 + next_block
-            ref[sub_block, slot] = torch.where(is_leaf, leaf_ref, child_ids)
             kind_rows.append(kind)
             ref_rows.append(ref)
-            internal = (~is_leaf).nonzero(as_tuple=True)[0]
-            r_start = sub_start.index_select(0, internal)
-            r_count = sub_count.index_select(0, internal)
             depth += 1
             if depth > MAX_DEPTH:
                 raise RuntimeError("refit BVH exceeded its depth budget (builder bug)")

@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import torch
 
-from algan.rendering.mps_compat import clamp_floor
+from algan.rendering.mps_compat import clamp_floor, gather_exact
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
 from algan.settings import SETTINGS
 
@@ -106,6 +106,32 @@ def sliver_strip_plan(tri_pos):
     return strips, longest, n_ac
 
 
+def _strip_rows(n, sidx):
+    """Each strip's sliver, its place along that sliver, and its triangle.
+
+    ``n`` ``[S]`` is each cut triangle's strip count and ``sidx`` ``[S]`` the
+    triangle's index. Returns ``(owner, k, parent)`` over the ``n.sum()``
+    strips, sliver by sliver: the sliver's position in ``sidx``, the strip's
+    index along it (0 to ``n - 1``), and the triangle it cuts.
+
+    A sliver's first strip is the count of strips before it, so it passes
+    2**24 on a scene with that many strips (524,288 slivers cut into the
+    default maximum of 32 pieces), and the triangle index passes it on a scene
+    with that many triangles. On MPS an integer ``index_select`` hands either
+    back as ``float32(value)`` (``mps_compat._MPS_EXACT_INT_BITS``), which
+    slides a strip along its sliver or gives it the wrong parent, so both are
+    gathered with ``gather_exact``, and the owners come from the counts alone
+    rather than from ``repeat_interleave(arange(S), n)``, an ``index_select``
+    of the arange. Off MPS-friendly mode the gathers are the ``index_select``
+    they replace, and the owners are the tensor the arange form gives.
+    """
+    K = int(n.sum())
+    owner = torch.repeat_interleave(n, output_size=K)
+    first = torch.cumsum(n, 0) - n
+    k = torch.arange(K, device=n.device) - gather_exact(first, owner)
+    return owner, k, gather_exact(sidx, owner)
+
+
 def sliver_leaf_columns(tri_pos, lo, hi, opaque, casts):
     """Leaf columns for a triangle BVH build with slivers cut into strips.
 
@@ -133,15 +159,14 @@ def sliver_leaf_columns(tri_pos, lo, hi, opaque, casts):
     split = strips > 1
     sidx = split.nonzero(as_tuple=True)[0]
     n = strips.index_select(0, sidx)
-    K = int(n.sum())
-    owner = torch.repeat_interleave(torch.arange(sidx.numel(), device=device), n)
-    first = torch.cumsum(n, 0) - n
-    k = torch.arange(K, device=device) - first.index_select(0, owner)
+    owner, k, parent = _strip_rows(n, sidx)
+    K = k.shape[0]
+    # Strip counts, at most ``sliver_split_max_pieces``, far below the 2**24
+    # an MPS index_select is exact through.
     n_o = n.index_select(0, owner).to(torch.float32)
     nac_o = n_ac.index_select(0, sidx).index_select(0, owner)
     ncb_o = (n.index_select(0, owner) - nac_o).clamp_min(1).to(torch.float32)
     nac_f = nac_o.clamp_min(1).to(torch.float32)
-    parent = sidx.index_select(0, owner)  # [K]
 
     c = tri_pos.float().view(tri_pos.shape[0], N, 3, 3)
     Tp = c.shape[0]

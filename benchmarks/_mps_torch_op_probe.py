@@ -1001,6 +1001,534 @@ def probe_epsilon_clamp(device):
     )
 
 
+#: MPS gathers an integer exactly through 2**24 (``mps_compat._MPS_EXACT_INT_BITS``),
+#: so 2**24 + 1 is the first value it can get wrong.
+_CEIL = 1 << 24
+
+
+def _guarded(name, run_cpu, run_device):
+    """:func:`_check` for an op the device may refuse with an exception."""
+    want = run_cpu()
+    try:
+        got = run_device()
+    except Exception as exc:  # noqa: BLE001
+        _report(name, False, f"{type(exc).__name__}: {str(exc).splitlines()[0]}")
+        return
+    _check(name, want, got)
+
+
+def probe_bvh_gathers(device):
+    """The BVH build's integer ops, at their call sites' shapes, past 2**24.
+
+    ``refit_bvh._build_topology`` keeps each node range's start, count and
+    block in int64 and moves them with ``index_select``; ``_binary_split``
+    expands a range id per primitive with ``repeat_interleave`` and partitions
+    with a stable ``argsort``; ``sliver_split.sliver_leaf_columns`` expands its
+    strips the same way and gathers their offsets; ``stbvh._median_split_slots``
+    permutes leaf slots with ``torch.gather``. Each carries a value, or returns
+    an index, past 2**24 once a tree has that many leaf columns. On a Mac that
+    build runs on the GPU only when the merge deferred it
+    (``scene_builder.build_deferred_bvhs``) and the tree has more than
+    ``refit_host_topology_max_columns`` columns, so it is rare, and silent when
+    it is wrong: a range count that comes back as ``float32(count)`` drops
+    primitives from the tree.
+
+    So each op runs here on values, or at sizes, just past the ceiling, against
+    the CPU's answer over the same host-built input. ``index_select`` and
+    ``repeat_interleave(values, counts)`` are the controls: §2.3b measured both
+    rounding on torch 2.13.0.
+    """
+    print("\nBVH build integer ops past 2**24 (refit_bvh, sliver_split, stbvh)")
+    g = torch.Generator().manual_seed(24)
+    n = 1 << 20
+    big = _CEIL + n  # a table that has to be addressed past 2**24
+    # Range starts past the ceiling, odd so that no float32 holds them.
+    starts_c = _CEIL + 1 + 2 * torch.randint(0, 1 << 22, (n,), generator=g)
+    pick_c = torch.randint(0, n, (n,), generator=g)
+    starts_m, pick_m = starts_c.to(device), pick_c.to(device)
+    for dtype in (torch.int64, torch.int32):
+        v_c = starts_c.to(dtype)
+        v_m = v_c.to(device)
+        _guarded(
+            f"index_select({dtype}) of range starts past 2**24  <- control",
+            lambda v_c=v_c: v_c.index_select(0, pick_c),
+            lambda v_m=v_m: v_m.index_select(0, pick_m),
+        )
+    _guarded(
+        "v[i] (int64) of range starts past 2**24",
+        lambda: starts_c[pick_c],
+        lambda: starts_m[pick_m],
+    )
+
+    # stbvh._median_split_slots: slot = torch.gather(sg, 1, perm), [ng, gs].
+    for ng in (1, 64, 4096):
+        sg_c = (_CEIL + torch.arange(n)).view(ng, n // ng)
+        perm_c = torch.rand((ng, n // ng), generator=g).argsort(1)
+        sg_m, perm_m = sg_c.to(device), perm_c.to(device)
+        _guarded(
+            f"torch.gather(int64 [{ng}, {n // ng}], 1, perm) of slots past 2**24",
+            lambda sg_c=sg_c, perm_c=perm_c: torch.gather(sg_c, 1, perm_c),
+            lambda sg_m=sg_m, perm_m=perm_m: torch.gather(sg_m, 1, perm_m),
+        )
+
+    # _binary_split's seg and sliver_split's owner: an arange repeated by the
+    # counts. Its values pass 2**24 only once there are that many ranges, so
+    # the real call runs at that size, beside the cheaper offset form.
+    counts_c = torch.randint(1, 3, (n,), generator=g)
+    values_c = _CEIL + 1 + torch.arange(n)
+    counts_m, values_m = counts_c.to(device), values_c.to(device)
+    _guarded(
+        "repeat_interleave(values past 2**24, counts)  <- control",
+        lambda: torch.repeat_interleave(values_c, counts_c),
+        lambda: torch.repeat_interleave(values_m, counts_m),
+    )
+    ranges = _CEIL + (1 << 12)
+    rcounts_c = torch.randint(1, 3, (ranges,), generator=g)
+    rcounts_m = rcounts_c.to(device)
+    total = int(rcounts_c.sum())
+    _guarded(
+        f"repeat_interleave(arange({ranges}), counts, output_size)  (refit_bvh seg)",
+        lambda: torch.repeat_interleave(
+            torch.arange(ranges), rcounts_c, output_size=total
+        ),
+        lambda: torch.repeat_interleave(
+            torch.arange(ranges, device=device), rcounts_m, output_size=total
+        ),
+    )
+    _guarded(
+        f"repeat_interleave(counts, output_size) over {ranges} counts  <- the fix",
+        lambda: torch.repeat_interleave(rcounts_c, output_size=total),
+        lambda: torch.repeat_interleave(rcounts_m, output_size=total),
+    )
+    rcounts_m = None
+    _release(device)
+
+    # _build_topology's canonical child order: argsort(block * (M + 1) + start),
+    # unique keys up to ~2**44.
+    key_c = torch.randperm(n, generator=g) * (_CEIL + 2) + (_CEIL + 1)
+    key_m = key_c.to(device)
+    _guarded(
+        "argsort(int64 block * (M + 1) + start), unique keys past 2**24",
+        lambda: torch.argsort(key_c),
+        lambda: torch.argsort(key_m),
+    )
+    # The partitions at a size past 2**24, where the returned INDICES pass it:
+    # the splittable flag of a level, and the root range's [left | right] key.
+    rows = _CEIL + (1 << 16)
+    flag_c = (torch.rand(rows, generator=g) < 0.5).to(torch.int8)
+    flag_m = flag_c.to(device)
+    _guarded(
+        f"argsort(int8 flag, stable) n={rows}  (_build_topology's partition)",
+        lambda: torch.argsort(flag_c, stable=True),
+        lambda: torch.argsort(flag_m, stable=True),
+    )
+    flag_m = None
+    side_c = torch.randint(0, 2, (rows,), generator=g)
+    side_m = side_c.to(device)
+    _guarded(
+        f"argsort(int64 0/1 key, stable) n={rows}  (_binary_split's partition)",
+        lambda: torch.argsort(side_c, stable=True),
+        lambda: torch.argsort(side_m, stable=True),
+    )
+    side_m = None
+    _release(device)
+
+    # slot = arange - searchsorted(sub_block, sub_block).
+    blocks_c = torch.sort(_CEIL + torch.randint(0, 1 << 22, (n,), generator=g)).values
+    blocks_m = blocks_c.to(device)
+    _guarded(
+        "searchsorted(int64 sorted block ids past 2**24, themselves)",
+        lambda: torch.searchsorted(blocks_c, blocks_c),
+        lambda: torch.searchsorted(blocks_m, blocks_m),
+    )
+    # _build_one's leaf map: where(kind == 1, pids[ref.clamp_min(0)], ref).
+    leafy_c = torch.rand(n, generator=g) < 0.8
+    refs_c = torch.where(leafy_c, starts_c, torch.full((n,), -1))
+    leafy_m, refs_m = leafy_c.to(device), refs_c.to(device)
+    _guarded(
+        "clamp_min(0) of int64 refs past 2**24 and -1",
+        lambda: refs_c.clamp_min(0),
+        lambda: refs_m.clamp_min(0),
+    )
+    _guarded(
+        "where(mask, int64 past 2**24, int64)",
+        lambda: torch.where(leafy_c, starts_c, refs_c),
+        lambda: torch.where(leafy_m, starts_m, refs_m),
+    )
+    # ref[sub_block, slot] = ids: the per-level child table.
+    width = 4
+    blk_c = torch.arange(n // width).repeat_interleave(width)
+    slot_c = torch.arange(width).repeat(n // width)
+    blk_m, slot_m = blk_c.to(device), slot_c.to(device)
+
+    def child_table(b, s, v, dev):
+        table = torch.full((n // width, width), -1, dtype=torch.long, device=dev)
+        table[b, s] = v
+        return table
+
+    _guarded(
+        "index_put table[block, slot] = int64 ids past 2**24",
+        lambda: child_table(blk_c, slot_c, starts_c, "cpu"),
+        lambda: child_table(blk_m, slot_m, starts_m, device),
+    )
+    # order[pos] = tp[perm]: ids past 2**24 written at positions past 2**24.
+    pos_c = _CEIL + torch.randperm(n, generator=g)
+    pos_m = pos_c.to(device)
+
+    def scatter_ids(pos, v, dev):
+        order = torch.zeros(big, dtype=torch.long, device=dev)
+        order[pos] = v
+        return order
+
+    _guarded(
+        "index_put order[pos] = int64 past 2**24 at positions past 2**24",
+        lambda: scatter_ids(pos_c, starts_c, "cpu"),
+        lambda: scatter_ids(pos_m, starts_m, device),
+    )
+    _release(device)
+
+    # The bin histograms and the left counts: index_add_ at indices past 2**24.
+    idx_c = _CEIL + torch.randint(0, n, (n,), generator=g)
+    idx_m = idx_c.to(device)
+
+    def histogram(idx, dev):
+        cnt = torch.zeros(big, dtype=torch.long, device=dev)
+        cnt.index_add_(0, idx, torch.ones_like(idx))
+        return cnt
+
+    _guarded(
+        "index_add_(int64 ones) at indices past 2**24",
+        lambda: histogram(idx_c, "cpu"),
+        lambda: histogram(idx_m, device),
+    )
+    # The per-bin box unions: mps_compat.index_reduce_'s MPS spelling, float32
+    # [rows, 3], at row indices past 2**24.
+    box_c = torch.rand((n, 3), generator=g) * 20 - 10
+    box_m = box_c.to(device)
+    for reduce_op, fill in (("amin", float("inf")), ("amax", float("-inf"))):
+
+        def unions(idx, val, dev, reduce_op=reduce_op, fill=fill):
+            out = torch.full((big, 3), fill, dtype=torch.float32, device=dev)
+            out.scatter_reduce_(
+                0, idx.view(-1, 1).expand_as(val), val, reduce_op, include_self=True
+            )
+            return out
+
+        _guarded(
+            f"scatter_reduce_(float32 [rows, 3], {reduce_op}) at rows past 2**24",
+            lambda unions=unions: unions(idx_c, box_c, "cpu"),
+            lambda unions=unions: unions(idx_m, box_m, device),
+        )
+        _release(device)
+    # pids = ever.nonzero(), internal = (~is_leaf).nonzero(): indices past 2**24.
+    mask_c = torch.zeros(big, dtype=torch.bool)
+    mask_c[idx_c] = True
+    mask_c[:4096] = True
+    mask_m = mask_c.to(device)
+    _guarded(
+        "nonzero(bool) with set positions past 2**24",
+        lambda: mask_c.nonzero(as_tuple=True)[0],
+        lambda: mask_m.nonzero(as_tuple=True)[0],
+    )
+    # child_ids = cumsum(~is_leaf) - 1 + next_block, to past 2**24.
+    run_c = torch.ones(big, dtype=torch.long)
+    run_m = run_c.to(device)
+    _guarded(
+        "cumsum(int64 ones) to past 2**24",
+        lambda: torch.cumsum(run_c, 0),
+        lambda: torch.cumsum(run_m, 0),
+    )
+    mask_m = run_m = None
+    _release(device)
+
+    # The link words: an int32 pattern in a float32 lane (f32 blocks), or its
+    # two int16 halves (f16 blocks). Leaf words with a small primitive id are
+    # negative subnormals and -1 is a NaN, so a copy that flushed subnormals or
+    # quieted NaNs would turn every leaf into primitive 0 and every empty slot
+    # into a link.
+    special = torch.tensor(
+        [-1, 0, 1, 5, (1 << 23) - 1, 1 << 23, 0x7F800000, 0x7FC00001, 0x7FFFFFFF]
+        + [-(1 << 31) | 5, -(1 << 31) | (1 << 30) | 7, -(1 << 31) | (1 << 29) | 3]
+        + [-(1 << 31), -(1 << 31) | ((1 << 29) - 1)],
+        dtype=torch.int64,
+    ).to(torch.int32)
+    words_c = torch.cat(
+        (special, torch.randint(-(1 << 31), (1 << 31) - 1, (4096,), generator=g).int())
+    )
+    words_c = words_c[: words_c.numel() // 4 * 4].view(-1, 4)
+    words_m = words_c.to(device)
+
+    def f32_lane(words, dev):
+        blk = torch.zeros((words.shape[0], 8, 4), dtype=torch.float32, device=dev)
+        blk[:, 6] = words.view(torch.float32)
+        return blk.contiguous()[:, 6].contiguous().view(torch.int32)
+
+    def f16_lanes(words, dev):
+        blk = torch.zeros((words.shape[0], 8, 4), dtype=torch.int16, device=dev)
+        halves = words.contiguous().view(torch.int16).view(words.shape[0], 4, 2)
+        blk[:, 6] = halves[..., 0]
+        blk[:, 7] = halves[..., 1]
+        return blk.view(torch.float16).contiguous().view(torch.int16)
+
+    _guarded(
+        "link words through a float32 lane (subnormal and NaN patterns)",
+        lambda: f32_lane(words_c, "cpu"),
+        lambda: f32_lane(words_m, device),
+    )
+    _guarded(
+        "link words through two int16 lanes of an f16 block",
+        lambda: f16_lanes(words_c, "cpu"),
+        lambda: f16_lanes(words_m, device),
+    )
+
+
+def _release(device):
+    """Hand the probe's freed device memory back between cases."""
+    if torch.device(device).type == "mps":
+        torch.mps.synchronize()
+        torch.mps.empty_cache()
+
+
+#: ``(form, reduce, dtype)`` for :func:`probe_int64_reductions`, in run order.
+#: ``("none", "", "")`` is the control: no reduction, only the canaries.
+_REDUCTION_CASES = (
+    (("none", "", ""),)
+    + tuple(
+        (form, reduce, "int64")
+        for reduce in ("sum", "prod", "mean", "amax", "amin")
+        for form in ("scatter_reduce_", "scatter_reduce_excl", "scatter_reduce")
+    )
+    + tuple(
+        ("index_reduce_", reduce, "int64")
+        for reduce in ("prod", "mean", "amax", "amin")
+    )
+    + (("scatter_", "add", "int64"), ("scatter_", "multiply", "int64"))
+    + (("scatter_add_", "sum", "int64"),)
+    + tuple(("dim", reduce, "int64") for reduce in ("amax", "amin", "max", "min"))
+    + tuple(
+        (form, reduce, "int32")
+        for reduce in ("amax", "amin")
+        for form in ("scatter_reduce_", "index_reduce_")
+    )
+    + (("none", "", ""),)
+)
+
+
+def _reduction_inputs(form, reduce, dtype, n, segments, g):
+    """``(base, index, src)`` on the host for one reduction case.
+
+    The values need all 64 bits and come in near-equal runs (one segment's
+    values differing only in their low bits), so a reduction that went through
+    a float32, or kept 32 bits, gives a wrong answer rather than a lucky one.
+    Products and sums are kept small enough not to overflow. A dim reduction
+    gets the wide values alone, so ``max``/``min`` have no ties and their
+    indices are one answer.
+    """
+    index = torch.randint(0, segments, (n,), generator=g)
+    if dtype is torch.int32:
+        wide = torch.randint(-(1 << 30), 1 << 30, (n,), generator=g)
+        near = (1 << 25) + torch.randint(0, 64, (n,), generator=g)
+    elif reduce in ("prod", "multiply"):
+        wide = torch.randint(-3, 4, (n,), generator=g)
+        near = torch.ones(n, dtype=torch.int64)
+    elif reduce in ("sum", "add", "mean"):
+        wide = torch.randint(-(1 << 44), 1 << 44, (n,), generator=g)
+        near = (1 << 40) + torch.randint(0, 64, (n,), generator=g)
+    else:
+        wide = torch.randint(-(1 << 62), 1 << 62, (n,), generator=g)
+        near = (1 << 40) + torch.randint(0, 64, (n,), generator=g)
+    if form == "dim":
+        near = wide
+    src = torch.where(torch.rand(n, generator=g) < 0.5, wide, near).to(dtype)
+    base = torch.where(
+        torch.rand(segments, generator=g) < 0.5, wide[:segments], near[:segments]
+    ).to(dtype)
+    if reduce in ("prod", "multiply"):
+        base = torch.ones(segments, dtype=dtype)
+    return base, index, src
+
+
+def _reduction_run(form, reduce, base, index, src):
+    """One reduction, spelled as ``form``. Returns a tuple of tensors."""
+    if form == "scatter_reduce_":
+        return (base.clone().scatter_reduce_(0, index, src, reduce, include_self=True),)
+    if form == "scatter_reduce_excl":
+        return (
+            base.clone().scatter_reduce_(0, index, src, reduce, include_self=False),
+        )
+    if form == "scatter_reduce":
+        return (torch.scatter_reduce(base, 0, index, src, reduce),)
+    if form == "index_reduce_":
+        return (base.clone().index_reduce_(0, index, src, reduce, include_self=True),)
+    if form == "scatter_":
+        return (base.clone().scatter_(0, index, src, reduce=reduce),)
+    if form == "scatter_add_":
+        return (base.clone().scatter_add_(0, index, src),)
+    if form == "dim":
+        rows = src[: src.numel() // 4 * 4].view(-1, 4)
+        if reduce in ("max", "min"):
+            values, where = getattr(rows, reduce)(1)
+            return values, where
+        return (getattr(rows, reduce)(1),)
+    raise ValueError(form)
+
+
+def _canaries(device):
+    """Kernels the reduction case never ran, each checked against the CPU.
+
+    A process whose Metal pipeline compiler has failed twice cannot compile a
+    kernel it has not compiled before, while the kernels it already compiled
+    keep working (runs 42329686918 and 42354063716), so the canaries must be
+    new to the process. ``v[i]`` and ``index_put_`` go last:
+    ``gatherND_base`` is the kernel whose failed load aborted run 42329686918.
+    """
+    x = torch.linspace(0.0, 1.0, 4096)
+    xi = torch.arange(4096, dtype=torch.int32)
+    xl = torch.arange(4096, dtype=torch.int64) * 3
+    # A permutation (7 is coprime to 4096), so the index_put_ has one writer per
+    # slot and its answer does not depend on which duplicate lands last.
+    pick = (torch.arange(4096) * 7) % 4096
+    return (
+        ("sin(float32)", lambda d: torch.sin(x.to(d))),
+        ("amax(int32)", lambda d: xi.to(d).amax()),
+        ("cumsum(int32)", lambda d: xi.to(d).cumsum(0)),
+        ("sort(float32)", lambda d: torch.sort(x.flip(0).to(d)).values),
+        ("matmul(float32)", lambda d: x.to(d).view(64, 64) @ x.to(d).view(64, 64)),
+        ("int32 -> int64", lambda d: xi.to(d).to(torch.int64)),
+        ("v[i] (int64)", lambda d: xl.to(d)[pick.to(d)]),
+        (
+            "index_put_(int64)",
+            lambda d: torch.zeros(4096, dtype=torch.int64, device=d).index_put_(
+                (pick.to(d),), xl.to(d)
+            ),
+        ),
+    )
+
+
+def _reduction_child(form, reduce, dtype_name, device_name) -> int:
+    """One reduction case and then the canaries, in this process alone.
+
+    Every line is flushed as it is printed, because the process this exists to
+    observe can die of a signal before it exits.
+    """
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning)
+    device = torch.device(device_name)
+
+    def sync():
+        if device.type == "mps":
+            torch.mps.synchronize()
+
+    if form == "none":
+        print("RESULT none", flush=True)
+    else:
+        dtype = getattr(torch, dtype_name)
+        g = torch.Generator().manual_seed(31)
+        n = N
+        base, index, src = _reduction_inputs(form, reduce, dtype, n, n // 3, g)
+        want = _reduction_run(form, reduce, base, index, src)
+        base_d, index_d, src_d = base.to(device), index.to(device), src.to(device)
+        sync()
+        try:
+            got = _reduction_run(form, reduce, base_d, index_d, src_d)
+            sync()
+            got = tuple(t.cpu() for t in got)
+        except Exception as exc:  # noqa: BLE001
+            line = str(exc).splitlines()[0] if str(exc) else ""
+            print(f"RESULT raised {type(exc).__name__}: {line}", flush=True)
+        else:
+            bad = sum(int((w != h).sum()) for w, h in zip(want, got))
+            if bad == 0:
+                print("RESULT ok", flush=True)
+            else:
+                w, h = want[0].reshape(-1), got[0].reshape(-1)
+                first = int((w != h).nonzero()[0][0]) if bool((w != h).any()) else 0
+                print(
+                    f"RESULT wrong {bad}/{sum(t.numel() for t in want)} differ, "
+                    f"first cpu {int(w[first])} vs device {int(h[first])}",
+                    flush=True,
+                )
+    for name, run in _canaries(device):
+        try:
+            got = run(device)
+            sync()
+            want, got = run("cpu"), got.cpu()
+            # Metal's float maths is not the CPU's to the last bit, and a
+            # canary asks whether the kernel ran, not how it rounds.
+            if want.is_floating_point():
+                ok = torch.allclose(want, got, rtol=1e-4, atol=1e-5)
+            else:
+                ok = torch.equal(want, got)
+        except Exception as exc:  # noqa: BLE001
+            line = str(exc).splitlines()[0] if str(exc) else ""
+            print(f"CANARY raised {name}: {type(exc).__name__}: {line}", flush=True)
+        else:
+            print(f"CANARY {'ok' if ok else 'wrong'} {name}", flush=True)
+    return 0
+
+
+def probe_int64_reductions(device):
+    """The int64 scatter and index reductions, each in a process of its own.
+
+    §2.3 found MPS refusing an int64 ``scatter_reduce_`` ``amin``/``amax``. The
+    refusal is a failed Metal pipeline compile, raised after the op has flipped
+    the sign bit of every element of its output, and the process survives one
+    (run 42352045841: every canary passes after it). A second, of either
+    reduction, leaves the process unable to compile a kernel it has not
+    compiled before, and the next one aborts it: run 42329686918 asked these
+    cases in one process and died in an MPSLibrary ``gatherND_base``
+    assertion, and run 42354063716 measured the pairs (exit -6). Asked
+    in-process, the questions would poison every probe after them and could
+    kill the run before its summary. So each case runs in a fresh
+    interpreter (``--reduction-case``): it prints its result against the CPU,
+    then a row of canary kernels new to that process, and this records what
+    came back, a signal included. The control case (no reduction, only the
+    canaries) runs first, to show the canaries pass in a clean process, and
+    last, to show that a failed compile in one process leaves the next one
+    alone. ``main`` runs this probe last as well.
+
+    One case at a time rather than in parallel: if a failure ever reached past
+    its process, cases running side by side would blame each other.
+    """
+    import subprocess
+
+    print("\nint64 scatter/index reductions, one process per case (run last)")
+    for form, reduce, dtype in _REDUCTION_CASES:
+        name = (
+            "control: no reduction"
+            if form == "none"
+            else (f"{form}({dtype}, {reduce})")
+        )
+        try:
+            done = subprocess.run(
+                [sys.executable, __file__, "--reduction-case", form, reduce, dtype]
+                + [str(device)],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            _report(name, False, "timed out after 300 s")
+            continue
+        lines = done.stdout.splitlines()
+        result = next((x for x in lines if x.startswith("RESULT ")), "RESULT missing")
+        canaries = [x for x in lines if x.startswith("CANARY ")]
+        broken = [x for x in canaries if not x.startswith("CANARY ok ")]
+        outcome = result.removeprefix("RESULT ")
+        if form != "none":
+            _report(name, outcome == "ok", "" if outcome == "ok" else outcome)
+        healthy = done.returncode == 0 and not broken and len(canaries) == 8
+        detail = f"{len(canaries) - len(broken)}/8 canaries ok, exit {done.returncode}"
+        if broken:
+            detail += f"; first: {broken[0].removeprefix('CANARY ')[:160]}"
+        if done.returncode != 0:
+            tail = [x for x in done.stderr.splitlines() if x.strip()][-1:]
+            if tail:
+                detail += f"; stderr: {tail[0][:200]}"
+        _report(f"{name} -- process usable after it", healthy, detail)
+
+
 def main(names=()) -> int:
     """Run every probe, or only those ``names`` gives (with or without the
     ``probe_`` prefix, e.g. ``scan_layouts``).
@@ -1025,6 +1553,11 @@ def main(names=()) -> int:
         probe_index_reduce,
         probe_gather_isolated,
         probe_epsilon_clamp,
+        probe_bvh_gathers,
+        # Last, and one process per case inside it: a second failed int64
+        # amin/amax in an MPS process leaves it unable to compile another
+        # kernel (see the probe).
+        probe_int64_reductions,
     )
     if names:
         wanted = {name.removeprefix("probe_") for name in names}
@@ -1053,4 +1586,6 @@ def main(names=()) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--reduction-case"]:
+        sys.exit(_reduction_child(*sys.argv[2:6]))
     sys.exit(main(sys.argv[1:]))

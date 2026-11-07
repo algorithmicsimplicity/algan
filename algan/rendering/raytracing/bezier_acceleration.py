@@ -27,7 +27,7 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_int
-from algan.rendering.mps_compat import clamp_floor, gather_exact
+from algan.rendering.mps_compat import clamp_floor, gather_exact, scatter_reduce_
 
 # Resolution of the two indices. Both are pure acceleration: a query that a
 # coarser index sends more edges to still exact-tests every one of them, so
@@ -233,7 +233,7 @@ def _build_group_tables(
         initial = inf if reduce == "amin" else neg_inf
         prepared = torch.where(finite, values, initial)
         out = torch.full((num_groups,), initial, dtype=edges_2d.dtype, device=device)
-        out.scatter_reduce_(0, group_ids, prepared, reduce=reduce, include_self=True)
+        scatter_reduce_(out, 0, group_ids, prepared, reduce=reduce, include_self=True)
         return out
 
     min_u = reduce_bounds(edge_lo_u, "amin")

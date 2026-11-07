@@ -8,7 +8,7 @@ from threading import Lock
 import numpy as np
 import torch
 
-from algan.rendering.mps_compat import repeat_interleave_exact
+from algan.rendering.mps_compat import repeat_interleave_exact, scatter_reduce_
 
 
 class _BezierGeometryCache:
@@ -162,11 +162,9 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
     segment_static = _rigid_segments(corners, centers, circuit_ids) & _constant_rows(
         next_inds
     )
-    static = (
-        static.int()
-        .scatter_reduce_(0, circuit_ids, segment_static.int(), "amin")
-        .bool()
-    )
+    static = scatter_reduce_(
+        static.int(), 0, circuit_ids, segment_static.int(), "amin"
+    ).bool()
     # Every decision below in one readback: none, all, or a partition the
     # circuits' own links respect.
     segment_static = static[circuit_ids]
@@ -292,8 +290,13 @@ def _padding_edges(edges, offsets):
         torch.arange(num_circuits, device=edges.device), counts
     )
     position = torch.arange(num_edges, device=edges.device)
-    first = torch.full_like(counts, num_edges).scatter_reduce_(
-        0, circuit[real], position[real], "amin", include_self=True
+    first = scatter_reduce_(
+        torch.full_like(counts, num_edges),
+        0,
+        circuit[real],
+        position[real],
+        "amin",
+        include_self=True,
     )
     start = edges[first.clamp(max=num_edges - 1), :2]
     padding = torch.cat((start, start, torch.zeros_like(start)), -1)
