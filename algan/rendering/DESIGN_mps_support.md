@@ -704,7 +704,11 @@ cleared so a gap is loud:
 
 The amin/amax gap is not incidental: `_one_mesh_pixel_caps`
 (`raster_pipeline.py:1330-1332`) uses exactly those two for the per-pixel surface
-id spread. Everything else **ran without raising**, including int64
+id spread. Nor is the failure clean, as torch 2.13.0 showed (§4.11, T): the op
+flips every sign bit of its output before it raises, and after a second failure
+the process can compile no new kernel. So the renderer reduces through
+`mps_compat.scatter_reduce_`, which computes an int64 extremum from two int32
+ones. Everything else **ran without raising**, including int64
 `scatter_add_`, 64-bit shifts, `view(torch.uint8)`, `argsort`/`sort` on int64,
 `unique_consecutive`, `bincount` — which is a weaker statement than it looks, and
 §2.3b is what the difference cost.
@@ -786,9 +790,11 @@ and int64 alike, and so does `repeat_interleave(values, counts)`, which torch
 builds on it, while the counts-only form is exact (run 42305385094). That
 version's `//`, `%`, floor `div` and `remainder` came back exact past 2**24 at
 both widths, and `torch.unique` still merged distinct values (run
-42329686918). The rule stands either way: `mps_compat.gather_exact` is the
-gather for such a value, and `mps_compat.repeat_interleave_exact` the repeat
-(§4.10).
+42329686918): asked for an inverse, or given a `dim`, it works on
+`float32(int32(x))`, while its values-only and counts-only forms are exact
+(§4.11, U). The rule stands either way: `mps_compat.gather_exact` is the
+gather for such a value, `mps_compat.repeat_interleave_exact` the repeat
+(§4.10), and `mps_compat.unique_exact` the `unique` (§4.11).
 
 `mps_compat.gather_packed_key` gathers with `v[i]`, which is one operation and
 exact. Two earlier forms are worth knowing about because they bound the problem:
@@ -1181,6 +1187,10 @@ section to update when one changes.
 | [42305385094](https://github.com/algorithmicsimplicity/algan/actions/runs/42305385094) (2026-11-06, cause N's intervals and polylines) | 6 failed, then 211 passed, 3 skipped — 789,747 interval offsets and 1,020,086 vertex numbers moved, then 0 |
 | [42308885414](https://github.com/algorithmicsimplicity/algan/actions/runs/42308885414) (2026-11-06, cause O on an M2 Pro) | the split kernel test's 12 MPS cases failed, then passed twice; both split files 198 passed, 20 skipped with the kernel arm on and off |
 | [42329686918](https://github.com/algorithmicsimplicity/algan/actions/runs/42329686918) (2026-11-07, pixel ids and stream positions past 2**24, cause Q) | 5 failed, then 5 passed; the six related files 294 passed, 20 skipped; no default render on the runner plans a chunk past 2**24 pixels |
+| [42351444222](https://github.com/algorithmicsimplicity/algan/actions/runs/42351444222), [42355723203](https://github.com/algorithmicsimplicity/algan/actions/runs/42355723203), [42371919983](https://github.com/algorithmicsimplicity/algan/actions/runs/42371919983) (2026-11-07, `unique` past 2**24, cause U, and the GPU's extra sheets) | 8,192 values from 2**24 came back as 4,097; the device tests failed, then 46 passed; the related files 222 passed, 10 skipped; the 8 extra sheets trace to an ulp of the camera ray's direction, with fast math on or off |
+| [42351612808](https://github.com/algorithmicsimplicity/algan/actions/runs/42351612808), [42353661819](https://github.com/algorithmicsimplicity/algan/actions/runs/42353661819), [42355691483](https://github.com/algorithmicsimplicity/algan/actions/runs/42355691483), [42370277126](https://github.com/algorithmicsimplicity/algan/actions/runs/42370277126) (2026-11-07, the silent out-of-memory, cause X) | §4.10's header build reproduced at 7.26 G, two command buffers failed and 102,317,937 of 121,000,000 words wrong, with nothing raised; held to the working set it raised after 11.7 s at 4.42 G; the hold's tests failed 3, then 105 passed, 2 skipped; the heavy renders peaked the same with the hold on and off, and every frame matched |
+| [42352045841](https://github.com/algorithmicsimplicity/algan/actions/runs/42352045841), [42354063716](https://github.com/algorithmicsimplicity/algan/actions/runs/42354063716), [42356233755](https://github.com/algorithmicsimplicity/algan/actions/runs/42356233755), [42370479770](https://github.com/algorithmicsimplicity/algan/actions/runs/42370479770), [42372352869](https://github.com/algorithmicsimplicity/algan/actions/runs/42372352869) (2026-11-07, the BVH builders and the int64 extrema, causes R and T) | `index_select` of 1,048,576 range starts past 2**24 wrong for all; every int64 `amin`/`amax` scatter raised, one case to a process, flipping its output's sign bits, and a second failure left a process that aborted on its next new kernel; the new tests failed on the device, then 15 passed; a root level of 17,825,793 primitives built on the GPU is the CPU's; the fast render's frames matched before and after |
+| [42355084729](https://github.com/algorithmicsimplicity/algan/actions/runs/42355084729), [42357151096](https://github.com/algorithmicsimplicity/algan/actions/runs/42357151096) (2026-11-07, the stroke split's denormal area and the sheet areas' order, causes V and W) | the area tests failed 20 of 20, then passed 20 of 20; replays moved 6 to 12 of an HD frame's 168,675 sheets and 283 to 309 of a solids frame's 1,843,088, then none; the split's six MPS weight cases failed, then passed; the five related files 346 passed, 23 skipped |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1213,11 +1223,23 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | O | the stroke split's kernel arm scans an int32 layout torch 2.13's metallib lacks | latent | 0 | **fixed** — §4.10 |
 | P | the zero-copy cache's weakref callback waits on a lock its own thread holds | a hang | 0 | **fixed** — §4.10 |
 | Q | a pixel id or stream position past 2**24, from a 4K chunk's third frame, goes through `index_select` | latent | 0 | **fixed** — §4.10 |
+| R | the BVH builders' range positions and ids, and the sliver strips, go through `index_select` and `repeat_interleave` | latent | 0 | **fixed** — §4.11 |
+| S | seventeen more ids, in the scene build and the depth-order scan, go through the same two | latent | 0 | **fixed** — §4.11 |
+| T | an int64 `scatter_reduce_` `amin` or `amax` flips its output's sign bits as it fails, and a second failure stops the process compiling kernels | latent | 0 | **fixed**: computed from two int32 reductions — §4.11 |
+| U | `unique` asked for an inverse merges integers past 2**24 | latent | 0 | **fixed** — §4.11 |
+| V | the stroke split's torch arm flushes a denormal area | latent | 0 | **fixed** — §4.11 |
+| W | the sheet areas' float32 atomics sum in no fixed order | replay noise | 0 | **fixed**: summed in stream order — §4.11 |
+| X | work past Metal's working set fails its command buffer, and nothing raises | latent | 0 | **fixed**: a render holds torch to the working set — §4.11 |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
 **L to Q failed no weekly run.** L, M, N and Q were found by reading for J's
 pattern after §4.9, and O and P by putting the stroke split's kernel arm on
 the Apple GPU. Each was made to fail there before it was fixed (§4.10).
+
+**Nor did R to X.** They are what §4.10 saw and did not chase, apart from S,
+which reading for R's pattern found. Each but S was made to fail on the Apple
+GPU before it was fixed; S's tests emulate the rounding, over ops the GPU
+answered exactly (§4.11).
 
 **Two fixes took thirty of the thirty-two**, and neither was aimed at most of
 what it cleared: §4.4's `empty_cache` (the arena was measuring torch's own
@@ -1924,33 +1946,298 @@ and `test_sheet_compaction.py::test_the_opaque_prefix_keeps_each_pixels_own_past
 The stream-position gathers are fixed but untested: they pass 2**24 only in a
 stream of that many fragments.
 
-**Seen and not chased**, recorded so the next reader starts from the
-measurement:
+**Seen and not chased** then, recorded so the next reader started from the
+measurement. §4.11 chased all seven, and says what each one was:
 
 * An out-of-memory error on MPS is silent. A chunk of 5,500 triangles over 100
   frames, built on the Apple GPU, printed `Insufficient Memory
   (kIOGPUCommandBufferCallbackErrorOutOfMemory)` to stderr, torch raised
   nothing, and 102.9M of its 121M header words came back wrong (run
-  42305385094; the runner's recommended working set is 4.67 GB).
+  42305385094; the runner's recommended working set is 4.67 GB). **Fixed**:
+  a render holds torch to the working set (X).
 * The GPU makes 2,063 circuit sheets of L's frame where the CPU makes 2,055,
   before the fix and after it, and the frames match after it. The stroke-pixel
-  split is not the cause.
+  split is not the cause. **Not a defect**: an ulp of Metal's ray direction.
 * On MPS the stroke split's torch arm flushes a denormal area (1.4e-45) to 0
-  where the kernel arm keeps it. No frame measured had one.
+  where the kernel arm keeps it. No frame measured had one. **Fixed** (V).
 * The general path sums areas with float32 atomics whose order MPS does not
   fix, so a sheet of three or more fragments can move by an ulp from one
-  replay to the next: 27 of an HD frame's 168,675 sheets did.
+  replay to the next: 27 of an HD frame's 168,675 sheets did. **Fixed**: the
+  areas are summed in stream order (W).
 * The BVH's gathers pass 2**24 once a BVH has 2**24 primitives:
   `refit_bvh.py`'s `sub_start`, `sub_count` and `sub_block` (lines 864-899)
   and `stbvh.py`'s slot ids (line 418), and the id expansions in
   `refit_bvh.py` (line 253) and `sliver_split.py` (line 137). None was
-  measured.
+  measured. **Fixed** (R), except the slot ids, which go through
+  `torch.gather` and were exact.
 * `torch.unique` merges distinct values past 2**24 on torch 2.13.0: 2,010,925
   of 2,091,233 came back (run 42329686918). In the renderer it is reachable
   on MPS only in `_sheet_rank_groups`' torch arm, whose key reaches 2**25 in a
-  4K frame, and MPS takes the kernel arm by default.
+  4K frame, and MPS takes the kernel arm by default. **Fixed** (U), along with
+  a second site, the solid shells' table.
 * An int64 `scatter_reduce_` amin or amax raises on MPS, as §2.3 found (the
-  renderer reduces in int32 there, §1.2), and it then poisons the process:
+  renderer reduces in int32 there, §1.2), and it then poisoned the process:
   every new MPS kernel after it failed the same way, and the process died in
   an MPSLibrary `gatherND_base` assertion (run 42329686918). A probe should
-  measure it last, or in a process of its own.
+  measure it last, or in a process of its own. Measured that way (T), the op
+  also flips every sign bit of its output, a process survives one failure,
+  and a second leaves it unable to compile a new kernel. **Fixed**: an int64
+  extremum is computed from two int32 ones.
+
+### 4.11 What §4.10 left: the BVH and scene ids, an int64 reduction, `unique`, two float sums, and a silent out-of-memory
+
+§4.10 ended with seven things seen and not chased. All seven were put on the
+Apple GPU on 2026-11-07 (§4.1). Six were defects and are fixed (R, T, U, V, W,
+X), and reading for R's pattern found the same gather at seventeen more sites
+(S). The seventh, the GPU's extra circuit sheets, is an ulp of Metal's
+arithmetic and stays. None of them failed a weekly run: R and S need more than
+2**24 primitives, ids or surfaces in one batch; T is off the default route;
+U's sites are a torch arm MPS does not take and a table whose surface ids pass
+2**24 only in a scene of that many; V and W change a bit or an ulp that no
+frame measured has shown; and X needs a build larger than the runner's working
+set. As in §4.10, each fix
+has a test that fails without it, a gather's test emulates the rounding on the
+CPU (`tests/unit_tests/mps_rounding.py`), and a test of an op MPS gets wrong
+also runs that op on an Apple machine's GPU.
+
+**R: the BVH builders' positions past 2**24.** The torch BVH builder moves
+each level's ranges with integer gathers: a range's start and count are
+positions in the primitive order, and its id (`sub_block`) numbers it within
+the level. `refit_bvh._build_level` gathered them with `index_select`, and
+`_binary_split` spread the range ids over their primitives with
+`repeat_interleave(values, counts)`. On the Mac, `index_select` of 1,048,576
+range starts past 2**24 returned every one wrong (17,812,899 as 17,812,900),
+and the `_binary_split` expansion over 16,781,312 ranges 3,075 of its
+25,174,750 ids (run 42352045841). A level of 16,777,343 primitives then read
+past the end of the order and raised `index 16777343 is out of bounds`.
+Positions go wrong in a tree of more than 2**24 ever-visible primitives built
+by the torch builder, which on MPS is any device build of more than 8,192
+columns (`ALGAN_REFIT_HOST_TOPOLOGY`), and range ids in a level of more than
+2**24 ranges; a CPU build takes the NumPy builder and never runs this code.
+`sliver_split._strip_rows` had the pattern three times over: the sliver that
+owns each strip, each sliver's first strip, which passes 2**24 at 524,288
+slivers of the default 32 strips, and the triangle a strip cuts. `_build_level`
+and `_strip_rows` gather with `gather_exact` now, and the two expansions take
+the counts alone (`repeat_interleave(counts, output_size=...)`), which is the
+arange gathered and exact. A root level of 17,825,793 primitives built on the
+GPU, with a sync after each op, is then the CPU's level exactly (runs
+42370479770 and 42372352869). `stbvh.py`'s slot ids were already exact: they
+go through `torch.gather`, which this torch answers exactly (§2.3b). The tests
+are `test_bvh_mps_gathers.py`'s four, emulated and on the device.
+
+**S: seventeen more ids in the scene build.** Ten sites spread an arange over
+runs with `repeat_interleave(values, counts)`: one in `bezier_acceleration.py`,
+four in `bezier_geometry_cache.py` and five in `primitives.py`. They take
+`repeat_interleave(counts)` now, the same tensor. `primitives.py`'s
+`vert_circuit` spreads circuit ids that are not an arange and takes
+`repeat_interleave_exact`. Four surface-id gathers in
+`sheets._sample_depth_lose_reference`, one in `scene_builder.py` and the
+owner gather of the depth-order diagnostic
+(`float32_rounding.depth_order_record`) take `gather_exact`. In a Mac render
+only the four `sheets` gathers and the diagnostic run on the GPU: the
+reference depth gate, taken with
+`ALGAN_SHEET_DEPTH_REDUCE_KERNEL=0` or for a batch too big for its kernel,
+goes wrong past 2**24 surfaces, and the diagnostic past 2**24 Mobs. The rest
+run on the projection and merge device, which is the CPU on a Mac, since GPU
+projection and merge are CUDA-only, so MPS reaches them only through
+`ALGAN_ANIMATION_DEVICE=mps` or a direct call, and each needs more than 2**24
+circuits, members or triangles in one batch. `test_ids_mps_gathers.py` builds
+each case alone and again behind 2**24 empty circuits or members, and each of
+the sixteen sites, reverted alone, fails one of its eleven tests.
+`test_depth_order_warning.py::test_owners_past_2_24_stay_apart_through_the_mps_gather`
+finds 116 pairs instead of 152 without the fix. No Mac run was needed: the
+fixes use only `v[i]` and the counts-only repeat, which run 42352045841
+measured exact through 2**25.
+
+**T: an int64 extremum corrupts its output, then the process.** §2.3 found
+that an int64 `scatter_reduce_` `amin` or `amax` raises on MPS. Run one case to
+a process (run 42352045841), every such call, `scatter_reduce_` or
+`scatter_reduce`, with `include_self` on or off, raises `Failed to created
+pipeline state object`. `prod` fails earlier, at function lookup, and
+`index_reduce_` refuses int64 cleanly; sum, mean, `scatter_add_` and the int32
+extrema work. Torch 2.13.0 runs the op as a ulong atomic kernel between two
+passes that flip every element's sign bit (`ScatterGather.mm`), and the
+compile fails between them, so the output comes back with every sign bit
+flipped: 1,024 of 1,024 (run 42354063716). A process survives one failure.
+After a second, of either reduction, it cannot compile a kernel it has not
+compiled before, and the next such kernel aborts it: exit −6 in that run, and
+the `gatherND_base` assertion of run 42329686918. The renderer asks for none of
+these on its default MPS route, since its reductions use
+`reduction_index_dtype()`, int32 in MPS-friendly mode, and its two int64 `amin`
+sites (`_padding_edges` and `_split_promotable`) reduce CPU tensors. With
+`ALGAN_MPS_FRIENDLY=0` on MPS, though, `reduction_index_dtype()` is int64 and
+those reductions reach the op. So all 25 call sites go through
+`mps_compat.scatter_reduce_` and `scatter_reduce` now, which compute an int64
+`amin` or `amax` exactly from two int32 reductions, high words and then the
+winners' low words, whenever the tensor is on MPS or the mode is on. A shape
+the route cannot do raises before any op runs, and every other dtype and
+reduction is the op itself. `test_mps_int64_reductions.py` checks the route
+against the op on the CPU and on the GPU, and its
+`::test_algan_reduces_through_mps_compat` fails on a direct call anywhere in
+`algan/`. `benchmarks/_mps_torch_op_probe.py` runs each int64 case in an
+interpreter of its own, last, with canary kernels after it.
+
+**U: `unique` with an inverse merges integers past 2**24.** On torch 2.13.0's
+MPS, `torch.unique` asked for an inverse, or given a `dim`, works on
+`float32(int32(x))`. `unique(arange(2**24, 2**24 + 8), return_inverse=True)`
+returns 16777216, 16777218, 16777220, 16777222 and 16777224, the last not in
+its input, and 8,192 consecutive values from 2**24 come back as 4,097 (runs
+42351444222 and 42371919983). From 2**32 an int64 keeps only its low word.
+The values-only and counts-only forms are exact, and so are sort and argsort,
+to 2**62 over 33.5 million rows. A record of every `unique` and
+`unique_consecutive` that ran on MPS in a test session (run 42351444222) found
+one with an inverse over values that can pass 2**24, the solid shells' table
+in `shell_alpha.py`, and reading found one more, `_sheet_rank_groups`' torch
+arm. In MPS-friendly mode the table takes the new `mps_compat.unique_exact`,
+which sorts stably, compares neighbours, numbers the groups with an int32 scan
+and scatters the numbers back, and the rank groups take `band_class_groups`
+(§2.3b). Off the mode both run the op they ran before. On the Mac without the
+fix, the device tests found "4 shells" where there are 5 and 4,199 rows of the
+rank groups moved (run 42355723203). The tests are `test_mps_friendly.py`'s
+four `unique_exact` ones, and two each in `test_sheet_rank_groups.py` and
+`test_hybrid_transport.py`, emulated (`mps_rounding.merge_wide_uniques`) and on
+the device.
+
+**V: the stroke split's torch arm flushed a denormal area.** On MPS every float
+op measured flushes a denormal to zero: add, multiply, `clamp_min`, `maximum`,
+`scatter_add_` and `index_add_`. Copies keep it, and a NaN's payload: clone,
+`index_select`, `x[i]`, a boolean mask and `index_copy_`. In Taichi on Metal a
+copy is exact, and max, atomic add and add flush (run 42355084729). The
+split's torch arm applied the stroke area rule, `(cov + 0.0).clamp_min_(0.0)`,
+in float arithmetic, so it flushed a 1.4e-45 area that the kernel arm, which
+applies the rule to the bits, kept. Linux's CPU did the same, because Taichi's
+init turns flush-to-zero on for the main thread. Only the affected sheet's
+`sheet_wgt` differed, and replacing all 4,117 zero sheet weights of an HD
+explainer frame with 1.4e-45 moved no pixel. `sheets._stroke_area_bits`
+applies the kernel's rule to the int32 view now: a set sign bit gives +0.0, a
+NaN gets its quiet bit, and anything else keeps its bits.
+`test_stroke_sheets.py::test_stroke_pixel_split_kernels_match_the_torch_arm`
+feeds ±1.4e-45 and ±1.18e-38 areas on every device, and its six MPS cases that
+compare the arms' weights failed before the fix and pass after it (runs
+42355084729 and 42357151096).
+
+**W: the sheet areas' float32 atomics had no fixed order.** In MPS-friendly
+mode the general path sums each sheet's area with float32 atomics, since Metal
+has neither float64 nor 64-bit integer atomics to sum them wider or in fixed
+point, and Metal fixes no order for them. Replaying one captured compaction six
+times moved 6 to 12 of an HD explainer frame's 168,675 sheets per replay, and
+283 to 309 of a solids frame's 1,843,088, each a sum of 3 to 18 fragments
+(runs 42355084729 and 42357151096). No final pixel moved in those renders. A
+new kernel, `sheet_compact_taichi.sheet_band_reduce_runs`, runs one thread per
+(pixel, surface, facing) group from the compaction's group starts and sums
+each band's area left to right in stream order. `_band_reduce` takes it when
+its accumulator is float32 and it is given the runs, which `compact_sheets`
+gives all four of its sums: the sheet areas, the rank pool's threshold and the
+two sibling-weight composites. `sheets.sheet_area_fixed_order`, on by
+default, turns the kernel off for an A/B against the atomics. The replays are then bit-identical, and so are the
+stroke split's arms on an HD frame. The cost did not measure: the compaction's
+median was 24.17 ms against 24.38 ms on the explainer, and 213.35 against
+210.20 ms on the solids. Off the mode the accumulator is float64, which was
+measured stable bit for bit, and the kernel never runs.
+`test_sheet_area_order.py`'s two tests, the areas against numpy's stream-order
+float32 sums and replays through the rank pool and the sibling weights,
+failed in 6 of 6 Mac runs before.
+
+**X: an out-of-memory failure on MPS was silent.** Metal refuses no
+allocation past `recommendedMaxWorkingSetSize`, nor past the machine's RAM. It
+fails the work that needs more memory resident than it can give, and nothing
+reads that failure: torch's `MPSStream::commitAndWait` reads only the kernels'
+own error buffer, never the command buffer's status, and Quadrants 1.3.3's
+`MetalStream::command_sync` does not either. So nothing raises, the outputs
+hold whatever their buffers held, and MPS prints
+`kIOGPUCommandBufferCallbackErrorOutOfMemory` or nothing at all. Nothing kept
+Algan out of that region: torch's own limit is 1.7 working sets
+(`default_high_watermark_ratio`), 7.93 G on the 7 GB runner against a working
+set of 4.67 G. The arena planner budgets against the working set, but torch's
+prep and merge work sits outside it, and a Bezier header for circuits whose
+edges change every frame can be large: §4.10's case peaks 3.27 GB above
+baseline on the CPU. Built on the GPU, it took the device to 7.26 G, two
+command buffers failed, and 102,317,937 of its 121,000,000 words came back
+wrong (run 42351612808). One `torch.add` of two 2 GiB tensors into a third, at
+6.0 G or 1.29 working sets, less than the runner's RAM, left its output all
+zeros and printed nothing; at 4.5 G it was right (run 42355691483).
+`taichi_runtime.render_job_holding_the_arch` now holds torch to the working
+set, `torch.mps.set_per_process_memory_fraction(1.0)`
+(`memory_utils.hold_mps_allocator_to_the_working_set`), from the start of the
+outermost render job to its end, and puts torch's default back after it. An
+allocation that would cross the working set is then refused: torch frees its
+cache and retries, then raises "MPS backend out of memory", which
+`is_cuda_oom` matches, so the render's retries split the window as they do on
+CUDA. The same header build raised after 11.7 s at 4.42 G. The environment
+variable would not do: `PYTORCH_MPS_HIGH_WATERMARK_RATIO=1.0` alone breaks
+torch's init ("invalid low watermark ratio 1.4"), and a ratio a user sets
+there stands. The heavy reference renders peak at 2.4 to 3.3 G, and rendered
+with the hold on and off in turn they reached the same peaks, the warm renders
+were no slower, and every frame was identical (run 42370277126).
+`test_mps_working_set_hold.py` checks the hold and its release after a render
+that fails, and on the MPS arm that a render job cannot allocate past the
+working set and can again after it.
+
+**The GPU's extra circuit sheets are not a defect.** L's frame makes 2,063
+sheets on the GPU and 2,055 on the CPU because the raster keeps 8 more
+fragments there. In column 30 the front circuit's coverage is 0.9999976 on
+Metal, just under `AA_FULL_COVERAGE` (1 − 1e-6), where the CPU's is 1.0, so
+the opaque-prefix truncation keeps the fragment behind it. The CPU's kernel on
+the GPU's inputs gives the CPU's raster and Metal's on the CPU's inputs the
+GPU's, so the inputs agree and the arithmetic differs. The first intermediate
+whose bits differ is the camera ray's direction, −0.12817332 against
+−0.12817331, about an ulp of Metal's normalize and division, and turning fast
+math off on Metal changes nothing (run 42355723203). Four squares show it as
+well, so it needs no 65,536 circuits. The extra fragment weighs at most
+2.4e-6, so L's frames are identical and other frames differ by at most one
+level at one pixel. It costs memory and time only, and it stays.
+
+**A coverage bug every device had.** Tracing those sheets found one that is
+not the GPU's. The oriented wedge that draws a Bezier circuit's corner
+(`raster_taichi._bez_pixel_hit`) handed its convex-or-reflex choice to the
+crossing parity whenever one of its two side tests abstained, and at a right
+angle with the pixel centre on a wall's line that parity is a rounding. A
+square whose edge ran through pixel centres drew the pixels beside its corners
+fully covered where they are half covered. It is fixed in a PR of its own,
+#251, because it changes CPU and CUDA output too.
+
+**Seen and not chased**, recorded so the next reader starts from the
+measurement:
+
+* `gather_exact`, `repeat_interleave_exact` and `unique_exact` switch on
+  MPS-friendly mode, so with `ALGAN_MPS_FRIENDLY=0` on an MPS device every
+  site of §4.9 to §4.11 rounds again. T's route also checks the device and
+  stays exact.
+* Run unsynced on the GPU, the level of 17,825,793 primitives that R's fix
+  builds exactly with a sync after each op raised `index 17825793 is out of
+  bounds` at 6.28 GiB on the driver (runs 42370479770 and 42372352869), and a
+  full build of 1M primitives, no value of which passes 2**24, raised the same
+  way (run 42356233755). So it is not R's rounding.
+* An int32 sum over 64M-element MPS buffers returned 0, with no error, at 0.9
+  working sets (run 42353661819).
+* X's hold is torch's alone. Torch counts the whole device, the native arena,
+  Quadrants' buffers and MPSGraph's included, but refuses only its own
+  allocations, and pressure from elsewhere below the limit stays silent:
+  only torch or Quadrants reading a command buffer's status would catch it.
+  Torch checks a request before carving it from heaps of up to 1 GiB, so the
+  device can end a little past the limit (5.00 G against 4.67 G). A fraction
+  a user set at runtime is replaced during a render, and the release writes
+  torch's default of 1.7, since torch has no getter. Only render jobs are
+  held.
+* A UHD render at the default host share (0.4 of RAM) raises
+  `OutOfRenderMemory` on the 7 GB runner, with the hold and without it (run
+  42351612808). It is loud, so it is a limit rather than a defect.
+* On MPS a denormal stroke area is kept by both split arms now, but the
+  unsplit general path's float32 sum flushes it, so split and unsplit can
+  give that sheet different weights. The resolve cannot tell them apart.
+* Two float32 sums keep an unordered `scatter_add_`: `_band_reduce`'s torch
+  arm, taken only with `sheet_mask_kernel` off, and the shell ceiling's cap
+  (M's noise).
+* `unique_consecutive` returns `int32(x)` as its values for an int64 of 2**31
+  or more on MPS. No call site comes near that.
+* Arange expansions remain on the animation device, in
+  `mobs/bezier_circuit.py`, `mobs/nonplanar_circuit.py`,
+  `animation_timeline/timeline.py` and `animatable_base/mob_morph.py`. That
+  device is the CPU on a Mac.
+* Two more coverage errors in the wedge, on every device. A segment is listed
+  in every grid cell it crosses, so in `_bezier_point_metrics_in` the nearest
+  segment's repeat can take the second slot from the corner's other wall and
+  the wedge sees one wall twice: that is all 48 of the fragments a 160x90 grid
+  of squares has more than 0.02 off their area, and barring the repeat alone
+  made 12 others worse. And an apex exactly on a pixel centre leaves both side
+  tests abstaining.
