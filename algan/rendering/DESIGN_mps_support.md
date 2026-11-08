@@ -1191,6 +1191,7 @@ section to update when one changes.
 | [42351612808](https://github.com/algorithmicsimplicity/algan/actions/runs/42351612808), [42353661819](https://github.com/algorithmicsimplicity/algan/actions/runs/42353661819), [42355691483](https://github.com/algorithmicsimplicity/algan/actions/runs/42355691483), [42370277126](https://github.com/algorithmicsimplicity/algan/actions/runs/42370277126), [42372132733](https://github.com/algorithmicsimplicity/algan/actions/runs/42372132733), [42374877006](https://github.com/algorithmicsimplicity/algan/actions/runs/42374877006), [42378512143](https://github.com/algorithmicsimplicity/algan/actions/runs/42378512143), [42381446368](https://github.com/algorithmicsimplicity/algan/actions/runs/42381446368), [42385375749](https://github.com/algorithmicsimplicity/algan/actions/runs/42385375749), [42388655058](https://github.com/algorithmicsimplicity/algan/actions/runs/42388655058) (2026-11-07, the silent out-of-memory, cause X) | §4.10's header build reproduced at 7.26 G, two command buffers failed and 102,317,937 of 121,000,000 words wrong, with nothing raised; held to the working set it raised after 11.7 s at 4.42 G; the hold's tests failed 3, then 105 passed, 2 skipped; the heavy renders peaked the same with the hold on and off, and every frame matched; the unsynced BVH builds and an int32 sum that came back 0 were the same failure, one command buffer whose heaps came within 20 to 30 MiB of the working set; held at 1.0, torch's 1 GiB heaps let 17 buffers into 1.07 working sets and an add over them came back wrong, and with the low watermark at 0.75 and the hold at 0.98 the same buffers stopped at 0.964 and the add was right, with the reference renders' frames unchanged |
 | [42352045841](https://github.com/algorithmicsimplicity/algan/actions/runs/42352045841), [42354063716](https://github.com/algorithmicsimplicity/algan/actions/runs/42354063716), [42356233755](https://github.com/algorithmicsimplicity/algan/actions/runs/42356233755), [42370479770](https://github.com/algorithmicsimplicity/algan/actions/runs/42370479770), [42372352869](https://github.com/algorithmicsimplicity/algan/actions/runs/42372352869) (2026-11-07, the BVH builders and the int64 extrema, causes R and T) | `index_select` of 1,048,576 range starts past 2**24 wrong for all; every int64 `amin`/`amax` scatter raised, one case to a process, flipping its output's sign bits, and a second failure left a process that aborted on its next new kernel; the new tests failed on the device, then 15 passed; a root level of 17,825,793 primitives built on the GPU is the CPU's; the fast render's frames matched before and after |
 | [42355084729](https://github.com/algorithmicsimplicity/algan/actions/runs/42355084729), [42357151096](https://github.com/algorithmicsimplicity/algan/actions/runs/42357151096) (2026-11-07, the stroke split's denormal area and the sheet areas' order, causes V and W) | the area tests failed 20 of 20, then passed 20 of 20; replays moved 6 to 12 of an HD frame's 168,675 sheets and 283 to 309 of a solids frame's 1,843,088, then none; the split's six MPS weight cases failed, then passed; the five related files 346 passed, 23 skipped |
+| [42422403489](https://github.com/algorithmicsimplicity/algan/actions/runs/42422403489), [42424700295](https://github.com/algorithmicsimplicity/algan/actions/runs/42424700295) (2026-11-08, the UHD segfault, cause Y) | a second thread calling `torch.mps.empty_cache()` killed a process running MPSGraph ops 4 times of 4, each within 1.5 s, and the allocator's drain alone, `driver_allocated_memory()` and `set_per_process_memory_fraction` killed none; UHD renders with the batch-prep worker's drain provoked died at `index_select_out_mps +1608` as before, in 5 of 8 processes; with drains kept to the render job's thread none of 7 such processes died, 0 of 21 renders crashed, the race test's child lived 6 times of 6 against 4 deaths of 4, the touched files 148 passed, 1 skipped, and every frame matched |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1230,6 +1231,7 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | V | the stroke split's torch arm flushes a denormal area | latent | 0 | **fixed** — §4.11 |
 | W | the sheet areas' float32 atomics sum in no fixed order | replay noise | 0 | **fixed**: summed in stream order — §4.11 |
 | X | work past Metal's working set fails its command buffer, and nothing raises | latent | 0 | **fixed**: a render holds torch under the working set, and a low watermark keeps its heaps there — §4.11 |
+| Y | a drain of torch's MPS caches on the batch-prep thread deletes the cached MPSGraph an op on the render thread is using | a segfault | 0 | **fixed**: drains stay on the render job's thread — §4.12 |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
 **L to Q failed no weekly run.** L, M, N and Q were found by reading for J's
@@ -1240,6 +1242,10 @@ the Apple GPU. Each was made to fail there before it was fixed (§4.10).
 which reading for R's pattern found. Each but S was made to fail on the Apple
 GPU before it was fixed; S's tests emulate the rounding, over ops the GPU
 answered exactly (§4.11).
+
+**Nor did Y**, the segfault §4.11 saw in 3 of 40 UHD probe renders and did
+not chase. It was made to happen at will on the Apple GPU, and in a
+real render, before it was fixed (§4.12).
 
 **Two fixes took thirty of the thirty-two**, and neither was aimed at most of
 what it cleared: §4.4's `empty_cache` (the arena was measuring torch's own
@@ -2280,7 +2286,8 @@ measurement:
   probe thread called `torch.mps.driver_allocated_memory()`: none in 16
   renders sampled every 0.5 s, one in 9 at 0.1 s and two in 15 at 20 ms. So a
   thread asking the driver for its memory during MPS work may provoke it,
-  which is not proven.
+  which is not proven. It was Y, the batch-prep worker draining torch's
+  caches, and that query alone never crashed (§4.12).
 * On MPS a denormal stroke area is kept by both split arms now, but the
   unsplit general path's float32 sum flushes it, so split and unsplit can
   give that sheet different weights. The resolve cannot tell them apart.
@@ -2306,3 +2313,141 @@ measurement:
   of squares has more than 0.02 off their area, and barring the repeat alone
   made 12 others worse. And an apex exactly on a pixel centre leaves both side
   tests abstaining.
+
+### 4.12 Y: a cache drain on the batch-prep thread, and the UHD segfault
+
+§4.11 saw three UHD renders of 40 segfault on the 7 GB runner and did not
+chase them. They were put on the Apple GPU on 2026-11-08 (§4.1), and they are
+one defect, Y: the batch-prep worker drained torch's MPS caches while the
+render thread was running an MPS op, and the drain deleted the graph the op
+was using. It failed no weekly run, since it needs memory pressure while a
+render runs on MPS, which a UHD render gives the 7 GB runner.
+
+**Where they died.** Each crash was on the main thread, in
+`index_select_out_mps` +1608 calling
+`+[NSDictionary dictionaryWithObjects:forKeys:count:]`, with `EXC_BAD_ACCESS`
+and "possible pointer authentication failure", while the batch-prep worker
+(`algan-batch-prep_0`) worked on the next batch (runs 42385375749 and
+42388655058).
+
+**A drain deletes every cached graph.** In torch 2.13.0,
+`torch.mps.empty_cache()` is `MPSHooks::emptyCache`, which drains the
+allocator and then calls `MPSGraphCache::clear()`, and the clear deletes every
+cached graph (`aten/src/ATen/mps/MPSHooks.mm`,
+`aten/src/ATen/native/mps/OperationUtils.h`). An op gets its graph from
+`LookUpOrCreateCachedGraph` as a raw pointer, and the cache's serial queue
+orders the lookup against the clear but not the graph's use after it.
+`index_select_out_mps` builds placeholders from the graph's tensors, then a
+feeds dictionary keyed by them, then runs the graph
+(`aten/src/ATen/native/mps/operations/Indexing.mm`). A clear on another thread
+in that window leaves the keys pointing at freed objects, and building the
+dictionary is where the renders died. `torch.accelerator.empty_cache()`
+drains the allocator alone and leaves the graphs.
+
+**The worker drained.** `release_torch_memory` drains torch's MPS caches
+whenever memory is under pressure, and the batch-prep worker calls it after
+each primitive it projects (`primitives._release_unpacked_geometry`, from
+`_pack_projected_flat_geometry`) and in `project_to_screen`, from
+`render_loop._prewarm_render_batch`. In a warm UHD render with nothing
+forced, about 0.8 G of the runner's 7 G was free, and the worker drained four
+times (run 42422403489).
+
+**It was made to happen** (run 42422403489):
+
+* A second thread calling `torch.mps.empty_cache()` in a loop killed a process
+  running MPSGraph ops on its main thread 4 times of 4, each within 1.5 s and
+  about ten ops: twice with `SIGSEGV`, and twice with `SIGABRT` on an
+  unrecognized selector sent to whatever then held the graph's memory, each
+  while `structured_mm_out_mps` built its feeds. The same loop killed none of 3
+  with `torch.accelerator.empty_cache()`, none of 3 with
+  `driver_allocated_memory()` and none of 2 with
+  `set_per_process_memory_fraction`, each process running its 15 s, about a
+  hundred ops.
+* In UHD renders, host pressure forced on, so that the worker drained in every
+  render, killed 1 of 4 processes, and a side thread also reclaiming every
+  0.25 s, as the worker does, killed 4 of 4, with 4 crashes in 5 renders. Each
+  died at `index_select_out_mps +1608` as before. The same two schedules with
+  the allocator-only drain killed none of 3 processes, in 6 renders.
+* `torch.mps.synchronize()` from a second thread aborted 2 of 2. That is
+  another torch defect, and Algan calls it only on the render job's thread.
+
+**The fix keeps drains on the render job's thread.**
+`memory_utils.drain_mps_caches()` makes every MPS drain now, for
+`release_torch_memory` and for `get_num_available_bytes` on MPS. While a
+render job runs, only the thread that entered it drains
+(`taichi_runtime.on_the_render_job_thread`). A request from any other thread
+sets `_MPS_DRAIN_DEFERRED`, and the job's thread makes the drain at its next
+`release_torch_memory`, pressured or not, or at the job's end, after the
+worker's executor has shut down: one drain for however many requests came in.
+A free figure measured on another thread is measured without the drain, and
+only the job's thread sizes an MPS arena during a job. With no job active,
+any thread drains at once, as before. `MPS_DRAIN_STATS` counts the drains, the
+requests deferred and the drains that served them. One thread is enough
+because it is the only one using cached graphs: GPU projection and merge are
+CUDA-only (`project_on_gpu_active`, `merge_on_gpu_active`), so on a Mac the
+worker's torch work runs on the CPU. In one UHD render all 1,376 Quadrants
+launches were the main thread's, and the worker ran one MPS op, an
+`aten.zeros`, which torch 2.13 fills with a Metal kernel and no graph (run
+42424700295).
+
+**Checked** (run 42424700295):
+
+* Before the fix the two new tests failed, and the race test's child died 4
+  times of 4, each process within 6.4 s of starting; each of the three that
+  showed where died in the matmul. After it the child lived 6 times of 6,
+  every drain on the job's thread, and the touched files 148 passed and 1
+  skipped, which needs CUDA, in 85.8 s.
+* No UHD render of 21 crashed after the fix: 8 with the reclaiming side
+  thread, in 4 processes, 6 with host pressure forced, in 3, and 7 plain,
+  without drains, with the allocator-only drain, and counting ops. Provoked
+  processes went from 5 of 8 crashed to 0 of 7 (one-sided Fisher p = 0.019),
+  and the child from 4 deaths of 4 to 0 of 6 (p = 0.005).
+* Every full drain during a job was on the main thread. With the side thread,
+  111 to 234 requests a render were served by 24 to 26 drains the render
+  thread made anyway, and with pressure forced, 4 requests by 1.
+* 18 frames of 18 decoded identically, with a largest difference of 0, before
+  the fix and after, and between the plain arm and the arms without drains and
+  with the side thread. On Linux the touched files 145 passed and 4 skipped,
+  and `tests/fast/test_fast_render.py` matches its baseline. CUDA runs none
+  of the new code, which is gated on `torch.mps.is_available()` or an MPS
+  device; that is read from the code, not measured.
+
+The tests are `tests/unit_tests/test_mps_cache_drains.py`'s two. A stubbed one
+runs anywhere, in about 0.2 s, and checks that the worker's pressured and
+forced reclaims and a free-figure measure drain nothing during a job, that the
+render thread's next reclaim makes one drain for them, and that the job's end
+makes a later one. On the Apple GPU, the other runs a render job's thread
+doing `index_select` and a matmul beside a thread reclaiming in a loop, in
+about 15 s.
+
+**The cost is the drains the render thread already made.** A full drain costs
+the render thread 30 to 110 ms, 0.6 to 2.7 s of a 36 to 93 s UHD render, and
+the allocator-only drain 2 to 4 ms. The fix adds no drain: a deferred request
+joins one the render thread makes, and those were fewer than the worker's
+own. Warm render times were too noisy to show a cost (one arm spread up to
+30 s), and rebuilding each graph after a full drain was not timed.
+
+**The sampler only moved the drains.** §4.11 found the crash rate rose with
+how often a probe thread called `torch.mps.driver_allocated_memory()`. That
+call alone never crashed, in the race or as the worker's own queries through
+the 21 renders after the fix, so the probe changed when a drain landed and
+caused nothing itself. GIL traffic shifting how the threads interleave is the
+likeliest reading, and it is not measured.
+
+**Seen and not chased**, recorded so the next reader starts from the
+measurement:
+
+* The render thread's own drains stay full: it drains on every `force_gc=True`
+  reclaim, 16 to 21 times in a UHD render. The allocator-only drain inside a
+  render, with the graph clear kept for the job's ends, would cost 2 to 4 ms a
+  drain rather than 30 to 110, but the graph cache would grow through the
+  render, and each torch would need checking for what its
+  `torch.accelerator.empty_cache` drains.
+* `ALGAN_ANIMATION_DEVICE=mps` puts the worker's torch work on the GPU, and
+  then the render thread's own drains can delete a graph the worker is using.
+* Two render jobs entered on two threads at once would leave the second's
+  drains to the first. Algan enters one at a time: the viewer serializes its
+  renders under `_scene_lock`.
+* The worker's prep retry (`force_gc=True`) leaves its MPS drain to the render
+  thread now. Its collection and heap trim still run at once.
+* Which line makes the worker's one MPS `zeros` was not traced.
