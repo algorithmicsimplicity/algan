@@ -2809,7 +2809,10 @@ analytic_aa_bez_wedge = env_flag("ALGAN_ANALYTIC_AA_BEZ_WEDGE", True)
 # its length at 1080p, against 1.2 % supersampled).
 # On, ``_bez_pixel_hit`` makes its nearest-edge query on screen, through the
 # plane's own projection at the pixel, and carries the plane's widths across.
-# Byte-identical off, and for a circuit facing an unrotated camera. Behind
+# Off, the query is the plane's again, but the wedge's rules of ss22.5 apply
+# under both arms, so off is no longer the filter before ss22 byte for byte.
+# For a circuit facing an unrotated camera the two arms draw the same: the fast
+# suite's scene, all camera-facing, renders identically under both. Behind
 # ``ti.static`` (``raster_taichi._bez_anisotropic``), hence one of
 # KERNEL_COMPILED_IN_FIELDS. DEFAULT ON.
 analytic_aa_bez_anisotropic = env_flag("ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC", True)
