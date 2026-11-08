@@ -1192,6 +1192,7 @@ section to update when one changes.
 | [42352045841](https://github.com/algorithmicsimplicity/algan/actions/runs/42352045841), [42354063716](https://github.com/algorithmicsimplicity/algan/actions/runs/42354063716), [42356233755](https://github.com/algorithmicsimplicity/algan/actions/runs/42356233755), [42370479770](https://github.com/algorithmicsimplicity/algan/actions/runs/42370479770), [42372352869](https://github.com/algorithmicsimplicity/algan/actions/runs/42372352869) (2026-11-07, the BVH builders and the int64 extrema, causes R and T) | `index_select` of 1,048,576 range starts past 2**24 wrong for all; every int64 `amin`/`amax` scatter raised, one case to a process, flipping its output's sign bits, and a second failure left a process that aborted on its next new kernel; the new tests failed on the device, then 15 passed; a root level of 17,825,793 primitives built on the GPU is the CPU's; the fast render's frames matched before and after |
 | [42355084729](https://github.com/algorithmicsimplicity/algan/actions/runs/42355084729), [42357151096](https://github.com/algorithmicsimplicity/algan/actions/runs/42357151096) (2026-11-07, the stroke split's denormal area and the sheet areas' order, causes V and W) | the area tests failed 20 of 20, then passed 20 of 20; replays moved 6 to 12 of an HD frame's 168,675 sheets and 283 to 309 of a solids frame's 1,843,088, then none; the split's six MPS weight cases failed, then passed; the five related files 346 passed, 23 skipped |
 | [42422403489](https://github.com/algorithmicsimplicity/algan/actions/runs/42422403489), [42424700295](https://github.com/algorithmicsimplicity/algan/actions/runs/42424700295) (2026-11-08, the UHD segfault, cause Y) | a second thread calling `torch.mps.empty_cache()` killed a process running MPSGraph ops 4 times of 4, each within 1.5 s, and the allocator's drain alone, `driver_allocated_memory()` and `set_per_process_memory_fraction` killed none; UHD renders with the batch-prep worker's drain provoked died at `index_select_out_mps +1608` as before, in 5 of 8 processes; with drains kept to the render job's thread none of 7 such processes died, 0 of 21 renders crashed, the race test's child lived 6 times of 6 against 4 deaths of 4, the touched files 148 passed, 1 skipped, and every frame matched |
+| [42443109513](https://github.com/algorithmicsimplicity/algan/actions/runs/42443109513) (2026-11-08, the render thread's drains with torch's graphs kept, §4.13) | ten UHD renders an arm, interleaved: kept, the graphs grew 49 to 51 MB a chunk until the 80% gate cleared them at chunk 14 in all ten, that one clear took about as long as the full arm's 12 to 17, and the renders were no faster (chunks 2 to 18 15.9 s against 16.1 s) while peaking 0.5 G higher; every frame matched, so the drains stay full |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -2426,7 +2427,8 @@ the render thread 30 to 110 ms, 0.6 to 2.7 s of a 36 to 93 s UHD render, and
 the allocator-only drain 2 to 4 ms. The fix adds no drain: a deferred request
 joins one the render thread makes, and those were fewer than the worker's
 own. Warm render times were too noisy to show a cost (one arm spread up to
-30 s), and rebuilding each graph after a full drain was not timed.
+30 s), and rebuilding each graph after a full drain was not timed (§4.13: a
+chunk builds most of its graphs for itself, so there is little to rebuild).
 
 **The sampler only moved the drains.** §4.11 found the crash rate rose with
 how often a probe thread called `torch.mps.driver_allocated_memory()`. That
@@ -2438,12 +2440,11 @@ likeliest reading, and it is not measured.
 **Seen and not chased**, recorded so the next reader starts from the
 measurement:
 
-* The render thread's own drains stay full: it drains on every `force_gc=True`
-  reclaim, 16 to 21 times in a UHD render. The allocator-only drain inside a
-  render, with the graph clear kept for the job's ends, would cost 2 to 4 ms a
-  drain rather than 30 to 110, but the graph cache would grow through the
-  render, and each torch would need checking for what its
-  `torch.accelerator.empty_cache` drains.
+* The render thread's own drains stay full. They are pressured reclaims, 16 to
+  21 times in a UHD render, and on the 7 GB runner the pressure is the host's,
+  not `force_gc=True`. §4.13 tried the allocator-only drain in their place,
+  with the graph clear kept for the job's ends, and it saved nothing: each
+  chunk builds most of its graphs for itself.
 * `ALGAN_ANIMATION_DEVICE=mps` puts the worker's torch work on the GPU, and
   then the render thread's own drains can delete a graph the worker is using.
 * Two render jobs entered on two threads at once would leave the second's
@@ -2452,3 +2453,86 @@ measurement:
 * The worker's prep retry (`force_gc=True`) leaves its MPS drain to the render
   thread now. Its collection and heap trim still run at once.
 * Which line makes the worker's one MPS `zeros` was not traced.
+
+### 4.13 The render thread's drains stay full: keeping torch's graphs does not pay
+
+§4.12 left the render thread's own drains full, each one clearing torch's
+MPSGraph cache, and recorded the allocator-only drain in their place as not
+chased. It was tried on the Apple GPU on 2026-11-08 and saved nothing, so the
+drains stay full.
+
+**Which reclaims drain.** §4.12 said the render thread drains on every
+`force_gc=True` reclaim. It drains on every pressured one, and in a UHD render
+on the 7 GB runner the pressure is the host's: the render leaves 0.8 to 1.2 G
+of the machine available, around the 15% at which `_host_memory_pressure`
+answers yes. In the ten full-drain renders of run 42443109513 no chunk made a
+forced or GPU-pressured reclaim, and 157 of the 170 chunks after the first
+drained: 12 to 17 times a render from `_render_primitive_batch`, and 14 to 20
+times in all.
+
+**What each torch drains.** `torch.accelerator.empty_cache()` came with torch
+2.9. In 2.13 it waits for torch's MPS stream and hands the allocator's cached
+buffers back (`MPSHeapAllocatorImpl::emptyCache`), and leaves the graphs.
+`torch.mps.empty_cache()` does the same and, since 2.13, also clears the
+MPSGraph cache (`MPSHooks::emptyCache`); in 2.7.1 to 2.12.0 it drained the
+allocator alone (read from each tag's `aten/src/ATen/mps/MPSHooks.mm`).
+Algan's MPS arena needs 2.13, so every MPS render runs on a torch with both.
+
+**What was tried.** Inside a render job, a drain that only host pressure asked
+for drained the allocator alone. The graphs still went when the reclaim was
+forced, when the device passed 80% of its working set (`_gpu_memory_pressure`),
+when an arena was sized, and at the job's end if a drain had kept them.
+Outside a render job every drain stayed full.
+
+**What it did** (run 42443109513: the benchmark scene at UHD on the 7 GB
+runner, torch 2.13.0, five processes an arm of two renders each, in the order
+kept, full, full, kept and so on):
+
+* Every frame matched: each kept render's 18 decoded identically to its full
+  pair's, with a largest difference of 0.
+* Kept, the device's driver-allocated memory rose 49 to 51 MB every chunk,
+  from 3.04 G at the first to 3.69 G at the 13th, in each of the ten renders,
+  and the 80% gate, at 3.74 G of the 4.67 G working set, cleared the graphs as
+  the 14th chunk began, in each. Full, it stayed at 3.04 to 3.22 G. The kept renders peaked at 3.69 to 3.79 G against 3.16 to 3.28 G,
+  and left the host 0.70 to 0.80 G at its lowest against 0.82 to 0.94 G. Both
+  arms were back to 1.10 to 1.17 G after each job, and neither retried more:
+  each render of both made one sheet-route arena retry, as the warm-up did.
+* The gate's one clear took 0.54 to 1.46 s, median 0.67 s, about as long as
+  the full arm's 12 to 17 per-chunk clears together (0.46 to 1.10 s, median
+  0.76 s, 38 to 68 ms each), and the clear at the job's end another 0.08 to
+  0.46 s. The allocator-only drains took 2 to 4 ms each.
+* Kept chunks before the gate ran 0.92 s each against 1.00 s full (means of
+  ten renders, standard deviations 0.14 and 0.10 s), and the chunk that met
+  the gate took 0.85 s longer. Chunks 2 to 18 took 15.9 s kept against 16.1 s
+  full. Whole renders took 47.7 s against 51.6 s as a process's first, and
+  38.9 s against 37.3 s as its second: means of five, whose spread was up to
+  23 s.
+
+**Why.** Each chunk builds most of its graphs for itself. Kept, the driver's
+memory rose by the same 50 MB in every chunk, so each chunk built as much as
+the one before it and found little of what it needed among earlier chunks'
+graphs, and the kept chunks gained about a full drain's own time and no more.
+A second render of the same scene, with the first's graphs kept, added none:
+it held at 3.96 to 3.99 G throughout (run 42424700295, which had no clear at
+the job's end). So what makes a graph a chunk's own is something each chunk
+changes and each render repeats, most likely the shapes of its tensors; that
+was not traced. A full drain therefore throws away little the next chunk would
+use, and what it costs is releasing the graphs, which keeping them only
+postpones: the gate's clear released twelve chunks' graphs at once, and the
+job's end the rest.
+
+**So the drains stay full.** Keeping the graphs would save time only if they
+were never cleared, and they grow by 50 MB a chunk. A Mac drains inside a
+render only under pressure, so the machines the allocator-only drain would
+reach are the ones without the memory to hold them.
+
+**Seen and not chased:**
+
+* Single renders in run 42424700295 had pointed the other way, with chunks of
+  1.19 to 1.56 s under full drains against 0.99 to 1.06 s with none.
+  Interleaved, five processes an arm, the full-drain chunks ran 0.87 to 1.12 s.
+* A repeat render of the same scene does reuse kept graphs (above), but in the
+  two measured its chunks ran 0.99 and 1.52 s against the first render's 1.06
+  and 1.01 s, and the graphs held 0.9 G between the jobs.
+* Every UHD render on the runner, in both arms and the warm-up, retried one
+  sheet-route tile after its arena ran out (`tracer._halve_after_oom`).

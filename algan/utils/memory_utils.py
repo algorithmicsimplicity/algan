@@ -956,6 +956,13 @@ def drain_mps_caches():
     and a drain between its own ops meets none.
 
     With no render job active, any thread drains at once, as before.
+
+    The drain stays full on the job's thread too, graph clear and all.
+    ``torch.accelerator.empty_cache`` would drain the allocator and keep the
+    graphs, but a UHD chunk builds most of its graphs for itself, about 50 MB
+    of them, so keeping them only postpones their release: on the 7 GB Mac
+    runner it saved no time and held 0.5 GB more of the device
+    (``DESIGN_mps_support.md`` §4.13).
     """
     global _MPS_DRAIN_DEFERRED
     if not _on_the_render_job_thread():
