@@ -2299,7 +2299,8 @@ measurement:
   `mobs/bezier_circuit.py`, `mobs/nonplanar_circuit.py`,
   `animation_timeline/timeline.py` and `animatable_base/mob_morph.py`. That
   device is the CPU on a Mac.
-* Two more coverage errors in the wedge, on every device. A segment is listed
+* Two more coverage errors in the wedge, on every device, since fixed
+  (`DESIGN_analytic_aa.md` §22.5). A segment is listed
   in every grid cell it crosses, so in `_bezier_point_metrics_in` the nearest
   segment's repeat can take the second slot from the corner's other wall and
   the wedge sees one wall twice: that is all 48 of the fragments a 160x90 grid
