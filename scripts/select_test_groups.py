@@ -145,6 +145,15 @@ ALWAYS_CI = (
     "tests/unit_tests/test_one_solid_ceiling.py::",
     # A triangle too big for the coverage lattice is sent to the ray cast.
     "tests/unit_tests/test_raster_lattice_bound.py::test_lattice_demotion_keeps_safe_triangles_and_sends_the_rest_to_half",
+    # The circuit wedge against exact areas: a corner's two walls through any
+    # screen map, and by identity rather than the nearest's repeat, an edge
+    # through pixel centres, a corner on one, and stems and slits narrower
+    # than a pixel. Small raster renders, a fraction of a second each.
+    "tests/unit_tests/test_tilted_circuit_coverage.py::test_a_corner_keeps_both_walls_through_any_screen_map",
+    "tests/unit_tests/test_tilted_circuit_coverage.py::test_an_edge_through_pixel_centres_half_covers_its_pixels_up_to_the_corners",
+    "tests/unit_tests/test_tilted_circuit_coverage.py::test_a_small_square_keeps_both_walls_at_its_corners",
+    "tests/unit_tests/test_tilted_circuit_coverage.py::test_a_corner_on_a_pixel_centre_covers_a_quarter_of_its_pixel",
+    "tests/unit_tests/test_tilted_circuit_coverage.py::test_a_stem_and_a_slit_narrower_than_a_pixel_cover_their_areas",
     # An extent past int32 takes the torch arm, or is refused, instead of wrapping.
     "tests/unit_tests/test_sheet_stream.py::test_kernel_extents_stop_below_2_31_on_each_extent",
     "tests/unit_tests/test_sheet_stream.py::test_a_chunk_past_the_emissions_int32_extents_is_refused",

@@ -175,15 +175,6 @@ _AA_MIN_SCREEN_SCALE = 0.1
 # direction good to a couple of percent wherever it is used.
 _AA_ON_BOUNDARY = 0.01
 
-# How close, in pixels, a segment in the nearest-edge query's second slot must
-# be to the nearest one to keep the slot against the nearest's own repeat from
-# another grid cell (``_bezier_point_metrics_in``, screen mode): what the plane
-# query's tie between a corner's two walls at their shared vertex comes to once
-# the screen map's rounding has been through it. That rounding is of order 1e-5
-# of a pixel for plane coordinates of a few world units, growing with them; a
-# hundredth of a pixel is far above it and far below anything the filter shows.
-_AA_RANK_TIE = 0.01
-
 # A fragment whose analytic coverage is at least this is treated as covering the
 # whole pixel: a materially opaque fragment at this coverage (with a full sample
 # mask) ends its pixel's kept fragment prefix at emission (opaque truncation).
@@ -2223,6 +2214,55 @@ def _circuit_near_cover(f, px, py, n, center, half_w, half_h,
 
 
 @ti.func
+def _walls_meet(edges_2d: ti.template(), te, i1, i2):
+    """Whether, and which way round, segments ``i1`` and ``i2`` meet.
+
+    ``1`` when ``i1`` ends where ``i2`` starts, ``-1`` when ``i2`` ends where
+    ``i1`` starts, ``0`` when they share no vertex or a slot is empty (``-1``).
+    Compared bit for bit: a contour's consecutive edges share their vertex
+    exactly, each edge's end being the very sample the next one starts at.
+    """
+    order = 0
+    if (i1 >= 0) and (i2 >= 0):
+        if (edges_2d[te, i1, 2] == edges_2d[te, i2, 0]) \
+                and (edges_2d[te, i1, 3] == edges_2d[te, i2, 1]):
+            order = 1
+        elif (edges_2d[te, i2, 2] == edges_2d[te, i1, 0]) \
+                and (edges_2d[te, i2, 3] == edges_2d[te, i1, 1]):
+            order = -1
+    return order
+
+
+@ti.func
+def _wall_in_pixel(edges_2d: ti.template(), te, e, u, v, m00, m01, m10, m11,
+                   h):
+    """Whether segment ``e`` reaches the pixel, and whether it spans it.
+
+    ``meets``: the segment meets the square ``h`` either side of the pixel
+    centre ``(u, v)``. ``foot_inside``: the centre's foot on it falls strictly
+    inside it, so its closest point is no endpoint. Measured as
+    :func:`_bezier_point_metrics_in` measures its closest point, carried by the
+    screen map ``m`` (the identity in the plane) around the centre.
+    """
+    x0 = edges_2d[te, e, 0]
+    y0 = edges_2d[te, e, 1]
+    dx = edges_2d[te, e, 2] - x0
+    dy = edges_2d[te, e, 3] - y0
+    ax = m00 * (x0 - u) + m01 * (y0 - v)
+    ay = m10 * (x0 - u) + m11 * (y0 - v)
+    sdx = m00 * dx + m01 * dy
+    sdy = m10 * dx + m11 * dy
+    foot = -(ax * sdx + ay * sdy) / ti.max(sdx * sdx + sdy * sdy, 1e-12)
+    bx = ax + sdx
+    by = ay + sdy
+    # Separating axes: the square's two, then the segment's normal.
+    meets = (ti.min(ax, bx) <= h) and (ti.max(ax, bx) >= -h) \
+        and (ti.min(ay, by) <= h) and (ti.max(ay, by) >= -h) \
+        and (ti.abs(sdx * ay - sdy * ax) <= h * (ti.abs(sdx) + ti.abs(sdy)))
+    return meets, (foot > 0.0) and (foot < 1.0)
+
+
+@ti.func
 def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                    cam_origin: ti.template(), screen_point: ti.template(),
                    pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
@@ -2366,11 +2406,12 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                     query_radius += _AA_FILTER_RADIUS * pixel_size
             te = f % edges_2d.shape[0]
             (crossings, min_dist_sq, ccu, ccv, e1x, e1y, sg1,
-             sec_dist_sq, scu, scv, e2x, e2y, sg2) = _bezier_point_metrics_in(
+             sec_dist_sq, scu, scv, e2x, e2y, sg2,
+             i1, i2) = _bezier_point_metrics_in(
                 circuit, te, uu, vv, query_radius,
                 circuit_meta.shape[1], edges_2d, edge_accel,
                 ti.static(bool(aa or border_aa) and _bez_anisotropic()),
-                m00, m01, m10, m11, screen_reach, _AA_RANK_TIE * pixel_size)
+                m00, m01, m10, m11, screen_reach)
             inside, is_border = _circuit_point_region(
                 border_w, outline_w, filled, centered, crossings, min_dist_sq)
             bf = 1.0 if is_border else 0.0
@@ -2491,7 +2532,68 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                             sd1 = (outer_w * wk - b1p) * inv_px
                             sd2 = (outer_w * w2k - b2p) * inv_px
                             nd = n1x * n2x + n1y * n2y
-                            if nd < 0.9:
+                            # The parity at the centre, ``ci``, is checked
+                            # below against the UNDILATED distances ``b1p``
+                            # and ``b2p``: the dilation would disagree with it
+                            # in a band around every edge. Within ``on`` of a
+                            # wall's line which side the centre is on is a
+                            # rounding, and that wall is not asked.
+                            ci = (crossings % 2) == 1
+                            on = _AA_ON_BOUNDARY * pixel_size
+                            # A wall's stored side is its filled side at its
+                            # midpoint (``_circuit_edge_inward_signs``), and it
+                            # changes where another part of the outline crosses
+                            # the wall: contours that overlap, as a glyph's
+                            # can, or a morph passing through itself. The
+                            # parity at the centre is the nearest wall's filled
+                            # side wherever its closest point lies inside it,
+                            # since nothing lies between the two, and a
+                            # corner's two walls have one filled side at the
+                            # vertex they share. A pair failing either check
+                            # keeps the nearest wall's half-plane, which the
+                            # parity orients: by overlapping glyph contours in
+                            # text_and_media the wedge drew 0.02 for 0.22 and
+                            # 0.28 for 0.48.
+                            order = _walls_meet(edges_2d, te, i1, i2)
+                            along = (e1x * ccu + e1y * ccv) / l1
+                            stale = (ti.abs(b1p) > on) \
+                                and (ti.abs(along) <= 1e-3 * ti.abs(b1p)) \
+                                and ((b1p < 0.0) != ci)
+                            if (order != 0) and (sg1 != sg2):
+                                stale = True
+                            # A corner's two walls are told apart by what
+                            # they are, two segments sharing a vertex, and
+                            # not by where their closest points fall. They
+                            # are folded together only within the filter's
+                            # reach of the pixel: past it the pixel is
+                            # covered or not, as the nearest wall says, and a
+                            # far corner can be a flattening's sliver whose
+                            # line cuts through the shape (a 0.2 px chord
+                            # 4.5 px away zeroed pixels deep in a circle's
+                            # 5 px border, DESIGN_analytic_aa.md ss22.3). Two
+                            # walls that do not meet are combined only where
+                            # the second crosses the pixel with the centre's
+                            # foot inside it. One that ends beside the pixel
+                            # has its line carried across it by the wedge
+                            # while the outline turns off at that end into a
+                            # segment two walls cannot hold, and the nearest
+                            # wall's half-plane comes closer: with the
+                            # nearest's repeat barred from the second slot and
+                            # no such test, a pixel by a corner in
+                            # manim_compat_and_plots drew 0.34 for 0.90.
+                            use2 = False
+                            if not stale:
+                                if order != 0:
+                                    reach = (_AA_FILTER_RADIUS * pixel_size
+                                             + outer_w * w2k)
+                                    use2 = sec_dist_sq <= reach * reach
+                                else:
+                                    meets, foot_inside = _wall_in_pixel(
+                                        edges_2d, te, i2, uu, vv, m00, m01,
+                                        m10, m11,
+                                        0.5 * pixel_size + outer_w * w2k)
+                                    use2 = meets and foot_inside
+                            if use2 and (nd < 0.9):
                                 # nd >= 0.9: the second segment is the next
                                 # flattening chord of the SAME wall; folding it
                                 # in would halve every plain edge's coverage.
@@ -2500,21 +2602,47 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                                 inter = _two_halfplane_area(
                                     n1x, n1y, sd1, n2x, n2y, sd2, a1, a2)
                                 cn = n1x * n2y - n1y * n2x
-                                c = inter
-                                if ti.abs(cn) >= 0.2:
-                                    # CONVEX vs REFLEX is which RAY of its
-                                    # line each wall segment occupies: the
-                                    # intersection region's boundary rays
-                                    # satisfy the OTHER constraint, the
-                                    # union's violate it. Read it off the
-                                    # closest points against the apex; when a
-                                    # closest point IS the apex, the clamped
-                                    # endpoint sign (cp . d) says which way
-                                    # the segment leaves it. Parity at the
-                                    # pixel centre is the last-resort arbiter
-                                    # (undilated distances -- the dilation
-                                    # would disagree with parity in a band
-                                    # around every edge).
+                                in_i = (b1p < 0.0) and (b2p < 0.0)
+                                in_u = (b1p < 0.0) or (b2p < 0.0)
+                                convex = True
+                                if order != 0:
+                                    # A corner is convex where its contour
+                                    # turns toward the inside. Under one
+                                    # inward sign ``cn`` is the turn from
+                                    # ``i1``'s direction to ``i2``'s (the
+                                    # normals are both directions turned the
+                                    # same way) and ``order`` says which of
+                                    # the two the contour runs along first.
+                                    # The side tests below guess this from
+                                    # the closest points, and with the apex
+                                    # ON the pixel centre both abstain and
+                                    # parity at the vertex, a rounding, chose:
+                                    # three corners of a grid of squares at
+                                    # 320x180 drew 0.75 for 0.25.
+                                    convex = order * sg1 * cn >= 0.0
+                                elif ti.abs(cn) < 0.2:
+                                    # Antiparallel walls that do not meet: a
+                                    # stem, whose inside lies between them,
+                                    # or a slit, whose outside does. The
+                                    # second wall lies on the first's inner
+                                    # side for a stem, its outer for a slit.
+                                    # Taken for a stem regardless, a slit
+                                    # 0.08 px wide in a glyph in
+                                    # text_and_media drew empty, 0.00 for
+                                    # 0.92.
+                                    convex = (n1x * (scu - ccu)
+                                              + n1y * (scv - ccv)) >= 0.0
+                                else:
+                                    # Two walls that do not meet have no turn
+                                    # to read. CONVEX vs REFLEX is then which
+                                    # RAY of its line each wall segment
+                                    # occupies: the intersection region's
+                                    # boundary rays satisfy the OTHER
+                                    # constraint, the union's violate it. Read
+                                    # it off the closest points against the
+                                    # apex; when a closest point IS the apex,
+                                    # the clamped endpoint sign (cp . d) says
+                                    # which way the segment leaves it.
                                     inv_cn = 1.0 / cn
                                     apx = (b1p * n2y - b2p * n1y) * inv_cn
                                     apy = (n1x * b2p - n2x * b1p) * inv_cn
@@ -2545,31 +2673,54 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                                             sgn = 1.0 if t2 > 0.0 else -1.0
                                             s2 = sgn * (n1x * e2x
                                                         + n1y * e2y)
-                                    uni = ti.math.clamp(
-                                        a1 + a2 - inter, 0.0, 1.0)
                                     # A side test left at 0.0 abstains, and
                                     # the other one decides alone; parity
                                     # arbitrates only when both abstain or
-                                    # the two disagree. At a right angle a
-                                    # wall abstains exactly when the centre
-                                    # sits on the OTHER wall's line, which is
-                                    # where parity cannot arbitrate: ``b1p``
-                                    # or ``b2p`` is 0 or a rounding either
-                                    # side of it. A square whose edge ran
-                                    # through pixel centres drew pixels by
-                                    # its corners fully covered where they
-                                    # are half (320x180: two on the CPU, and
-                                    # those and a third on the Apple GPU).
+                                    # the two disagree. A wall abstains where
+                                    # the centre sits on the OTHER wall's
+                                    # line, which is where parity cannot
+                                    # arbitrate: ``b1p`` or ``b2p`` is 0 or a
+                                    # rounding either side of it.
                                     if (s1 <= 0.0) and (s2 <= 0.0) \
                                             and (s1 + s2 < 0.0):
-                                        c = uni
+                                        convex = False
                                     elif not ((s1 >= 0.0) and (s2 >= 0.0)
                                               and (s1 + s2 > 0.0)):
-                                        ci = (crossings % 2) == 1
-                                        in_i = (b1p < 0.0) and (b2p < 0.0)
-                                        in_u = (b1p < 0.0) or (b2p < 0.0)
                                         if (in_u == ci) and (in_i != ci):
-                                            c = uni
+                                            convex = False
+                                # The wedge's own verdict on the centre --
+                                # inside both walls for an intersection,
+                                # inside either for a union -- must be the
+                                # parity's. Where it is not, the two walls are
+                                # not the outline there: a third segment cuts
+                                # the pixel, an edge drawn without a border
+                                # (edges_2d column 4), which the query does
+                                # not list and the parity counts, or a pair
+                                # whose stored sides went stale where the
+                                # checks above could not tell. The nearest
+                                # wall's half-plane stays: by a corner of a
+                                # sliver closed by such an edge in
+                                # text_and_media the wedge drew 0.72 for 0.25.
+                                # A wall within ``on`` of the centre has no
+                                # say; the verdict is asked wherever the
+                                # other settles it, one wall the centre is
+                                # clearly outside of putting it outside an
+                                # intersection, one it is clearly inside of
+                                # inside a union.
+                                out1 = b1p > on
+                                out2 = b2p > on
+                                in1 = b1p < -on
+                                in2 = b2p < -on
+                                wedge = inter
+                                wrong = (ci and (out1 or out2)) \
+                                    or ((not ci) and in1 and in2)
+                                if not convex:
+                                    wedge = ti.math.clamp(
+                                        a1 + a2 - inter, 0.0, 1.0)
+                                    wrong = ((not ci) and (in1 or in2)) \
+                                        or (ci and out1 and out2)
+                                if not wrong:
+                                    c = wedge
                 bf = 0.0
                 if border_w > 0.0:
                     if filled:

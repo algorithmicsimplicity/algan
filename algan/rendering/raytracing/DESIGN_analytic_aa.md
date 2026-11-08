@@ -2363,8 +2363,9 @@ of the map, had the repeat take the slot at 60, all but the identity. The
 first screen version therefore left 9-12 pixels a frame more than 20 levels
 too bright at glyph tips in the rotated-camera act of `solids_and_camera`.
 
-On screen, the nearest segment's repeat must now beat the second slot by more
-than `_AA_RANK_TIE`, a hundredth of a pixel, to take it;
+(Superseded by 22.5: the second slot now bars the repeat by id, and
+`_AA_RANK_TIE` is gone.) On screen, the nearest segment's repeat must now beat
+the second slot by more than `_AA_RANK_TIE`, a hundredth of a pixel, to take it;
 `test_a_corner_keeps_both_walls_through_any_screen_map` is the guard. That also
 settles the corners where the plane query's own arithmetic missed the tie
 (`x0 + 1 * dx` an ulp off the stored vertex), so camera-facing text changes at
@@ -2396,7 +2397,8 @@ Both want the wedge confined first to walls the filter can see (within
 apex at the ends of both segments, or a strip -- and to convex/reflex calls the
 crossing parity at the pixel centre agrees with (today the parity arbitrates
 only when the closest points split the call; 22.4 has a pixel it would have
-saved, and it would have saved both cracks above). That is work of its own.
+saved, and it would have saved both cracks above). That is work of its own,
+and 22.5 is it.
 
 22.4 Measured
 -------------
@@ -2486,3 +2488,156 @@ analytic coverage call `_bezier_point_metrics`, the plane-mode wrapper, and
 compile as before. `tests/unit_tests/test_tilted_circuit_coverage.py` is the
 guard: its stroke test fails on the old filter by 7-18 % spread against a
 1.5 % bound, and its corner test on a screen query without the tie.
+
+22.5 The second wall by identity, and what that lets into the wedge — 2026-11-08
+----------------------------------------------------------------------------------
+Three coverage errors, all in `raster_taichi._bez_pixel_hit`'s wedge:
+
+  * The repeat. The spatial grid lists a segment in every cell its bounds
+    touch, and the nearest-edge query walks every cell its box touches, so the
+    nearest segment comes round again from the next cell. The tie of 22.3 kept
+    the repeat out of the second slot only when the slot already held a wall
+    within a hundredth of a pixel; wherever the corner's other wall was
+    farther the repeat took the slot, and the wedge, handed one wall twice,
+    drew that wall's half-plane. A grid of camera-facing squares 16-29 px
+    across: 48 boundary pixels more than 0.02 off at 160x90 (up to 0.19), all
+    of them this, and 7 of the 10 at 320x180 (the other 3 are the next item).
+    Stems and slits narrower than a pixel lost their far wall the same way (a
+    0.3 px stem 0.65 for 0.30), and where the two walls tied, a slit centred
+    on a pixel centre, the antiparallel pair was taken for a stem and the
+    slit's pixel drew 0.00 for 0.70.
+  * The apex on a pixel centre. The convex/reflex call came from one side
+    test per wall, each asking which way its wall leaves the apex; with the
+    centre on the apex both abstain, and the crossing parity at the centre --
+    the vertex itself -- is a rounding: at 320x180 three corners drew 0.75 for
+    0.25 on the CPU, image pixels (138,61), (228,157) and (232,57).
+  * The Apple GPU's corner. Run 42429688735 (mac-mps, base kernels) drew
+    (138,61) at 0.75 and (212,141) at 0.5 as the CPU does -- the second is
+    the repeat on the CPU too -- and (232,57) and (228,157) right, but
+    (32,141), right on the CPU, at 0.5 for 0.25: the repeat again, at a corner
+    whose apex is a pixel centre, where both walls and the repeat are all but
+    0 from it and the GPU's rounding of those distances decides which takes
+    the second slot.
+
+Barring the repeat alone (22.3's second rejected fix, tried again) hands the
+wedge whatever segment is second nearest, and made 12 test fragments worse,
+(394,244) in `manim_compat_and_plots` frame 92 from 0.901 to 0.340, a pixel
+by a corner: walls that do not meet but end beside the
+pixel, far slivers the filter cannot see, pixels three or more segments share.
+So the bar comes with the guards 22.3 asked for:
+
+  * `_bezier_point_metrics_in`: the second slot is the nearest segment other
+    than the first, told apart by id (`e != i1`), distinct segments still
+    strictly ranked; it returns the two ids. `screen_tie` and `_AA_RANK_TIE`
+    are gone; `_bezier_point_metrics`, the plane-mode wrapper, drops the ids.
+  * `_walls_meet`: the two walls are a corner when they share a vertex bit for
+    bit, and in which order. A corner's second wall is used within the
+    filter's reach (`_AA_FILTER_RADIUS` px past the dilation); two walls that
+    do not meet only when the second meets the pixel square and the centre's
+    foot falls strictly inside it (`_wall_in_pixel`).
+  * Convex or reflex: at a corner, the contour's turn (`order * sg1 * cn >=
+    0`), which needs no side test and does not care where the apex falls.
+    Antiparallel walls that do not meet are a stem (intersected) when the
+    second lies on the first's inner side, else a slit (united); other walls
+    that do not meet keep 22.3's side tests and parity.
+  * Stale sides. A wall's stored inward side is its filled side at its
+    midpoint (`_circuit_edge_inward_signs`) and goes stale past a crossing
+    with another part of the outline: overlapping glyph contours,
+    self-intersecting morphs. The nearest wall's half-plane, oriented by the
+    parity, stays when a corner's two stored sides disagree, or when the
+    nearest wall's closest point is inside it, the centre clear of it, and the
+    parity disagrees with its stored side. Correcting the side from the parity
+    instead is wrong at an apex: an acute corner's normal cone reaches into
+    the half-plane, and a correction made pixels by corners worse.
+  * The verdict. The wedge's own call at the centre must agree with the
+    parity wherever a wall clear of the centre by `_AA_ON_BOUNDARY` settles
+    it, or the half-plane stays: this catches walls the query does not list
+    (an invisible closing edge, which the parity counts), a third segment,
+    and stale pairs the checks above miss.
+
+`benchmarks/_aa_wedge_check.py` mirrors the rule standalone: part 2e adds the
+slit, part 2f the stale sides (a corner's two walls, one wall, a stem's two).
+
+Measured on the CPU, each fragment's coverage against the exact even-odd area
+of its circuit's flattened outline over the pixel (vertical strips, no
+sampling), on 24 captured raster launches replayed through both sources;
+partly covered fragments, mean |error| / count > 0.02 / > 0.1 / max:
+
+    grid of squares 160x90          0.00357 /   48 /   9 / 0.188  ->  0       /   0 /  0 / 0
+    grid of squares 320x180         0.00129 /   10 /  10 / 0.500  ->  0       /   0 /  0 / 0
+    tilted shapes 320x180           0.00742 /   56 /  15 / 0.245  ->  0.00196 /  24 /  0 / 0.052
+    manim_compat_and_plots f92      0.00756 /  568 / 114 / 0.340  ->  0.00291 / 278 / 19 / 0.260
+    text_and_media f63              0.00898 / 1248 / 250 / 0.585  ->  0.00400 / 669 / 56 / 0.492
+    text_and_media f107             0.00964 / 1283 / 277 / 0.994  ->  0.00417 / 678 / 65 / 0.460
+    complex_hierarchy_become f35    0.00796 /  631 / 118 / 0.413  ->  0.00206 / 208 /  4 / 0.170
+
+Over all 24: 4872 fragments more than 0.02 closer to their area, 79 farther.
+78 of the 79 are in pixels three or more segments share (overlapping glyph
+contours, an invisible closing edge), which two walls cannot draw; in such
+pixels the change is 759 better against 78 worse. The last is a two-segment
+pixel where two overlapping glyph contours cross inside it. Random polygons
+(triangles, five-pointed stars, turned squares, needles; 32 shapes white on
+black), CPU, mean / > 0.1, at 160x90, 320x180, 640x360: 0.0303 / 84, 0.0147 /
+80, 0.0078 / 79 before, 0.0021 / 1, 0.0016 / 0, 0.0017 / 0 after; 481 pixels
+better by more than 0.02, none worse. The one pixel left past 0.1 (0.264 off
+before and after) holds a sliver triangle's obtuse corner and its opposite
+side, three segments. On the Apple GPU (run 42432156080, mac-mps, the same
+polygons): 0.0293 / 80, 0.0145 / 78, 0.0076 / 77 before; after, the CPU's
+figures to the last digit printed, maxima included (0.264, 0.019, 0.008);
+465 pixels better by more than 0.02, none worse.
+
+The guards are in `tests/unit_tests/test_tilted_circuit_coverage.py`. Each new
+test fails on the old kernels on the CPU and on the Apple GPU (run
+42429688735) and passes on the new (run 42432156080: 36 passed across it,
+`test_bezier_header_mps_gather.py`, `test_circuit_span_candidates.py` and
+`test_analytic_aa_gates.py`); each takes under a second:
+
+  * `test_a_small_square_keeps_both_walls_at_its_corners`: the grid at
+    160x90; 48 pixels off before on either device.
+  * `test_a_corner_on_a_pixel_centre_covers_a_quarter_of_its_pixel`: six of
+    its squares at 320x180, every corner on a pixel centre; 4 off before on
+    the CPU, 3 on the GPU, (32,141) among them.
+  * `test_a_stem_and_a_slit_narrower_than_a_pixel_cover_their_areas`: five
+    of each, 0.3-0.6 px wide; 80 of 320 pixels off before on the CPU, 60 on
+    the GPU.
+  * `test_a_corner_keeps_both_walls_through_any_screen_map` now also asserts
+    that the two slots hold the corner's two segments by id.
+
+The cost is per pixel with a second wall in play: an id compare in the query,
+`_walls_meet`'s four loads, and `_wall_in_pixel` only for walls that do not
+meet. The fast suite's render, three runs of each source interleaved, took
+5.52, 5.05 and 5.19 s before and 5.16, 5.01 and 5.99 s after (the test's call,
+warm): nothing past the run-to-run spread.
+
+The switch. `ALGAN_ANALYTIC_AA_BEZ_ANISOTROPIC=0` still puts the query back in
+the plane, but the rules above apply under both arms, so it no longer restores
+the filter before 22 byte for byte (22.4). For camera-facing circuits the two
+arms now agree exactly. The fast suite's scene renders identically under both,
+where on the old kernels the plane query's ulp-unequal ties (22.3) moved it in
+43 of 45 frames. The three new tests pass under either arm.
+
+Every full-render scene's PREVIEW frames move on the CPU, nearly every frame:
+`shapes_and_timeline` at 152,627 pixel-changes, up to 221 levels;
+`text_and_media` 116,209, up to 221; `solids_and_camera` 87,444, up to 63;
+`materials_and_lighting` 66,037, up to 52 (their titles' glyphs);
+`complex_hierarchy_become` 45,742, up to 51; `manim_compat_and_plots` 38,202,
+up to 99. Each of the 44 changes past 100 levels was checked against the exact
+area on the very render the recording made (a 24-frame chunk: a frame
+rendered alone rounds its geometry differently): 40 moved toward it, 4 away,
+all four in pixels three or more segments share. All six scenes are to be
+re-baselined.
+
+The fast suite's baseline moves as well: 43 of its 45 frames are past the
+tolerance of 2, by up to 72 levels (frame 36), with 5,093 pixels over the 45
+frames, 142 of them by more than 50 levels and none by more than 100. Its own
+render was captured (through the test's `save_video`, the vendored fonts
+registered first; the old kernels' capture matches the committed baseline
+exactly) and replayed through both sources. Over all 45 frames the partly
+covered fragments went from mean |error| 0.0075, 6,863 more than 0.02 off and
+1,467 more than 0.1 off to 0.0027, 2,657 and 317, and no frame got worse on
+any of the three. Of the 1,002 pixel-changes past 20 levels, 940 moved toward
+the exact area and 62 away. The 62 are four pixels, three of them held for
+frames 21-41. Each holds two corners and four segments or more: three are
+features of the formula's glyphs 0.22-0.24 px across, and one is the centre
+of its plus sign, whose strokes are 0.39 px wide. The fast suite's baseline
+is to be re-baselined too.
