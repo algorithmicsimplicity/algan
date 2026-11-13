@@ -1,0 +1,24 @@
+diff --git a/quadrants/runtime/cpu/jit_cpu.cpp b/quadrants/runtime/cpu/jit_cpu.cpp
+index a3f750205..b25e61c0c 100644
+--- a/quadrants/runtime/cpu/jit_cpu.cpp
++++ b/quadrants/runtime/cpu/jit_cpu.cpp
+@@ -116,9 +116,17 @@ class JITSessionCPU : public JITSession {
+ #if defined(__APPLE__) && defined(__aarch64__)
+         object_layer_(es_),
+ #else
++        // On COFF each object's sections are mapped as one block. A kernel's .pdata unwind entries address its code
++        // with IMAGE_REL_AMD64_ADDR32NB, a 32-bit offset from the object's lowest section, but the default manager
++        // maps code, read-only and read-write data separately, each wherever VirtualAlloc finds room. In a process
++        // whose address space is fragmented, a small data section can then land more than 4 GB below a large code
++        // section, and RuntimeDyld aborts: "IMAGE_REL_AMD64_ADDR32NB relocation requires an ordered section layout".
++        // ReserveAlloc maps code, read-only and read-write data in one allocation, in that order; a section the
++        // reservation underestimates still gets memory of its own, as before. The flag is captured by value because
++        // the factory runs once per object, long after this constructor has returned.
+         object_layer_(es_,
+-                      [&](const MemoryBuffer &) {
+-                        auto smgr = std::make_unique<SectionMemoryManager>();
++                      [&, reserve_alloc = JTMB.getTargetTriple().isOSBinFormatCOFF()](const MemoryBuffer &) {
++                        auto smgr = std::make_unique<SectionMemoryManager>(/*MM=*/nullptr, reserve_alloc);
+                         memory_manager_ = smgr.get();
+                         return smgr;
+                       }),

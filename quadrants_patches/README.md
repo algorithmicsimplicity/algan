@@ -1,6 +1,6 @@
 # The Quadrants patches Algan carries
 
-Eleven patches against **Quadrants v1.3.3** (`00423caa9`, dated 2026-09-25 — the pinned upstream base, not a claim
+Twelve patches against **Quadrants v1.3.3** (`00423caa9`, dated 2026-09-25 — the pinned upstream base, not a claim
 about the latest upstream release),
 applied **in numeric order** onto a pristine checkout of that tag:
 
@@ -38,6 +38,7 @@ touching a patch.
 | `0009-python-3.14.patch` | **Python 3.14.** Lifts `requires-python` to `<3.15` and drops the four reads of `ast.Str`, which 3.14 removed from the standard library — without that, a kernel with a docstring or an `assert` message fails to compile. Upstream v1.3.0 through v1.3.3 (and upstream `main` as of 2026-09-28) stop at 3.13. See "0009" below. | none |
 | `0010-cuda-ptx-cache-by-content-hash.patch` | **Fresh-process start-up on CUDA.** Under a new `offline_cache_ptx_by_content_hash` config field, the PTX cache is keyed by the SHA-256 every `.qdc` already stores over its metadata and IR, and a cached kernel's IR is parsed only when its PTX is not cached. A kernel whose `.qdc` and PTX are both on disk reaches `cuModuleLoadDataEx` without its IR being parsed, verified, cloned, printed or hashed. Off by default; Algan turns it on. See "0010" below. | none |
 | `0011-prepare-kernel-without-launch.patch` | **PTX from the precompile workers.** `Program.prepare_kernel(compiled_kernel_data)` does a first launch's work without the launch (on CUDA: the PTX, and the driver's JIT of it); `dump_cache_data_to_disk` now writes the PTX cache as well; a PTX lookup by content hash finds a file another process wrote after this one started. See "0011" below. | none |
+| `0012-windows-cpu-jit-section-layout.patch` | **The Windows CPU backend's intermittent link failure.** On COFF, each JIT-linked object's sections are mapped as one block (`SectionMemoryManager`'s `ReserveAlloc`), so a kernel's code and its `.pdata` unwind table can no longer land more than 4 GB apart and abort the link with "`IMAGE_REL_AMD64_ADDR32NB` relocation requires an ordered section layout". Not a port -- new. See "0012" below. | none |
 
 0005-0007 are CUDA codegen and were written in one sitting, after 0004 and
 **against a tree that did not have 0003 applied** (their `codegen_cuda.cpp` and
@@ -82,6 +83,12 @@ produce. All eleven apply strictly in order onto a pristine `v1.3.3`, **55
 files, +1127/−72**, and the result is byte-identical to the tree they were
 written in. Both have been built and verified on an RTX 5080: see "0010-0011 —
 what is verified". They were first published in `1.3.3.post2` (`PYPI.md`).
+
+**0012 was added on 2026-11-14**, written against the tree the eleven produce.
+All twelve apply strictly in order onto a pristine `v1.3.3`, **56 files,
++1137/−74**, and 0012 also applies on its own: it is the only patch that
+touches `runtime/cpu/jit_cpu.cpp`. It has **not been built yet**; see "0012"
+below for what is and is not verified.
 
 Numeric order is the convention rather than a constraint, and it is worth being
 precise about which, because several patches share a file:
@@ -1366,6 +1373,82 @@ warns against:
 `uv sync` puts the published wheel back. Publishing follows `PYPI.md`'s two
 stages, and 0010-0011 went out that way as `1.3.3.post2` (`PYPI.md`,
 "1.3.3.post2").
+
+## 0012 — one block per JIT object on Windows
+
+**What it fixes.** On Windows, the CPU backend could fail to link a kernel,
+intermittently, with
+
+    RuntimeError: [llvm_context.cpp:...] LLVM Fatal Error:
+    IMAGE_REL_AMD64_ADDR32NB relocation requires an ordered section layout
+
+It surfaced once in `test_sheet_chain_kernels.py`, late in a long CPU pytest
+run; the same test passes on its own and on CUDA. The CPU backend links each
+kernel in-process with LLVM's RuntimeDyld (`RTDyldObjectLinkingLayer`), and on
+COFF a kernel's `.pdata` unwind entries address its code with
+`IMAGE_REL_AMD64_ADDR32NB`: a 32-bit offset from what RuntimeDyld fakes as the
+image base, the lowest of that object's sections. So every section of one
+object must sit within 4 GB of the lowest. `JITSessionCPU` gives each object a
+default `SectionMemoryManager`, which maps code, read-only data and read-write
+data with separate `VirtualAlloc(NULL, ...)` calls, and Windows puts each at
+the lowest free range large enough. In a process whose address space has been
+fragmented by large allocations, the small read-only section can take a low
+hole while a code section larger than one 64 KB allocation granule only fits
+more than 4 GB higher. Then RuntimeDyld aborts. Loading a kernel from the
+offline cache links it the same way, so the cache does not help, and the
+longer-lived the process -- a long test run, the warm daemon -- the more
+exposed it is. CUDA kernels go through PTX and the driver, macOS arm64 links
+with JITLink and Linux with ELF, so none of those see this error.
+
+**What it changes**, 1 file, +10/−2: `runtime/cpu/jit_cpu.cpp`'s object-layer
+factory constructs `SectionMemoryManager(nullptr, ReserveAlloc)` with
+`ReserveAlloc = JTMB.getTargetTriple().isOSBinFormatCOFF()`, captured by value
+because the factory runs once per object, long after the constructor returns.
+
+**Why `ReserveAlloc` is safe**, read in LLVM 22.1.0's source, which every
+Algan wheel pins. With it, RuntimeDyld sizes the object first
+(`computeTotalAllocSize`, documented as an upper bound) and calls
+`reserveAllocationSpace` once; that makes one `allocateMappedMemory` call and
+carves code, read-only data and read-write data out of it in that order. If
+the estimate ever came up short, `allocateSection` does not fail: it maps
+memory of its own for that section, as it always did, so the worst case is
+today's behaviour. The header's comment that allocating beyond the reservation
+"will fail" does not match the 22.1.0 implementation. LLVM documents the
+option for this case ("large memory systems may otherwise allocate separate
+sections too far apart"), and RuntimeDyldCOFFX86_64's own comment on the check
+says the memory manager must keep the sections ordered.
+
+**Why COFF only.** It is where the failure is demonstrated. The same option
+would bound the code-to-data distance for ELF's 32-bit PC-relative relocations
+too, but nothing has been seen to fail there, and Linux and macOS x86-64
+behave exactly as before under this patch.
+
+**A side effect, not measured.** Each object used to commit at least three
+64 KB granules (code, read-only, read-write) and now commits one block, so a
+process with hundreds of small kernels commits less memory.
+
+**What is verified.** `verify_jit_section_layout.py` (the Windows leg of
+`quadrants_build.yaml` runs it; it skips elsewhere):
+
+* **The criterion, deterministic.** It compiles a kernel with over 64 KB of
+  code and checks that the `VirtualAlloc` block holding the new code also
+  holds a read-only region, the kernel's `.pdata`, `.xdata` and constants.
+  With 0012 they are carved from one block; without it they never share one.
+* **The failure itself.** It reserves (never commits) the address space so
+  only isolated 64 KB holes remain in the first GB above the allocation floor
+  and nothing is free for 9 GB above them, then links a second kernel there.
+  Without 0012 this usually aborts with the error above, but not always:
+  memory the process allocated before the layout and freed during the compile
+  can open a gap inside the wall that the code fits. That is why it is the
+  second check, not the criterion.
+
+On the RTX 5080 box (Windows 11, `algan-quadrants` 1.3.3.post2, so **without**
+0012) the criterion fails 4 runs out of 4 in about 4 s, and the kernel's
+read-only data lies in another block. The forced layout aborted with the
+error above in 2 of 3 runs, and a kernel whose code fits one 64 KB granule
+linked under the same layout. **Not yet verified:** that a wheel built with
+0012 compiles, and that the gate then passes. Both need the Windows leg of
+`quadrants_build.yaml`.
 
 ## Upstreaming
 
