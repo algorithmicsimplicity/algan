@@ -1124,6 +1124,18 @@ jobs:
           set -euxo pipefail
           python algan/quadrants_patches/verify_ptx_cache.py binding ptx_binding.json | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # 0012: each JIT-linked object's sections in one block, so a kernel's
+      # code and its .pdata cannot be mapped more than 4 GB apart. Windows
+      # only (the relocation is COFF's), and deterministic: a wheel without
+      # 0012 fails it every time.
+      - name: Check the 0012 CPU JIT section layout
+        if: ${{ inputs.apply_patches }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python algan/quadrants_patches/verify_jit_section_layout.py | tee verify_jit_section_layout.log
+          tail -n 1 verify_jit_section_layout.log >> "$GITHUB_STEP_SUMMARY"
+
       - name: Report the wheel
         if: always()
         shell: bash
