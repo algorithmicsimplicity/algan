@@ -87,8 +87,9 @@ what is verified". They were first published in `1.3.3.post2` (`PYPI.md`).
 **0012 was added on 2026-11-14**, written against the tree the eleven produce.
 All twelve apply strictly in order onto a pristine `v1.3.3`, **56 files,
 +1137/−74**, and 0012 also applies on its own: it is the only patch that
-touches `runtime/cpu/jit_cpu.cpp`. It has **not been built yet**; see "0012"
-below for what is and is not verified.
+touches `runtime/cpu/jit_cpu.cpp`. It has been built for Windows, Linux
+x86-64 and Linux aarch64 and verified on Windows, and is **not yet in a
+published wheel**: see "0012" below.
 
 Numeric order is the convention rather than a constraint, and it is worth being
 precise about which, because several patches share a file:
@@ -1442,13 +1443,29 @@ process with hundreds of small kernels commits less memory.
   can open a gap inside the wall that the code fits. That is why it is the
   second check, not the criterion.
 
-On the RTX 5080 box (Windows 11, `algan-quadrants` 1.3.3.post2, so **without**
-0012) the criterion fails 4 runs out of 4 in about 4 s, and the kernel's
-read-only data lies in another block. The forced layout aborted with the
-error above in 2 of 3 runs, and a kernel whose code fits one 64 KB granule
-linked under the same layout. **Not yet verified:** that a wheel built with
-0012 compiles, and that the gate then passes. Both need the Windows leg of
-`quadrants_build.yaml`.
+**Without 0012**, on the RTX 5080 box (Windows 11, `algan-quadrants`
+1.3.3.post2): the criterion fails 4 runs out of 4 in about 4 s, the kernel's
+code block holding only execute-read and read-write regions and its read-only
+data in another block. The forced layout aborted with the error above in 2 of
+3 runs, and a kernel whose code fits one 64 KB granule linked under the same
+layout.
+
+**With 0012**, built on 2026-11-14 in run
+[`43520892129`](https://github.com/algorithmicsimplicity/algan/actions/runs/43520892129)
+(Windows, Linux x86-64 and Linux aarch64, Python 3.13; all three legs compiled
+the patched `jit_cpu.cpp`, and nothing was published):
+
+* The Windows leg's gate step passed: each kernel's block holds execute-read,
+  read-only and read-write regions together.
+* On the RTX 5080 box, the same gate against that run's `win_amd64` wheel
+  (sha256 `d42acc9d6cce0352...`), loaded from an unpacked copy, passed 3 runs
+  out of 3. In one of them the forced layout put the second kernel's code above
+  the 9 GB wall, which is the placement that used to strand its read-only data
+  in a low hole; the whole object moved with it and linked.
+
+Not verified: the Linux wheels beyond building (0012 changes nothing they
+run), and a full Algan test run on the patched wheel. It ships in the next
+`algan-quadrants` release.
 
 ## Upstreaming
 
