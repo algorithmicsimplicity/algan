@@ -1,7 +1,7 @@
 # Releasing Algan
 
 Operational instructions for [`.github/workflows/release.yaml`](.github/workflows/release.yaml),
-checked against source on 2026-09-09. [RELEASE_AUDIT.md](docs/reports/RELEASE_AUDIT.md) is the
+checked against source on 2026-09-09; §1, §3 and §5 re-checked on 2026-11-26. [RELEASE_AUDIT.md](docs/reports/RELEASE_AUDIT.md) is the
 historical pre-release audit, not a list of current blockers.
 
 A source checkout cannot establish whether a PyPI name or version is available,
@@ -16,7 +16,7 @@ commit SHA and use the workflow run's `head_sha` to confirm what it will release
 A green run on an earlier commit is not sufficient.
 
 `pyproject.toml` is the source of the package version. At this document's source
-check it declares `0.0.0`; that is a snapshot, not a standing instruction to
+check it declares `0.0.3`; that is a snapshot, not a standing instruction to
 publish that version. Choose an unused version, update the metadata and lockfile
 as needed in a PR, and let that exact commit complete CI. The workflow does not
 edit package versions or regenerate the lockfile for you.
@@ -86,7 +86,7 @@ trying to replace a published wheel.
 ## 3. Keep compiler publication separate
 
 The current `pyproject.toml` and `uv.lock` consume
-`algan-quadrants==1.3.3.post2`. Its Python import remains `quadrants`.
+`algan-quadrants==1.3.3.post3`. Its Python import remains `quadrants`.
 The compiler build workflow may target a newer version without changing what
 Algan installs. Read [quadrants_patches/PYPI.md](quadrants_patches/PYPI.md) before
 changing that dependency.
@@ -133,11 +133,15 @@ After a successful rehearsal and a fresh prerequisite check, dispatch the same
 release commit and version with `dry_run=false`. The dependency graph is:
 
 ```text
-gate -> build + docs -> promote
-                         |-> publish_docs
-                         |-> github_release (also needs build)
-                         `-> PyPI waits for both publication jobs
+gate -> build + build_macos + docs -> promote
+                                       |-> publish_docs
+                                       |-> github_release (also needs build and build_macos)
+                                       `-> PyPI waits for both publication jobs
 ```
+
+`build_macos` builds the macOS abi3 wheel on a hosted Mac. `promote`,
+`github_release` and PyPI all need it, so a macOS runner failure, or the account's
+macOS slots being busy, blocks or delays the whole release.
 
 `publish_docs` and `github_release` can run independently after promotion;
 this is not a strictly sequential transaction. `promote` first fast-forwards

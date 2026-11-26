@@ -1,5 +1,5 @@
 {
-  "_comment": "Written by scripts/build_quadrants_wheels.py. The wheels beside this file are gitignored; this manifest is committed so that which wheel a measurement used stays recoverable.",
+  "_comment": "Written by scripts/build_quadrants_wheels.py. The wheels beside this file are gitignored; this manifest is committed so that which wheel a measurement used stays recoverable. This one records a pre-publication diagnostic run on a rebase branch (patches 0001-0009, 1.3.4.dev0 versions); it does not describe the published algan-quadrants wheels Algan installs, which carry patches up to 0012 (quadrants_patches/PYPI.md).",
   "workflow": "quadrants_build.yaml",
   "run_id": 39571753107,
   "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/39571753107",

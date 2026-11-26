@@ -13,8 +13,8 @@ wheels, cp310-cp314 on four platforms, like `1.3.0.post3` before it, the first
 revision with cp314 wheels (see "Python 3.14" below); the recorded post2
 publication on 2026-09-06 contained sixteen; post1 contained twelve. Check actual PyPI availability before changing the consumer pin or
 attempting a new publication. The
-`post` suffix identifies Algan's patched build of upstream Quadrants v1.3.0
-and keeps it distinct from the upstream `quadrants==1.3.0` release.
+`post` suffix identifies Algan's patched build of upstream Quadrants v1.3.3
+and keeps it distinct from the upstream `quadrants==1.3.3` release.
 
 ## One-time PyPI setup
 

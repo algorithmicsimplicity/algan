@@ -29,8 +29,9 @@ classifiers = [
 
 # Both bounds are the kernel compiler's. `algan-quadrants` publishes cp310-cp314
 # wheels: no cp39 (which is why the floor moved up from 3.9 -- the maintainer
-# confirmed no user is on it, and `algan` is not on PyPI yet, so nobody can
-# have installed it there through the documented channel). Upstream Quadrants
+# confirmed no user is on it; the releases on PyPI, 0.0.0 to 0.0.2, already
+# required Python >=3.10, so nobody can have installed one there through the
+# documented channel). Upstream Quadrants
 # stops at cp313; cp314 is this repository's own addition
 # (`quadrants_patches/0009`), first shipped in `algan-quadrants` 1.3.0.post3
 # and carried by every revision since. Raising the ceiling again waits
@@ -220,9 +221,12 @@ dev = [
     "types-pillow>=10.2.0.20240822",
     "types-pygments>=2.19.0.20250107",
     "requests>=2.32.3",
-    # `taichi` is in here as well as in `--all-extras`: a `uv sync --dev` with
-    # no extras still has to be able to run the A/B control arm
-    # (`ALGAN_TAICHI_BACKEND=taichi`), which is half of every backend report.
+    # `taichi` is in here as well as in `--all-extras`: an install of the
+    # `dev` extra alone (`uv sync --extra dev`) still has to be able to run
+    # the A/B control arm (`ALGAN_TAICHI_BACKEND=taichi`), which is half of
+    # every backend report. `dev` is an extra, not a dependency group, so
+    # `uv sync --dev` without `--all-extras` or `--extra dev` installs none
+    # of this; every documented command passes `--all-extras`.
     "algan[audio,fbx,taichi,typst]",
 ]
 
