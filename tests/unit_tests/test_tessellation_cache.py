@@ -16,6 +16,8 @@ save was not the origin added back on load.
 
 from __future__ import annotations
 
+import hashlib
+import math
 import shutil
 
 import pytest
@@ -121,3 +123,50 @@ def test_cache_survives_a_wipe_between_builds(isolated_tessellation_cache, monke
 
     for before, after in zip(first, second):
         assert torch.equal(before, after)
+
+
+def _ellipse_outline():
+    angle = torch.linspace(0, 1, 41)[:-1] * 2 * math.pi
+    return torch.stack(
+        (0.3 * torch.cos(angle) + 0.05, 0.2 * torch.sin(angle) - 0.02), -1
+    )
+
+
+def _tessellation_digest(tiles, tile_counts):
+    digest = hashlib.sha256()
+    for part in (tiles, tile_counts[0], tile_counts[1]):
+        digest.update(part.cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+# Digests of ``tile_region``'s output for ``_ellipse_outline()``, recorded from
+# the implementation that reseeded the global RNG with ``torch.manual_seed(42)``.
+_TILE_REGION_DIGESTS = {
+    0.0: "0ecffbd2735d59b5eb231dca33d4b91f60f6db3f3099c2d6a456829a50585125",
+    0.5: "cd322c5c429c7b9553dc33ecd93bfae259472a67dee149a5abd8a231c74b29cb",
+}
+
+
+@pytest.mark.parametrize("perturbation", sorted(_TILE_REGION_DIGESTS))
+def test_tessellating_leaves_the_global_rng_alone(perturbation):
+    """A tessellation must neither read nor reset the caller's torch RNG.
+
+    It used to call ``torch.manual_seed(42)``, so a script that seeded torch,
+    built a ``TexTriangulated`` on a cache miss and then drew random numbers got
+    the same stream whatever seed it had set. The tiles must still be exactly
+    the ones that reseeding produced.
+    """
+    torch.manual_seed(1234)
+    state_before = torch.get_rng_state()
+    tiles, tile_counts = tbc.tile_region(
+        _ellipse_outline(), tile_size=0.04, random_perturbation=perturbation
+    )
+    assert torch.equal(torch.get_rng_state(), state_before)
+
+    if tbc._ANIMATION_DEVICE.type == "cpu":
+        # The digests were recorded on the CPU; another device rounds the grid
+        # differently, which is not what this test is about.
+        assert (
+            _tessellation_digest(tiles, tile_counts)
+            == (_TILE_REGION_DIGESTS[perturbation])
+        )

@@ -140,9 +140,22 @@ def tile_region(
         -1,
     )
     te = tile_size * 0.3 - 1e-5
-    torch.manual_seed(42)
-    grid[1:-1, 1:-1] = grid[1:-1, 1:-1] + (
-        torch.randn_like(grid[1:-1, 1:-1]) * random_perturbation * te
+    # A private generator, seeded as the global one used to be: the same
+    # draws, so the same tiles bit for bit, without resetting the caller's
+    # torch RNG on every tessellation-cache miss. The draw is kept even at
+    # ``random_perturbation == 0``, because adding ``randn * 0`` is not quite
+    # a no-op: it can turn a ``-0.0`` grid coordinate into ``+0.0``.
+    generator = torch.Generator(device=grid.device).manual_seed(42)
+    interior = grid[1:-1, 1:-1]
+    grid[1:-1, 1:-1] = interior + (
+        torch.randn(
+            interior.shape,
+            generator=generator,
+            dtype=interior.dtype,
+            device=interior.device,
+        )
+        * random_perturbation
+        * te
     ).clamp_(min=-te, max=te)
 
     grid4 = torch.stack(
