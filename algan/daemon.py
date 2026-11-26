@@ -128,8 +128,10 @@ Three more limits that are specific to serving other processes:
 * **Anything that can reach 127.0.0.1 can ask the daemon to execute a path.**
   Every request -- ``run``, ``cancel``, ``render``, ``ping`` and ``quit``
   alike -- must carry the token from the state file, which lives in the user's
-  home directory (mode 0600 where the platform honours it). Do not forward the
-  port off-host.
+  home directory (mode 0600 where the platform honours it). ``run`` proves the
+  token in a challenge-response instead of sending it, and the daemon proves it
+  first, so a client never sends its environment to a process that took over
+  the port of a daemon that died. Do not forward the port off-host.
 * **The daemon must be the same Algan.** The state file records the
   interpreter, the prefix, the package directory and the version it was
   started with, and a client whose own differ is not served: it runs cold in
@@ -512,7 +514,7 @@ class _StateFile:
         temporary), so a racer never reads half of it and takes it for stale.
         A registration whose daemon does not answer is cleared and claimed.
         """
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        _dc.make_home()
         for _ in range(3):
             if self._publish_if_absent():
                 return True
@@ -1019,12 +1021,13 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         # ``verb [token]``. Every verb needs the token: this socket executes
         # arbitrary paths and stops the process, and a bare ``quit`` from any
         # local process used to be enough to stop somebody else's daemon.
-        # ``run`` carries its token inside the JSON request that follows.
+        # ``run`` proves it instead, in a handshake (``_handle_run``), so the
+        # client can check this is the daemon before it sends anything.
         verb, _, token = line.partition(" ")
         command = verb.lower()
         token = token.strip()
         if command == "run":
-            self._handle_run()
+            self._handle_run(token)
             return
         if command == "cancel":
             token, _, request_id = token.partition(" ")
@@ -1055,22 +1058,51 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         )
         return False
 
-    def _handle_run(self):
-        """Accept a client's script, queue it, and block until it has run."""
+    def _handle_run(self, client_nonce):
+        """Accept a client's script, queue it, and block until it has run.
+
+        First the handshake: this daemon proves it holds the token by
+        answering the client's nonce with an HMAC and a nonce of its own, and
+        the client's request carries the HMAC of that in turn. Neither side
+        sends the token, and the client sends its environment only to a
+        listener that proved itself (``daemon_client._prove_daemon``).
+        """
+        if len(client_nonce) != 32 or any(
+            c not in "0123456789abcdef" for c in client_nonce
+        ):
+            # A protocol-4 client sends ``run`` bare, then its request.
+            _refuse(
+                self.wfile,
+                f"daemon speaks protocol {_dc.PROTOCOL_VERSION} and the client "
+                "an older one -- restart the daemon",
+            )
+            return
+        token = self.server.state.token
+        server_nonce = secrets.token_hex(16)
+        proof = _dc.run_proof(token, "daemon", client_nonce, server_nonce)
         try:
+            self.wfile.write(f"{server_nonce} {proof}\n".encode("ascii"))
             header = self.rfile.read(4)
             if len(header) != 4:
                 return
             (length,) = struct.unpack("!I", header)
+            if length > _dc.MAX_RUN_REQUEST_BYTES:
+                # Refused before reading it: the length comes before any
+                # proof, so an uncapped read let any local process make this
+                # daemon buffer up to 4 GiB.
+                _refuse(self.wfile, f"run request of {length} bytes is too large")
+                return
             request = json.loads(self.rfile.read(length).decode("utf-8"))
         except (OSError, ValueError, struct.error):
             _refuse(self.wfile, "malformed run request")
             return
+        if not isinstance(request, dict):
+            _refuse(self.wfile, "malformed run request")
+            return
 
-        if not secrets.compare_digest(
-            str(request.get("token", "")), self.server.state.token
-        ):
-            _say("rejected a run request with a bad token")
+        expected = _dc.run_proof(token, "client", server_nonce, client_nonce)
+        if not secrets.compare_digest(str(request.get("proof", "")), expected):
+            _say("rejected a run request that did not prove the token")
             _refuse(self.wfile, "bad daemon token -- is the state file stale?")
             return
         if request.get("protocol") != _dc.PROTOCOL_VERSION:

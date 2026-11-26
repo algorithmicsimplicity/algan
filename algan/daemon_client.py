@@ -118,7 +118,7 @@ from algan.environment import (
 #: records the interpreter, prefix, package path and version of the daemon.
 #: 4 -- run requests have an ID; Ctrl-C cancels only that request, including
 #: queued jobs. The acceptance frame closes the enqueue/cancel race.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 
 def connect_timeout():
@@ -209,6 +209,18 @@ def algan_home():
     """
     home = env_str("ALGAN_HOME") or os.path.join(os.path.expanduser("~"), ".algan")
     return os.path.expanduser(home)
+
+
+def make_home():
+    """Create ``$ALGAN_HOME`` owner-only (0700) if it does not exist yet.
+
+    It holds the daemon's state file and log, and the log carries every run's
+    output. An existing directory keeps its mode: it may be shared on
+    purpose, and the files that matter are created owner-only regardless.
+    """
+    home = algan_home()
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    return home
 
 
 def state_path():
@@ -817,6 +829,58 @@ def script_may_render(path, search_path=None):
     return False
 
 
+#: Bytes of a ``run`` request the daemon will read. The request is a script
+#: path, its argv and the client's environment -- kilobytes. Without a cap any
+#: local process could announce 4 GiB and have the daemon buffer it.
+MAX_RUN_REQUEST_BYTES = 8 * 1024 * 1024
+
+
+def run_proof(token, role, first, second):
+    """``HMAC-SHA256(token, ...)`` for one side of the ``run`` handshake.
+
+    Each side proves it holds the state file's token without sending it:
+    ``role`` is ``"daemon"`` or ``"client"`` so neither proof can be replayed
+    as the other, and the two nonces make every exchange fresh.
+    """
+    import hashlib
+    import hmac
+
+    message = f"algan-daemon-run:{role}:{first}:{second}".encode("ascii", "replace")
+    return hmac.new(str(token).encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _prove_daemon(stream, token, port):
+    """Run the client half of the handshake; return the daemon's nonce.
+
+    The state file outlives a daemon that is killed, and once that daemon is
+    gone its port is anybody's: on a shared host another user can bind it and
+    wait. The request that follows carries the client's whole environment --
+    cloud credentials, API keys -- and the reply decides what this terminal
+    prints and the exit code, so nothing is sent until the listener proves it
+    holds the token, which only the daemon that registered there does.
+    """
+    import hmac
+    import secrets
+
+    client_nonce = secrets.token_hex(16)
+    stream.write(f"run {client_nonce}\n".encode("ascii"))
+    stream.flush()
+    try:
+        line = stream.readline(256)
+    except OSError as exc:
+        raise DaemonUnavailable(
+            f"the daemon did not answer the run handshake ({exc})"
+        ) from exc
+    server_nonce, _, proof = line.decode("ascii", "replace").strip().partition(" ")
+    expected = run_proof(token, "daemon", client_nonce, server_nonce)
+    if not server_nonce or not hmac.compare_digest(proof, expected):
+        raise DaemonUnreachable(
+            f"the process listening on 127.0.0.1:{port} did not prove it is the "
+            "daemon that registered there, so nothing was sent to it"
+        )
+    return client_nonce, server_nonce
+
+
 def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
     """Execute ``script`` on the daemon described by ``state``; return its code.
 
@@ -827,10 +891,17 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
     err = err if err is not None else _binary(sys.stderr)
     import uuid
 
+    if state.get("protocol", PROTOCOL_VERSION) != PROTOCOL_VERSION:
+        # Known before connecting: the handshake below would only time out
+        # against a daemon too old to answer it.
+        raise DaemonUnavailable(
+            f"the running daemon speaks protocol {state.get('protocol')!r} and "
+            f"this client speaks {PROTOCOL_VERSION}; restart it with "
+            "`algan daemon quit`"
+        )
     request = {
         "protocol": PROTOCOL_VERSION,
         "request_id": uuid.uuid4().hex,
-        "token": state["token"],
         "cwd": cwd if cwd is not None else os.getcwd(),
         "script": script,
         "argv": list(argv if argv is not None else sys.argv[1:]),
@@ -838,8 +909,9 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         # The whole environment, applied by the daemon for the runtime of the
         # run. Without it a script reads the *daemon's* environment, so
         # ``MY_VAR=x python scene.py`` would silently see the daemon's value.
-        # Localhost-only, token-authenticated, and same-user, which is the same
-        # trust boundary the script path itself already crosses.
+        # Localhost-only, and sent only once the listener has proved it holds
+        # the token (``_prove_daemon``), which is the same trust boundary the
+        # script path itself already crosses.
         "env_full": dict(os.environ),
         "isatty_out": _isatty(sys.stdout),
         "isatty_err": _isatty(sys.stderr),
@@ -853,14 +925,25 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
 
     started = False
     with sock, contextlib.ExitStack() as cleanup:
-        sock.settimeout(None)
         stream = sock.makefile("rwb")
+        # Bounded like the connect: a listener that never answers is not
+        # worth blocking a cold run for.
+        sock.settimeout(connect_timeout())
+        client_nonce, server_nonce = _prove_daemon(
+            stream, state["token"], state["port"]
+        )
+        sock.settimeout(None)
+        # The token itself never goes on the wire, so a listener that read
+        # this request could not replay it to the daemon.
+        request["proof"] = run_proof(
+            state["token"], "client", server_nonce, client_nonce
+        )
         payload = json.dumps(request).encode("utf-8")
         # The request needs no kind byte -- only the daemon's replies are
         # multiplexed -- so it is a bare 4-byte length and that many bytes.
         accepted, restore = _install_cancel_handler(state, request["request_id"])
         cleanup.callback(restore)
-        stream.write(b"run\n" + struct.pack("!I", len(payload)) + payload)
+        stream.write(struct.pack("!I", len(payload)) + payload)
         stream.flush()
         try:
             for kind, data in read_frames(stream):
@@ -913,14 +996,23 @@ def log_path():
 
 
 def _open_log():
-    """Open the daemon log for append, trimming it if it has grown large."""
+    """Open the daemon log for append, trimming it if it has grown large.
+
+    Owner-only (0600): the daemon tees every client run's stdout and stderr
+    into it, and on a shared host a world-readable log hands other users
+    every script's output.
+    """
     path = log_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    make_home()
     cap = env_int("ALGAN_DAEMON_LOG_MAX_BYTES", 4 * 1024 * 1024)
     with contextlib.suppress(OSError):
         if cap > 0 and os.path.getsize(path) > cap:
             os.replace(path, path + ".old")
-    return open(path, "ab")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with contextlib.suppress(OSError):
+        # A log an older version created keeps its 0644 otherwise.
+        os.chmod(path, 0o600)
+    return os.fdopen(fd, "ab")
 
 
 def _spawn_daemon():
@@ -987,7 +1079,7 @@ def _autostart():
     """
     if not env_flag("ALGAN_AUTO_DAEMON", True):
         return None
-    os.makedirs(algan_home(), exist_ok=True)
+    make_home()
     proc = _spawn_daemon()
     if proc is None:
         return None

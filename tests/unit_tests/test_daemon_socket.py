@@ -14,9 +14,11 @@ by the wrong process or unreachable by the right one:
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import socket
+import struct
 import threading
 
 import pytest
@@ -95,6 +97,56 @@ def test_a_wrong_token_is_refused(served):
 def test_an_unknown_verb_still_says_what_is_accepted(served):
     _, state = served
     assert "expected run" in _send(state._payload["port"], f"frobnicate {state.token}")
+
+
+def _handshake(port, token):
+    """Open a ``run`` connection and check the daemon proves the token."""
+    sock = socket.create_connection(("127.0.0.1", port), 5)
+    stream = sock.makefile("rwb")
+    client_nonce = "ab" * 16
+    stream.write(f"run {client_nonce}\n".encode())
+    stream.flush()
+    server_nonce, proof = stream.readline().decode().split()
+    assert proof == dc.run_proof(token, "daemon", client_nonce, server_nonce)
+    return sock, stream, client_nonce, server_nonce
+
+
+def _refusal(stream):
+    kind, data = dc.read_frame(stream)
+    assert kind == dc.FRAME_REFUSE
+    return data.decode()
+
+
+def test_a_run_is_refused_without_the_clients_proof(served):
+    events, state = served
+    sock, stream, _, _ = _handshake(state._payload["port"], state.token)
+    with sock:
+        # The token itself, as a protocol-4 client sent it, is not a proof.
+        payload = json.dumps({"token": state.token, "proof": state.token}).encode()
+        stream.write(struct.pack("!I", len(payload)) + payload)
+        stream.flush()
+        assert "bad daemon token" in _refusal(stream)
+    assert events.empty()
+
+
+def test_a_run_request_too_large_is_refused_before_it_is_read(served):
+    events, state = served
+    sock, stream, _, _ = _handshake(state._payload["port"], state.token)
+    with sock:
+        stream.write(struct.pack("!I", 0xFFFFFFFF))
+        stream.flush()
+        assert "too large" in _refusal(stream)
+    assert events.empty()
+
+
+def test_a_protocol_4_client_is_told_to_restart_the_daemon(served):
+    _, state = served
+    with socket.create_connection(("127.0.0.1", state._payload["port"]), 5) as sock:
+        stream = sock.makefile("rwb")
+        payload = json.dumps({"token": state.token}).encode()
+        stream.write(b"run\n" + struct.pack("!I", len(payload)) + payload)
+        stream.flush()
+        assert "restart the daemon" in _refusal(stream)
 
 
 # --------------------------------------------------------------------------
