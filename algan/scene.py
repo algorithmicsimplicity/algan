@@ -434,7 +434,20 @@ class Scene(RenderLoopMixin):
     def __exit__(self, exc_type, exc_value, traceback):
         self._context_depth = max(0, self._context_depth - 1)
         if self._context_depth == 0:
-            self._terminate()
+            if exc_type is None:
+                SceneManager.instance().end_block(self)
+            else:
+                # Raising here would replace the error the block is already
+                # propagating, leaving the user's own exception visible only
+                # as ``__context__``.
+                try:
+                    SceneManager.instance().end_block(self)
+                except RuntimeError as stack_error:
+                    logger.warning(
+                        "Could not pop the Scene at the end of its `with` "
+                        "block while an exception propagated: %s",
+                        stack_error,
+                    )
         return False
 
     def _terminate(self):
