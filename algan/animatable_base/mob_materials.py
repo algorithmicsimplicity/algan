@@ -109,6 +109,37 @@ def _vertex_shader_parameters(shader):
     return parameters
 
 
+def _warn_shadowed_mob_attributes(shader, names, mobs):
+    """Warn for each material parameter named like an attribute of the Mobs.
+
+    set_shader makes each material parameter an animatable attribute and
+    assigns its default through the Mob's own setter, so a parameter named
+    ``color`` repainted the Mob, ``opacity=0`` made it vanish and ``location``
+    moved it, in silence. The name check is FragmentStage's, with its
+    exemptions (the built-in material slot names, and properties earlier shader
+    calls attached for their own parameters). A fragment stage raises; a vertex
+    shader only warns for now, because scripts may rely on the overwrite.
+    """
+    from algan.rendering.shaders.fragment_shaders import _reserved_mob_name
+
+    classes = list(dict.fromkeys(type(m) for m in mobs))
+    shadowed = [n for n in names if any(_reserved_mob_name(n, c) for c in classes)]
+    if not shadowed:
+        return
+    shader_name = getattr(shader, "__name__", None) or type(shader).__name__
+    for name in shadowed:
+        warnings.warn(
+            f"{shader_name}: material parameter {name!r} is named like the Mob "
+            f"attribute {name!r}. set_shader makes each material parameter an "
+            "attribute of the Mob and assigns its default there, so this one "
+            f"overwrites the Mob's own {name}. Rename the parameter (for "
+            f"example to 'shader_{name}'). This will be an error in a later "
+            "release.",
+            AlganWarning,
+            stacklevel=_user_stacklevel(),
+        )
+
+
 class MobMaterialsMixin:
     """``set_shader`` / ``set_fragment_shader`` / ``set_material`` -- all must
     be called *before* the mob is spawned.
@@ -153,7 +184,12 @@ class MobMaterialsMixin:
             all by position. Declare all nine first, even those it ignores: a
             shader that puts one of them in another place, or another parameter
             with a default in one of theirs, warns that it will be given the
-            wrong values.
+            wrong values. Do not name a material parameter after an
+            attribute the Mob already has (``color``, ``opacity``,
+            ``location``, a method or property): its default would overwrite
+            the Mob's own, so it warns, and will be an error in a later
+            release. The built-in material names (``roughness``,
+            ``emissive``, ...) are fine.
 
         Returns
         -------
@@ -200,6 +236,9 @@ class MobMaterialsMixin:
             else 0
             for n in shader_specific_param_names
         ]
+        _warn_shadowed_mob_attributes(
+            shader, shader_specific_param_names, self.get_descendants()
+        )
 
         for d in reversed(self.get_descendants()):
             d.register_attrs_as_animatable(shader_specific_param_names)

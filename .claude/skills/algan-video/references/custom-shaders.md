@@ -34,7 +34,9 @@ light_intensity, ambient_light_intensity
 
 Declare all nine even when unused. Parameters after them are exposed as
 animatable Mob attributes. Give each custom parameter an explicit default.
-Use distinctive names that do not collide with ordinary Mob attributes.
+Use distinctive names that do not collide with ordinary Mob attributes:
+a parameter named `color`, `opacity`, `location` or after a Mob method
+overwrites that attribute with its default, and `set_shader` warns.
 
 `albedo_color` is `[..., 4]`: **RGB plus glow**, not RGBA. The return value must
 preserve the broadcast leading dimensions and four-channel layout. Work on

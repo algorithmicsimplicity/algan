@@ -109,6 +109,11 @@ ALWAYS_CI = (
     "tests/unit_tests/test_fragment_shaders.py::test_the_reserved_state_names_are_the_ones_a_mob_is_built_with",
     "tests/unit_tests/test_fragment_shaders.py::test_material_slot_names_and_earlier_stage_parameters_stay_legal",
     "tests/unit_tests/test_fragment_shaders.py::test_a_stage_the_kernel_could_not_compile_fails_when_made",
+    # A vertex shader parameter named like a Mob attribute warns: one
+    # set_shader call on an unspawned Sphere each, no render.
+    "tests/unit_tests/test_custom_shader_signature.py::test_a_material_parameter_named_like_a_mob_attribute_warns",
+    "tests/unit_tests/test_custom_shader_signature.py::test_a_material_parameter_named_like_a_subclass_attribute_warns",
+    "tests/unit_tests/test_custom_shader_signature.py::test_setting_the_same_custom_shader_twice_does_not_warn",
     # A fragment the ceiling does not clip comes back bit for bit, which on an
     # Apple GPU it did not while the kernel divided it by its own area.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_solid_shell_ceiling_returns_what_it_does_not_clip_bit_for_bit",

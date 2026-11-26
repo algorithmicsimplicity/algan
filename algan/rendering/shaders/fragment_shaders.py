@@ -179,25 +179,30 @@ def _check_compiler_func(label, role, func, arity):
         ) from None
 
 
-def _reserved_mob_name(name):
-    """Whether a stage parameter ``name`` would overwrite part of every Mob.
+def _reserved_mob_name(name, mob_class=None):
+    """Whether a shader parameter ``name`` would overwrite part of every Mob.
 
     The names a Mob is built with (``_MOB_STATE_ATTRS``) and everything on the
     ``Mob`` class -- its methods, properties and class attributes -- except the
-    properties earlier ``set_fragment_shader`` calls attached to it for their
-    own stage parameters, which are what a parameter is meant to become. The
-    built-in material slot names are exempt: the built-in stages share them
-    with set_material's attributes on purpose.
+    properties earlier ``set_fragment_shader`` / ``set_shader`` calls attached
+    to it for their own parameters, which are what a parameter is meant to
+    become. The built-in material slot names are exempt: the built-in stages
+    and shaders share them with set_material's attributes on purpose.
+    ``mob_class`` (``Mob`` when not given) is the class whose attributes count:
+    ``set_shader``, which knows the Mob, passes its class so a subclass's own
+    methods and properties count too.
     """
     if name in _MAT_SLOTS:
         return False
     if name in _MOB_STATE_ATTRS:
         return True
-    from algan.animatable_base.mob import Mob
+    if mob_class is None:
+        from algan.animatable_base.mob import Mob
 
-    if not hasattr(Mob, name):
+        mob_class = Mob
+    if not hasattr(mob_class, name):
         return False
-    attribute = inspect.getattr_static(Mob, name)
+    attribute = inspect.getattr_static(mob_class, name)
     generated = isinstance(attribute, property) and getattr(
         attribute.fset, "_forwards_to_set_animated_attribute", False
     )
