@@ -25,7 +25,11 @@ import numpy as np
 import torch
 
 from algan.animatable_base.animatable import _reports_refused_keywords
-from algan.animatable_base.mob import _MANIM_CONSTRUCTOR_HINTS, Mob
+from algan.animatable_base.mob import (
+    _MANIM_CONSTRUCTOR_HINTS,
+    _MANIM_METHOD_HINTS,
+    Mob,
+)
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUTWARD
@@ -56,6 +60,12 @@ from algan.utils.tensor_utils import cast_to_tensor
 # such as Axes.plot can convert their returned Mobjects back to the most useful
 # Algan wrapper type.
 _MANIM_WRAPPER_REGISTRY: dict[str, type[ManimCompatMob]] = {}
+
+
+#: Manim method names a compatibility Mob must not delegate, because Algan's
+#: answer has to win: each gets the native Mob's migration hint instead
+#: (``_MANIM_METHOD_HINTS`` in ``animatable_base/mob.py``).
+_ALGAN_MEANING_WINS = frozenset({"animate"})
 
 
 def _tensor_to_manim(value: torch.Tensor):
@@ -1705,6 +1715,19 @@ class ManimCompatMob(ManimMob):
         accessor = self._generated_accessor(name)
         if accessor is not None:
             return accessor
+        if name in _ALGAN_MEANING_WINS:
+            # Manim has these too, but delegating them would do the wrong
+            # thing: ``animate`` returns Manim's ``_AnimationBuilder``, which
+            # the ``@wraps`` below cannot even wrap (``TypeError: __annotations__
+            # must be set to a dict object``), and an animation built that way
+            # would reach no timeline. Native Mobs answer with the migration
+            # hint; so does this.
+            raise AttributeError(
+                f"{self._describe()} has no attribute {name!r}. "
+                f"That is Manim's name for it; in Algan use "
+                f"{_MANIM_METHOD_HINTS[name]}. "
+                f"See the Manim migration guide for the full table."
+            )
         if (
             name.startswith("_")
             or "manim_mobject" not in self.__dict__
