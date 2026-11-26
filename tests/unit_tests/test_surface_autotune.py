@@ -270,3 +270,45 @@ def test_an_error_no_grid_explains_is_raised_from_the_sizing_search(error):
         with pytest.raises(type(error)) as caught:
             _Ridge(error)
     assert caught.value is error
+
+
+def _sinc_bowl(uv):
+    """NaN along u = 0, where sin(u)/u is 0/0."""
+    u = uv[..., :1] * 3
+    return torch.cat((u, uv[..., 1:], torch.sin(u) / u), -1)
+
+
+def _two_coordinates(uv):
+    return uv
+
+
+def _flattened(uv):
+    """The right points, but flattened to ``[N, 3]``."""
+    return torch.cat((uv, torch.zeros_like(uv[..., :1])), -1).reshape(-1, 3)
+
+
+@pytest.mark.parametrize(
+    ("function", "match"),
+    [
+        (_sinc_bowl, r"_sinc_bowl returned a non-finite point .* \(u, v\) = \(0, 0\)"),
+        (_two_coordinates, r"_two_coordinates returned shape \[5, 5, 2\]"),
+        (_flattened, r"_flattened returned shape \[25, 3\]"),
+    ],
+    ids=["NaN", "two coordinates", "flattened"],
+)
+def test_a_bad_coordinate_function_is_named_before_the_sizing_search(function, match):
+    """REGRESSION. A NaN or a wrongly shaped result read as "this grid is too
+    coarse": the search climbed to max_grid_resolution (10 s for the NaN),
+    warned that the tolerance was out of reach, and then failed on an error
+    that never named the function -- or, for the flattened result, accepted
+    it at 200 x 200.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(ValueError, match=match):
+            Surface(function)
+
+
+def test_a_bad_coordinate_function_is_named_at_a_fixed_resolution_too():
+    with pytest.raises(ValueError, match="_sinc_bowl returned a non-finite point"):
+        Surface(_sinc_bowl, resolution=(6, 6))
