@@ -991,6 +991,15 @@ class Animatable:
         if event.time.end_event is not None:
             # Already removed.
             return
+        # Materializing below resolves every edit's replay window into a plain
+        # float. Inside an unfinished block (a ``runtime``, an Audio or Speech
+        # clip) those are the times before the block rescales on exit, and
+        # nothing revisits them afterwards: the block's earlier animations then
+        # replay over the wrong windows. Roll the resolution back, as
+        # Scene.save_frame does, whenever a context other than the root is open.
+        preserve_replay_resolution = (
+            self.animation_manager.context.prev_context is not None
+        )
         # See add_updater: the end event must live on an entered context.
         with Off(
             record_funcs=False, animation_manager=self.animation_manager
@@ -1002,11 +1011,16 @@ class Animatable:
             # hub's stale initial orientation and snap backwards on the last frame.
             previous_capture, writes = timeline.begin_updater_write_capture(event)
             try:
-                with Off(
-                    record_attr_modifications=False,
-                    record_funcs=False,
-                    priority_level=float("inf"),
-                    animation_manager=self.animation_manager,
+                with (
+                    timeline.preserving_authoring_state(
+                        preserve_replay_resolution=preserve_replay_resolution
+                    ),
+                    Off(
+                        record_attr_modifications=False,
+                        record_funcs=False,
+                        priority_level=float("inf"),
+                        animation_manager=self.animation_manager,
+                    ),
                 ):
                     timeline.set_state_to_times(
                         cast_to_tensor(context.timespan.current_time).reshape(1)
