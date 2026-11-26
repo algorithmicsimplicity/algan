@@ -124,6 +124,9 @@ ALWAYS_CI = (
     # A Group grown by adds is the Group built at once, and an add costs the
     # same however large the Group is (counted, not timed).
     "tests/unit_tests/test_group_add.py::",
+    # A Mob scaled to nothing grows back to its size, shape and orientation,
+    # and a shrink to nothing still ends a video.
+    "tests/unit_tests/test_scale_to_zero.py::",
     # More of the same, and the ops MPS gets wrong around it, emulated on the
     # CPU and, on an Apple machine, run through the real op: a BVH level's
     # ranges and the sliver strips, the depth-order scan's owners, the depth

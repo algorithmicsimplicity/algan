@@ -1842,6 +1842,7 @@ class Animatable:
                 # Keyed on the source's rows (Mob._apply_basis_change), which
                 # a clone does not share.
                 "_rest_shape",
+                "_collapse",
                 # Whom a render stand-in draws for (pass_identity.render_identity):
                 # a clone is a new object, and deep-copying the reference would
                 # clone that other Mob's whole hierarchy besides.
