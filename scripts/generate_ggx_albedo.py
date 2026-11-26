@@ -1,4 +1,9 @@
-"""Generate the path tracer's opaque GGX directional-albedo table.
+"""Generate the opaque GGX directional-albedo table.
+
+Both renderers read it: the path tracer's multiple-scattering compensation, and
+the deterministic renderer's split-sum glossy weight
+(``wavefront_kernels_taichi._env_brdf_scale_bias``), whose direct lights are
+shaded with the same lobe.
 
 Run from the repository root with the development interpreter. Only NumPy is
 needed. For every (roughness, sqrt(n.v)) grid point it integrates the lobe

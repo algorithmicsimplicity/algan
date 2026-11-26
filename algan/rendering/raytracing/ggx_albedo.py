@@ -13,6 +13,12 @@ This table is that lobe's albedo, split the usual way for Schlick Fresnel:
 energy table (``pt_energy_tables``), which the path tracer already copies into
 the arena, so no kernel gains a parameter. ``scripts/generate_ggx_albedo.py``
 regenerates it; nothing is integrated at import or render time.
+
+The deterministic renderer's direct lights use the same lobe
+(``shading_taichi._ggx_distribution`` and ``_smith_geometry``), so its glossy
+prefilter weights a reflection by this table too: the split-sum ``E`` of
+``wavefront_kernels_taichi._env_brdf_scale_bias``, bound as ``env_lut`` in the
+sheet resolve and ``wavefront_shade``.
 """
 
 from __future__ import annotations

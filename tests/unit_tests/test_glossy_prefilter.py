@@ -22,6 +22,7 @@ numbers as its own. That failure has produced two wrong measurements in this
 repo already (see AGENTS.md's Taichi gotchas).
 """
 
+import functools
 import json
 import math
 import os
@@ -30,21 +31,24 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
 # Importing algan is what initialises Taichi and Torch for this process.
 import algan  # noqa: F401  (import for its side effects: ti.init lives there)
+from algan.rendering.raytracing.ggx_albedo import ggx_albedo_table
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     _reflector_magnification,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
-    _env_brdf_approx,
+    _env_brdf,
     _material_env_brdf,
     _material_reflectance,
     _mirror_share,
 )
 from algan.taichi_compat import ti
+from tests.unit_tests.test_ggx_albedo import _albedo_by_quadrature
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _AUDIT_DIR = _REPO_ROOT / "benchmarks" / "renderer_audit"
@@ -80,21 +84,21 @@ _skip_slow_crawl = pytest.mark.skipif(
 
 @ti.kernel
 def _probe_env_brdf(
+    lut: ti.types.ndarray(),
     f0: ti.types.ndarray(),
     nv: ti.types.ndarray(),
     rough: ti.types.ndarray(),
     out: ti.types.ndarray(),
 ):
     for i in range(f0.shape[0]):
-        e = _env_brdf_approx(
-            ti.math.vec3(f0[i, 0], f0[i, 1], f0[i, 2]), nv[i], rough[i]
-        )
+        e = _env_brdf(lut, ti.math.vec3(f0[i, 0], f0[i, 1], f0[i, 2]), nv[i], rough[i])
         for k in ti.static(range(3)):
             out[i, k] = e[k]
 
 
 @ti.kernel
 def _probe_material(
+    lut: ti.types.ndarray(),
     rd: ti.types.ndarray(),
     nrm: ti.types.ndarray(),
     metal: ti.types.ndarray(),
@@ -109,7 +113,7 @@ def _probe_material(
         d = ti.math.vec3(rd[i, 0], rd[i, 1], rd[i, 2])
         n = ti.math.vec3(nrm[i, 0], nrm[i, 1], nrm[i, 2])
         a = ti.math.vec3(albedo[i, 0], albedo[i, 1], albedo[i, 2])
-        e = _material_env_brdf(d, n, metal[i], ior[i], a, rough[i])
+        e = _material_env_brdf(lut, d, n, metal[i], ior[i], a, rough[i])
         r, _dp = _material_reflectance(d, n, metal[i], ior[i], a, 0.0)
         share = _mirror_share(rough[i])
         for k in ti.static(range(3)):
@@ -118,13 +122,22 @@ def _probe_material(
             throttle_out[i, k] = r[k] * share
 
 
-def _env_brdf(f0_rows, nv_rows, rough_rows):
+def _lut():
+    return torch.from_numpy(ggx_albedo_table().copy())
+
+
+def _probe(*args):
+    """``_probe_material`` with the shipped table as its first argument."""
+    _probe_material(_lut(), *args)
+
+
+def _env_brdf_rows(f0_rows, nv_rows, rough_rows):
     n = len(f0_rows)
     f0 = torch.tensor(f0_rows, dtype=torch.float32)
     nv = torch.tensor(nv_rows, dtype=torch.float32)
     rg = torch.tensor(rough_rows, dtype=torch.float32)
     out = torch.zeros((n, 3), dtype=torch.float32)
-    _probe_env_brdf(f0, nv, rg, out)
+    _probe_env_brdf(_lut(), f0, nv, rg, out)
     return out
 
 
@@ -133,17 +146,81 @@ def test_env_brdf_reduces_to_fresnel_at_zero_roughness():
 
     This is what lets the route below ``_GLOSSY_MIN_ROUGHNESS`` keep Schlick
     while the route above it uses the DFG term: the two agree across the
-    threshold rather than stepping.
+    threshold rather than stepping. Checked at n.v down to 0.1; nearer
+    grazing the lobe's own masking takes a share even at the smallest
+    roughness, where Schlick goes to 1.
     """
     f0 = [[0.04] * 3, [1.0] * 3, [0.95, 0.64, 0.54]]
-    out = _env_brdf(f0, [1.0, 1.0, 1.0], [0.0, 0.0, 0.0])
-    for row, expect in zip(out.tolist(), f0):
-        for got, want in zip(row, expect):
-            assert abs(got - want) < 0.02, (got, want)
+    for nv in (1.0, 0.6, 0.3, 0.1):
+        out = _env_brdf_rows(f0, [nv] * 3, [0.0] * 3)
+        for row, expect in zip(out.tolist(), f0):
+            for got, want in zip(row, expect):
+                schlick = want + (1.0 - want) * (1.0 - nv) ** 5
+                assert abs(got - schlick) < 0.01, (nv, got, schlick)
 
-    # Grazing: every material reflects (nearly) everything, whatever its f0.
-    graze = _env_brdf(f0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
-    assert graze.min().item() > 0.95, graze
+
+# Off the table's nodes on both axes (roughness nodes are k/32, cosine nodes
+# (k/32)**2), so the bilinear step is part of what is checked. (0.3, 1.0) is
+# the audit's case: a white metal at roughness 0.3, head-on. Roughness starts
+# at 0.27 because the midpoint-rule reference cannot resolve a narrower lobe
+# near the horizon; the table itself is checked against it at its nodes in
+# ``test_ggx_albedo.py``, and the roughness-0 row against Schlick above.
+_REFERENCE_GRID = [
+    (rough, nv)
+    for rough in (0.27, 0.3, 0.47, 0.71, 0.9)
+    for nv in (0.07, 0.2, 0.45, 0.8, 1.0)
+]
+
+
+@functools.cache
+def _reference(rough, nv):
+    return _albedo_by_quadrature(rough, nv, n=500)
+
+
+@pytest.mark.parametrize("f0", [1.0, 0.04, 0.5])
+def test_env_brdf_is_the_albedo_of_the_direct_lobe(f0):
+    """The split-sum weight against a brute-force integral of the lobe the
+    direct lights are shaded with (GGX ``D``, height-correlated Smith ``G2``,
+    Schlick on ``v.h``, ``alpha = roughness**2``): within 0.01 everywhere on
+    the grid. That bound covers the table's own error (0.004 at most for
+    ``n.v >= 0.06``, measured against a 65 x 65 integration) plus the
+    reference's, and is far above a last-bit difference between platforms.
+
+    Karis's analytic fit, which this replaced, was made for a separable
+    Smith term: it gave 0.835 at f0 = 1, roughness 0.3, head-on, where the
+    lobe reflects 0.989.
+    """
+    out = _env_brdf_rows(
+        [[f0] * 3] * len(_REFERENCE_GRID),
+        [nv for _r, nv in _REFERENCE_GRID],
+        [r for r, _nv in _REFERENCE_GRID],
+    )
+    for (rough, nv), got in zip(_REFERENCE_GRID, out[:, 0].tolist()):
+        a, b = _reference(rough, nv)
+        assert got == pytest.approx(f0 * a + b, abs=0.01), (rough, nv)
+    if f0 == 1.0:
+        head_on = out[_REFERENCE_GRID.index((0.3, 1.0)), 0].item()
+        assert head_on == pytest.approx(0.989, abs=0.01)
+
+
+def test_env_brdf_never_reflects_more_than_arrives():
+    """Energy: ``f0 * A + B <= 1`` for every f0 in [0, 1], everywhere on the
+    square, nodes and cells alike -- in the shipped table itself (``A + B``,
+    the white albedo, is the largest it can be) and through the kernel's
+    lookup.
+    """
+    table = ggx_albedo_table()
+    assert table.min() >= 0.0
+    assert (table[:, 0] + table[:, 1]).max() <= 1.0 + 1e-4
+
+    grid = np.linspace(0.0, 1.0, 41)
+    rows = [(r, nv) for r in grid for nv in grid]
+    for f0 in (0.0, 0.04, 0.5, 1.0):
+        out = _env_brdf_rows(
+            [[f0] * 3] * len(rows), [nv for _r, nv in rows], [r for r, _nv in rows]
+        )
+        assert out.min().item() >= 0.0
+        assert out.max().item() <= 1.0
 
 
 def test_env_brdf_is_bounded_and_falls_with_roughness():
@@ -155,7 +232,7 @@ def test_env_brdf_is_bounded_and_falls_with_roughness():
     for rough in (0.0, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0):
         for nv in (0.05, 0.25, 0.5, 0.75, 1.0):
             rows.append((rough, nv))
-    out = _env_brdf(
+    out = _env_brdf_rows(
         [[1.0] * 3] * len(rows), [nv for _r, nv in rows], [r for r, _nv in rows]
     )
     assert out.min().item() >= 0.0, out.min().item()
@@ -163,7 +240,7 @@ def test_env_brdf_is_bounded_and_falls_with_roughness():
 
     for nv in (0.25, 0.5, 1.0):
         vals = [
-            _env_brdf([[1.0] * 3], [nv], [r])[0, 0].item()
+            _env_brdf_rows([[1.0] * 3], [nv], [r])[0, 0].item()
             for r in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
         ]
         assert all(b <= a + 1e-4 for a, b in zip(vals, vals[1:])), (nv, vals)
@@ -184,17 +261,19 @@ def test_env_brdf_beats_the_mirror_share_throttle_on_a_rough_metal():
     env = torch.zeros((n, 3))
     schlick = torch.zeros((n, 3))
     throttle = torch.zeros((n, 3))
-    _probe_material(rd, nrm, metal, ior, albedo, rough, env, schlick, throttle)
+    _probe(rd, nrm, metal, ior, albedo, rough, env, schlick, throttle)
 
     # Schlick at normal incidence on a white metal is 1: the whole lobe.
     assert abs(schlick[0, 0].item() - 1.0) < 1e-3, schlick
     # The throttle keeps a few percent of it ...
     assert throttle[0, 0].item() < 0.06, throttle
-    # ... and the split-sum keeps most of it. 0.807 is the fit's exact value
-    # here; what it is short of 1 is the single-scattering GGX model's own
-    # energy loss (light that would have needed a second microfacet bounce),
-    # which split-sum does not compensate and which is ~19% at this roughness.
-    assert 0.78 < env[0, 0].item() < 0.83, env
+    # ... and the split-sum keeps nearly all of it: what it is short of 1 is
+    # the single-scattering GGX lobe's own energy loss (light that would have
+    # needed a second microfacet bounce), which split-sum does not
+    # compensate and which is under 3% at this roughness head-on.
+    a, b = _albedo_by_quadrature(0.35, 1.0, n=300)
+    assert env[0, 0].item() == pytest.approx(a + b, abs=0.01), env
+    assert env[0, 0].item() > 0.95, env
 
 
 def test_env_brdf_is_zero_for_the_unlit_sentinel():
@@ -206,7 +285,7 @@ def test_env_brdf_is_zero_for_the_unlit_sentinel():
     env = torch.zeros((1, 3))
     schlick = torch.zeros((1, 3))
     throttle = torch.zeros((1, 3))
-    _probe_material(
+    _probe(
         rd,
         nrm,
         torch.tensor([-1.0]),
@@ -230,7 +309,7 @@ def test_env_brdf_index_matched_dielectric_has_no_lobe():
     env = torch.zeros((1, 3))
     schlick = torch.zeros((1, 3))
     throttle = torch.zeros((1, 3))
-    _probe_material(
+    _probe(
         rd,
         nrm,
         torch.tensor([0.0]),
@@ -255,7 +334,7 @@ def test_env_brdf_metal_tint_rides_in_f0():
     env = torch.zeros((2, 3))
     schlick = torch.zeros((2, 3))
     throttle = torch.zeros((2, 3))
-    _probe_material(
+    _probe(
         rd,
         nrm,
         torch.tensor([1.0, 0.0]),

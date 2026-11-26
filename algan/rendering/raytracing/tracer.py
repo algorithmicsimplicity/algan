@@ -51,6 +51,7 @@ from algan.rendering.raytracing.float32_rounding import (
     attach_depth_order,
     depth_order_eye,
 )
+from algan.rendering.raytracing.ggx_albedo import ggx_albedo_table
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_samples,
     kbuf,
@@ -3465,6 +3466,14 @@ def raytrace_render_wavefront(
     # The projection rows and their compile-time switch, as every kernel
     # launched below takes them (projection.kernel_projection).
     cam_proj_table, projected = kernel_projection(cam_proj, cam_origin)
+    # The specular lobe's directional-albedo table, which the glossy
+    # prefilter's split-sum weight reads in both the sheet resolve and the
+    # shade (wavefront_kernels_taichi._env_brdf_scale_bias). 8.7 KB, copied
+    # per batch like the light tables, because an arena-bound table has to
+    # share the allocation of every other array those kernels bind.
+    env_lut_host = torch.from_numpy(ggx_albedo_table())
+    with memory.scope("persistent_inputs", env_lut_cells=env_lut_host.numel()):
+        env_lut = _arena_copy(memory, env_lut_host)
     # Opt-in inline stages for this function's loops (the profiler's pipeline
     # hooks cannot reach inside one function). A shared nullcontext unless the
     # profiler is installed; imported here rather than at module level because
@@ -4427,6 +4436,7 @@ def raytrace_render_wavefront(
                         cam_origin,
                         tri_shell,
                         cam_proj_table,
+                        env_lut,
                         projected,
                     )
                 if merged.get("glossy_mode") == 3:
@@ -4827,6 +4837,7 @@ def raytrace_render_wavefront(
                                 bez_bvh,
                                 layer_offset_triangles,
                                 max_bounces,
+                                env_lut=env_lut,
                                 shadow_tracer=resolve_shadow_tracer,
                             )
                     except (InsufficientMemoryException, RuntimeError) as exc:
@@ -5354,6 +5365,7 @@ def raytrace_render_wavefront(
                     cam_origin,
                     tri_shell,
                     cam_proj_table,
+                    env_lut,
                     projected,
                 )
             active = compactor.select(

@@ -471,6 +471,9 @@ def sheet_resolve_shade_arena(
     rs_alloc = ti.static(ArenaView(arena_i32, aoff[40], (ashp[82],)))
     # Per-frame projection rows (algan.rendering.projection).
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[41], (ashp[83], ashp[84])))
+    # The lobe's directional-albedo table (wavefront_kernels_taichi.
+    # _env_brdf_scale_bias), for the split-sum substitution below.
+    env_lut = ti.static(ArenaView(arena_f32, aoff[42], (ashp[85], ashp[86])))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     far_clip = layer_offsets[5]
@@ -1069,8 +1072,9 @@ def sheet_resolve_shade_arena(
                 if (reflectivity >= 0.0) and (T <= 1e-4) \
                         and (rough > _GLOSSY_MIN_ROUGHNESS) \
                         and (bounces_left > 0):
-                    e_brdf = _material_env_brdf(surf_rd, normal, reflectivity,
-                                                ior, albedo3, rough)
+                    e_brdf = _material_env_brdf(env_lut, surf_rd, normal,
+                                                reflectivity, ior, albedo3,
+                                                rough)
                     if (not gl_taken) or gl_share:
                         prefilter_take = True
                     else:
@@ -1718,6 +1722,7 @@ _SHEET_RESOLVE_SHADE_ARENA = (
     ("gen_meta", "f32", 1),
     ("rs_alloc", "i32", 1),
     ("cam_proj_table", "f32", 2),
+    ("env_lut", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -1738,7 +1743,7 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "shadow_vis", "covered_idx", "time_start", "width", "height",
     "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
     "gen_meta", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix",
-    "pix_accum", "rs_alloc", "dump", "dump_out", "cam_proj_table", "projected",
+    "pix_accum", "rs_alloc", "dump", "dump_out", "cam_proj_table", "env_lut", "projected",
     "display_cap",
 )
 

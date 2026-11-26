@@ -182,6 +182,13 @@ ALWAYS_CI = (
     # While a render job runs, only its thread drains torch's MPS caches, and a
     # drain the batch-prep worker asks for waits for that thread: stubs, no GPU.
     "tests/unit_tests/test_mps_cache_drains.py::test_a_drain_asked_for_off_the_render_thread_waits_for_the_render_thread",
+    # The glossy prefilter's split-sum weight is the direct lobe's albedo
+    # table: a rough white metal keeps nearly all its reflection, the
+    # roughness-0 row is Schlick, and no lookup reflects more than arrives.
+    # One small probe kernel, a fraction of a second.
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_beats_the_mirror_share_throttle_on_a_rough_metal",
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_reduces_to_fresnel_at_zero_roughness",
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_never_reflects_more_than_arrives",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
@@ -208,6 +215,9 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_glossy_prefilter.py::test_rough_glass_reflects_the_same_with_and_without_the_prefilter",
     # An opaque metal keeps its direct-light highlight when the render bounces.
     "tests/unit_tests/test_direct_specular_lobe.py::test_an_opaque_metal_keeps_its_highlight_when_the_render_has_bounces",
+    # The split-sum weight against a brute-force integral of the direct lobe
+    # over a grid (three seconds of quadrature).
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_is_the_albedo_of_the_direct_lobe",
     # The closed-shell ceiling's torch arm and its segment order keep their
     # integer gathers exact past MPS's 2**24: a real frame's fragments in a 4K
     # window, and a float32 spend over 2**24 rows.
