@@ -270,7 +270,9 @@ def test_every_adapter_documents_its_conversions():
         assert "stroke_width" in doc
 
 
-@pytest.mark.parametrize("value", [math.pi / 2, 0.5, -1.25, 3.14159])
+@pytest.mark.parametrize(
+    "value", [math.pi / 2, 0.5, -1.25, 3.14159, math.tau, -math.tau, 2 * math.pi]
+)
 def test_a_radian_looking_angle_warns(value):
     with pytest.warns(ApproximationWarning, match="looks like radians"):
         algan.Arc(angle=value)
@@ -321,3 +323,43 @@ def test_the_mobject_spelled_classes_are_renamed_at_the_root(manim_name, root_na
     assert getattr(algan, root_name).__module__ == _ADAPTER_MODULE
     assert hasattr(mn, manim_name)
     assert root_name in algan.__all__
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda mob, angle: mob.rotate(angle),
+        lambda mob, angle: mob.rotate(angle, algan.UP),
+        lambda mob, angle: mob.orbit(angle, about=algan.RIGHT),
+        lambda mob, angle: algan.Arc(angle=90).rotate(angle),
+    ],
+    ids=["rotate", "rotate about UP", "orbit", "compat rotate"],
+)
+@pytest.mark.parametrize("value", [math.pi / 2, math.tau, -math.pi])
+def test_rotate_and_orbit_warn_like_the_constructors(call, value):
+    """REGRESSION. ``rotate(PI / 2)`` -- Manim's quarter turn -- silently
+    turned 1.57 degrees, while ``Arc(angle=PI / 2)`` already warned.
+    """
+    with pytest.warns(ApproximationWarning, match="looks like radians"):
+        call(algan.Square(), value)
+
+
+@pytest.mark.parametrize("value", [90, 45.0, 7.5 * 2, -180, 400.5, 0.0])
+def test_rotate_takes_ordinary_degrees_in_silence(value):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ApproximationWarning)
+        algan.Square().rotate(value)
+        algan.Square().orbit(value, about=algan.RIGHT)
+
+
+def test_rotate_in_radians_on_purpose_does_not_warn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ApproximationWarning)
+        algan.Square().rotate(math.pi / 2, degrees=False)
+        algan.Square().orbit(math.tau, about=algan.RIGHT, degrees=False)
+
+
+def test_the_rotate_warning_points_at_the_script():
+    with pytest.warns(ApproximationWarning) as caught:
+        algan.Square().rotate(math.pi / 2)
+    assert caught[0].filename == __file__
