@@ -255,6 +255,45 @@ def _resolve_leading_dot_field_targets(app, env, node, contnode):
     )
 
 
+# Most of Manim's classes are documented twice, as two different classes: the
+# root spelling (`algan.mobs.manim_adapters.Arc`, what `from algan import *`
+# gives, in degrees and Algan's stroke width) and the `mn.` one
+# (`algan.mobs.manim_compat.Arc`, in radians and Manim's). A reference that names
+# only the class, :class:`~.Arc`, is written for a reader who star-imported
+# algan, so it means the root class. Sphinx's search finds both and would warn
+# and pick one by registration order; this drops the `mn.` candidate whenever
+# the root one was found too. A full `algan.mobs.manim_compat.Arc` target is an
+# exact match and never gets here, and neither does a bare `Arc` written inside
+# manim_compat's own pages, where the current module resolves it first.
+_MANIM_COMPAT_PREFIX = "algan.mobs.manim_compat."
+_MANIM_ADAPTERS_PREFIX = "algan.mobs.manim_adapters."
+
+
+def _prefer_root_spellings(matches):
+    if len(matches) < 2:
+        return matches
+    found = {name for name, _ in matches}
+    return [
+        (name, entry)
+        for name, entry in matches
+        if not (
+            name.startswith(_MANIM_COMPAT_PREFIX)
+            and _MANIM_ADAPTERS_PREFIX + name[len(_MANIM_COMPAT_PREFIX) :] in found
+        )
+    ]
+
+
+def _python_domain_preferring_root_spellings():
+    from sphinx.domains.python import PythonDomain
+
+    class AlganPythonDomain(PythonDomain):
+        def find_obj(self, *args, **kwargs):
+            return _prefer_root_spellings(super().find_obj(*args, **kwargs))
+
+    return AlganPythonDomain
+
+
 def setup(app):
     app.connect("autodoc-skip-member", _skip_inherited_tensor_members)
     app.connect("missing-reference", _resolve_leading_dot_field_targets)
+    app.add_domain(_python_domain_preferring_root_spellings(), override=True)
