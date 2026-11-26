@@ -212,6 +212,15 @@ ALWAYS_CI = (
     "tests/unit_tests/test_speech_cache.py::",
     # Where the conftest pipes a run's log, and that a collection writes none.
     "tests/unit_tests/test_conftest_logs.py::",
+    # Two files the groups had no test of, which other changes now add pinned
+    # tests to: the file leaves NOT_IN_GROUPS (tests/unit_tests/
+    # test_test_groups.py) the moment it has one, so each has one here already.
+    # The CLI's version and entry point, and the direct specular lobe on a
+    # material without one and behind the surface: under a second together.
+    "tests/unit_tests/test_cli_startup.py::test_version_is_read_from_metadata_not_from_the_package",
+    "tests/unit_tests/test_cli_startup.py::test_the_entry_point_points_outside_the_package",
+    "tests/unit_tests/test_direct_specular_lobe.py::test_the_lobe_is_off_for_a_non_pbr_material",
+    "tests/unit_tests/test_direct_specular_lobe.py::test_a_back_facing_hit_does_not_explode",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
