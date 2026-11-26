@@ -471,16 +471,64 @@ class _StateFile:
         """Record the port actually bound (see :func:`_start_socket`)."""
         self._payload["port"] = port
 
-    def write(self):
+    def claim(self):
+        """Publish the state file unless a live daemon already owns it.
+
+        Returns ``False`` when one does. Two auto-starts racing (``make -j``,
+        two terminals) both bind a socket -- the loser of the preferred port
+        falls back to an ephemeral one -- and the file used to be written
+        unconditionally, so the second overwrote the first's registration,
+        leaving a daemon nobody could reach or stop holding its memory for
+        the whole idle timeout.
+
+        The file is created complete or not at all (a hard link of a finished
+        temporary), so a racer never reads half of it and takes it for stale.
+        A registration whose daemon does not answer is cleared and claimed.
+        """
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        # Create with owner-only permissions *before* the token reaches the
-        # disk; the file is a capability to execute arbitrary paths.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        fd = os.open(self.path, flags, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(self._payload, fh)
-        with contextlib.suppress(OSError):
-            os.chmod(self.path, 0o600)
+        for _ in range(3):
+            if self._publish_if_absent():
+                return True
+            current = _dc.read_state()
+            if current is None:
+                # Present but unreadable: not something a live daemon wrote.
+                with contextlib.suppress(OSError):
+                    os.remove(self.path)
+                continue
+            if _dc.is_reachable(current):
+                return False
+            _dc._clear_stale_state(current)
+        return False
+
+    def _publish_if_absent(self):
+        # Created with owner-only permissions *before* the token reaches the
+        # disk; the file is a capability to execute arbitrary paths. The
+        # chmod covers a leftover temporary, which O_CREAT would not re-mode.
+        temporary = f"{self.path}.{os.getpid()}.tmp"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with contextlib.suppress(OSError):
+                os.chmod(temporary, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(self._payload, fh)
+            try:
+                os.link(temporary, self.path)
+                return True
+            except FileExistsError:
+                return False
+            except OSError:
+                # A filesystem without hard links. O_EXCL still settles the
+                # race; only its half-written window comes back.
+                try:
+                    fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                except FileExistsError:
+                    return False
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(self._payload, fh)
+                return True
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(temporary)
 
     def remove(self):
         with contextlib.suppress(OSError):
@@ -1100,7 +1148,8 @@ class _TriggerServer(socketserver.ThreadingTCPServer):
     algan's sources change, the replacement started by the next run would fail
     to bind and exit -- leaving no daemon at all for the rest of that minute,
     exactly during a burst of library edits. The flag still does not permit two
-    live listeners on one port, so a spawn race keeps its loser.
+    live listeners on one port, but the loser of a spawn race binds an
+    ephemeral one instead; :meth:`_StateFile.claim` is what makes it exit.
 
     Not set on Windows, where SO_REUSEADDR means something else: it lets two
     sockets bind the same address *simultaneously*, which would let two daemons
@@ -1377,7 +1426,17 @@ def main(argv=None):
         _say("no trigger socket and no SCRIPT -- nothing to serve; exiting")
         return 1
     if server is not None:
-        state.write()
+        if not state.claim():
+            # Lost a spawn race, or launched by hand beside a live daemon.
+            # Staying up would hold a warm process, and on a GPU its memory,
+            # that no state file points at: unreachable and unstoppable.
+            _say(
+                f"a daemon is already serving {_dc.algan_home()} (state: "
+                f"{state.path}); exiting. Stop it with `algan daemon quit`."
+            )
+            server.shutdown()
+            server.server_close()
+            return 0
         _say(f"serving any script launched on this machine (state: {state.path})")
         _say("scripts run normally -- `python scene.py` will find this daemon")
     watcher = _Watcher(events) if args.watch else None

@@ -162,10 +162,38 @@ def test_the_state_file_says_which_algan_this_is(state):
 
 
 def test_the_state_file_is_written_owner_only(state):
-    state.write()
+    assert state.claim()
     assert os.path.isfile(state.path)
     if os.name != "nt":
         assert os.stat(state.path).st_mode & 0o777 == 0o600
+
+
+def test_a_second_daemon_does_not_take_a_live_daemons_registration(served, tmp_path):
+    """The bug: the loser of a spawn race overwrote the state file.
+
+    Both bound a socket (the loser on an ephemeral port), the file named only
+    the second, and the first stayed up -- warm, holding its memory for the
+    idle timeout -- with nothing pointing at it, so nothing could stop it.
+    """
+    _, first = served
+    assert first.claim()
+    second = d._StateFile(_free_port())
+    assert not second.claim(), "a live daemon's registration must stand"
+    assert dc.read_state()["token"] == first.token
+    assert sorted(os.listdir(tmp_path)) == ["daemon.json"], "no temporary left"
+
+
+def test_a_registration_nobody_answers_is_claimed(state, tmp_path):
+    stale = d._StateFile(_free_port())  # registered, but its socket is gone
+    assert stale.claim()
+    assert state.claim()
+    assert dc.read_state()["token"] == state.token
+
+
+def test_an_unreadable_state_file_is_claimed(state, tmp_path):
+    (tmp_path / "daemon.json").write_text("{half a", encoding="utf-8")
+    assert state.claim()
+    assert dc.read_state()["token"] == state.token
 
 
 # --------------------------------------------------------------------------
