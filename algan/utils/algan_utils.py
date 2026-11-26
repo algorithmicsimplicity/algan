@@ -80,6 +80,41 @@ def algan_scene(function=None, *, name=None):
 from algan.utils.memory_utils import release_torch_memory
 from algan.utils.python_utils import callable_signature
 
+#: Odd frame sizes :func:`_warn_if_h264_cannot_be_420` has reported.
+_WARNED_ODD_H264 = set()
+
+
+def _warn_if_h264_cannot_be_420(size, codec, ffmpeg_params):
+    """Warn once per size when H.264 output will be 4:4:4 because a side is odd.
+
+    moviepy asks libx264 for 4:2:0 only when both sides are even, and 4:2:0
+    cannot hold an odd side at all, so FFmpeg falls back to ``yuv444p`` and
+    the High 4:4:4 profile: a file VLC and ffplay play but browsers, QuickTime
+    and most phones do not. The frames are left exactly as rendered (padding
+    would change the picture, refusing would break renders that work); the
+    user is told why and what to change. An explicit ``-pix_fmt`` is a choice
+    already made and is left alone.
+    """
+    width, height = int(size[0]), int(size[1])
+    if codec != "libx264" or not (width % 2 or height % 2):
+        return
+    if "-pix_fmt" in [str(p) for p in (ffmpeg_params or ())]:
+        return
+    if (width, height) in _WARNED_ODD_H264:
+        return
+    _WARNED_ODD_H264.add((width, height))
+    warnings.warn(
+        f"The video is {width}x{height}: H.264 cannot store an odd width or "
+        "height in the 4:2:0 format browsers, QuickTime and most phones play, "
+        "so it is encoded as 4:4:4 (High 4:4:4 Predictive), which plays in "
+        "VLC or ffplay but not in a browser. Render at an even size, such as "
+        f"{width + width % 2}x{height + height % 2}, for a file that plays "
+        "everywhere; to keep this size and format, pass ffmpeg_params with an "
+        'explicit "-pix_fmt", "yuv444p".',
+        UnsupportedFeatureWarning,
+        stacklevel=_user_stacklevel(),
+    )
+
 
 def get_file_writer(
     temp_file_path,
@@ -95,6 +130,7 @@ def get_file_writer(
         FFMPEG_VideoWriter,  # deferred: ~0.3 s of import algan
     )
 
+    _warn_if_h264_cannot_be_420(video_settings_resolution, codec, ffmpeg_params)
     return FFMPEG_VideoWriter(
         filename=temp_file_path,
         size=video_settings_resolution,

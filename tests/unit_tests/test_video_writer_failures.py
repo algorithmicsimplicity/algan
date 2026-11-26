@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+import warnings
 from queue import Empty
 from types import SimpleNamespace
 
@@ -333,3 +334,32 @@ def test_save_video_leaves_a_video_it_could_not_publish_in_place(tmp_path, monke
     (path,) = kept
     with open(path, "rb") as handle:
         assert handle.read() == b"finished"
+
+
+def test_an_odd_sized_h264_video_says_it_will_not_play_in_a_browser(
+    tmp_path, monkeypatch
+):
+    """With an odd side moviepy passes libx264 no pixel format, and FFmpeg
+    picks 4:4:4, which browsers and QuickTime refuse; nothing said so.
+    """
+    from algan.errors import UnsupportedFeatureWarning
+    from algan.utils import algan_utils
+
+    monkeypatch.setattr(algan_utils, "_WARNED_ODD_H264", set())
+    params = ["-crf", "17"]
+    with pytest.warns(UnsupportedFeatureWarning, match="34x34"):
+        algan_utils._warn_if_h264_cannot_be_420((33, 33), "libx264", params)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        algan_utils._warn_if_h264_cannot_be_420((33, 33), "libx264", params)
+        algan_utils._warn_if_h264_cannot_be_420((32, 32), "libx264", params)
+        algan_utils._warn_if_h264_cannot_be_420((33, 32), "prores_ks", params)
+        algan_utils._warn_if_h264_cannot_be_420(
+            (35, 32), "libx264", ["-pix_fmt", "yuv444p"]
+        )
+    with pytest.warns(UnsupportedFeatureWarning, match="height"):
+        writer = algan_utils.get_file_writer(
+            str(tmp_path / "odd.mp4"), (48, 31), "libx264", 2, False,
+            params, None, None,
+        )  # fmt: skip
+    writer.close()
