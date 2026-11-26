@@ -5340,9 +5340,24 @@ class RenderLoopMixin:
             if previous_scene_times is not None:
                 self.scene_times[:] = previous_scene_times
 
-        if os.path.exists(file_path_out):
-            os.remove(file_path_out)
-        os.rename(file_path, file_path_out)
+        try:
+            # One step, never a delete followed by a rename: that pair left no
+            # video at all whenever the rename failed after the delete.
+            os.replace(file_path, file_path_out)
+        except PermissionError as exc:
+            # Windows cannot replace a file another program holds open (a
+            # player or editor showing the previous render). The render is
+            # finished, so it is kept, and the caller's cleanup leaves the
+            # temporary named here alone (``_render_scene_to_file``).
+            error = PermissionError(
+                f"The video was rendered, but {file_path_out} could not be "
+                f"replaced ({exc.strerror or exc}); another program, such as a "
+                f"video player or editor, probably has it open. The finished "
+                f"video is kept at {file_path}: close that program and move it "
+                f"into place, or render to a different file name."
+            )
+            error.algan_kept_video = file_path
+            raise error from exc
         if passes is not None:
             # After the video, so the passes never describe a render whose
             # video failed to publish.

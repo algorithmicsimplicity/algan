@@ -285,3 +285,51 @@ def test_an_encoder_that_cannot_start_raises_its_own_error(tmp_path):
             str(tmp_path / "clip.mp4"), (16, 16), "libx264", 2, False,
             ["-crf", 18], None, None,
         )  # fmt: skip
+
+
+def test_a_destination_that_cannot_be_replaced_keeps_the_finished_video(
+    workers, tmp_path, monkeypatch
+):
+    """Windows refuses to replace a video another program has open. Publishing
+    used to delete the old file first and then rename, and the caller's
+    cleanup deleted the temporary, so the finished render was lost.
+    """
+
+    def locked(source, target):
+        raise PermissionError(13, "Access is denied", target)
+
+    monkeypatch.setattr(render_loop.os, "replace", locked)
+    errors, source, target = _render(_Scene(3), _Writer(), tmp_path)
+
+    (error,) = errors
+    assert isinstance(error, PermissionError)
+    assert str(source) in str(error)
+    assert "open" in str(error)
+    assert error.algan_kept_video == str(source)
+    assert source.read_bytes() == b"new video"
+    assert target.read_bytes() == b"existing video"
+
+
+def test_save_video_leaves_a_video_it_could_not_publish_in_place(tmp_path, monkeypatch):
+    from algan import SMOKE_TEST, Square
+    from algan.scene_manager import SceneManager
+
+    scene = SceneManager.instance().current_scene
+    Square().spawn()
+    kept = []
+
+    def render(file_writer, file_path, file_path_out, **_kwargs):
+        file_writer.close()
+        with open(file_path, "wb") as handle:
+            handle.write(b"finished")
+        kept.append(file_path)
+        error = PermissionError("destination is open elsewhere")
+        error.algan_kept_video = file_path
+        raise error
+
+    monkeypatch.setattr(scene, "_render_to_video", render)
+    with pytest.raises(PermissionError, match="open elsewhere"):
+        scene.save_video(tmp_path / "clip.mp4", SMOKE_TEST)
+    (path,) = kept
+    with open(path, "rb") as handle:
+        assert handle.read() == b"finished"

@@ -486,6 +486,9 @@ def _render_scene_to_file(
     pass_job = None
     render_started = False
     scene_finalized = False
+    # The finished video, when publishing it failed and the error says it is
+    # kept (``RenderLoopMixin._render_to_video_impl``).
+    kept_video = None
 
     try:
         scene.set_video_settings(video_settings)
@@ -704,6 +707,9 @@ def _render_scene_to_file(
             plan,
             passes=dict(pass_job.directories) if pass_job is not None else {},
         )
+    except OSError as error:
+        kept_video = getattr(error, "algan_kept_video", None)
+        raise
     finally:
         if pass_job is not None:
             # A no-op after a successful publish; after a failure it removes
@@ -715,7 +721,9 @@ def _render_scene_to_file(
             except Exception:
                 logger.debug("Video writer cleanup failed", exc_info=True)
         for temporary in (temp_file_path, audio_file_path):
-            if temporary is None:
+            if temporary is None or (
+                kept_video is not None and str(temporary) == str(kept_video)
+            ):
                 continue
             try:
                 temporary.unlink(missing_ok=True)
