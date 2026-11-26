@@ -108,16 +108,18 @@ only for experiments that intentionally replace that supported dependency.
   `quadrants_patches/README.md` ("Getting a patched wheel") is how one gets
   built: `scripts/build_quadrants_wheels.py` dispatches the build and prints
   the run id.
-* **An MPS test run needs CI's torch, and the harness does not install it.**
-  The harness runs `uv sync --locked`, which gives torch 2.7.1 below Python
-  3.14. Algan's MPS arena needs torch 2.13 or newer to import Metal DLPack
-  storage, so `test.yaml`'s MPS arm installs `torch==2.13.0` /
-  `torchaudio==2.11.0` before pytest. A harness command that runs the suite on
-  `mac-mps` has to do the same first:
-  `uv pip install --python .venv/bin/python "torch==2.13.0" "torchaudio==2.11.0" && ...`.
-  Without it every render fails with "This PyTorch build cannot import Metal
-  DLPack storage". One such run (2026-10-21) then hung until its 150-minute
-  timeout, which read like a compiler regression until the log was checked.
+* **The `mac-mps` arm runs CI's torch, not the locked one.**
+  `uv sync --locked` gives torch 2.7.1 below Python 3.14, and Algan's MPS
+  arena needs torch 2.13 or newer to import Metal DLPack storage. So the
+  harness's MPS arm installs `torch==2.13.0` / `torchaudio==2.11.0` after the
+  sync, as `test.yaml`'s MPS arm does, and sets `UV_NO_SYNC=1` so a later
+  `uv run` does not put the locked torch back. `mps_probe.yaml`'s render job
+  and `torch_compile_ab.yaml` do the same. The CPU arms stay on the lock, so
+  a comparison across arms compares a PyTorch as well as a device. Before the
+  harness did this, every MPS render failed with "This PyTorch build cannot
+  import Metal DLPack storage", and one such run (2026-10-21) hung until its
+  150-minute timeout, which read like a compiler regression until the log was
+  checked.
 * **`arms`**. Each Mac arm consumes a runner slot. Check the account's current
   concurrency and billing limits before fanning out experiments.
 
