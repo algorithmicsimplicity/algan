@@ -447,3 +447,39 @@ def test_a_failed_render_logs_where_it_was_raised(fresh_scene, monkeypatch):
         session.close()
         algan_logger.removeHandler(capture)
     assert [record.exc_info[0] for record in records if record.exc_info] == [NameError]
+
+
+def test_one_failed_render_does_not_fail_every_later_frame(fresh_scene, monkeypatch):
+    # A render that fails once -- out of memory at UHD, an updater raising on
+    # a transient condition -- used to leave its error in place for good, so
+    # every later uncached frame failed at once with the stale message, even
+    # after a successful render or a change of resolution.
+    monkeypatch.setattr(viewer, "_frame_cache_budget", lambda: 1 << 20)
+    calls = []
+
+    def flaky(self, start, end, *, store, generation=None, yielding=False):
+        calls.append(start)
+        if len(calls) == 1:
+            raise RuntimeError("transient failure")
+        for index in range(start, end):
+            if store and self._store_png(index, b"png%d" % index) is False:
+                return
+
+    monkeypatch.setattr(viewer.ViewerSession, "_render_range", flaky)
+    Scene.wait(2)
+    session = viewer.ViewerSession(Scene.current(), PREVIEW.set(resolution=(4, 4)))
+    try:
+        with pytest.raises(RuntimeError, match="transient failure"):
+            session.frame(0, timeout=5)
+        assert session.frame(7, timeout=5) == b"png7"
+        assert session.state()["error"] is None
+        session.set_resolution("SMOKE_TEST")
+        assert session.frame(3, timeout=5) == b"png3"
+    finally:
+        session.close()
+
+
+def test_a_new_resolution_clears_the_error_of_the_old_one(session):
+    session._error = "RuntimeError: out of memory at UHD"
+    session.set_resolution("SMOKE_TEST")
+    assert session.state()["error"] is None
