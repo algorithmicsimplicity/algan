@@ -193,3 +193,94 @@ def test_a_render_after_registering_a_pipeline_injects_nothing(tmp_path, monkeyp
 
     assert injected, "the render never reached the fragment-pipeline dispatch"
     assert all(pipelines == () for pipelines in injected), injected
+
+
+# --------------------------------------------------------------------------
+# A stage is checked when it is made: a wrong one used to be accepted by
+# set_fragment_shader and fail only inside the first shade kernel's compile,
+# and a parameter named like a Mob attribute silently overwrote it.
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "name", ["color", "opacity", "location", "basis", "glow", "scale", "move"]
+)
+def test_a_stage_parameter_named_like_a_mob_attribute_is_refused(name):
+    from algan.errors import AlganConfigurationError
+    from algan.rendering.shaders.fragment_shaders import (
+        FragmentStage,
+        _stage_cosine_color,
+    )
+
+    with pytest.raises(AlganConfigurationError, match=f"Mob.{name}\\b"):
+        FragmentStage(_stage_cosine_color, [(name, 1, 0.0)])
+
+
+def test_the_reserved_state_names_are_the_ones_a_mob_is_built_with():
+    from algan.animatable_base.mob import Mob
+    from algan.rendering.shaders.fragment_shaders import _MOB_STATE_ATTRS
+
+    SceneManager.reset()
+    assert set(Mob().animatable_attrs) == _MOB_STATE_ATTRS
+
+
+def test_material_slot_names_and_earlier_stage_parameters_stay_legal():
+    from algan.animatable_base.mob import Mob
+    from algan.rendering.shaders.fragment_shaders import (
+        STAGE_PHONG,
+        FragmentStage,
+        _stage_cosine_color,
+    )
+
+    # The built-in stages share the material slot names with set_material on
+    # purpose, so a custom stage may use them too.
+    FragmentStage(STAGE_PHONG.ti_func, STAGE_PHONG.param_specs)
+    # A pipeline set on a bare Mob attaches its parameters to the Mob class
+    # itself; that must not make the same names illegal for the next stage.
+    SceneManager.reset()
+    Mob().set_fragment_shader(cosine_color)
+    FragmentStage(_stage_cosine_color, [("frequency", 1, 4.0), ("phase", 1, 0.0)])
+
+
+def _plain_stage(*args):
+    return args[4]
+
+
+@pytest.mark.parametrize(
+    ("make", "match"),
+    [
+        (lambda s: s(_plain_stage), "must be a function decorated with @ti.func"),
+        (lambda s: s(lambda *a: a[4]), "must be a function decorated with @ti.func"),
+        (lambda s: s(_two_parameter_stage()), "16 positional parameters"),
+        (
+            lambda s: s(_cosine(), [("tint", 3, (1.0, 0.5))]),
+            "has width 3 but its default",
+        ),
+        (lambda s: s(_cosine(), [("tint", 0, 1.0)]), "has width 0"),
+        (lambda s: s(_cosine(), [("tint", 1, "red")]), "not a number"),
+        (lambda s: s(_cosine(), [("tint", 1)]), r"\(name, width, default\)"),
+        (lambda s: s(_cosine(), [], scatter=_plain_stage), "scatter must be"),
+        (lambda s: s(_cosine(), [], scatter=_cosine()), "15 positional parameters"),
+    ],
+)
+def test_a_stage_the_kernel_could_not_compile_fails_when_made(make, match):
+    from algan.errors import AlganConfigurationError
+    from algan.rendering.shaders.fragment_shaders import FragmentStage
+
+    with pytest.raises(AlganConfigurationError, match=match) as raised:
+        make(FragmentStage)
+    assert "FragmentStage(" in str(raised.value)
+
+
+def _cosine():
+    from algan.rendering.shaders.fragment_shaders import _stage_cosine_color
+
+    return _stage_cosine_color
+
+
+def _two_parameter_stage():
+    from algan.taichi_compat import ti
+
+    @ti.func
+    def two(pos, view_dir):
+        return pos
+
+    return two
