@@ -14,7 +14,9 @@ expected.
 
 The module then defines the palette exported by ``from algan import *``:
 ``BLACK``, ``WHITE``, the greys, and the ``BLUE``/``RED``/``GREEN``/``YELLOW``
-families with their ``_A`` (lightest) through ``_E`` (darkest) shades. Both
+families with their ``_A`` (lightest) through ``_E`` (darkest) shades, the
+same values as Manim Community's except ``YELLOW`` and ``YELLOW_C``, which are
+pure yellow (``#FFFF00``) here and ``#F7D96F`` in Manim. Both
 British and American spellings of grey are provided. Two special values are worth
 knowing: ``TRANSPARENT`` (invisible, and the background color that produces an
 alpha-channel video) and ``GLOW`` (black with full glow).
@@ -777,6 +779,10 @@ GREEN_D = Color("#77B05D")
 GREEN_E = Color("#699C52")
 PURE_GREEN = Color("#00FF00")
 GREEN = Color("#83C167")
+# YELLOW and YELLOW_C are pure yellow, as in 3b1b's manimlib, where Manim
+# Community's are #F7D96F; the rest of the palette is Manim Community's. They
+# are left as they are because every scene that says YELLOW would change
+# colour.
 YELLOW_A = Color("#FFF1B6")
 YELLOW_B = Color("#FFEA94")
 YELLOW_C = Color("#FFFF00")

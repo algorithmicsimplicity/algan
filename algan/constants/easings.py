@@ -436,6 +436,11 @@ def ease_in_out_bounce(t):
 
 
 # --- Animation flow helpers ---
+# Algan's own curves under Manim's names, not Manim's formulas: ``rush_into``
+# and ``rush_from`` are cubics within 0.023 of Manim's, while ``slow_into`` is a
+# quadratic ease-out that is up to 0.25 away from Manim's
+# ``sqrt(1 - (1 - t) ** 2)`` (which is :func:`ease_out_circ`). Changing them
+# would retime every animation that uses them.
 rush_into = ease_in_cubic
 rush_from = ease_out_cubic
 slow_into = ease_out_quad
