@@ -1580,11 +1580,6 @@ shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
 # both arms. ALGAN_SHADOW_RAY_BUDGET / ALGAN_SHADOW_BOUNCE_RAYS.
 shadow_ray_budget = max(0, env_int("ALGAN_SHADOW_RAY_BUDGET", 16))
 shadow_bounce_rays = max(0, env_int("ALGAN_SHADOW_BOUNCE_RAYS", 1))
-# Deferred bounce events expose only sample zero and have zero footprints.
-# Hard point lights can use the existing one-sample trace kernel and avoid
-# the full-sized zero offset buffer. Extended lights retain the masked fan.
-# Off: the warm UHD A/B improved this stage but not whole-render time.
-shadow_deferred_single_sample = env_flag("ALGAN_SHADOW_DEFERRED_SINGLE_SAMPLE", False)
 
 # Group primary shadow events by source primitive before their existing gathers.
 # The sheet event-ID map carries the permutation back to visibility lookups.

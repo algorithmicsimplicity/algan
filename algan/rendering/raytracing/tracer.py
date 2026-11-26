@@ -384,15 +384,6 @@ def _gloss_pyramid_levels(width, height, max_levels):
     return levels, off
 
 
-def _deferred_shadow_sample_count(samples, light_columns):
-    # Deferred events expose only sample zero and have zero footprints.
-    # Compact RGB light rows prove every emitter is a hard point light.
-    # Extended/soft lights must keep their original masked emitter fan.
-    if rt_settings.shadow_deferred_single_sample and light_columns == 3:
-        return 1
-    return samples
-
-
 #: The bounce drain's device-side shadow events are ordered by bin, and there
 #: are at most ``2 ** _SHADOW_EVENT_BIN_LOG2`` bins: the window's frames times
 #: an octree of the scene box, as fine as that leaves room for (64 cells to an
@@ -3868,9 +3859,7 @@ def raytrace_render_wavefront(
             acc_idx = acc_idx.index_select(
                 0, torch.argsort(ev_key.index_select(0, acc_idx))
             )
-        sec_aa = _deferred_shadow_sample_count(
-            rt_settings.effective_analytic_aa_secondary_samples(), light_col.shape[2]
-        )
+        sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
         ev_dp = memory.get_tensor((num_events if sec_aa > 1 else 1, 6), f32)
         ev_dp.zero_()
         shadow_vis = memory.get_tensor((num_events, max(1, int(num_lights)), 3), f32)
@@ -4096,9 +4085,7 @@ def raytrace_render_wavefront(
             # No light to trace: every row reads as all-lit, which the map's
             # slots cannot change with nothing stored behind them.
             return vis_flat
-        sec_aa = _deferred_shadow_sample_count(
-            rt_settings.effective_analytic_aa_secondary_samples(), light_col.shape[2]
-        )
+        sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
         # One row every event shares: the zero footprint and the -1 source
         # identity the drain's events have always carried.
         ev_dp = memory.get_tensor((1, 6), f32)
