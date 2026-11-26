@@ -227,3 +227,41 @@ def test_a_file_that_is_not_audio_names_the_formats_alignment_reads(tmp_path):
     path.write_bytes(b"not audio at all")
     with pytest.raises(AlganConfigurationError, match="WAV, FLAC, OGG and MP3"):
         audio_utils._audio_frames_and_rate(path)
+
+
+def test_a_file_only_an_older_torchaudio_reads_still_aligns(tmp_path, monkeypatch):
+    """soundfile is tried first; where it cannot read a container, a
+    torchaudio that still has ``info`` and ``load`` reads it as before.
+    """
+    import sys
+    import types
+
+    path = tmp_path / "voice.m4a"
+    path.write_bytes(b"a container libsndfile does not read")
+    calls = []
+
+    def info(file):
+        return types.SimpleNamespace(num_frames=300, sample_rate=100)
+
+    def load(file, frame_offset, num_frames):
+        calls.append((frame_offset, num_frames))
+        return torch.zeros(1, num_frames), 100
+
+    legacy = types.SimpleNamespace(info=info, load=load)
+    monkeypatch.setitem(sys.modules, "torchaudio", legacy)
+
+    assert audio_utils._audio_frames_and_rate(path) == (300, 100)
+    waveform, sample_rate = audio_utils._read_audio_window(path, 20, 50)
+    assert (waveform.shape, sample_rate) == ((1, 50), 100)
+    assert calls == [(20, 50)]
+
+
+def test_a_newer_torchaudio_is_not_asked_to_read_a_file(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    path = tmp_path / "voice.m4a"
+    path.write_bytes(b"a container libsndfile does not read")
+    monkeypatch.setitem(sys.modules, "torchaudio", types.SimpleNamespace())
+    with pytest.raises(AlganConfigurationError, match="WAV, FLAC, OGG and MP3"):
+        audio_utils._audio_frames_and_rate(path)

@@ -34,15 +34,15 @@ on:
   schedule:
     - cron: "23 4 * * 1"
 
+# Read-only unless a job asks for more; nothing here writes to the repository.
+permissions:
+  contents: read
+
 # One run per pull request: a new push (or the `full-ci` label) cancels the
 # run in flight, whose answer is about a commit nobody is waiting on any more.
 # Pushes to master and stable, and merge-queue runs, are keyed by run id and so
 # never cancel one another. A label other than `full-ci` gets a group of its
 # own; it starts nothing, and must not cancel the run that is going.
-# Read-only unless a job asks for more; nothing here writes to the repository.
-permissions:
-  contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true

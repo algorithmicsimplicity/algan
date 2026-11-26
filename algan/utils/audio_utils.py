@@ -71,6 +71,9 @@ def _audio_frames_and_rate(audio_path):
     try:
         info = soundfile.info(str(audio_path))
     except RuntimeError as e:  # soundfile.LibsndfileError is one
+        legacy = _torchaudio_info(audio_path)
+        if legacy is not None:
+            return legacy
         raise AlganConfigurationError(
             f"Could not read {audio_path!r} as audio to align speech to: {e}. "
             "Speech alignment reads WAV, FLAC, OGG and MP3 files; convert the "
@@ -78,6 +81,24 @@ def _audio_frames_and_rate(audio_path):
             "`ffmpeg -i voice.m4a voice.wav`)."
         ) from e
     return info.frames, info.samplerate
+
+
+def _torchaudio_info(audio_path):
+    """The frames and rate of a file soundfile cannot read, or None.
+
+    torchaudio before 2.9 reads containers libsndfile does not (an m4a, say)
+    where FFmpeg's shared libraries are installed. A recording that aligned
+    that way keeps aligning; on a newer torchaudio this finds nothing.
+    """
+    import torchaudio
+
+    if not hasattr(torchaudio, "info"):
+        return None
+    try:
+        info = torchaudio.info(str(audio_path))
+    except Exception:  # noqa: BLE001 -- any failure means "cannot read it either"
+        return None
+    return info.num_frames, info.sample_rate
 
 
 def _read_audio_window(audio_path, frame_offset, num_frames):
@@ -89,13 +110,21 @@ def _read_audio_window(audio_path, frame_offset, num_frames):
     """
     import soundfile
 
-    samples, sample_rate = soundfile.read(
-        str(audio_path),
-        start=frame_offset,
-        stop=frame_offset + num_frames,
-        dtype="float32",
-        always_2d=True,
-    )
+    try:
+        samples, sample_rate = soundfile.read(
+            str(audio_path),
+            start=frame_offset,
+            stop=frame_offset + num_frames,
+            dtype="float32",
+            always_2d=True,
+        )
+    except RuntimeError:
+        # Only reached for a file _torchaudio_info read: see there.
+        import torchaudio
+
+        return torchaudio.load(
+            str(audio_path), frame_offset=frame_offset, num_frames=num_frames
+        )
     return torch.from_numpy(samples.T.copy()), sample_rate
 
 
