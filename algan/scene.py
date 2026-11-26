@@ -1619,29 +1619,46 @@ class Scene(RenderLoopMixin):
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If the resolved timestamp is negative or not finite.
+            If the resolved timestamp is negative or not finite, or if
+            matplotlib, which displays the frame, is not installed.
         """
-        from algan.utils.plotting_utils import plot_tensor
+        from algan.utils import plotting_utils
 
+        # Before anything renders: matplotlib is not a runtime dependency.
+        plotting_utils._pyplot()
         _note_render_requested()
-        time_ind = self._frame_index_for_timestamp(
-            self._resolve_still_timestamp(at), at
-        )
+        # The same settings save_frame and save_video render at. A Scene that
+        # was never given its own holds the snapshot of SETTINGS.video taken
+        # when it was built -- usually by the script's first Mob, before the
+        # script sets SETTINGS.video -- so rendering with that snapshot drew
+        # the wrong size and turned ``at`` into the wrong frame.
+        previous_settings = self.video_settings
+        previous_explicit = getattr(self, "_video_settings_explicit", False)
         frames = []
-        # See Scene.save_frame: a render that leaves the Scene re-renderable
-        # must not leave its replay-window resolution behind for the next one.
-        with self.timeline_manager.preserving_authoring_state(
-            preserve_replay_resolution=self.animation_manager.context.prev_context
-            is not None
-        ):
-            for frame in self.get_frames(time_ind, time_ind + 1):
-                frame = frame.float() / 255
-                frames.append(frame.squeeze(0).permute(-1, 0, 1))
+        try:
+            self.set_video_settings(
+                self._resolve_video_settings(None), _explicit=previous_explicit
+            )
+            time_ind = self._frame_index_for_timestamp(
+                self._resolve_still_timestamp(at), at
+            )
+            # See Scene.save_frame: a render that leaves the Scene
+            # re-renderable must not leave its replay-window resolution
+            # behind for the next one.
+            with self.timeline_manager.preserving_authoring_state(
+                preserve_replay_resolution=self.animation_manager.context.prev_context
+                is not None
+            ):
+                for frame in self.get_frames(time_ind, time_ind + 1):
+                    frame = frame.float() / 255
+                    frames.append(frame.squeeze(0).permute(-1, 0, 1))
+        finally:
+            self.set_video_settings(previous_settings, _explicit=previous_explicit)
         for frame in frames:
             # The frame is already in [0, 1]. plot_tensor's default stretches
             # each image to its own min and max, which shifted every color and
             # turned a frame of one flat color into 0 / 0.
-            plot_tensor(frame, norm=False)
+            plotting_utils.plot_tensor(frame, norm=False)
 
         return frames
 
