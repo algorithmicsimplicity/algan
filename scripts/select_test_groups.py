@@ -261,6 +261,9 @@ ALWAYS_PRE_PR = (
     # pass's batch-sizing models, and render the frames fresh passes do.
     "tests/unit_tests/test_camera_views.py::test_camera_view_windows_share_one_arena_models_and_prep_worker",
     "tests/unit_tests/test_camera_views.py::test_shared_window_resources_render_the_same_frames",
+    # A tiled denoise is the whole-frame one at its seams: random weights of
+    # the real shapes, an aligned and an unaligned tile size.
+    "tests/unit_tests/test_denoise.py::test_a_tiled_denoise_is_the_whole_frame_denoise_at_its_seams",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")

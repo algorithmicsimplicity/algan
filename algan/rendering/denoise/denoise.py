@@ -11,10 +11,14 @@ transfer and exposure. The transfer arithmetic stays in float32; the
 network itself runs at ``denoise_precision`` (half on CUDA by default,
 :func:`resolve_precision`), and its output comes back as float32.
 
-Large frames run as overlapping tiles (``denoise_tile_size``, 32-pixel
+Large frames run as overlapping tiles (``denoise_tile_size``, 96-pixel
 overlap; only each tile's core is kept) so peak activation memory is
 bounded by the tile, not the frame; every tile is zero-padded up to the
-network's 16-pixel alignment exactly as OIDN pads whole images.
+network's 16-pixel alignment exactly as OIDN pads whole images. The overlap
+covers the network's receptive field (a radius of about 94 pixels: four
+pooling levels under 3x3 convolutions), and every core starts on the
+16-pixel pooling grid, so a tiled frame is the whole-frame result to within
+float rounding.
 """
 
 from __future__ import annotations
@@ -47,7 +51,12 @@ _PU_Y1 = 3.22087631e-02
 _PU_X0 = 2.23151711e-03
 _PU_X1 = 3.70974749e-01
 
-_TILE_OVERLAP = 32
+# At least the U-Net's receptive-field radius, on the 16-pixel grid. A
+# 32-pixel overlap left every core pixel within ~60 pixels of a tile edge
+# computed from truncated context: measured with the real weights on HD
+# path-traced frames, tiled output stepped by up to 4.5 8-bit levels along
+# the seams (and nowhere else). From 96 the tiles reproduce the whole frame.
+_TILE_OVERLAP = 96
 _MIN_TILE = 4 * _TILE_OVERLAP
 
 
@@ -142,7 +151,9 @@ class Denoiser:
         """
         frames, height, width = color.shape[0], color.shape[1], color.shape[2]
         tile = max(_MIN_TILE, int(rt_settings.denoise_tile_size))
-        core = tile - 2 * _TILE_OVERLAP
+        # Cores start on the pooling grid: a tile whose origin is off it
+        # pools different 2x2 blocks from the whole frame's, everywhere.
+        core = (tile - 2 * _TILE_OVERLAP) // ALIGNMENT * ALIGNMENT
         out = torch.empty(
             (frames, height, width, 3), dtype=torch.float32, device=color.device
         )
