@@ -936,7 +936,11 @@ class Animatable:
         current context's runtime. It is applied once immediately at zero elapsed
         time, so the scene reflects it right away. Updaters are applied after
         recorded animations each frame, so an updater writing an attribute wins over
-        an animation of that attribute.
+        an animation of that attribute. Updaters run in the order they were added,
+        and an updater sees nothing an updater added after it writes: add an updater
+        after the updaters whose results it reads. A label following a dot driven by
+        its own updater must be given its updater after the dot's, or it stays
+        where the dot was before the dot's updater moved it.
 
         Parameters
         ----------
