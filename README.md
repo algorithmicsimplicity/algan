@@ -43,6 +43,9 @@ pip install algan
 algan warmup    # optional: compile the render kernels now, in parallel, instead of during your first render
 ```
 
+`algan warmup` and Python 3.14 need Algan 0.0.3 or later. Earlier releases run on
+Python 3.10 to 3.13 and compile their kernels during the first render instead.
+
 For installing optional extra features (GPU acceleration, LaTeX for formulas, speech), see the [Installation Guide](https://algorithmicsimplicity.github.io/algan/installation.html).
 
 ---
