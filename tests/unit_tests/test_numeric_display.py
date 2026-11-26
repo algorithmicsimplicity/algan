@@ -684,6 +684,9 @@ def test_a_value_float32_shows_exactly_does_not_warn():
         display.value = 16777216
         display = DecimalNumber(0.1, significant_figures=7)
         display.value = torch.tensor([1.5], dtype=torch.float32)
+        # A decimal tie: the double reads "1.11" and the float "1.12", which
+        # is the number as written, not a digit lost to the narrower float.
+        DecimalNumber(1.115)
 
 
 @pytest.mark.parametrize("kwargs", [{}, {"significant_figures": 3}])

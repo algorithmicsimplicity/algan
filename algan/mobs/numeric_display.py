@@ -479,6 +479,17 @@ class DecimalNumber(Mob):
         for wanted, held in zip(exact.tolist(), stored.tolist()):
             if wanted != wanted or self._formatted(wanted) == self._formatted(held):
                 continue
+            # ``1.115`` to two places is a tie that no binary float holds
+            # exactly: the nearest double is a hair under it and reads
+            # "1.11", the nearest 32-bit float a hair over and reads "1.12".
+            # That is the number the user wrote, not digits lost, so a value
+            # whose neighbouring doubles already disagree is left alone.
+            neighbours = (
+                math.nextafter(wanted, math.inf),
+                math.nextafter(wanted, -math.inf),
+            )
+            if any(self._formatted(n) == self._formatted(held) for n in neighbours):
+                continue
             warnings.warn(
                 f"DecimalNumber shows {self._formatted(held)} for {wanted!r}: "
                 "its value is held as a 32-bit float, which has about seven "

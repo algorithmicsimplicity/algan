@@ -83,6 +83,8 @@ _sweep_lock = threading.Lock()
 class TypesettingTimeoutError(AlganError, TimeoutError):
     """A LaTeX or dvisvgm run took longer than ``ALGAN_TEX_TIMEOUT`` allows."""
 
+    code = "ALGAN_TYPESETTING_TIMEOUT"
+
 
 def _timeout_seconds() -> float | None:
     seconds = env_float("ALGAN_TEX_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
