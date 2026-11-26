@@ -71,6 +71,17 @@ ALWAYS_CI = (
     "tests/unit_tests/test_manim_adapter_conventions.py::test_every_adapted_class_has_a_derived_angle_table",
     "tests/unit_tests/test_manim_animation_audit.py::test_high_value_animation_api_is_exported",
     "tests/unit_tests/test_scene_pixel_lengths.py::test_every_public_scene_method_answers_on_the_class",
+    # Timeline regressions, recorded and materialized without a render:
+    # removing an updater inside a block that rescales on exit, the context
+    # tree and the segment caches after materializing, the parameter-name
+    # memo's hold on a script, a context's repr, and Wiggle beside a move.
+    "tests/unit_tests/test_updater_removal.py::",
+    "tests/unit_tests/test_updater_mob_creation.py::test_materializing_frames_leaves_the_context_tree_as_it_was",
+    "tests/unit_tests/test_texture_time_lerp.py::test_a_render_drops_the_segment_window_caches_when_it_ends",
+    "tests/unit_tests/test_animated_function_arguments.py::test_a_recorded_function_does_not_keep_its_script_alive",
+    "tests/unit_tests/test_animated_function_arguments.py::test_functions_sharing_a_code_object_keep_their_own_parameter_names",
+    "tests/unit_tests/test_edge_case_timeline.py::test_a_context_prints_without_the_tree_it_belongs_to",
+    "tests/unit_tests/test_indication_animations.py::test_wiggle_composes_with_a_move_running_alongside_it",
     "tests/unit_tests/test_shape_style_profiles.py::test_snapshot_matches_the_installed_manim",
     "tests/unit_tests/test_renderer_audit_contract.py::test_every_audit_scene_normalizes_identically_in_both_bridges",
     # The sheet resolve's event pass compiles none of its continuation fans.
