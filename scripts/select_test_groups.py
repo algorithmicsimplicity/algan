@@ -138,6 +138,38 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sparse_tile_oom_retry.py::",
     # A setting that no longer changes anything refuses a write.
     "tests/unit_tests/test_settings_api.py::test_an_inert_field_is_readable_but_refuses_a_write",
+    # The daemon, CLI, viewer and settings regressions, on stubs, loopback
+    # sockets and two-frame clips: joining clips that differ or have no sound;
+    # the handshake that keeps the environment from an impostor, the request
+    # cap and the registration a second daemon may not take; cheap commands
+    # that do not import torch; a restore that leaves untouched fields alone;
+    # and a viewer that recovers from one failed render.
+    "tests/unit_tests/test_project.py::test_project_concat_keeps_narration_after_a_silent_first_scene",
+    "tests/unit_tests/test_project.py::test_project_concat_refuses_to_stream_copy_different_resolutions",
+    "tests/unit_tests/test_project.py::test_project_concat_reencodes_different_resolutions_with_a_warning",
+    "tests/unit_tests/test_daemon_client.py::test_nothing_is_sent_to_a_listener_that_cannot_prove_the_token",
+    "tests/unit_tests/test_daemon_client.py::test_a_daemon_of_another_protocol_is_not_contacted",
+    "tests/unit_tests/test_daemon_client.py::test_a_cuda_visible_devices_mismatch_is_refused",
+    "tests/unit_tests/test_daemon_client.py::test_the_daemon_home_and_log_are_owner_only",
+    "tests/unit_tests/test_daemon_socket.py::test_a_run_is_refused_without_the_clients_proof",
+    "tests/unit_tests/test_daemon_socket.py::test_a_run_request_too_large_is_refused_before_it_is_read",
+    "tests/unit_tests/test_daemon_socket.py::test_a_protocol_4_client_is_told_to_restart_the_daemon",
+    "tests/unit_tests/test_daemon_socket.py::test_a_second_daemon_does_not_take_a_live_daemons_registration",
+    "tests/unit_tests/test_daemon_socket.py::test_a_registration_nobody_answers_is_claimed",
+    "tests/unit_tests/test_daemon_socket.py::test_an_unreadable_state_file_is_claimed",
+    "tests/unit_tests/test_daemon_cancellation.py::test_a_cancel_interrupts_a_blocking_wait_at_once",
+    "tests/unit_tests/test_cli_startup.py::test_a_daemon_trigger_does_not_import_torch",
+    "tests/unit_tests/test_cli_startup.py::test_launching_a_script_does_not_import_torch",
+    "tests/unit_tests/test_cli.py::test_new_appends_py_to_a_name_without_it",
+    "tests/unit_tests/test_project_selection_and_cli.py::test_run_cli_names_an_action_it_did_not_recognise",
+    "tests/unit_tests/test_project_selection_and_cli.py::test_run_cli_stays_quiet_about_a_launchers_own_arguments",
+    "tests/unit_tests/test_settings_sections_and_audio_effect.py::test_global_override_keeps_the_identity_of_fields_it_did_not_change",
+    "tests/unit_tests/test_settings_sections_and_audio_effect.py::test_restore_rewrites_only_the_fields_that_differ",
+    "tests/unit_tests/test_settings_sections_and_audio_effect.py::test_restore_still_puts_back_a_field_changed_in_place",
+    "tests/unit_tests/test_viewer_frame_cache.py::test_one_failed_render_does_not_fail_every_later_frame",
+    "tests/unit_tests/test_viewer_frame_cache.py::test_a_new_resolution_clears_the_error_of_the_old_one",
+    "tests/unit_tests/test_viewer_frame_cache.py::test_inspections_nobody_waits_for_any_more_are_dropped",
+    "tests/unit_tests/test_viewer_server.py::test_the_daemon_stops_a_viewer_its_run_left_serving",
     # The closed-shell coverage ceiling, on synthetic streams: tensors only.
     "tests/unit_tests/test_closed_shell_ceiling.py::",
     # The one-mesh ceiling behind a refracted sheet (the glass rim), at the
