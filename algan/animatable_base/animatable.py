@@ -1838,6 +1838,7 @@ class Animatable:
                 "_attr_inds_cache",
                 "_descendants_cache",
                 "_subtree_spawn_cache",
+                "_member_box_cache",
                 # Keyed on the source's rows (Mob._apply_basis_change), which
                 # a clone does not share.
                 "_rest_shape",

@@ -286,6 +286,14 @@ _REST_SHAPE_ROUNDINGS = 4
 #: thinner along one axis than the others misses by about a thousandth.
 _BASIS_CHANGE_TOLERANCE = 1e-4
 
+#: Bumped whenever ``exclude_from_boundary`` changes on a Mob a Group has
+#: measured (``_boundary_measured``), so a cache of which rows a Group measures
+#: (``Group._member_box``) can tell it still holds without reading the flag of
+#: every Mob in it. A Mob no Group has measured is in no such cache, which is
+#: what keeps the flags set on helper geometry at construction from dropping
+#: them all.
+BOUNDARY_FLAG_VERSION = [0]
+
 
 #: ``(default dtype, default device, target device) -> interpolation``: the
 #: unit interpolation :func:`animated_function` casts for an unrecorded
@@ -2122,6 +2130,25 @@ class Mob(
         with Sync(animation_manager=self.animation_manager):
             self._apply_change(attr, target - current, recursive=True)
         return self
+
+    @property
+    def exclude_from_boundary(self) -> bool:
+        """Whether boundary and layout queries leave this Mob out. Defaults to False.
+
+        Set on helper geometry that sits away from what the viewer sees -- a
+        Bezier circuit's texture grids, a retired point-cloud sphere -- so that
+        edge points, bounding boxes and a Group's centre measure the shape and
+        not its helpers. A plain attribute: setting it records nothing.
+        """
+        return self.__dict__.get("_exclude_from_boundary", False)
+
+    @exclude_from_boundary.setter
+    def exclude_from_boundary(self, value):
+        if self.__dict__.get("_boundary_measured") and value != self.__dict__.get(
+            "_exclude_from_boundary", False
+        ):
+            BOUNDARY_FLAG_VERSION[0] += 1
+        self.__dict__["_exclude_from_boundary"] = value
 
     @property
     def location(self) -> torch.Tensor:

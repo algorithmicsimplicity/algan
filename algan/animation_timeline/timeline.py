@@ -144,6 +144,15 @@ STRUCTURE_VERSION = [0]
 #: so the row-index caches stay correct too.
 HIERARCHY_VERSION = [0]
 
+#: Bumped by every hierarchy change that does not say which Mob's children
+#: changed (a bare :func:`bump_hierarchy_version`). A change that does say --
+#: :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin._note_hierarchy_change`
+#: -- stamps that Mob with the new :data:`HIERARCHY_VERSION` instead, which lets
+#: a descendant list built before the change be kept when nothing in it was
+#: stamped since (see ``MobHierarchyMixin.get_descendants``). Without that,
+#: growing one Group rebuilt the descendant list of every Mob in the Scene.
+UNSCOPED_HIERARCHY_VERSION = [0]
+
 #: Global spawn version, bumped whenever any mob's spawn time is (re)assigned
 #: (:class:`Lifespan.start`). Together with :data:`HIERARCHY_VERSION` it keys
 #: the subtree-spawn cache of
@@ -170,14 +179,23 @@ def bump_timing_version():
     TIMING_VERSION[0] += 1
 
 
-def bump_hierarchy_version():
+def bump_hierarchy_version(changed=None):
     """Bump both the hierarchy and structure versions. Call this (instead of
     :func:`bump_structure_version`) for any change to a mob's ``children``: it
     invalidates both the descendant-list cache and the descendant-row-index
     caches, since a hierarchy change alters both.
+
+    ``changed`` is the Mob whose ``children`` changed, when the caller knows
+    it. It is stamped with the new version (``_hierarchy_changed_at``), so only
+    the descendant lists that contain it are rebuilt. Without it every
+    descendant list in the process is.
     """
     HIERARCHY_VERSION[0] += 1
     STRUCTURE_VERSION[0] += 1
+    if changed is None:
+        UNSCOPED_HIERARCHY_VERSION[0] += 1
+    else:
+        object.__setattr__(changed, "_hierarchy_changed_at", HIERARCHY_VERSION[0])
 
 
 _OPT_DISABLED = None
@@ -1105,6 +1123,11 @@ class AttributeTimeline:
         self._query_cache = {}
         self.mob_id_to_inds = {}
         self.mob_id_to_ranges = {}
+        # Bumped whenever a Mob's rows are handed over, dropped or re-allocated
+        # -- every change to ``mob_id_to_inds`` except a new Mob's first rows --
+        # so a cache of which rows belong to which Mobs can tell it still holds
+        # (``Group._member_box``).
+        self.rows_version = 0
         self.mob_id_to_starts = {}
         self.mob_id_to_ends = {}
         self._endpoint_layout_revision = 0
@@ -1510,6 +1533,7 @@ class AttributeTimeline:
         """
         self.mob_id_to_inds[mob_id] = inds
         self.mob_id_to_ranges.pop(mob_id, None)
+        self.rows_version += 1
         self._dirty_endpoint_rows.add(mob_id)
         self._invalidate_endpoint_values()
         bump_structure_version()
@@ -1518,6 +1542,7 @@ class AttributeTimeline:
         """Forget ``mob_id``'s rows and cached ranges."""
         self.mob_id_to_inds.pop(mob_id, None)
         self.mob_id_to_ranges.pop(mob_id, None)
+        self.rows_version += 1
         self._dirty_endpoint_rows.add(mob_id)
         self._invalidate_endpoint_values()
         bump_structure_version()
@@ -1549,6 +1574,8 @@ class AttributeTimeline:
         replacing_rows = mob_id in self.mob_id_to_inds
         if (not overwrite) and replacing_rows:
             return
+        if replacing_rows:
+            self.rows_version += 1
         if replacing_rows and self._replay_row_floor is not None:
             existing = self.mob_id_to_inds[mob_id]
             if existing.numel() and int(existing[0]) < self._replay_row_floor:
@@ -1641,6 +1668,7 @@ class AttributeTimeline:
         else re-allocated rows during the same replay.
         """
         dropped = False
+        self.rows_version += 1
         for mob_id in mob_ids:
             if self.mob_id_to_inds.pop(mob_id, None) is not None:
                 dropped = True

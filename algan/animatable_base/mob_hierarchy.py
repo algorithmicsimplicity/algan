@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from algan.animatable_base.animatable import Animatable
 from algan.animation_timeline.timeline import (
     HIERARCHY_VERSION,
+    UNSCOPED_HIERARCHY_VERSION,
     _opt_disabled,
     bump_hierarchy_version,
 )
@@ -46,11 +47,13 @@ class MobHierarchyMixin:
         bump is not optional: three caches key on it
         (``_descendants_cache``, ``_attr_inds_cache``, ``_subtree_spawn_cache``)
         and a mutation that skips it does not error, it silently serves the
-        pre-mutation descendant set. The diagnostic beside it catches the one
+        pre-mutation descendant set. The bump names this Mob, so a descendant
+        list that does not contain it survives the change
+        (:meth:`_cached_descendants`). The diagnostic beside it catches the one
         case the record-time contract does not cover -- a live updater, whose
         subtree is re-resolved per frame at materialization.
         """
-        bump_hierarchy_version()
+        bump_hierarchy_version(self)
         scene = getattr(self, "scene", None)
         if scene is not None and not self.__dict__.get("_assembling_view"):
             scene.timeline_manager.note_hierarchy_change(self)
@@ -237,14 +240,8 @@ class MobHierarchyMixin:
             along more than one path (it has several parents under this one)
             appears once, at its first depth-first position.
         """
-        cache = getattr(self, "_descendants_cache", None)
-        if (
-            cache is not None
-            and cache[0] == HIERARCHY_VERSION[0]
-            and not _opt_disabled("desccache")
-        ):
-            descendants = cache[1]
-        else:
+        descendants = self._cached_descendants()
+        if descendants is None:
             # A Mob shared by several parents under this one is reached once
             # per path; keep only its first (depth-first) occurrence, so
             # callers that walk the list do not process it twice.
@@ -261,10 +258,43 @@ class MobHierarchyMixin:
                 )
                 if id(mob) not in seen and not seen.add(id(mob))
             ]
-            object.__setattr__(
-                self, "_descendants_cache", (HIERARCHY_VERSION[0], descendants)
-            )
+            self._store_descendants(descendants, seen)
         return list(descendants) if include_self else descendants[1:]
+
+    def _cached_descendants(self):
+        """The descendant list :meth:`get_descendants` cached, if it still holds, else None.
+
+        It holds at the version it was built at, and also after any number of
+        hierarchy changes none of which touched a Mob in it: every change names
+        the Mob whose children changed (``_hierarchy_changed_at``, stamped by
+        :func:`~algan.animation_timeline.timeline.bump_hierarchy_version`), and
+        a list can only go stale through a change below one of its own Mobs. A
+        change that names no Mob drops every list. Checking the stamps costs a
+        pass over the list, which is what lets ``group.add`` in a loop keep the
+        members' lists while the Group's own grows, instead of rebuilding every
+        one of them on every add.
+        """
+        cache = self.__dict__.get("_descendants_cache")
+        if cache is None or _opt_disabled("desccache"):
+            return None
+        version, descendants, unscoped, ids = cache
+        if version == HIERARCHY_VERSION[0]:
+            return descendants
+        if unscoped != UNSCOPED_HIERARCHY_VERSION[0]:
+            return None
+        for mob in descendants:
+            if mob.__dict__.get("_hierarchy_changed_at", 0) > version:
+                return None
+        self._store_descendants(descendants, ids)
+        return descendants
+
+    def _store_descendants(self, descendants, ids):
+        """Cache ``descendants`` and the set of their ids, at this version."""
+        object.__setattr__(
+            self,
+            "_descendants_cache",
+            (HIERARCHY_VERSION[0], descendants, UNSCOPED_HIERARCHY_VERSION[0], ids),
+        )
 
     @staticmethod
     def _contains_in_hierarchy(root, target):
@@ -282,6 +312,15 @@ class MobHierarchyMixin:
         return False
 
     def _validate_new_children(self, mobs):
+        """Refuse a child list with a non-Mob, a repeat, a self-link, another
+        Scene or a cycle in it.
+
+        Appending callers pass only the Mobs they are adding, already filtered
+        against the existing children: those were checked when they were
+        added, and a cycle through one would already be a cycle through this
+        Mob. Each cycle check walks the child's subtree, so re-checking them
+        made every ``Group.add`` cost as much as the whole Group.
+        """
         seen = set()
         for mob in mobs:
             if not isinstance(mob, Animatable):
@@ -389,28 +428,65 @@ class MobHierarchyMixin:
             If a Mob appears twice, is its own child, belongs to another Scene, or
             the change would create a cycle.
         """
-        candidates = list(traverse(mobs))
-        # Re-adding an existing child is idempotent, matching Group.add.
-        candidates = [
-            mob
-            for mob in candidates
-            if not any(existing is mob for existing in self.children)
-        ]
+        candidates = self._not_yet_children(traverse(mobs))
         if not candidates:
             return self
-        self._validate_new_children([*self.children, *candidates])
+        self._validate_new_children(candidates)
         if getattr(self, "_constructor_unlit", False):
             from algan.rendering.shaders.material_shaders import basic_material_shader
 
             for mob in candidates:
                 if hasattr(mob, "set_shader"):
                     mob.set_shader(basic_material_shader)
+        cache = self.__dict__.get("_descendants_cache")
+        descendants = self._cached_descendants()
         for mob in candidates:
             self.children.append(mob)
             mob._link_parent(self)
             self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
         self._note_hierarchy_change()
+        if descendants is not None:
+            # Appending children appends their descendants to the list, in the
+            # order a rebuild would put them, so the list is extended rather
+            # than rebuilt -- which would walk every existing child.
+            # Extended in place: the cached list is never handed out (callers
+            # get a copy), and keeping its identity is what lets a cache built
+            # on it (Group._member_box) take only the new tail.
+            seen = cache[3]
+            descendants.extend(
+                mob
+                for child in candidates
+                for mob in child.get_descendants()
+                if id(mob) not in seen and not seen.add(id(mob))
+            )
+            self._store_descendants(descendants, seen)
         return self
+
+    def _not_yet_children(self, mobs):
+        """The Mobs in ``mobs`` that are not children here yet, in order.
+
+        Re-adding an existing child is idempotent. A Mob missing from the
+        cached descendant set cannot be a child, which answers most Mobs
+        without a pass over the children -- the pass that made a loop of
+        ``group.add`` quadratic. The set holds every child for as long as this
+        Mob's own children are unchanged since it was built, however stale it
+        is further down, so it is not revalidated here.
+        """
+        mobs = list(mobs)
+        cache = self.__dict__.get("_descendants_cache")
+        below = (
+            cache[3]
+            if cache is not None
+            and cache[2] == UNSCOPED_HIERARCHY_VERSION[0]
+            and self.__dict__.get("_hierarchy_changed_at", 0) <= cache[0]
+            else None
+        )
+        return [
+            mob
+            for mob in mobs
+            if (below is not None and id(mob) not in below)
+            or not any(existing is mob for existing in self.children)
+        ]
 
     def remove_child(self, mob: Mob) -> Mob:
         """Detach a child so it stops following this Mob's transforms.

@@ -24,8 +24,9 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import Animatable, _rejecting_timing_kwargs
-from algan.animatable_base.mob import Mob
+from algan.animatable_base.mob import BOUNDARY_FLAG_VERSION, Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
+from algan.animation_timeline.timeline import AttributeTimeline, RowRanges
 from algan.constants.spatial import DOWN, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
@@ -49,6 +50,26 @@ def midpoint(x):
     mn = torch.stack([_.amin(-2, keepdim=True) for _ in x], -1).amin(-1)
     mx = torch.stack([_.amax(-2, keepdim=True) for _ in x], -1).amax(-1)
     return (mn + mx) / 2
+
+
+#: Rows :meth:`Group._member_box` reads and reduces at a time: a few thousand
+#: three-channel rows stay under the size at which torch hands an elementwise
+#: op or a reduction to its thread pool.
+_BOX_READ_ROWS = 8192
+
+
+def _row_bounds(timeline, mask, first, last):
+    """The per-chunk corners of the rows ``mask`` selects in ``[first, last)``."""
+    for begin in range(first, last, _BOX_READ_ROWS):
+        end = min(begin + _BOX_READ_ROWS, last)
+        selected = mask[begin:end].view(1, -1, 1)
+        if not bool(selected.any()):
+            continue
+        values = timeline.get(RowRanges([(begin, end)]), copy=False)
+        yield (
+            torch.where(selected, values, math.inf).amin(-2, keepdim=True),
+            torch.where(selected, values, -math.inf).amax(-2, keepdim=True),
+        )
 
 
 def _layout_direction(name, value):
@@ -306,7 +327,139 @@ class Group(Mob):
         torch.Tensor
             The midpoint, shape ``(*, 1, 3)``, or ``ORIGIN`` for an empty Group.
         """
-        return self._midpoint_for(self.children)
+        box = self._member_box()
+        if box is None:
+            return self._midpoint_for(self.children)
+        return (box[0] + box[1]) / 2
+
+    def _member_box(self):
+        """Internal: the corners :meth:`_midpoint_for` takes the middle of, or None.
+
+        The same rows as reading ``.location`` on every boundary descendant of
+        every member, and so exactly the same corners. Read one Mob at a time,
+        they made a loop of ``group.add`` quadratic: 2,000 adds took minutes,
+        against well under a second for one ``Group(mobs)``.
+
+        Which rows belong to the members is kept as a mask over the location
+        buffer, extended by each add with just the new members' rows. When
+        nothing has been written to any timeline since the last add measured
+        the box (:meth:`add` notes the write count after its own write), the
+        old corners still hold and only the new rows are read. Otherwise every
+        row is read, as slices of the buffer between the first and last of
+        them a few thousand at a time: a gather or a reduction over more than
+        that goes to torch's thread pool, which on a loaded machine cost more
+        than the whole add did.
+
+        Returns None where that would not read what ``.location`` reads: an
+        empty Group, a member whose rows are not allocated yet, a packed view,
+        a materialized frame window, or a read inside replay or an updater.
+        """
+        if not self.children:
+            return None
+        tm = self.scene.timeline_manager
+        if tm._active_replay_event is not None or tm._active_updater_trace is not None:
+            return None
+        timeline = tm.attr_to_timeline.get("location")
+        if timeline is None or timeline.active_state is not timeline.current_state:
+            return None
+        descendants = self._cached_descendants()
+        if descendants is None:
+            self.get_descendants()
+            descendants = self._cached_descendants()
+            if descendants is None:
+                return None
+        cache = self.__dict__.get("_member_box_cache")
+        if not (
+            cache is not None
+            and cache["descendants"] is descendants
+            and cache["timeline"] is timeline
+            and cache["rows_version"] == timeline.rows_version
+            and cache["flag_version"] == BOUNDARY_FLAG_VERSION[0]
+        ):
+            cache = {
+                "descendants": descendants,
+                "timeline": timeline,
+                "rows_version": timeline.rows_version,
+                "flag_version": BOUNDARY_FLAG_VERSION[0],
+                # Index 0 is this Group: its own pivot is not one of its members.
+                "done": 1,
+                "mask": torch.zeros(timeline.pointer, dtype=torch.bool),
+                "first": None,
+                "last": None,
+                "rows": 0,
+                "groups": [],
+                "box": None,
+                "write_count": None,
+            }
+            object.__setattr__(self, "_member_box_cache", cache)
+        inds = timeline.mob_id_to_inds
+        new_runs = []
+        for mob in descendants[cache["done"] :]:
+            # From here on a change to the flag drops the cache.
+            mob.__dict__["_boundary_measured"] = True
+            if mob.exclude_from_boundary:
+                continue
+            if mob.id not in inds or getattr(mob, "data_sub_inds", None) is not None:
+                self.__dict__.pop("_member_box_cache", None)
+                return None
+            pairs = timeline.ranges_for(mob.id).pairs
+            if pairs is None:
+                self.__dict__.pop("_member_box_cache", None)
+                return None
+            new_runs.extend(pairs)
+            if isinstance(mob, Group):
+                cache["groups"].append(mob)
+        cache["done"] = len(descendants)
+        mask = cache["mask"]
+        for begin, end in new_runs:
+            if end > mask.shape[0]:
+                grown = torch.zeros(max(end, 2 * mask.shape[0]), dtype=torch.bool)
+                grown[: mask.shape[0]] = mask
+                mask = cache["mask"] = grown
+            cache["rows"] += int((~mask[begin:end]).sum())
+            mask[begin:end] = True
+            first, last = cache["first"], cache["last"]
+            cache["first"] = begin if first is None else min(first, begin)
+            cache["last"] = end if last is None else max(last, end)
+        if cache["first"] is None:
+            return None
+        # Reading a nested Group's ``.location`` re-centers its pivot on its
+        # own members first, and so does this -- before the write count is
+        # compared, since that can write.
+        for group in cache["groups"]:
+            group._follow_members()
+        box = cache["box"]
+        if box is not None and cache["write_count"] == AttributeTimeline.write_count:
+            # Nothing written since the box was measured: extend it.
+            lower, upper = [box[0]], [box[1]]
+            for begin, end in new_runs:
+                for lo, hi in _row_bounds(timeline, mask, begin, end):
+                    lower.append(lo)
+                    upper.append(hi)
+        else:
+            lower, upper = [], []
+            first, last = cache["first"], cache["last"]
+            if last - first > 4 * cache["rows"] + 2 * _BOX_READ_ROWS:
+                # Members scattered through a much larger buffer: gather their
+                # rows rather than scan everything between them.
+                selected = mask[first:last].nonzero().view(-1) + first
+                values = timeline.get(RowRanges(None, tensor=selected), copy=False)
+                lower.append(values.amin(-2, keepdim=True))
+                upper.append(values.amax(-2, keepdim=True))
+            else:
+                for lo, hi in _row_bounds(timeline, mask, first, last):
+                    lower.append(lo)
+                    upper.append(hi)
+        box = (torch.stack(lower, -1).amin(-1), torch.stack(upper, -1).amax(-1))
+        cache["box"] = box
+        cache["write_count"] = None
+        return box
+
+    def _note_box_current(self):
+        """Internal: say the box :meth:`_member_box` measured still holds after this write."""
+        cache = self.__dict__.get("_member_box_cache")
+        if cache is not None and cache["box"] is not None:
+            cache["write_count"] = AttributeTimeline.write_count
 
     def __getitem__(self, item):
         """Get a member by index, or a sub-Group by slice.
@@ -432,18 +585,16 @@ class Group(Mob):
             # bumped or ``get_descendants`` goes on serving the cache it filled
             # before the member arrived -- leaving the new member behind when
             # the view is moved, while ``len(view)`` says it is there.
-            candidates = [
-                mob
-                for mob in mobs
-                if not any(existing is mob for existing in self.children)
-            ]
+            candidates = self._not_yet_children(mobs)
             if candidates:
-                new_children = [*self.children, *candidates]
-                self._validate_new_children(new_children)
-                self.children[:] = new_children
+                self._validate_new_children(candidates)
+                self.children[:] = [*self.children, *candidates]
                 self._note_hierarchy_change()
         with Off(animation_manager=self.animation_manager):
             self.set_non_recursive(location=self._get_mob_midpoint())
+        # The only write since the box was measured moved this Group's own
+        # pivot, which is not one of the rows it measures.
+        self._note_box_current()
         return self
 
     def get_parts_as_mobs(self):
