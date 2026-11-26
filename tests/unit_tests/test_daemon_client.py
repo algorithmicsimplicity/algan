@@ -452,7 +452,7 @@ def test_malformed_state_file_is_treated_as_no_daemon(tmp_path, monkeypatch):
 
 
 def test_matching_startup_env_is_no_mismatch():
-    env = dict.fromkeys(dc.STARTUP_ENV, "x")
+    env = dict.fromkeys((*dc.STARTUP_ENV, *dc.FOREIGN_STARTUP_ENV), "x")
     assert dc.describe_env_mismatch(env, env) is None
 
 
@@ -469,6 +469,27 @@ def test_animation_device_mismatch_is_reported():
     assert "'cpu'" in report
     assert "'cuda'" in report
     assert "ALGAN_USE_DAEMON=0" in report, "the report must say how to proceed"
+
+
+@pytest.mark.parametrize(
+    ("client", "daemon"), [("1", None), ("", None), ("0", "1"), (None, "")]
+)
+def test_a_cuda_visible_devices_mismatch_is_refused(monkeypatch, client, daemon):
+    """The daemon's CUDA context was made with its own value and cannot move.
+
+    ``CUDA_VISIBLE_DEVICES= python scene.py``, the usual way to force the CPU,
+    sets it *empty*, which is not the same as leaving it unset.
+    """
+    if client is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", client)
+    client_env = dc.startup_env()
+    daemon_env = {**client_env, "CUDA_VISIBLE_DEVICES": daemon}
+    report = dc.describe_env_mismatch(client_env, daemon_env)
+    assert report is not None
+    assert "CUDA_VISIBLE_DEVICES" in report
+    assert "ALGAN_USE_DAEMON=0" in report
 
 
 def test_a_render_device_mismatch_is_adopted_rather_than_refused():
@@ -683,7 +704,7 @@ def test_run_remote_streams_output_and_returns_the_exit_code(tmp_path):
         "t0ken", "client", daemon.server_nonce, daemon.client_nonce
     )
     assert daemon.request["protocol"] == dc.PROTOCOL_VERSION
-    assert set(daemon.request["env"]) == set(dc.STARTUP_ENV)
+    assert set(daemon.request["env"]) == {*dc.STARTUP_ENV, *dc.FOREIGN_STARTUP_ENV}
 
 
 def test_refusal_before_start_is_recoverable(tmp_path):

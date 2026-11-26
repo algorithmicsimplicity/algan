@@ -152,6 +152,26 @@ FRAME_EXIT = b"X"  # payload is a 4-byte big-endian signed exit code
 #: settings" section of ``AGENTS.md``.
 STARTUP_ENV = startup_environment_variables()
 
+#: Variables that CUDA, torch, OpenMP and the kernel compiler read at their own
+#: initialisation, which in a daemon happened at its launch. They are not
+#: Algan's, so they are compared rather than declared or read through
+#: :mod:`algan.environment`. Swapping a client's value into ``os.environ``
+#: cannot move an initialised CUDA context, so ``CUDA_VISIBLE_DEVICES=1 python
+#: scene.py`` on a warm daemon started without it used to render on the
+#: daemon's GPU 0 with no message. Unlike Algan's own, **unset and empty
+#: differ** here: ``CUDA_VISIBLE_DEVICES=`` hides every GPU, unset shows them
+#: all.
+FOREIGN_STARTUP_ENV = (
+    "CUDA_VISIBLE_DEVICES",
+    "CUDA_DEVICE_ORDER",
+    "HIP_VISIBLE_DEVICES",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "TI_ARCH",
+    "QD_ARCH",
+    "PYTORCH_CUDA_ALLOC_CONF",
+)
+
 #: The startup variables a difference in is *not* refused. Their import-time
 #: read only seeds a runtime setting, and the daemon re-applies the client's
 #: value at the start of each run (``algan.daemon._adopt_render_device``), so a
@@ -229,8 +249,14 @@ def state_path():
 
 
 def startup_env():
-    """The subset of the environment that the daemon bakes in at launch."""
-    return {name: env_str(name, "") for name in STARTUP_ENV}
+    """The subset of the environment that the daemon bakes in at launch.
+
+    A foreign variable that is unset is recorded as ``None``, so that it
+    compares unequal to one set empty.
+    """
+    env = {name: env_str(name, "") for name in STARTUP_ENV}
+    env.update({name: os.environ.get(name) for name in FOREIGN_STARTUP_ENV})
+    return env
 
 
 def algan_version():
@@ -299,6 +325,16 @@ def describe_env_mismatch(client_env, daemon_env):
         for name in STARTUP_ENV
         if name not in STARTUP_ENV_ADOPTED
         and client_env.get(name, "") != daemon_env.get(name, "")
+    ]
+
+    def shown(value):
+        return "<unset>" if value is None else repr(value)
+
+    diffs += [
+        f"  {name}: this script wants {shown(client_env.get(name))}, "
+        f"daemon was launched with {shown(daemon_env.get(name))}"
+        for name in FOREIGN_STARTUP_ENV
+        if client_env.get(name) != daemon_env.get(name)
     ]
     if not diffs:
         return None
