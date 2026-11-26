@@ -64,6 +64,7 @@ from algan.rendering.raytracing.raster_taichi import (
 from algan.rendering.raytracing.raster_taichi import (
     _AA_LATTICE_MAX_COORD,
     _AA_LATTICE_MAX_EXTENT,
+    _AA_SLIVER_DROP,
     _BEZ_BORDER_BITS,
     _WRITE_MISS_T_BITS,
     AA_FULL_COVERAGE,
@@ -2914,29 +2915,21 @@ def prepare_sparse_raster_coverage(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 3/4 select the RUN-CORRECTED representation for corr > 1 under rule A
-    # (clamp) / B (redistribute) (DESIGN_analytic_aa_v2.md ss4.4). Both map to
-    # the same emission representation (raster_taichi._tri_repr == 2); the
-    # rule itself now lives in the sheet resolve's per-sheet redistribution.
-    # Value 2 belonged to the deleted cells accounting.
+    # 3 selects the RUN-CORRECTED representation (raster_taichi._tri_repr ==
+    # 2); the run rule for corr > 1 lives in the sheet resolve, which always
+    # redistributes (DESIGN_analytic_aa_v2.md ss4.4). Value 2 belonged to the
+    # deleted cells accounting; 4 was the same representation under the
+    # retired analytic_aa_run_rule, and compiled the same geometry kernels.
     if aa_tri and rt_settings.analytic_aa_run:
-        aa_tri = 4 if rt_settings.analytic_aa_run_rule == "redistribute" else 3
-    # The sample-less-triangle policy rides along in the value the GEOMETRY
-    # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
-    # resolve and the shadow-event build keep the plain mode value: the policy
-    # reaches them as a per-fragment mask bit, so they compile once per mode.
-    # Sliver policy AND the representation ride in the geometry kernels'
-    # template value (1 + sliver + 4 * repr), so every combination gets its
-    # own compiled variant and its own offline-cache entry (see _sliver_mode /
-    # _tri_repr). The sliver knob is INERT under run mode (v2 ss4.1): pin it
-    # to drop so it cannot fork pointless cache entries.
+        aa_tri = 3
+    # The geometry kernels' template value is 1 + sliver + 4 * repr (see
+    # raster_taichi._sliver_mode / _tri_repr). The sample-less-triangle
+    # policy is fixed at drop: the run representation pins it (v2 ss4.1), and
+    # the point representation (aa_tri 1) is an arm the route decision
+    # vetoes. The retired analytic_aa_sliver chose it there.
     aa_tri_ss = 0
     if aa_tri:
-        aa_tri_ss = (
-            1
-            + (2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode())
-            + 4 * min(aa_tri - 1, 2)
-        )
+        aa_tri_ss = 1 + _AA_SLIVER_DROP + 4 * min(aa_tri - 1, 2)
     aa_grp = _aa_group(aa_bez, aa_tri)
     # The sheet resolve (DESIGN_sheet_resolve.md) consumes EXACT areas, so
     # every geometry kind present must emit them: triangles need the run

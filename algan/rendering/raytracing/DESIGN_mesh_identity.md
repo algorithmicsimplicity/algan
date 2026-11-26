@@ -92,7 +92,7 @@ listed before the wins:
     ALGAN_WELD_SURFACE_SEAMS         ON       shared seam/pole vertices (§3.1)
     ALGAN_WATERTIGHT_TRI             ON       Woop-Benthin-Wald (§3.2)
     ALGAN_BEZ_BVH_SPLIT              ON       median-split bezier BVH (§3.4)
-    ALGAN_ANALYTIC_AA_RUN_RULE       redist.  pre-existing (v2 §4.4)
+    ALGAN_ANALYTIC_AA_RUN_RULE       redist.  pre-existing (v2 §4.4); removed 2026-11-26
 
 Seven of the ten are on, and the two still off are off for stated reasons rather
 than for want of attention:
