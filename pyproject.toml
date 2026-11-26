@@ -151,6 +151,9 @@ typst = ["typst>=0.14"]
 # Word-level alignment of recorded speech audio to a transcript (used by the
 # Speech/Audio animation contexts when synchronizing to a pre-recorded audio
 # file). The default pyttsx3 text-to-speech path does not need these.
+# soundfile reads the recording; torchaudio only aligns and resamples it, because
+# torchaudio 2.9 removed `info` and its `load` needs torchcodec, which this
+# extra does not install (algan/utils/audio_utils.py).
 audio = [
     "soundfile>=0.14.0",
     "torchaudio>=2.0.0",

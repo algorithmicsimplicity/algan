@@ -56,6 +56,49 @@ def unflatten(list_, lengths):
     return ret
 
 
+def _audio_frames_and_rate(audio_path):
+    """The length in frames and the sample rate of a recording, by soundfile.
+
+    Not ``torchaudio.info``: torchaudio 2.9 removed it, and its ``load`` now
+    needs ``torchcodec`` and FFmpeg's shared libraries, neither of which the
+    ``audio`` extra installs. ``pip install "algan[audio]"`` takes the newest
+    torchaudio, so on a fresh install both calls failed. soundfile is in the
+    extra already, reads WAV, FLAC, OGG and MP3 through the libsndfile its
+    wheel bundles, and behaves the same whatever torchaudio is installed.
+    """
+    import soundfile
+
+    try:
+        info = soundfile.info(str(audio_path))
+    except RuntimeError as e:  # soundfile.LibsndfileError is one
+        raise AlganConfigurationError(
+            f"Could not read {audio_path!r} as audio to align speech to: {e}. "
+            "Speech alignment reads WAV, FLAC, OGG and MP3 files; convert the "
+            "recording to one of those (for example "
+            "`ffmpeg -i voice.m4a voice.wav`)."
+        ) from e
+    return info.frames, info.samplerate
+
+
+def _read_audio_window(audio_path, frame_offset, num_frames):
+    """``num_frames`` frames of a recording from ``frame_offset``, as torch reads it.
+
+    Returns ``(waveform, sample_rate)`` with the waveform a float32 tensor of
+    shape ``(channels, frames)``, which is what ``torchaudio.load`` returned
+    and what the model's processor expects.
+    """
+    import soundfile
+
+    samples, sample_rate = soundfile.read(
+        str(audio_path),
+        start=frame_offset,
+        stop=frame_offset + num_frames,
+        dtype="float32",
+        always_2d=True,
+    )
+    return torch.from_numpy(samples.T.copy()), sample_rate
+
+
 def align_large_audio_torchaudio_robust(
     audio_path, transcript_path, model_id=MODEL_ID, chunk_duration_s=CHUNK_DURATION_S
 ):
@@ -63,13 +106,15 @@ def align_large_audio_torchaudio_robust(
     if not math.isfinite(chunk_duration_s) or chunk_duration_s <= 0:
         raise AlganConfigurationError("chunk_duration_s must be finite and positive")
     try:
+        import soundfile  # noqa: F401  (read by the two helpers below)
         import torchaudio
         import torchaudio.functional as F
         from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
     except ImportError as e:
         raise ImportError(
             "Synchronizing to a recorded speech audio file requires the optional"
-            " audio dependencies (torchaudio and transformers). Install them with:"
+            " audio dependencies (soundfile, torchaudio and transformers). Install"
+            " them with:"
             " pip install algan[audio]"
         ) from e
 
@@ -83,8 +128,8 @@ def align_large_audio_torchaudio_robust(
     model = Wav2Vec2ForCTC.from_pretrained(model_id).to(device)
 
     logger.info("Loading audio file info...")
-    audio_info = torchaudio.info(audio_path)
-    audio_duration_s = audio_info.num_frames / audio_info.sample_rate
+    num_audio_frames, sample_rate = _audio_frames_and_rate(audio_path)
+    audio_duration_s = num_audio_frames / sample_rate
 
     with open(transcript_path, encoding="utf-8-sig") as f:
         full_transcript_text = f.read().upper()
@@ -120,11 +165,9 @@ def align_large_audio_torchaudio_robust(
         )
 
         logger.info("Loading audio chunk...")
-        frame_offset = int(chunk_start_s * audio_info.sample_rate)
-        num_frames = int((chunk_end_s - chunk_start_s) * audio_info.sample_rate)
-        waveform, sr = torchaudio.load(
-            audio_path, frame_offset=frame_offset, num_frames=num_frames
-        )
+        frame_offset = int(chunk_start_s * sample_rate)
+        num_frames = int((chunk_end_s - chunk_start_s) * sample_rate)
+        waveform, sr = _read_audio_window(audio_path, frame_offset, num_frames)
         if sr != processor.feature_extractor.sampling_rate:
             waveform = torchaudio.transforms.Resample(
                 orig_freq=sr, new_freq=processor.feature_extractor.sampling_rate
@@ -231,7 +274,7 @@ def align_large_audio_torchaudio_robust(
             or confirmed_end <= chunk_start_s
             or not math.isfinite(next_chunk_start)
             or next_chunk_start <= chunk_start_s
-            or int(next_chunk_start * audio_info.sample_rate) <= frame_offset
+            or int(next_chunk_start * sample_rate) <= frame_offset
         ):
             raise AudioTranscriptMismatchError(
                 f"Speech alignment made no forward progress in the audio window "
