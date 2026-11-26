@@ -657,7 +657,10 @@ class Animatable:
         if animation_manager is None:
             animation_manager = scene.animation_manager
         self.animation_manager = animation_manager
-        if add_to_scene:
+        # Not while frames are replayed, for the reason Scene.add_actor gives:
+        # a Mob an updater builds on every frame would otherwise be appended to
+        # every enclosing context, the root included, for the Scene's life.
+        if add_to_scene and not self.scene.timeline_manager.is_replaying():
             animation_manager.context.add_mob(self)
         if name is not None or not hasattr(self, "name"):
             self.name = name

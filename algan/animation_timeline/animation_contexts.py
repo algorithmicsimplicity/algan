@@ -762,6 +762,23 @@ class AnimationContext:
         """
         self.child_contexts.append(c)
 
+    def _unlink_from_parent(self):
+        """Internal: drop this exited context from its parent's children.
+
+        Only for a context that recorded nothing and took no time, such as
+        the one frame materialization runs in: nothing then rescales through
+        it, and left linked it would be kept for the Scene's life. Searched
+        from the end by identity, since it is normally the last child, and
+        the generated ``__eq__`` compares every field.
+        """
+        if getattr(self, "ignored", True) or self.prev_context is None:
+            return
+        siblings = self.prev_context.child_contexts
+        for i in range(len(siblings) - 1, -1, -1):
+            if siblings[i] is self:
+                del siblings[i]
+                return
+
     def get_timespan(self):
         """Get this context's timespan object.
 

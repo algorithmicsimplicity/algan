@@ -308,3 +308,23 @@ def test_an_updater_that_writes_before_building_a_mob_writes_once():
             torch.testing.assert_close(
                 dot.location[..., 0].reshape(-1), FRAMES, atol=1e-5, rtol=0
             )
+
+
+def test_materializing_frames_leaves_the_context_tree_as_it_was():
+    """Each materialization used to leave its replay context linked under the
+    current context, and each Mob an updater built under every enclosing
+    context: the root grew by one child per call and one Mob per frame, for
+    the Scene's life.
+    """
+    with algan.Scene() as scene:
+        square = algan.Square().spawn(animate=False)
+        square.add_updater(lambda mob, t: algan.Circle(radius=0.1))
+        algan.Scene.wait(1)
+        root = scene.animation_manager.context
+        before = (len(root.child_contexts), len(root.new_mobs))
+        for start in (0.0, 0.25, 0.5):
+            scene.timeline_manager.set_state_to_times(
+                torch.tensor([start, start + 0.1])
+            )
+            scene.timeline_manager.clear_buffers()
+        assert (len(root.child_contexts), len(root.new_mobs)) == before

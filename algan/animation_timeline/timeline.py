@@ -4165,14 +4165,23 @@ class AnimationTimeline:
                 break
         if manager is None and self._traced_paths:
             manager = next(iter(self._traced_paths.values())).animation_manager
-        with Off(
+        replay_context = Off(
             record_attr_modifications=False,
             record_funcs=False,
             priority_level=math.inf,
             animation_manager=manager,
-        ):
-            self._prepare_traced_paths(times, active_mobs)
-            return self._replay_state_to_times(times, active_mobs)
+        )
+        try:
+            with replay_context:
+                self._prepare_traced_paths(times, active_mobs)
+                return self._replay_state_to_times(times, active_mobs)
+        finally:
+            # Entered outside a render or another replay, the context is
+            # linked into the authoring tree like any block, and stays there:
+            # one more child of the current context per call, for the Scene's
+            # life. It recorded nothing and takes no time, so nothing rescales
+            # through it; unlink it.
+            replay_context._unlink_from_parent()
 
     def _prepare_traced_paths(self, times, active_mobs):
         if (
