@@ -453,14 +453,16 @@ def _build_hierarchy(gltf, meshes, blobs):
                 transform=_node_local_transform(n),
                 parent=remap[parent[g]] if parent[g] >= 0 else -1,
                 mesh_indices=mesh_indices,
+                source_index=g,
             )
         )
     return out
 
 
 def _parse_animations(gltf, blobs):
-    """Parse glTF animation clips into ``list[AnimationData]`` keyed by node
-    name (matching :class:`NodeData.name`).
+    """Parse glTF animation clips into ``list[AnimationData]``, each track
+    bound to its node by the node's glTF index (``source_index``, matching
+    :class:`NodeData.source_index`); the name is kept for display only.
     """
     gnodes = gltf.nodes or []
 
@@ -489,7 +491,10 @@ def _parse_animations(gltf, blobs):
             values = _accessor_array(gltf, sampler.output, blobs).float()
             runtime = max(runtime, float(times[-1]) if times.numel() else 0.0)
             na = per_node.setdefault(
-                target.node, NodeAnimation(node_name=node_name(target.node))
+                target.node,
+                NodeAnimation(
+                    node_name=node_name(target.node), source_index=target.node
+                ),
             )
             path = target.path
             if path == "translation":

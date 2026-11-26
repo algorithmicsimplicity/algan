@@ -746,6 +746,39 @@ def test_gltf_node_matrices_and_scale_keys_compose_down_the_hierarchy(tmp_path):
     )
 
 
+@pytest.mark.parametrize("names", [("Part", "Part"), ("node_1", None)])
+def test_gltf_channels_bind_to_their_node_by_index_not_by_name(tmp_path, names):
+    """REGRESSION. Channels were bound by node name, so two nodes sharing one
+    (legal in glTF) both played the track authored for the first, and the
+    second lost its own rest translation. An unnamed node was named
+    ``node_<index>``, which a real node could also be called.
+    """
+    gltf = _Gltf()
+    mesh = g.Mesh(primitives=[gltf.triangle()])
+    sampler = gltf.keys([0.0, 1.0], [[-2, 0, 0], [-2, 5, 0]])
+    path = gltf.save(
+        tmp_path / "names.glb",
+        scene=0,
+        scenes=[g.Scene(nodes=[0, 1])],
+        nodes=[
+            g.Node(name=names[0], mesh=0, translation=[-2, 0, 0]),
+            g.Node(name=names[1], mesh=0, translation=[2, 0, 0]),
+        ],
+        meshes=[mesh],
+        animations=[
+            g.Animation(samplers=[sampler], channels=[_channel(0, 0, "translation")])
+        ],
+    )
+    with Scene():
+        model = Model3D(path)
+        _, corners = model.precompute_animation(times=[0.0, 1.0])
+    animated, still = (corners[mob] for mob in model.mesh_mobs)
+    triangle = torch.tensor([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    torch.testing.assert_close(animated[1], triangle + torch.tensor([-2.0, 5, 0]))
+    for frame in still:
+        torch.testing.assert_close(frame, triangle + torch.tensor([2.0, 0, 0]))
+
+
 def test_a_gltf_without_a_default_scene_roots_at_its_parentless_nodes(tmp_path):
     gltf = _Gltf()
     mesh = g.Mesh(primitives=[gltf.triangle()])

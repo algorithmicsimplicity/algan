@@ -105,6 +105,10 @@ class NodeData:
     transform: torch.Tensor | None = None  # [4, 4], local to parent
     parent: int = -1  # index into SceneData.nodes
     mesh_indices: list[int] = field(default_factory=list)
+    # The node's index in the source file, for formats whose animation
+    # channels name their node by index (glTF); -1 where channels bind by
+    # name (assimp). Names need not be unique, so an index is what binds.
+    source_index: int = -1
 
 
 @dataclass
@@ -115,6 +119,9 @@ class NodeAnimation:
     """
 
     node_name: str = ""
+    # The animated node's index in the source file (glTF); -1 to bind the
+    # track to a node by ``node_name`` instead (assimp).
+    source_index: int = -1
     position_times: torch.Tensor | None = None  # [Kp]
     positions: torch.Tensor | None = None  # [Kp, 3]
     rotation_times: torch.Tensor | None = None  # [Kr]
