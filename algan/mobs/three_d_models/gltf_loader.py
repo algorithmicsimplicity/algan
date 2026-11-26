@@ -120,12 +120,17 @@ def _linear_to_display(values):
     return linear_to_srgb(torch.as_tensor(values, dtype=torch.float64)).float()
 
 
-def _gltf_alpha(material):
+def _gltf_alpha(material, exact_factors=None):
     """A glTF material's linear ``baseColorFactor`` (``[1, 1, 1, 1]`` when
     omitted), ``alphaMode`` (``OPAQUE`` when omitted) and ``alphaCutoff``
     (``0.5`` when omitted).
+
+    The factor is taken from ``exact_factors`` (:func:`_exact_base_color_factors`)
+    where it holds one for ``material``; trimesh's own copy is 8-bit.
     """
-    factor = _normalize_color(getattr(material, "baseColorFactor", None))
+    factor = (exact_factors or {}).get(id(material))
+    if factor is None:
+        factor = _normalize_color(getattr(material, "baseColorFactor", None))
     mode = getattr(material, "alphaMode", None) or "OPAQUE"
     cutoff = getattr(material, "alphaCutoff", None)
     return factor, mode, 0.5 if cutoff is None else float(cutoff)
@@ -174,7 +179,7 @@ def _tint_base_color_image(image, factor, mode, cutoff):
     return torch.stack(channels, -1)
 
 
-def _convert_material(visual, gltf=False):
+def _convert_material(visual, gltf=False, exact_factors=None):
     """trimesh visual -> :class:`MaterialData` (PBR base color + embedded
     diffuse texture where present).
 
@@ -182,6 +187,7 @@ def _convert_material(visual, gltf=False):
     factor takes the specification's default, the color factors are linear
     (Algan's colors are display sRGB), ``baseColorFactor`` multiplies the
     base-color texture, and ``alphaMode`` decides what alpha means.
+    ``exact_factors`` is passed to :func:`_gltf_alpha`.
     """
     material = getattr(visual, "material", None)
     if material is None:
@@ -189,7 +195,7 @@ def _convert_material(visual, gltf=False):
     if gltf:
         # Omitted factors are the specification's defaults, never trimesh's
         # placeholder grey: base color [1, 1, 1, 1], metallic and roughness 1.
-        factor, alpha_mode, alpha_cutoff = _gltf_alpha(material)
+        factor, alpha_mode, alpha_cutoff = _gltf_alpha(material, exact_factors)
         base = (
             *_linear_to_display(factor[:3]).tolist(),
             float(_resolve_alpha(factor[3], alpha_mode, alpha_cutoff)),
@@ -250,7 +256,7 @@ def _convert_material(visual, gltf=False):
     )
 
 
-def _gltf_vertex_colors(colors, material):
+def _gltf_vertex_colors(colors, material, exact_factors=None):
     """glTF ``COLOR_0`` ``[V, 3 or 4]`` as display sRGB, its alpha resolved by
     the primitive's ``alphaMode``.
 
@@ -262,7 +268,7 @@ def _gltf_vertex_colors(colors, material):
     rgb = _linear_to_display(colors[:, :3])
     if material is None or colors.shape[-1] < 4:
         return torch.cat((rgb, colors[:, 3:]), -1)
-    factor, mode, cutoff = _gltf_alpha(material)
+    factor, mode, cutoff = _gltf_alpha(material, exact_factors)
     alpha = colors[:, 3:4]
     if mode == "MASK":
         alpha = _resolve_alpha(alpha * factor[3], mode, cutoff)
@@ -271,7 +277,7 @@ def _gltf_vertex_colors(colors, material):
     return torch.cat((rgb, alpha), -1)
 
 
-def _convert_mesh(geom, material_index, name, gltf=False):
+def _convert_mesh(geom, material_index, name, gltf=False, exact_factors=None):
     vertices = _to_tensor(geom.vertices)
     faces = _to_tensor(getattr(geom, "faces", None), dtype=torch.int64)
     if vertices is None or faces is None:
@@ -304,7 +310,7 @@ def _convert_mesh(geom, material_index, name, gltf=False):
         vertex_colors = _image_to_float_hwc(np.asarray(vc)[None])[0]
         if gltf and authored:
             vertex_colors = _gltf_vertex_colors(
-                vertex_colors, getattr(visual, "material", None)
+                vertex_colors, getattr(visual, "material", None), exact_factors
             )
 
     return MeshData(
@@ -581,6 +587,53 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         return static_nodes, []
 
 
+def _exact_base_color_factors(gltf, loaded):
+    """The ``baseColorFactor`` of each of ``loaded``'s trimesh materials, at
+    the float precision the glTF document ``gltf`` gives it, by the trimesh
+    material's ``id``.
+
+    trimesh stores the factor as uint8. It is *linear*, so 1/255 steps crush
+    the darks: ``[0.003, 0.0015, 0.2]`` came back with its green gone and its
+    red 29% too bright. trimesh does not say which document material a
+    material came from, so each is matched to the document's materials by
+    name, alpha mode and its 8-bit factor; a material is left out (and keeps
+    trimesh's value) unless every document material it matches gives the
+    same factor.
+    """
+    exact = {}
+    documented = [
+        (
+            material.name or "",
+            material.alphaMode or "OPAQUE",
+            np.asarray(
+                getattr(material.pbrMetallicRoughness, "baseColorFactor", None)
+                or (1.0, 1.0, 1.0, 1.0),
+                dtype=np.float64,
+            ),
+        )
+        for material in gltf.materials or []
+    ]
+    for geom in loaded.geometry.values():
+        material = getattr(getattr(geom, "visual", None), "material", None)
+        stored = getattr(material, "baseColorFactor", None)
+        if stored is None or id(material) in exact:
+            continue
+        stored = np.asarray(_normalize_color(stored), dtype=np.float64)
+        name = getattr(material, "name", None) or ""
+        mode = getattr(material, "alphaMode", None) or "OPAQUE"
+        matches = [
+            factor
+            for doc_name, doc_mode, factor in documented
+            if doc_name == name
+            and doc_mode == mode
+            and factor.shape == (4,)
+            and np.all(np.abs(factor - stored) <= 1.0 / 255)
+        ]
+        if matches and all(np.array_equal(f, matches[0]) for f in matches):
+            exact[id(material)] = tuple(float(x) for x in matches[0])
+    return exact
+
+
 def _uri_resolver(file_path):
     """A trimesh resolver that reads a glTF's external URIs as the format
     defines them.
@@ -706,6 +759,7 @@ def load_scene(file_path):
             stacklevel=2,
         )
 
+    exact_factors = _exact_base_color_factors(gltf, loaded) if is_gltf else None
     meshes: list[MeshData] = []
     materials: list[MaterialData] = []
     nodes: list[NodeData] = []
@@ -722,11 +776,15 @@ def load_scene(file_path):
         visual = getattr(geom, "visual", None)
         source = getattr(visual, "material", None)
         material_index = material_indices.get(id(source), len(materials))
-        md = _convert_mesh(geom, material_index, name, gltf=is_gltf)
+        md = _convert_mesh(
+            geom, material_index, name, gltf=is_gltf, exact_factors=exact_factors
+        )
         if md is None:
             continue
         if material_index == len(materials):
-            materials.append(_convert_material(visual, gltf=is_gltf))
+            materials.append(
+                _convert_material(visual, gltf=is_gltf, exact_factors=exact_factors)
+            )
             if source is not None:
                 # ``loaded`` keeps every material alive until we return, so
                 # its id cannot be reused by another one meanwhile.
