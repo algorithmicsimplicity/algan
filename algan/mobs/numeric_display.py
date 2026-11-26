@@ -13,6 +13,7 @@ into a fixed number of significant digits instead.
 from __future__ import annotations
 
 import math
+import warnings
 from numbers import Integral
 from typing import Any
 
@@ -31,7 +32,12 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     active_scene_for_new_mob,
 )
-from algan.errors import UnsupportedFeatureError
+from algan.errors import (
+    AlganConfigurationError,
+    ApproximationWarning,
+    UnsupportedFeatureError,
+    _user_stacklevel,
+)
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -116,6 +122,42 @@ def _keep_glyph_selection(mobs):
             mob._mark_explicit_alpha(stroke=True)
 
 
+def _exactly(given):
+    """``given`` as a flat float64 tensor, or ``None`` if it holds no more.
+
+    A float32 (or narrower) tensor is already what the timeline stores, so
+    nothing is lost storing it.
+    """
+    if isinstance(given, torch.Tensor):
+        if given.is_floating_point() and torch.finfo(given.dtype).bits <= 32:
+            return None
+        return given.detach().double().reshape(-1).cpu()
+    try:
+        return torch.as_tensor(given, dtype=torch.float64).reshape(-1)
+    except (TypeError, ValueError, RuntimeError):
+        return None
+
+
+def _reject_beyond_storage(given) -> None:
+    """Raise for a finite value too large for the timeline's 32-bit floats.
+
+    Stored, it becomes an infinity, and was then refused as "not finite",
+    which is not what the user wrote.
+    """
+    exact = _exactly(given)
+    if exact is None:
+        return
+    largest = torch.finfo(torch.float32).max
+    too_large = exact.isfinite() & (exact.abs() > largest)
+    if bool(too_large.any()):
+        wanted = exact[too_large][0].item()
+        raise AlganConfigurationError(
+            f"DecimalNumber cannot hold {wanted!r}: its value is a 32-bit "
+            f"float, at most {largest:.3g} in size. Scale the number down and "
+            "show the scale beside it."
+        )
+
+
 class DecimalNumber(Mob):
     """A number drawn on screen, which counts when you assign to it.
 
@@ -195,7 +237,11 @@ class DecimalNumber(Mob):
     ----------
     value
         The number displayed, shape ``(*, 1)``. Assigning to it records a
-        counting animation.
+        counting animation. It is held as a 32-bit float, so a number with
+        more than about seven significant digits is drawn rounded (for
+        example ``1234567.89`` as ``1234567.88``), with an
+        :class:`~algan.errors.ApproximationWarning` when that changes a
+        digit shown.
 
     Raises
     ------
@@ -205,7 +251,8 @@ class DecimalNumber(Mob):
     ValueError
         If ``significant_figures`` is less than one.
     :class:`~algan.errors.AlganConfigurationError`
-        If a value is not finite: no glyph shows NaN or infinity.
+        If a value is not finite: no glyph shows NaN or infinity. Also if it
+        is too large for a 32-bit float, beyond about ``3.4e38``.
 
     Examples
     --------
@@ -269,17 +316,20 @@ class DecimalNumber(Mob):
                 raise ValueError("significant_figures must be at least 1")
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
+        given = value
         value = cast_to_tensor(value)
         self.significant_figures = significant_figures
         self.decimal_places = decimal_places
         self.group_with_commas = bool(group_with_commas)
         if significant_figures is not None:
             value = value.to(dtype=torch.get_default_dtype())
+        _reject_beyond_storage(given)
         # Neither mode has a glyph for NaN or infinity, and decimal places
         # showed them as 0.00 and as the largest number its slots hold.
         reject_non_finite("value", value)
         if significant_figures is not None:
             self._init_significant_display(value, kwargs)
+            self._warn_if_digits_are_lost(given)
             return
         required_integer_places = self._required_integer_places(value)
         if integer_places is None:
@@ -403,6 +453,41 @@ class DecimalNumber(Mob):
         for c in self.children:
             c.on_create = lambda c=c: c
         _keep_glyph_selection(self.get_descendants())
+        self._warn_if_digits_are_lost(given)
+
+    def _formatted(self, value: float) -> str:
+        """The characters this number draws for ``value``, before layout."""
+        if self.significant_figures is not None:
+            return self._format_significant_value(value)
+        digits = f"{abs(value):.{self.decimal_places}f}"
+        return ("-" if value < 0 and digits.strip("0.") else "") + digits
+
+    def _warn_if_digits_are_lost(self, given) -> None:
+        """Warn when the stored value draws other digits than ``given`` would.
+
+        The timeline holds ``value`` as a 32-bit float, about seven
+        significant digits, so ``1234567.89`` is drawn as ``1234567.88`` and
+        a count past 2**24 skips integers. Holding it at higher precision
+        would need the timeline to store an attribute in float64; until then
+        this says so, once, where the number was asked for, rather than
+        drawing wrong digits without a word.
+        """
+        exact = _exactly(given)
+        if exact is None:
+            return
+        stored = exact.to(self.value.dtype).double()
+        for wanted, held in zip(exact.tolist(), stored.tolist()):
+            if wanted != wanted or self._formatted(wanted) == self._formatted(held):
+                continue
+            warnings.warn(
+                f"DecimalNumber shows {self._formatted(held)} for {wanted!r}: "
+                "its value is held as a 32-bit float, which has about seven "
+                "significant digits. Show fewer digits, or display only the "
+                "part of the number that changes.",
+                ApproximationWarning,
+                stacklevel=_user_stacklevel(),
+            )
+            return
 
     def __deepcopy__(self, memo):
         # The placeholder lays the number out at construction, and its pack
@@ -539,8 +624,9 @@ class DecimalNumber(Mob):
         Parameters
         ----------
         value
-            Target number, as a scalar or a tensor of shape ``(*, 1)``.
-            Python scalars use the default Torch floating-point dtype.
+            Target number, as a scalar or a tensor of shape ``(*, 1)``. It
+            is stored as a 32-bit float, about seven significant digits; see
+            the class's ``value`` attribute.
         interpolation
             Fraction of the displayed change to apply; ``1`` shows the target.
             Accepts a scalar or a tensor of shape ``(*, 1)``. Defaults to ``1``.
@@ -553,7 +639,7 @@ class DecimalNumber(Mob):
         Raises
         ------
         :class:`~algan.errors.AlganConfigurationError`
-            If ``value`` is not finite.
+            If ``value`` is not finite, or too large for a 32-bit float.
         :class:`~algan.errors.UnsupportedFeatureError`
             If an updater sets a value with more digits before the decimal
             point than the number has room for; see ``integer_places``.
@@ -571,12 +657,15 @@ class DecimalNumber(Mob):
 
             Scene.save_video()
         """
+        given = value
         value = cast_to_tensor(value)
         if self.significant_figures is not None:
             value = value.to(dtype=self.value.dtype)
+        _reject_beyond_storage(given)
         reject_non_finite("value", value)
         if self.significant_figures is None:
             self._ensure_integer_places(value)
+        self._warn_if_digits_are_lost(given)
         return self._set_value(value, interpolation=interpolation)
 
     @animated_function(animated_args={"interpolation": 0})

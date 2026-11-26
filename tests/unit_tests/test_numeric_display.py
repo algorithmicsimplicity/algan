@@ -645,3 +645,54 @@ def test_replayed_growth_says_what_set_the_value(grow):
         with pytest.raises(UnsupportedFeatureError, match=writer) as raised:
             scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
         assert "integer_places=" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "kwargs", "shown"),
+    [
+        (1234567.89, {}, "1234567.88"),
+        (123456789, {"decimal_places": 0}, "123456792"),
+        (123456789.0, {"significant_figures": 9}, "123456792"),
+    ],
+)
+def test_a_value_float32_cannot_show_warns_with_the_digits_drawn(value, kwargs, shown):
+    # A DecimalNumber's value is held on the timeline as a 32-bit float, about
+    # seven significant digits, and showed rounded digits without a word.
+    from algan.errors import ApproximationWarning
+
+    with Scene():
+        with pytest.warns(ApproximationWarning, match="32-bit") as caught:
+            display = DecimalNumber(value, **kwargs).spawn(animate=False)
+        [warning] = [w for w in caught if w.category is ApproximationWarning]
+        assert warning.filename == __file__
+        assert f"shows {shown} for" in str(warning.message)
+        assert _displayed_value(display) == shown
+
+        display = DecimalNumber(0, **kwargs).spawn(animate=False)
+        with pytest.warns(ApproximationWarning, match=f"shows {shown} for"):
+            display.value = value
+
+
+def test_a_value_float32_shows_exactly_does_not_warn():
+    import warnings
+
+    from algan.errors import ApproximationWarning
+
+    with Scene(), warnings.catch_warnings():
+        warnings.simplefilter("error", ApproximationWarning)
+        display = DecimalNumber(123456.78).spawn(animate=False)
+        display.value = 16777216
+        display = DecimalNumber(0.1, significant_figures=7)
+        display.value = torch.tensor([1.5], dtype=torch.float32)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"significant_figures": 3}])
+def test_a_value_beyond_float32_range_says_so_rather_than_infinite(kwargs):
+    from algan.errors import AlganConfigurationError
+
+    with Scene():
+        with pytest.raises(AlganConfigurationError, match="32-bit float"):
+            DecimalNumber(1e300, **kwargs)
+        display = DecimalNumber(1, **kwargs)
+        with pytest.raises(AlganConfigurationError, match="32-bit float"):
+            display.value = -1e300
