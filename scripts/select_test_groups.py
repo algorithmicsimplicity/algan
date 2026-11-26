@@ -77,6 +77,13 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sheet_resolve_variants.py::test_mode_1_unrolls_no_continuation_fan",
     # Nor, under the glossy prefilter, spreads one over the GGX lobe.
     "tests/unit_tests/test_sheet_resolve_variants.py::test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe",
+    # The glossy prefilter's split-sum weight is the direct lobe's albedo
+    # table: a rough white metal keeps nearly all its reflection, the
+    # roughness-0 row is Schlick, and no lookup reflects more than arrives.
+    # One small probe kernel, a fraction of a second.
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_beats_the_mirror_share_throttle_on_a_rough_metal",
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_reduces_to_fresnel_at_zero_roughness",
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_never_reflects_more_than_arrives",
     # Its launches name every argument, so none can land in another's place.
     "tests/unit_tests/test_sheet_resolve_variants.py::test_a_resolve_launch_names_every_argument",
     # The sequential oracle's band, claim, residue and NaN rules, which the
@@ -182,13 +189,6 @@ ALWAYS_CI = (
     # While a render job runs, only its thread drains torch's MPS caches, and a
     # drain the batch-prep worker asks for waits for that thread: stubs, no GPU.
     "tests/unit_tests/test_mps_cache_drains.py::test_a_drain_asked_for_off_the_render_thread_waits_for_the_render_thread",
-    # The glossy prefilter's split-sum weight is the direct lobe's albedo
-    # table: a rough white metal keeps nearly all its reflection, the
-    # roughness-0 row is Schlick, and no lookup reflects more than arrives.
-    # One small probe kernel, a fraction of a second.
-    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_beats_the_mirror_share_throttle_on_a_rough_metal",
-    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_reduces_to_fresnel_at_zero_roughness",
-    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_never_reflects_more_than_arrives",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
