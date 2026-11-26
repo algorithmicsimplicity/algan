@@ -374,3 +374,111 @@ def test_a_packed_text_batch_takes_back_the_values_read_from_it():
         # A value that is not one row per glyph is still refused.
         with pytest.raises(Exception, match="shape"):
             batch.color = torch.zeros(1, 2, 5)
+
+
+# A pack of solids whose constructor turns the grid or owns end discs. Each
+# member is compared with a lone solid built at its centre, to a tolerance: the
+# pack repeats the representative's turned grid rather than turning each
+# member's, so the two agree to rounding, not bit for bit.
+
+SOLID_CENTERS = torch.tensor([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [0.0, 5.0, 0.0]])
+
+
+def _grid_rows(surface, count):
+    return surface.grid.location.reshape(count, -1, 3)
+
+
+def test_a_packed_cone_keeps_its_direction():
+    """REGRESSION. The pack rebuilt its members from ``coord_function``, which
+    a Cone writes unrotated and only afterwards turns to face ``direction`` --
+    so ``Cone.from_batches(..., direction=RIGHT)`` packed cones pointing UP
+    while every member's basis said RIGHT.
+    """
+    from algan.constants.spatial import RIGHT
+    from algan.mobs.shapes_3d import Cone
+
+    SceneManager.reset()
+    kwargs = {"radius": 0.2, "height": 2.0, "direction": RIGHT, "resolution": (4, 8)}
+    with Scene() as scene, Off(record_funcs=False, record_attr_modifications=False):
+        pack = Cone.from_batches(SOLID_CENTERS, scene=scene, **kwargs)
+        grids = _grid_rows(pack, len(SOLID_CENTERS))
+        for member, center in enumerate(SOLID_CENTERS):
+            lone = Cone(location=center.view(1, 1, 3), scene=scene, **kwargs)
+            assert torch.allclose(grids[member], lone.grid.location[0], atol=1e-5)
+            extent = grids[member].amax(0) - grids[member].amin(0)
+            assert extent[0] == pytest.approx(2.0, abs=1e-4)
+
+
+@pytest.mark.parametrize("solid", ["cylinder", "cone"])
+def test_a_packed_capped_solid_caps_every_member(solid):
+    """REGRESSION. The end discs are Surfaces of their own and stayed one
+    member at the first centre, so ``Cylinder.from_batches(3 centres,
+    closed=True)`` built three tubes and one pair of caps -- and the two
+    uncapped tubes still declared a closed shell.
+    """
+    from algan.constants.spatial import RIGHT
+    from algan.mobs.shapes_3d import Cone, Cylinder
+
+    SceneManager.reset()
+    cls = Cylinder if solid == "cylinder" else Cone
+    kwargs = {
+        "radius": 0.2,
+        "height": 1.0,
+        "direction": RIGHT,
+        "closed": True,
+        "resolution": (4, 8),
+    }
+    count = len(SOLID_CENTERS)
+
+    def discs(mob):
+        if solid == "cone":
+            return [mob.base_circle]
+        return [mob.bottom_cap, mob.top_cap]
+
+    with Scene() as scene, Off(record_funcs=False, record_attr_modifications=False):
+        pack = cls.from_batches(SOLID_CENTERS, scene=scene, **kwargs)
+        caps = discs(pack)
+        for member, center in enumerate(SOLID_CENTERS):
+            lone = cls(location=center.view(1, 1, 3), scene=scene, **kwargs)
+            for cap, lone_cap in zip(caps, discs(lone), strict=True):
+                # A lone cone built away from the origin used to leave its
+                # base at the origin's base position.
+                assert float(
+                    (lone_cap.location.reshape(3) - center).norm()
+                ) == pytest.approx(kwargs["height"] * 0.5, abs=1e-5)
+                assert len(cap) == count
+                assert torch.allclose(
+                    cap.location.reshape(count, 3)[member],
+                    lone_cap.location.reshape(3),
+                    atol=1e-5,
+                )
+                assert torch.allclose(
+                    _grid_rows(cap, count)[member],
+                    lone_cap.grid.location[0],
+                    atol=1e-5,
+                )
+
+        # Each member's view carries its own discs, so moving one member
+        # moves its caps and no other member's.
+        pack.spawn()
+        pack[1].move(UP * 3)
+        for cap in caps:
+            heights = _grid_rows(cap, count)[..., 1]
+            assert bool((heights[1] > 2.5).all())
+            assert not bool((heights[0] > 2.5).any())
+            assert not bool((heights[2] > 5.5).any())
+
+
+def test_from_batches_refuses_a_surface_child_it_cannot_pack():
+    class _SphereWithMoon(Sphere):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.add_children(Sphere(radius=0.05, resolution=(4, 4), scene=self.scene))
+
+    SceneManager.reset()
+    with (
+        Scene() as scene,
+        Off(record_funcs=False, record_attr_modifications=False),
+        pytest.raises(ValueError, match="cannot pack"),
+    ):
+        _SphereWithMoon.from_batches(CENTERS, scene=scene, **KWARGS)

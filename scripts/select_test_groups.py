@@ -141,6 +141,11 @@ ALWAYS_CI = (
     "tests/unit_tests/test_fbx_import.py::test_skin_weights_keep_the_four_strongest_influences_per_vertex",
     "tests/unit_tests/test_surface_shape_and_image_mob.py::test_set_shape_to_takes_a_user_surfaces_own_function",
     "tests/unit_tests/test_surface_shape_and_image_mob.py::test_set_shape_to_takes_a_turned_targets_shape_as_it_is",
+    # A packed Cone keeps its direction, a packed capped solid caps every
+    # member, and a Surface child from_batches cannot pack is refused.
+    "tests/unit_tests/test_batched_surface_mobs.py::test_a_packed_cone_keeps_its_direction",
+    "tests/unit_tests/test_batched_surface_mobs.py::test_a_packed_capped_solid_caps_every_member",
+    "tests/unit_tests/test_batched_surface_mobs.py::test_from_batches_refuses_a_surface_child_it_cannot_pack",
     # A sheet's float32 area, and the weights pooled from it, come back bit
     # for bit across the stroke split's arms and across replays of a frame.
     "tests/unit_tests/test_sheet_area_order.py::",

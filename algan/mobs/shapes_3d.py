@@ -700,7 +700,11 @@ class Cone(Surface):
         )
         self.base_circle._mesh_key = self._mesh_key
         with Off(animation_manager=self.animation_manager):
-            self.base_circle.move_to(-direction_t * height * 0.5)
+            # From the cone's own location: a cone built away from the origin
+            # had its base left at the origin's base position.
+            self.base_circle.move_to(
+                self.location.reshape(-1, 3) - direction_t * height * 0.5
+            )
         # Capped AND swept the whole way round is what closes the shell: the
         # disc seals the base, but a partial sweep still leaves the wedge's cut
         # faces open (the disc itself is whole either way -- see
@@ -711,6 +715,11 @@ class Cone(Surface):
         self.base_circle.closed_shell = self.closed_shell
         if closed:
             self.add_children(self.base_circle)
+
+    def _packed_parts(self):
+        # Packed whether or not the cone is capped: ``base_circle`` is
+        # documented as always built, so each member keeps its own.
+        return [self.base_circle]
 
     def _cap_ring_offsets(self, azimuth):
         """The base ring, as offsets from its centre, for the base disc.
@@ -1035,6 +1044,10 @@ class Cylinder(Surface):
             for cap in (self.bottom_cap, self.top_cap):
                 cap.spawn(animate=False)
         return self
+
+    def _packed_parts(self):
+        bottom = getattr(self, "bottom_cap", None)
+        return [] if bottom is None else [bottom, self.top_cap]
 
     def _place_bases(self, direction, start, end):
         """Sit the end caps on ``start`` and ``end``, each facing outward.
