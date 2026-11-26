@@ -90,6 +90,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 from algan.constants.math import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
+from algan.constants.spatial import ORIGIN, OUTWARD
 from algan.mobs.manim_compat import _MANIM_WRAPPER_REGISTRY, _WRAPPER_DOCSTRINGS
 from algan.settings import SETTINGS
 from algan.utils.api_renames import (
@@ -402,7 +403,118 @@ def _to_manim_stroke_width(kwargs):
     width = kwargs.get("stroke_width")
     if width is not None:
         kwargs["stroke_width"] = width * SETTINGS.style.manim_stroke_width_ratio
+    # A style dict is forwarded to the sub-Mobjects it styles -- Axes'
+    # ``axis_config``, NumberPlane's ``background_line_style`` -- so its
+    # ``stroke_width`` is the same argument one level down, and left alone it
+    # reached Manim in Algan's unit: ``Axes(axis_config={"stroke_width": 4})``
+    # drew axes half as heavy as ``Arrow(stroke_width=4)``.
+    for key, value in kwargs.items():
+        if isinstance(value, Mapping) and key.endswith(_STYLE_DICT_SUFFIXES):
+            kwargs[key] = _to_manim_stroke_width(dict(value))
     return kwargs
+
+
+#: Keyword names whose value is a dict of style arguments for sub-Mobjects.
+_STYLE_DICT_SUFFIXES = ("_config", "_style")
+
+
+def _root_methods(wrapper) -> dict:
+    """The Manim methods an adapter converts, beside its constructor.
+
+    Delegated methods otherwise take Manim's units, so a root ``DashedLine``
+    built at 90 degrees was turned by ``set_angle(90)`` through 90 *radians*,
+    ``get_angle()`` answered ``1.5708`` for that line, and ``set_stroke(width=4)``
+    drew half the weight ``stroke_width=4`` does. Only the methods the Manim
+    class actually has are added, so ``dir()`` and ``hasattr`` stay truthful.
+    """
+    manim_class = wrapper._manim_class
+    methods = {}
+
+    def delegated(self, name):
+        return wrapper.__getattr__(self, name)
+
+    if hasattr(manim_class, "get_angle"):
+
+        def get_angle(self):
+            """Get the direction this line points in, in degrees.
+
+            Returns
+            -------
+            float
+                The angle from ``RIGHT``, counter-clockwise in the screen
+                plane, in degrees -- Manim's ``get_angle`` converted from
+                radians.
+            """
+            return float(delegated(self, "get_angle")()) * RADIANS_TO_DEGREES
+
+        methods["get_angle"] = get_angle
+
+    if hasattr(manim_class, "set_angle"):
+
+        def set_angle(self, angle, about_point=None):
+            """Turn this line to point in a direction, given in degrees.
+
+            Parameters
+            ----------
+            angle
+                The new direction, counter-clockwise from ``RIGHT`` in the
+                screen plane, in degrees.
+            about_point
+                Point to turn about, shape ``(3,)``. Defaults to ``None``,
+                meaning the line's start, as in Manim.
+
+            Returns
+            -------
+            :class:`~algan.mobs.manim_compat.ManimCompatMob`
+                This Mob, so calls can be chained.
+            """
+            _warn_if_angle_looks_like_radians("angle", angle)
+            return delegated(self, "set_angle")(_to_radians(angle), about_point)
+
+        methods["set_angle"] = set_angle
+
+    if hasattr(manim_class, "rotate_about_origin"):
+
+        def rotate_about_origin(self, angle, axis=OUTWARD):
+            """Rotate about ``ORIGIN``: ``rotate(angle, axis, about=ORIGIN)``.
+
+            Parameters
+            ----------
+            angle
+                How far to rotate, in degrees.
+            axis
+                Axis to rotate around. Defaults to ``OUTWARD``.
+
+            Returns
+            -------
+            :class:`~algan.mobs.manim_compat.ManimCompatMob`
+                This Mob, so calls can be chained.
+            """
+            return self.rotate(angle, axis, about=ORIGIN)
+
+        methods["rotate_about_origin"] = rotate_about_origin
+
+    if hasattr(manim_class, "set_stroke"):
+
+        def set_stroke(self, color=None, width=None, *args, **kwargs):
+            """Manim's ``set_stroke``, with ``width`` in Algan's unit.
+
+            ``width`` is scaled by ``SETTINGS.style.manim_stroke_width_ratio``
+            on the way to Manim, as ``stroke_width`` is in the constructor, so
+            the two spell the same weight. Every other argument is Manim's.
+
+            Returns
+            -------
+            :class:`~algan.mobs.manim_compat.ManimCompatMob`
+                This Mob, so calls can be chained.
+            """
+            if width is not None:
+                width = width * SETTINGS.style.manim_stroke_width_ratio
+            return delegated(self, "set_stroke")(color, width, *args, **kwargs)
+
+        methods["set_stroke"] = set_stroke
+
+    return methods
 
 
 #: Manim class name -> the root spelling of it. Manim names its base class
@@ -627,11 +739,25 @@ def _root_docstring(name, root_name, wrapper, root_sig, angle_params) -> str:
     state an argument's unit and default but not its meaning.
     """
     converted = [
-        "``stroke_width`` is in Algan's unit, half Manim's for the same visual weight"
+        "``stroke_width`` is in Algan's unit, half Manim's for the same visual "
+        "weight, here, in a ``*_config`` or ``*_style`` dict and in "
+        "``set_stroke(width=...)``"
     ]
     if angle_params:
         listed = ", ".join(f"``{param}``" for param in angle_params)
         converted.insert(0, f"{listed} in **degrees** rather than radians")
+    manim_class = wrapper._manim_class
+    angle_methods = [
+        f"``{method}``"
+        for method in ("set_angle", "get_angle", "rotate_about_origin")
+        if hasattr(manim_class, method)
+    ]
+    if angle_methods:
+        converted.append(
+            f"{', '.join(angle_methods)} take and give degrees too, while any "
+            "other delegated Manim method, and an attribute read such as "
+            "``.angle``, is in Manim's radians"
+        )
     boundary = (
         f"Manim's ``{name}``, under Algan's conventions: "
         f"{'; '.join(converted)}. ``algan.manim.{name}`` is the same class "
@@ -715,6 +841,7 @@ def _make_adapter(name: str, angle_params: tuple[str, ...]):
             "__init__": __init__,
             "__module__": __name__,
             "_root_conventions": True,
+            **_root_methods(wrapper),
             "__doc__": _root_docstring(
                 name, root_name, wrapper, root_sig, angle_params
             ),
