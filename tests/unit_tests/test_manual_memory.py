@@ -391,7 +391,10 @@ def test_a_cpu_render_is_sized_against_the_machine_not_a_flat_2gb(monkeypatch):
     the scene and reading the error.
     """
     from algan.settings import computing_settings as cs
+    from algan.utils import cgroup_memory
 
+    # Outside a container; the cgroup clamp has its own test below.
+    monkeypatch.setattr(cgroup_memory, "linux_cgroup_memory_limit", lambda: None)
     monkeypatch.setattr(
         cs.psutil if hasattr(cs, "psutil") else psutil,
         "virtual_memory",
@@ -412,6 +415,28 @@ def test_a_cpu_render_is_sized_against_the_machine_not_a_flat_2gb(monkeypatch):
 
     monkeypatch.setattr(psutil, "virtual_memory", _no_telemetry)
     assert cs._default_cpu_memory() == 2 * cs.GIGABYTES
+
+
+def test_the_cpu_budget_is_sized_from_the_cgroup_limit_inside_a_container(
+    monkeypatch,
+):
+    """``psutil`` reports the host's RAM inside a container; the kernel
+    OOM-kills at the cgroup's limit. A 4 GiB container on a 64 GiB host was
+    budgeted 25.6 GB, and the chunk model fills what it is given.
+    """
+    from algan.settings import computing_settings as cs
+    from algan.utils import cgroup_memory
+
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: types.SimpleNamespace(total=64 << 30)
+    )
+    monkeypatch.setattr(cgroup_memory, "linux_cgroup_memory_limit", lambda: 8 << 30)
+    assert cs._default_cpu_memory() == int((8 << 30) * cs._CPU_MEMORY_SHARE)
+    # A cgroup limit above the machine's RAM does not raise the budget.
+    monkeypatch.setattr(cgroup_memory, "linux_cgroup_memory_limit", lambda: 1 << 40)
+    assert cs._default_cpu_memory() == int((64 << 30) * cs._CPU_MEMORY_SHARE)
+    monkeypatch.setattr(cgroup_memory, "linux_cgroup_memory_limit", lambda: 1 << 30)
+    assert cs._default_cpu_memory() == 2 * cs.GIGABYTES, "the floor still holds"
 
 
 def test_native_heap_trim_skips_unsupported_platforms(monkeypatch):
@@ -526,7 +551,8 @@ def test_a_cgroup_counts_its_working_set_not_its_page_cache(
     """
     from pathlib import Path
 
-    from algan.utils import memory_utils as mu
+    # The reader lives apart from memory_utils so SETTINGS can use it.
+    from algan.utils import cgroup_memory as mu
 
     monkeypatch.setattr(mu.sys, "platform", "linux")
     # Every absolute path the module reads lands under tmp_path, once.
