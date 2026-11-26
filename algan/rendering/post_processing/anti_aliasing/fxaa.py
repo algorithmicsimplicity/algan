@@ -154,12 +154,32 @@ def fxaa(
         _where(is_horizontal, s0, zero, out=s2)
         s2.div_(H).mul_(s1)
 
-        # Build the sampling grid directly in its arena destination.
+        # Build the sampling grid directly in its arena destination. Its base
+        # is each pixel's own CENTRE in the convention the sampler below reads
+        # (``align_corners=False``: pixel ``i`` sits at ``(2i + 1) / N - 1``),
+        # so a pixel with no offset added comes back as itself. Spacing the
+        # base corner to corner instead (``linspace(-1, 1, N)``) reads pixel
+        # ``i`` at ``i + i / (N - 1) - 0.5``: half a pixel out at either
+        # border, which softened every pixel of the frame, edge or not.
         grid = memory.get_tensor((B, H, W, 2), images.dtype)
         grid_x = memory.get_tensor((W,), images.dtype)
         grid_y = memory.get_tensor((H,), images.dtype)
-        torch.linspace(-1, 1, W, device=images.device, dtype=images.dtype, out=grid_x)
-        torch.linspace(-1, 1, H, device=images.device, dtype=images.dtype, out=grid_y)
+        torch.linspace(
+            1.0 / W - 1.0,
+            1.0 - 1.0 / W,
+            W,
+            device=images.device,
+            dtype=images.dtype,
+            out=grid_x,
+        )
+        torch.linspace(
+            1.0 / H - 1.0,
+            1.0 - 1.0 / H,
+            H,
+            device=images.device,
+            dtype=images.dtype,
+            out=grid_y,
+        )
         grid[..., 0].copy_(grid_x.view(1, 1, W).expand(B, H, W))
         grid[..., 1].copy_(grid_y.view(1, H, 1).expand(B, H, W))
 
