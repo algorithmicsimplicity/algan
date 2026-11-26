@@ -608,6 +608,42 @@ def test_a_hit_whose_artifact_is_gone_counts_as_a_miss(hooks, monkeypatch):
     assert sk.STATS["hits"] == 0
 
 
+def test_an_indexed_artifact_that_will_not_load_is_reported_once(tmp_path, monkeypatch):
+    """The C++ index lists a kernel whose ``.qdc`` is gone or damaged: the
+    kernel recompiles, and the exit dump never rewrites an artifact its index
+    already lists, so every later process recompiles it too. That is worth one
+    line naming the remedy. An artifact another process wrote after this one
+    read the index (a long-lived daemon), or one the index does not list (a
+    process killed before its exit dump), heals or loads in the next program
+    and is left silent.
+    """
+    monkeypatch.setattr(sk, "_WARNED_LOST", set())
+    monkeypatch.setattr(sk, "_PROCESS_START", 1000.0)
+    directory = tmp_path / "kernel_compilation_manager"
+    directory.mkdir()
+    (directory / "qdcache.qdb").write_bytes(b"\x00\x02Tlisted\x00\x01")
+
+    def warned(name, key):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sk._warn_lost_artifact(name, key, str(tmp_path))
+        return [str(w.message) for w in caught]
+
+    assert warned("mod.unlisted", "Tunlisted") == []
+    artifact = directory / "Tlisted.qdc"
+    artifact.write_bytes(b"half")
+    os.utime(artifact, (2000.0, 2000.0))
+    assert warned("mod.fresh", "Tlisted") == [], "written after the index was read"
+    os.utime(artifact, (500.0, 500.0))
+    (message,) = warned("mod.damaged", "Tlisted")
+    assert "mod.damaged" in message
+    assert "clear_cached_kernels" in message
+    artifact.unlink()
+    (message,) = warned("mod.gone", "Tlisted")
+    assert "mod.gone" in message
+    assert warned("mod.gone", "Tlisted") == [], "once per kernel"
+
+
 def test_an_index_that_cannot_be_written_is_a_miss_not_a_crash(hooks, monkeypatch):
     """A read-only kernel cache (a shared mount, one a root container made)
     makes Quadrants' index raise ``PermissionError``: on a hit from the

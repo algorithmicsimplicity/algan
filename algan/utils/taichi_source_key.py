@@ -1721,6 +1721,54 @@ def _warn_cache_unusable(error):
     )
 
 
+#: A lower bound on when any program of this process read the offline cache's
+#: index (it does so at its first use of the cache, never before import).
+_PROCESS_START = time.time()
+#: Kernels :func:`_warn_lost_artifact` has reported.
+_WARNED_LOST = set()
+
+
+def _warn_lost_artifact(name, cpp_key, cache_directory):
+    """Warn once for ``name`` when the C++ cache lists ``cpp_key`` but cannot load it.
+
+    Quadrants' exit dump writes only kernels its index does not already list,
+    so a listed ``.qdc`` that is missing or damaged (a partial copy of the
+    cache, a deleted file) is never written again: every later process
+    recompiles that kernel, with nothing but its usual progress line to show
+    for it. Two cases look the same from here and heal on their own, so they
+    stay silent: an artifact the index does not list yet (a process killed
+    before its exit dump stored only the source-key entry; this process's dump
+    writes it), and one written after this process read the index (another
+    process compiled it; the next program loads it). The index is read as
+    bytes and searched for the key, which is stored there as text; anything
+    that goes wrong reading it says nothing.
+    """
+    if name in _WARNED_LOST:
+        return
+    try:
+        directory = os.path.join(cache_directory, "kernel_compilation_manager")
+        with open(os.path.join(directory, "qdcache.qdb"), "rb") as index:
+            listed = cpp_key.encode() in index.read()
+        artifact = os.path.join(directory, f"{cpp_key}.qdc")
+        written_since = (
+            os.path.exists(artifact) and os.path.getmtime(artifact) >= _PROCESS_START
+        )
+    except (OSError, TypeError, AttributeError):
+        return
+    if not listed or written_since:
+        return
+    _WARNED_LOST.add(name)
+    warnings.warn(
+        f"taichi_source_key: the kernel cache lists {name}'s compiled artifact "
+        f"({cpp_key}.qdc) but it is missing or damaged, so the kernel compiles "
+        "again, in this and every later process: the cache never rewrites an "
+        "artifact its index lists. Call algan.clear_cached_kernels() once to "
+        "rebuild the cache.",
+        RuntimeWarning,
+        stacklevel=5,
+    )
+
+
 def _restore_from_cache_value(self, key, cache_value, kernel_module, src_hasher):
     """What Quadrants' ``_try_load_fastcache`` does on a validated hit, verbatim in effect.
 
@@ -1741,6 +1789,11 @@ def _restore_from_cache_value(self, key, cache_value, kernel_module, src_hasher)
     )
     if not data:
         self.compiled_kernel_data_by_key.pop(key, None)
+        _warn_lost_artifact(
+            kernel_qualname(self),
+            cache_value.frontend_cache_key,
+            getattr(prog.config(), "offline_cache_file_path", None),
+        )
         return None
     self.compiled_kernel_data_by_key[key] = data
     self.src_ll_cache_observations.cache_loaded = True
