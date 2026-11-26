@@ -30,6 +30,22 @@ def _resolve_buffer(buffer):
     return SETTINGS.style.buffer if buffer is None else buffer
 
 
+def _side_direction(name, value):
+    """``value`` as a unit direction naming a side, refusing a zero one.
+
+    A zero direction normalises to zero, so ``move_next_to(other, ORIGIN)``
+    put the Mob on ``other``'s centre and ``align_with(other, ORIGIN)`` did
+    nothing, both without a word.
+    """
+    direction = cast_to_direction(name, value)
+    if bool((direction == 0).all(-1).any()):
+        raise AlganConfigurationError(
+            f"{name} must be a non-zero direction naming a side, such as RIGHT "
+            f"or UP + LEFT; got {value!r}"
+        )
+    return F.normalize(direction, p=2, dim=-1)
+
+
 def _is_one_direction(value):
     """Whether ``value`` is one direction rather than a collection of them."""
     if isinstance(value, (torch.Tensor, np.ndarray)):
@@ -181,7 +197,9 @@ class MobMovementMixin:
         dtype = start.dtype
         device = start.device
 
-        target = cast_to_tensor(point).to(device=device, dtype=dtype)
+        # Checked as move_to's straight path checks it, so ``(1, 2)`` is told
+        # it is not a 3-D vector rather than failing a broadcast further on.
+        target = cast_to_direction("point", point).to(device=device, dtype=dtype)
         normal = cast_to_tensor(arc_normal).to(device=device, dtype=dtype)
         angle_degrees = cast_to_tensor(arc_angle).to(device=device, dtype=dtype)
 
@@ -468,8 +486,9 @@ class MobMovementMixin:
             the others.
         """
         buffer = _resolve_buffer(buffer)
-        direction = cast_to_direction("direction", direction)
-        normalized_direction = F.normalize(direction, p=2, dim=-1)
+        normalized_direction = _side_direction("direction", direction)
+        if align_edge is not None:
+            _side_direction("align_edge", align_edge)
         # Anything that is not a Mob (a tensor, tuple, list or ndarray) is a
         # point, cast the way ``move`` casts its displacement.
         target_is_mob = hasattr(target_mob, "get_boundary_point")
@@ -552,14 +571,15 @@ class MobMovementMixin:
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``anchor`` is not one of the three names above.
+            If ``anchor`` is not one of the three names above, or
+            ``direction`` is zero.
         """
         anchor = str(anchor).lower()
         if anchor not in ("center", "edge", "boundary"):
             raise AlganConfigurationError(
                 f"anchor must be 'center', 'edge' or 'boundary', got {anchor!r}"
             )
-        direction = F.normalize(cast_to_direction("direction", direction), p=2, dim=-1)
+        direction = _side_direction("direction", direction)
         source = self if from_mob is None else from_mob
         if buffer is None:
             buffer = SETTINGS.style.buffer if anchor == "edge" else 0.0
