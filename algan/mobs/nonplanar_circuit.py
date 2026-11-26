@@ -315,19 +315,6 @@ def _window_sagittae(points, starts, ends, covariances):
     )
 
 
-def plane_sagitta(points):
-    """Greatest distance from ``points`` to their best-fit plane, in world units."""
-    points = points.reshape(-1, 3)
-    if points.shape[0] < 3:
-        return 0.0
-    starts, ends = _whole_range(points)
-    return float(
-        _window_sagittae(
-            points, starts, ends, _window_covariances(points, starts, ends)
-        )[0]
-    )
-
-
 def subpath_bounds(corners):
     """Split ``[S, 4, 3]`` cubic segments into contiguous sub-paths.
 
