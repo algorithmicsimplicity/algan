@@ -364,6 +364,34 @@ def test_recomputed_normals_weight_shared_vertices_by_face_area():
     )
 
 
+@pytest.mark.parametrize("smooth_normals", [True, False])
+def test_a_mirrored_node_is_rewound_so_derived_normals_face_out(smooth_normals):
+    """REGRESSION. A node with a negative determinant reverses its triangles'
+    winding, which glTF requires an importer to undo. The flat normals (and
+    the ones recomputed while a clip plays) are +cross of the winding, so a
+    mirrored part was lit from inside. Authored normals were already right.
+    """
+    data = _model_data(_slide("up", (0, 1, 0)), normals=True)
+    data.nodes[0].transform = torch.diag(torch.tensor([-1.0, 1.0, 1.0, 1.0]))
+    with Scene():
+        model = Model3D(scene_data=data, smooth_normals=smooth_normals)
+        mesh = model.mesh_mobs[0]
+        out = torch.tensor([0.0, 0.0, 1.0]).expand(3, 3)
+        torch.testing.assert_close(_render_normals(mesh), out)
+        # The same face, mirrored: the corners are the authored ones in x.
+        placed = mesh.grid.location[0]
+        assert {tuple(c) for c in placed.tolist()} == {
+            (-1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0),
+        }
+        # Playback recomputes normals from the winding, which still faces out.
+        model.play_animation()
+        torch.testing.assert_close(
+            mesh._compute_corner_normals(mesh.grid.location)[0], out
+        )
+
+
 def test_ignore_normals_hands_the_renderer_zero_normals():
     with Scene():
         mesh = TriangleMesh(_TETRA, _TETRA_FACES, normals=_TETRA, ignore_normals=True)

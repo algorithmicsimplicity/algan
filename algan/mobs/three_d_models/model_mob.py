@@ -350,6 +350,14 @@ class Model3D(Mob):
         self, scene_data, mesh, matrix, device, load_textures, smooth_normals
     ):
         vertices = _transform_points(mesh.vertices.to(device), matrix)
+        faces = mesh.faces.to(device)
+        if bool(torch.linalg.det(matrix[:3, :3].double()) < 0):
+            # A mirroring transform reverses each triangle's winding (glTF
+            # says so outright), and the flat and recomputed normals are
+            # +cross of the winding: they pointed inward. Re-wind so the
+            # placed triangle winds the way the authored one did. Holding
+            # the first corner keeps each triangle's fan origin.
+            faces = faces[:, [0, 2, 1]]
         normals = None
         if smooth_normals and mesh.normals is not None:
             normals = _transform_normals(mesh.normals.to(device), matrix)
@@ -394,7 +402,7 @@ class Model3D(Mob):
         mob = TriangleMesh(
             scene=self.scene,
             vertices=vertices,
-            faces=mesh.faces.to(device),
+            faces=faces,
             normals=normals,
             uvs=uvs,
             texture=texture,
