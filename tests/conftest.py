@@ -139,8 +139,9 @@ _register_dejavu_where_missing()
 # The history is worth knowing. The budget was 120 s, then 150 s, while the fast
 # suite was *everything not marked slow* and grew with every test anyone added.
 # Curating it by hand (only ``fast``-marked tests run) took it from 910 of the
-# 1038 collected tests to 191, of which 190 are behavioural and one is the
-# render.
+# 1038 collected tests to 191 at the time, of which 190 were behavioural and
+# one was the render. It has grown since (742 collected tests from 334 test
+# functions on 2026-11-26).
 # The render is now most of the cost -- it was measured at ~50 s of the old
 # 112-147 s suite on CUDA -- so the budget is set to leave it room to pay a
 # kernel compile. Raising it again is a deliberate trade of loop time for
@@ -306,12 +307,32 @@ def _collected_suite_dirs(items) -> list[Path]:
     return sorted(dirs)
 
 
+def _log_path(config, suite_dir: Path) -> Path | None:
+    """Where this process logs a suite's run, or None for no log.
+
+    ``--collect-only`` runs nothing, and opening the log truncates it, so a
+    collection would wipe the log of the last real run for nothing. Under
+    ``pytest-xdist`` each worker is a process of its own that opens the log
+    with ``"w"``: with more than one, they would truncate each other's, so
+    each gets a file named after it. ``-n 1``, which is how CI and the docs
+    run the suite, keeps the one ``pytest.log``.
+    """
+    if config.option.collectonly:
+        return None
+    worker = getattr(config, "workerinput", None)
+    if worker is not None and worker.get("workercount", 1) > 1:
+        return suite_dir / f"pytest.{worker['workerid']}.log"
+    return suite_dir / "pytest.log"
+
+
 def pytest_collection_finish(session):
     """Open a live log per collected suite, before the first test runs."""
     if _LOG_FILES:
         return
     for suite_dir in _collected_suite_dirs(session.items):
-        _LOG_FILES.append(_setup_log_piping(suite_dir / "pytest.log", session.config))
+        path = _log_path(session.config, suite_dir)
+        if path is not None:
+            _LOG_FILES.append(_setup_log_piping(path, session.config))
     if not _LOG_FILES:
         return
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")

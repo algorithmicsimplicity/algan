@@ -210,6 +210,8 @@ ALWAYS_CI = (
     # Synthesised narration reaches its cache whole or not at all: a
     # stand-in engine, no audio.
     "tests/unit_tests/test_speech_cache.py::",
+    # Where the conftest pipes a run's log, and that a collection writes none.
+    "tests/unit_tests/test_conftest_logs.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

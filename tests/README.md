@@ -222,8 +222,8 @@ newly covered per second until each budget is spent.
 
 | Group | Command | Who runs it | Size |
 | --- | --- | --- | --- |
-| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~1100 tests, about two minutes on a runner, 86% of the lines the whole suite covers |
-| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~2400 tests, about nine minutes, effectively 100% of those lines |
+| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~1,700 tests with the pins and the fast suite (1,673 collected at the time of writing), about two minutes on a runner, 86% of the lines the whole suite covers |
+| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~3,200 tests with the pins (3,155 collected at the time of writing), about nine to ten minutes, effectively 100% of those lines |
 
 Each test is charged its measured duration plus a fixed per-test overhead
 (`PER_TEST_OVERHEAD`, what a runner actually spends per test beyond the
