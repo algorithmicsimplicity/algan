@@ -412,7 +412,9 @@ def fake_plt(monkeypatch):
         clf=lambda: None,
         close=lambda: None,
     )
-    monkeypatch.setattr(plotting_utils, "plt", fake)
+    # ``plot_tensor`` asks for pyplot when it is called, not at import, so the
+    # stand-in goes where it asks.
+    monkeypatch.setattr(plotting_utils, "_pyplot", lambda: fake)
     return plotting_utils.plot_tensor, log
 
 
