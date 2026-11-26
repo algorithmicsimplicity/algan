@@ -252,6 +252,12 @@ it costs a fraction of a second, and to `ALWAYS_PRE_PR` otherwise.
 **Regenerate** when a group drifts (a big new test file, a budget overrun),
 not on every change. `test_test_groups.py` fails when a listed test is renamed
 or deleted, and when a pin names no test; dropping that line by hand is fine.
+It also fails when a test file under `tests/unit_tests` or `tests/fast` has no
+test in the pre-PR group (listed, pinned or marked `fast`), so a **new test
+file needs a pin** until the next regeneration measures it: its whole
+`<path>::` in `ALWAYS_CI` if the file runs in a second or two, otherwise a
+representative subset in `ALWAYS_PRE_PR`. The files the last measurement left
+out are frozen in that test's `NOT_IN_GROUPS`, which only shrinks.
 To regenerate, measure on a warm kernel cache:
 
 ```bash

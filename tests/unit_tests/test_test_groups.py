@@ -89,8 +89,13 @@ def _selector():
 
 
 def _names_a_test(pin):
-    """Whether a pin, a node-id prefix, names any test function."""
+    """Whether a pin, a node-id prefix, names any test function.
+
+    A pin may name one parametrized case (``test_x[0-None-40]``); the case id
+    is generated at collection, so only its function is checked here.
+    """
     file, _, rest = pin.partition("::")
+    rest = rest.split("[", 1)[0]
     path = ROOT / file
     return path.is_file() and any(
         name.startswith(rest) and name.split("::")[-1].startswith("test")
@@ -133,4 +138,120 @@ def test_every_pin_still_names_a_test(pins):
     assert not stale, (
         f"{stale} in {pins} (scripts/select_test_groups.py) match no test "
         f"function any more; point them at the test's new name, or drop them."
+    )
+
+
+#: Portable test files with no test in the pre-PR group, frozen as they stood
+#: when the check below was added. The groups were last measured on
+#: 2026-10-23 and the greedy pass chose none of these files' tests: their lines
+#: were covered more cheaply by others, or they cover none. The next
+#: regeneration may change that; drop an entry once its file has a test in the
+#: group (the check says so). Never add one: give a new file's tests a group
+#: by pinning them instead (tests/README.md, "Test groups").
+NOT_IN_GROUPS = frozenset(
+    {
+        "test_audio_context.py",
+        "test_bvh_block_bound_range.py",
+        "test_callable_signature.py",
+        "test_circuit_frames.py",
+        "test_circuit_span_candidates.py",
+        "test_cli_startup.py",
+        "test_color_grid_broadcasting.py",
+        "test_daemon_kernel_persistence.py",
+        "test_default_shader_albedo.py",
+        "test_dielectric_fresnel.py",
+        "test_direct_specular_lobe.py",
+        "test_distant_camera_reflections.py",
+        "test_doc_builder.py",
+        "test_frame_readback.py",
+        "test_ggx_albedo.py",
+        "test_glass_energy_table.py",
+        "test_gpu_harness.py",
+        "test_hud_near_camera.py",
+        "test_lagged_wave_timing.py",
+        "test_lit_bsdf_sidedness.py",
+        "test_mac_branch_cleanup.py",
+        "test_mac_depth_buffer_ab.py",
+        "test_manim_compat_spawned_edits.py",
+        "test_manim_shader_render.py",
+        "test_mps_arena_build.py",
+        "test_nested_ior.py",
+        "test_numeric_display_render.py",
+        "test_phong_specular_normalization.py",
+        "test_primary_shadow_sort.py",
+        "test_profiler_stage_attribution.py",
+        "test_promoted_maps_batched.py",
+        "test_quadrants_distribution.py",
+        "test_quadrants_ptx_cache.py",
+        "test_quadrants_wheels.py",
+        "test_refit_link_decode.py",
+        "test_render_determinism.py",
+        "test_rough_dielectric.py",
+        "test_rough_glass_furnace_render.py",
+        "test_shadow_fan_grain.py",
+        "test_shadow_ray_budget.py",
+        "test_shadow_vis_slots.py",
+        "test_source_key_check_harness.py",
+        "test_still_output.py",
+        "test_surface_parametric_ranges.py",
+        "test_surface_prep_identity.py",
+        "test_taichi_source_key_fingerprint.py",
+        "test_tile_state_fills.py",
+        "test_verify_baseline_pointer.py",
+        "test_volume_absorption.py",
+        "test_wide_attr_device.py",
+    }
+)
+
+
+def _portable_test_files():
+    for suite in ("unit_tests", "fast"):
+        yield from sorted((ROOT / "tests" / suite).glob("test_*.py"))
+
+
+def _files_with_a_pre_pr_test():
+    """Files the pre-PR group runs a test of: listed, pinned, or marked fast."""
+    pins = _selector().ALWAYS_CI + _selector().ALWAYS_PRE_PR
+    named = {nodeid.split("::", 1)[0] for nodeid in _members("pre-pr") + list(pins)}
+    files = set()
+    for path in _portable_test_files():
+        rel = path.relative_to(ROOT).as_posix()
+        # `--group` keeps every `fast` test (tests/conftest.py); a marker is
+        # either module-level or on a test, and both spell it this way.
+        if rel in named or "pytest.mark.fast" in path.read_text(encoding="utf-8"):
+            files.add(path.name)
+    return files
+
+
+def test_every_portable_test_file_has_a_test_in_the_pre_pr_group():
+    """A new test file must not sit in no group until someone regenerates.
+
+    The groups are measured, and the measurement needs a whole-suite coverage
+    run, so it happens rarely; five files that landed after the last one --
+    the caustics and volume tests among them, 171 tests -- ran on no pull
+    request and in no pre-PR run, and nothing said so.
+    """
+    covered = _files_with_a_pre_pr_test()
+    missing = [
+        path.relative_to(ROOT).as_posix()
+        for path in _portable_test_files()
+        if path.name not in covered and path.name not in NOT_IN_GROUPS
+    ]
+    assert not missing, (
+        f"{missing} have no test in the pre-PR group. Pin one in "
+        f"scripts/select_test_groups.py: the file's whole `<path>::` in "
+        f"ALWAYS_CI if it runs in a fraction of a second, else a representative "
+        f"test in ALWAYS_PRE_PR (tests/README.md, 'Test groups')."
+    )
+
+
+def test_the_files_left_out_of_the_groups_are_still_left_out():
+    """``NOT_IN_GROUPS`` only shrinks: an entry that is now covered, or gone, goes."""
+    names = {path.name for path in _portable_test_files()}
+    gone = sorted(NOT_IN_GROUPS - names)
+    covered = sorted(NOT_IN_GROUPS & _files_with_a_pre_pr_test())
+    assert not gone, f"NOT_IN_GROUPS names files that no longer exist: {gone}"
+    assert not covered, (
+        f"{covered} now have a test in the pre-PR group; drop them from "
+        f"NOT_IN_GROUPS in this file."
     )
