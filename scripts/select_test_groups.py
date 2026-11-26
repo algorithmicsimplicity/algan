@@ -257,6 +257,10 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_mps_zero_copy.py::test_an_owner_freed_while_the_cache_lock_is_held_is_evicted_without_deadlock",
     # The glossy pyramid's fused finish sums each texel in its launches' order.
     "tests/unit_tests/test_glossy_fused_finish.py::test_the_fused_finish_matches_the_launches_it_replaces",
+    # A live CameraView's windows share one arena, one prep worker and each
+    # pass's batch-sizing models, and render the frames fresh passes do.
+    "tests/unit_tests/test_camera_views.py::test_camera_view_windows_share_one_arena_models_and_prep_worker",
+    "tests/unit_tests/test_camera_views.py::test_shared_window_resources_render_the_same_frames",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")

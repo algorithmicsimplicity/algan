@@ -4297,7 +4297,13 @@ class RenderLoopMixin:
                 # runtime decides whether to throw away warm kernels.
                 self.background_frame = original_background
                 render_memory = self.memory
-                if render_memory is not None and render_memory is not original_memory:
+                resources = self.__dict__.get("_camera_view_resources")
+                if (
+                    render_memory is not None
+                    and render_memory is not original_memory
+                    and (resources is None or render_memory is not resources.memory)
+                ):
+                    # (A camera-view pass's arena is the job's, which frees it.)
                     render_memory.data = None
                 self.memory = original_memory
                 if owns_rounding_job:
@@ -4391,10 +4397,23 @@ class RenderLoopMixin:
         actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors]
         save_image = False
 
-        self.memory = ManualMemory(
-            SETTINGS.computing.rendering_memory_fraction,
-            managed=manual_memory,
-        )
+        # A camera-view pass draws its arena, its batch-sizing models and its
+        # prep worker from the job (camera_views._JobPassResources), so a
+        # render with a live view probes and faults its arena in once rather
+        # than once per pass of every window.
+        pass_resources = self.__dict__.get("_camera_view_resources")
+        if pass_resources is None:
+            self.memory = ManualMemory(
+                SETTINGS.computing.rendering_memory_fraction,
+                managed=manual_memory,
+            )
+        else:
+            self.memory = pass_resources.arena(
+                lambda: ManualMemory(
+                    SETTINGS.computing.rendering_memory_fraction,
+                    managed=manual_memory,
+                )
+            )
         # Safety margin learned from render failures this job: when a batch
         # that passed the arena preflight still fails to render, the preflight
         # under-estimated some allocation, so subsequent preflights must leave
@@ -4412,21 +4431,35 @@ class RenderLoopMixin:
         # the next fetch (see fetch_end_for). None until a batch has been
         # measured: the first fetch of a job has nothing to go on.
         self._arena_fetch_frame_cap = None
-        # Measured chunk-peak model, carried across every batch of this job so
-        # only the first one pays to probe.
-        self._chunk_memory_model = ChunkMemoryModel()
         # The prepared background, uploaded once for the job rather than per
         # chunk (see _prepare_background_for_chunk); get_frames drops it.
         self._chunk_background_cache = {}
-        # The merge and the projection build outside the arena, so the chunk
-        # model cannot see them; their multipliers are measured from the builds
-        # themselves, seeded by the previous guesses until one has run.
-        self._merge_peak_ratio = PeakRatioModel(
-            rt_settings_module.merge_gpu_peak_factor
+
+        # Measured chunk-peak model, carried across every batch of this job so
+        # only the first one pays to probe. The merge and the projection build
+        # outside the arena, so the chunk model cannot see them; their
+        # multipliers are measured from the builds themselves, seeded by the
+        # previous guesses until one has run. A camera-view pass keeps all
+        # three from window to window.
+        def pass_models():
+            from algan.rendering.camera_views import _PassModels
+
+            return _PassModels(
+                ChunkMemoryModel(),
+                PeakRatioModel(rt_settings_module.merge_gpu_peak_factor),
+                PeakRatioModel(rt_settings_module.project_gpu_peak_factor),
+            )
+
+        models = (
+            pass_models()
+            if pass_resources is None
+            else pass_resources.models(
+                self.__dict__.get("_camera_view_pass_key"), pass_models
+            )
         )
-        self._project_peak_ratio = PeakRatioModel(
-            rt_settings_module.project_gpu_peak_factor
-        )
+        self._chunk_memory_model = models.chunk
+        self._merge_peak_ratio = models.merge_peak_ratio
+        self._project_peak_ratio = models.project_peak_ratio
 
         # Adaptive gen-fused forecast (settings.wf_gen_fused == "auto") is fed
         # per-batch render timings below; a new job restarts its batch count.
@@ -4707,11 +4740,15 @@ class RenderLoopMixin:
                     return end_time_ind
                 return min(end_time_ind, time_ind + int(cap))
 
-            executor = (
-                ThreadPoolExecutor(max_workers=1, thread_name_prefix="algan-batch-prep")
-                if prefetch_enabled
-                else None
-            )
+            if not prefetch_enabled:
+                executor = None
+            elif pass_resources is not None:
+                # The job's worker, shut down when its last window is done.
+                executor = pass_resources.executor()
+            else:
+                executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="algan-batch-prep"
+                )
             pending = None
             pending_end_ind = end_time_ind
             retry_end_ind = None
@@ -5235,7 +5272,7 @@ class RenderLoopMixin:
                 if pending is not None:
                     with contextlib.suppress(Exception):
                         pending.result()
-                if executor is not None:
+                if executor is not None and pass_resources is None:
                     executor.shutdown(wait=True)
                 # And always put the timeline back. Materializing points every
                 # attribute's ``active_state`` at a buffer holding this window's
