@@ -32,7 +32,10 @@ World axes are `RIGHT` (+x), `UP` (+y), and `OUT` (+z), with opposite constants
 viewer for the default camera, not for every camera pose. Every root angle
 argument is in degrees: rotations, adapted Manim shapes (`Arc(angle=90)`), and
 `RegularPolygon(start_angle=...)`, `Line(path_arc=...)` and
-`Wiggle(rotation_angle=...)`. A root angle that looks like radians warns.
+`Wiggle(rotation_angle=...)`. Those constructor angles, `rotate` and `orbit`
+warn when given an angle that looks like radians (a non-integer number no
+larger than a full turn, such as `PI / 4` or `TAU`); other degree arguments,
+such as `look`, camera `fov` and `move(arc_angle=...)`, do not.
 
 Use `.move(vector)` for a displacement and `.move_to(point)` for a destination.
 Use `.scale(factor)` or `.scale_to_width(...)` / `.scale_to_height(...)` for size.
