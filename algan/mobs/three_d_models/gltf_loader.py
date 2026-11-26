@@ -705,16 +705,27 @@ def load_scene(file_path):
     materials: list[MaterialData] = []
     nodes: list[NodeData] = []
     geom_to_mesh: dict[str, int] = {}
+    # trimesh hands every primitive that uses one material the same material
+    # object, so a material is converted once and shared by index. Converting
+    # it per primitive decoded and tinted a full float32 copy of each of its
+    # textures for every primitive -- tens of copies of one atlas.
+    material_indices: dict[int, int] = {}
 
     for name, geom in loaded.geometry.items():
         if not hasattr(geom, "vertices") or not hasattr(geom, "faces"):
             continue
-        material_index = len(materials)
-        materials.append(_convert_material(getattr(geom, "visual", None), gltf=is_gltf))
+        visual = getattr(geom, "visual", None)
+        source = getattr(visual, "material", None)
+        material_index = material_indices.get(id(source), len(materials))
         md = _convert_mesh(geom, material_index, name, gltf=is_gltf)
         if md is None:
-            materials.pop()
             continue
+        if material_index == len(materials):
+            materials.append(_convert_material(visual, gltf=is_gltf))
+            if source is not None:
+                # ``loaded`` keeps every material alive until we return, so
+                # its id cannot be reused by another one meanwhile.
+                material_indices[id(source)] = material_index
         geom_to_mesh[name] = len(meshes)
         meshes.append(md)
 

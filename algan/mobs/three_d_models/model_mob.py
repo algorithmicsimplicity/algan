@@ -256,6 +256,12 @@ class Model3D(Mob):
 
         # Cache loaded texture maps by file path (materials commonly share one).
         self._texture_cache: dict[str, object] = {}
+        # And the maps built from each material, by identity: every mesh that
+        # shares a material shares one map instead of expanding the material's
+        # image into a [W, H, 5] float32 copy of its own. Nothing writes into
+        # a texture map in place, so sharing the tensor is safe; scene_data
+        # keeps every material alive, so an id is never reused meanwhile.
+        self._material_maps: dict[tuple[str, int], object] = {}
 
         # Recenter/scale applied by normalize(), also folded into animation
         # baking so baked poses land in the same space as the built geometry.
@@ -476,10 +482,23 @@ class Model3D(Mob):
         mob.set_material(mat)
         return mob
 
+    def _per_material(self, kind, material, build):
+        """``build()``, once per (``kind``, ``material``) for this model."""
+        key = (kind, id(material))
+        if key not in self._material_maps:
+            self._material_maps[key] = build()
+        return self._material_maps[key]
+
     def _resolve_normal_map(self, material, device):
         """Tangent-space normal map for a material as a ``[W, H, 3]`` tensor in
         ``[-1, 1]``: an embedded image takes precedence over a file path.
+        Built once per material and shared by every mesh that uses it.
         """
+        return self._per_material(
+            "normal", material, lambda: self._build_normal_map(material, device)
+        )
+
+    def _build_normal_map(self, material, device):
         if material.normal_image is not None:
             return image_to_normal_map(material.normal_image.to(device)).to(device)
         if material.normal_texture:
@@ -491,8 +510,14 @@ class Model3D(Mob):
     def _resolve_texture(self, material, device):
         """Diffuse texture map for a material: an embedded in-memory image
         (``diffuse_image``, e.g. from glB) takes precedence over an external
-        ``diffuse_texture`` file path. Returns a ``[W, H, 5]`` map or ``None``.
+        ``diffuse_texture`` file path. Returns a ``[W, H, 5]`` map or ``None``,
+        built once per material and shared by every mesh that uses it.
         """
+        return self._per_material(
+            "diffuse", material, lambda: self._build_texture(material, device)
+        )
+
+    def _build_texture(self, material, device):
         if material.diffuse_image is not None:
             return image_to_texture_map(material.diffuse_image.to(device)).to(device)
         if material.diffuse_texture:
