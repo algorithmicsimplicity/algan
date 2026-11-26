@@ -428,16 +428,34 @@ def current_context():
     source (``_settings_fingerprint`` and ``_environment_fingerprint``): a
     worker that reproduces them writes index entries under exactly the keys
     this process will compute.
+
+    Filtered as the key is: host-only computing fields and the variables that
+    only seed a renderer setting (already here by value, in ``raytracing``)
+    are left out. Kept in, they gave two runs whose kernels share every key
+    two contexts -- separate manifest rows, warm-up skipping rows over an
+    unset ``ALGAN_PT_SEED``, and a pool stopped as "for other settings" whose
+    artifacts the render would have used. A worker keeps its own values for
+    what is left out, which no kernel reads.
     """
     from algan.environment import _HARNESS_VARIABLES, ALGAN_ENVIRONMENT_VARIABLES
     from algan.settings import SETTINGS
-    from algan.utils.taichi_source_key import _ENV_NOT_IN_KEY
+    from algan.utils.taichi_source_key import (
+        _ENV_NOT_IN_KEY,
+        _HOST_ONLY_COMPUTING_FIELDS,
+        _settings_seed_variables,
+    )
 
     computing = {
         name: str(value) if type(value).__name__ == "device" else value
         for name, value in SETTINGS.computing.to_dict().items()
+        if name not in _HOST_ONLY_COMPUTING_FIELDS
     }
-    skip = _ENV_NOT_IN_KEY | frozenset(_HARNESS_VARIABLES) | _WORKER_ONLY_ENV
+    skip = (
+        _ENV_NOT_IN_KEY
+        | frozenset(_HARNESS_VARIABLES)
+        | _WORKER_ONLY_ENV
+        | _settings_seed_variables()
+    )
     env = {}
     for name in sorted(ALGAN_ENVIRONMENT_VARIABLES):
         if name in skip:
