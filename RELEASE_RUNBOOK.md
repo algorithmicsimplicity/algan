@@ -25,14 +25,19 @@ The release gate checks that:
 
 - the `version` input exactly matches `project.version`, without a leading `v`;
 - `v<version>` is not already a Git tag;
-- the selected commit has Test check runs and all returned Test conclusions are
+- a run that publishes (anything but `dry_run`) was dispatched from `master`;
+- the selected commit has at least one run of the Test workflow (`test.yaml`),
+  and every Test run on it, whatever event started it, has completed with
   `success`;
 - every archive named by `tests/baselines.json` downloads and matches its recorded
   SHA-256, via `scripts/gate/verify_baseline_pointer.py`.
 
 The Test gate is not a substitute for reviewing the complete CI matrix and its
-skips. It filters check-run names containing `Test` or `test`; inspect code-quality
-and documentation checks as well. See [tests/README.md](tests/README.md) for
+skips. A push to master runs only the CI test group on two arms; the full suite,
+Python 3.14 and the MPS arm run weekly or on dispatch, so dispatch a full Test run
+on the release commit (Actions, Test, Run workflow, on master) and let it finish
+before releasing: the gate then refuses the release if it failed. The gate reads
+only the Test workflow; inspect code-quality and documentation checks as well. See [tests/README.md](tests/README.md) for
 portable tests, GPU coverage and separately hosted render baselines.
 
 Before choosing the commit, check that the built-in kernel list is current:
