@@ -636,15 +636,18 @@ def test_bake_hierarchy_animation():
     assert torch.allclose(baked[1, 0], v0 + torch.tensor([0.0, 3.0, 0.0]), atol=1e-5)
 
 
-def test_play_animation_sets_recompute_normals():
-    """Playing an animation drives the corner geometry and switches meshes to
-    per-frame smooth-normal recomputation.
+def test_play_animation_turns_the_authored_normals_rather_than_recomputing_them():
+    """Playing an animation drives the corner geometry, and the authored
+    normals follow the node: recomputing them from the posed geometry creased
+    every seam where the file had split its vertices.
     """
     SceneManager.reset()
     with torch.inference_mode():
         model = Model3D(scene_data=_spin_translate_scene()).spawn()
         model.play_animation(runtime=1.0)
-    assert model.mesh_mobs[0].recompute_normals is True
+    mesh = model.mesh_mobs[0]
+    assert mesh.recompute_normals is False
+    assert mesh._has_posed_normals() == (mesh.corner_normals is not None)
 
 
 def _write_animated_glb(path):

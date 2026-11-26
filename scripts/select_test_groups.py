@@ -150,6 +150,10 @@ ALWAYS_CI = (
     # than read as a grid too coarse.
     "tests/unit_tests/test_surface_autotune.py::test_a_bad_coordinate_function_is_named_before_the_sizing_search",
     "tests/unit_tests/test_surface_autotune.py::test_a_bad_coordinate_function_is_named_at_a_fixed_resolution_too",
+    # Node animation turns a mesh's authored normals rather than recomputing
+    # them, so a UV seam stays smooth while a clip plays.
+    "tests/unit_tests/test_model_import.py::test_playback_keeps_the_authored_normals_across_a_uv_seam",
+    "tests/unit_tests/test_fbx_import.py::test_play_animation_turns_the_authored_normals_rather_than_recomputing_them",
     # A sheet's float32 area, and the weights pooled from it, come back bit
     # for bit across the stroke split's arms and across replays of a frame.
     "tests/unit_tests/test_sheet_area_order.py::",
