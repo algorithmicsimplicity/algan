@@ -483,3 +483,32 @@ def test_a_new_resolution_clears_the_error_of_the_old_one(session):
     session._error = "RuntimeError: out of memory at UHD"
     session.set_resolution("SMOKE_TEST")
     assert session.state()["error"] is None
+
+
+def test_inspections_nobody_waits_for_any_more_are_dropped(session, monkeypatch):
+    # Scrubbing with the fragment panel open asks for one inspection per
+    # frame. Each used to start a capture render of its own, all queued on the
+    # Scene lock ahead of the frame worker, although the page had moved on.
+    started = []
+    release = threading.Event()
+
+    def inspect(frame, x, y):
+        started.append(frame)
+        if frame == 0:
+            release.wait(5)
+        return {"available": True, "frame": frame, "x": x, "y": y}
+
+    monkeypatch.setattr(session, "_inspect_pixel", inspect)
+    session.pixel(0, 1, 1, wait=0)
+    deadline = time.monotonic() + 3
+    while not started and time.monotonic() < deadline:
+        time.sleep(0.005)
+    # Asked for while frame 0's capture render holds the inspector.
+    for frame in range(1, 5):
+        session.pixel(frame, 1, 1, wait=0)
+    release.set()
+    # The newest request is answered; the ones it superseded never render.
+    assert session.pixel(4, 1, 1, wait=5)["frame"] == 4
+    assert started == [0, 4]
+    # A superseded key is computed if the page asks for it again.
+    assert session.pixel(2, 1, 1, wait=5)["frame"] == 2
