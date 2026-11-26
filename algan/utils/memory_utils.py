@@ -1214,16 +1214,6 @@ def auto_record_enabled():
     return _AUTO_RECORD
 
 
-def recorded_nonarena_peaks():
-    """``(name, input_bytes, peak_bytes)`` samples, oldest first."""
-    return list(_NONARENA_PEAKS)
-
-
-def recorded_arenas():
-    """Managed arenas armed by :func:`set_auto_record`, oldest first."""
-    return list(_RECORDED_ARENAS)
-
-
 def clear_recorded_arenas():
     _RECORDED_ARENAS.clear()
     _NONARENA_PEAKS.clear()
@@ -1265,29 +1255,6 @@ def end_cuda_peak(token):
     key = (device.type, device.index)
     _PEAK_FLOOR[key] = max(_PEAK_FLOOR.get(key, 0), saved, peak)
     return max(0, peak - base)
-
-
-@contextmanager
-def cuda_peak_scope(device):
-    """Block form of :func:`begin_cuda_peak`.
-
-    Yields a callable returning the region's peak bytes above entry; it keeps
-    reporting the final value after the block exits.
-    """
-    token = begin_cuda_peak(device)
-    measured = []
-
-    def peak():
-        if measured:
-            return measured[0]
-        if token is None:
-            return 0
-        return max(0, torch.cuda.max_memory_allocated(token[0]) - token[2])
-
-    try:
-        yield peak
-    finally:
-        measured.append(end_cuda_peak(token))
 
 
 def reset_peak_floor():
