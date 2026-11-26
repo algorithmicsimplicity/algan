@@ -789,3 +789,36 @@ def test_full_render_glb_fixture_retains_pbr_maps():
     assert mesh.texture_map is not None
     assert mesh.normal_texture_map is not None
     assert mesh.shader is standard_shader
+
+
+def test_skin_weights_keep_the_four_strongest_influences_per_vertex():
+    """The assimp skin parse, on stand-in bones: per vertex the four strongest
+    influences, strongest first and ties in file order, renormalized to sum
+    to one; out-of-range vertex ids are dropped and a vertex with no weight
+    stays all zero.
+    """
+    from types import SimpleNamespace
+
+    from algan.mobs.three_d_models.assimp_loader import _parse_skin
+
+    def bone(name, weights):
+        return SimpleNamespace(
+            name=name,
+            offsetmatrix=np.eye(4),
+            weights=[SimpleNamespace(vertexid=v, weight=w) for v, w in weights],
+        )
+
+    bones = [
+        bone("a", [(0, 0.1), (1, 0.5), (9, 1.0), (-1, 1.0)]),
+        bone("b", [(0, 0.4), (1, 0.5)]),
+        bone("c", [(0, 0.2), (1, 0.25)]),
+        bone("d", [(0, 0.3)]),
+        bone("e", [(0, 0.05), (1, 0.25)]),
+    ]
+    skin = _parse_skin(SimpleNamespace(bones=bones), 3)
+    assert skin.bone_names == ["a", "b", "c", "d", "e"]
+    assert skin.inverse_bind_matrices.shape == (5, 4, 4)
+    assert skin.bone_indices.tolist() == [[1, 3, 2, 0], [0, 1, 2, 4], [0, 0, 0, 0]]
+    expected = torch.tensor([[0.4, 0.3, 0.2, 0.1], [0.5, 0.5, 0.25, 0.25], [0] * 4])
+    expected[:2] /= expected[:2].sum(1, keepdim=True)
+    torch.testing.assert_close(skin.weights, expected)
