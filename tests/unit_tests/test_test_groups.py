@@ -128,7 +128,10 @@ def test_a_fast_test_runs_in_every_group_whether_listed_or_not(group):
     nodeid = "tests/unit_tests/test_kernel_control_flow.py::test_a_case_no_list_names"
     assert nodeid not in members
     assert not nodeid.startswith(pins)
-    assert keeps(_Item(nodeid, pytest.mark.fast.mark), members, pins)
+    # By name: spelled as an attribute, the marker would put this file in the
+    # fast suite as far as test_fast_suite_curation.py can tell.
+    fast = getattr(pytest.mark, "fast").mark  # noqa: B009
+    assert keeps(_Item(nodeid, fast), members, pins)
     assert not keeps(_Item(nodeid), members, pins)
 
 
@@ -217,8 +220,10 @@ def _files_with_a_pre_pr_test():
     for path in _portable_test_files():
         rel = path.relative_to(ROOT).as_posix()
         # `--group` keeps every `fast` test (tests/conftest.py); a marker is
-        # either module-level or on a test, and both spell it this way.
-        if rel in named or "pytest.mark.fast" in path.read_text(encoding="utf-8"):
+        # either module-level or on a test, and both spell it this way. Split,
+        # as test_fast_suite_curation.py does, so this file does not match.
+        marker = "pytest.mark." + "fast"
+        if rel in named or marker in path.read_text(encoding="utf-8"):
             files.add(path.name)
     return files
 
