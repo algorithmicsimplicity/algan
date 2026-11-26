@@ -90,7 +90,7 @@ dependencies = [
     "setuptools>=61",
     "scipy>=1.8.0",
     "svgelements>=1.0.0",
-    "torch>=2.0.0",
+    "torch>=2.3",
     # Imported at module scope by algan.mobs.image_compat, used for all image
     # decoding in algan.utils.file_utils / algan.mobs.three_d_models.model_mob,
     # and by the vendored Manim subset's ImageMobject.

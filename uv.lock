@@ -190,7 +190,7 @@ requires-dist = [
     { name = "sphinxext-opengraph", marker = "extra == 'dev'", specifier = ">=0.9.1" },
     { name = "svgelements", specifier = ">=1.0.0" },
     { name = "taichi", marker = "python_full_version < '3.14' and extra == 'taichi'", specifier = ">=1.7.4" },
-    { name = "torch", specifier = ">=2.0.0" },
+    { name = "torch", specifier = ">=2.3" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.0.0" },
     { name = "tqdm", specifier = ">=4.51.0" },
     { name = "transformers", marker = "extra == 'audio'", specifier = ">=4.30.0" },
