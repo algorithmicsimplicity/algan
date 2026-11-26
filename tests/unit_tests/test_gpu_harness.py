@@ -153,11 +153,13 @@ class TestResolveGpuRequest:
         with pytest.raises(SystemExit):
             resolver.resolve({"IN_COMMAND": "x", "IN_TIMEOUT": "an hour"}, None)
 
-    def test_the_wheel_defaults_but_can_be_opted_out_of(self, resolver):
-        assert resolver.resolve({"IN_COMMAND": "x"}, None)["wheel"].isdigit()
+    def test_the_taichi_wheel_is_none_unless_asked_for(self, resolver):
+        # The default used to be a run id whose artifact had expired, so every
+        # MPS arm that did not override it failed fetching the wheel.
+        assert resolver.resolve({"IN_COMMAND": "x"}, None)["wheel"] == "none"
         assert (
-            resolver.resolve({"IN_COMMAND": "x", "IN_WHEEL": "none"}, None)["wheel"]
-            == "none"
+            resolver.resolve({"IN_COMMAND": "x", "IN_WHEEL": "123"}, None)["wheel"]
+            == "123"
         )
 
     def test_the_quadrants_wheel_is_empty_unless_asked_for(self, resolver):

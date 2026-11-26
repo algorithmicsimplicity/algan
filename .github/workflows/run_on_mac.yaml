@@ -22,8 +22,10 @@ name: Run on the Mac GPU runner
 # ORDINARY MPS SUPPORT DOES NOT NEED A WHEEL OVERRIDE. The required MPS arm in
 # `test.yaml` uses Algan's normal locked `algan-quadrants` dependency. The wheel
 # inputs below exist only so this measurement harness can A/B an experimental
-# compiler build: the default Taichi run id selects the historical patched
-# Taichi control, while `quadrants_wheel` can install a one-off Quadrants build.
+# compiler build: a Taichi run id selects the historical patched Taichi control
+# (the default, `none`, does not; the run it used to name has outlived its
+# artifact's retention), while `quadrants_wheel` can install a one-off
+# Quadrants build.
 # When both are given the Quadrants override wins. Any MPS measurement still
 # has to verify Algan resolved `mps`; a silent CPU fallback is not an MPS result.
 #
@@ -51,9 +53,9 @@ on:
         type: boolean
         default: false
       taichi_wheel_run_id:
-        description: "taichi_build.yaml run id whose patched wheel the MPS arm installs ('none' = stock Taichi)"
+        description: "taichi_build.yaml run id whose patched Taichi wheel the MPS arm installs and selects as the compiler ('none' = the locked Quadrants, as CI and users run)"
         type: string
-        default: "33342025517"
+        default: "none"
       quadrants_wheel:
         description: "Patched Quadrants wheel for the Mac arms: a quadrants_build.yaml run id, or a release-asset URL (blank = none; selects ALGAN_TAICHI_BACKEND=quadrants)"
         type: string

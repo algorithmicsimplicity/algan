@@ -83,14 +83,15 @@ only for experiments that intentionally replace that supported dependency.
   BasicTeX plus the packages is ~4 minutes and most measurement scripts never
   touch it. A scene that needs it and did not ask fails minutes later, inside
   the render.
-* **`taichi_wheel_run_id`**. The MPS arm installs a patched Taichi wheel from a
-  `taichi_build.yaml` run (default `33342025517`). **Set it to `"none"` to
-  reproduce what the ordinary gate runs**, which is what a plain `uv sync
+* **`taichi_wheel_run_id`**. Given a `taichi_build.yaml` run id, the MPS arm
+  installs that run's patched Taichi wheel. The default is `"none"` (it used to
+  be `33342025517`, whose artifact has expired). **`"none"` reproduces what the
+  ordinary gate runs**, which is what a plain `uv sync
   --locked` puts on the machine: the published patched `algan-quadrants`,
   which carries `quadrants_patches/0001` and therefore renders on the Apple
-  GPU with no override at all. The default is the historical *Taichi* control
-  arm and it also flips `ALGAN_TAICHI_BACKEND=taichi`, so leaving it alone
-  measures a different compiler from the one CI and users have.
+  GPU with no override at all. A run id selects the historical *Taichi*
+  control arm and also flips `ALGAN_TAICHI_BACKEND=taichi`, so it measures a
+  different compiler from the one CI and users have.
   (The bullet used to say `"none"` meant a silent CPU fallback. That was true
   while the only patched build was a private wheel; since the patched
   Quadrants distribution is the normal dependency it is the other way round,

@@ -1,7 +1,11 @@
 name: Taichi from source (macOS)
 
-# Builds the forked Taichi wheel Algan's Apple-GPU path needs, on the free
-# Apple-silicon runner -- the only Mac the project has.
+# Builds the forked Taichi wheel for the Taichi A/B control arm
+# (`ALGAN_TAICHI_BACKEND=taichi`), on the free Apple-silicon runner -- the only
+# Mac the project has. It is no longer what the Apple GPU needs: the default
+# compiler, the locked `algan-quadrants`, renders there with no override. Its
+# wheel is an artifact kept 60 days, so a run id written into another workflow
+# as a default expires; pass one per dispatch instead.
 #
 # It began as a measurement of what such a build costs (`DESIGN_mps_zero_copy.md`
 # §4.1, and the timings below are still taken) and became the build itself once
