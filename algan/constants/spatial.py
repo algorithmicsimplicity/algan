@@ -3,7 +3,7 @@
 ``RIGHT``/``LEFT`` run along +x/-x, ``UP``/``DOWN`` along +y/-y, and
 ``OUTWARD``/``INWARD`` along **+z/-z**: ``OUTWARD`` points out of the screen
 towards the viewer, so it is ``(0, 0, 1)`` and the +z axis runs *towards* the
-viewer, out of the scene. ``CAMERA_ORIGIN`` is correspondingly at positive z.
+viewer, out of the scene.
 This is the same sign convention as Manim, Three.js and glTF, so a scene ported
 from any of them keeps its z coordinates as written. Each constant is a unit
 tensor of shape ``(3,)``, so they compose by ordinary arithmetic:
@@ -23,9 +23,12 @@ throughout and never reads ``IN`` or ``OUT`` (enforced by
 ``tests/unit_tests/test_spatial_constants.py``), and the short names are the
 script's to keep or to shadow.
 
-``ORIGIN`` is the zero vector, ``DEFAULT_BASIS`` the orientation every Mob
-starts with -- facing ``OUTWARD``, towards the viewer -- and ``CAMERA_ORIGIN``
-where a new Scene's camera sits, looking ``INWARD`` at the Mobs that face it.
+``ORIGIN`` is the zero vector and ``DEFAULT_BASIS`` the orientation every Mob
+starts with -- facing ``OUTWARD``, towards the viewer. A new Scene's camera sits
+on the +z axis, 20 units out (``algan.manim_defaults.MANIM_FOCAL_DISTANCE``),
+looking ``INWARD`` at the Mobs that face it, so that it frames Manim's 8 world
+units of height. ``CAMERA_ORIGIN``, 7 units out, is where the camera used to
+sit; nothing in Algan reads it any more.
 
 Distances are in world units throughout; angles are in **degrees**, which is the
 convention that most often surprises users arriving from Manim.

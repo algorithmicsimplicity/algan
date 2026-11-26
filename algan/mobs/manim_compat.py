@@ -1912,13 +1912,18 @@ arguments work as written -- ``tex_to_color_map`` and ``substrings_to_isolate``
 included -- and Manim methods Algan does not implement are delegated to the
 backing object.
 
+Indexing follows Manim: ``formula[i]`` is the ``i``-th of the
+``tex_strings`` (or of the pieces ``substrings_to_isolate`` and
+``tex_to_color_map`` split off), as the part drawing it on screen, so
+``MathTex("x^2", "+", "y")[0]`` is the ``x^2`` and editing it edits what is
+shown.
+
 Reach for Algan's :class:`~algan.mobs.text.Tex` when you are not porting a
 script. The two produce the same outlines (``MathTex("x^2")`` matches
 ``Tex("x^2", font_size=48)``, because Algan's ``Tex`` also builds at Manim's 48
-and then scales), but this one is a single Mob with no per-glyph views:
-``formula[0]`` raises :class:`TypeError`, and character indexing,
+and then scales), but character indexing,
 :meth:`~algan.mobs.text.Tex.get_segment` and :meth:`~algan.mobs.text.Tex.write`
-all live on ``Tex`` instead.
+live on ``Tex``.
 
 Animation
 ---------
@@ -1995,16 +2000,13 @@ The text is typeset by LaTeX in text mode (so ``Title("Chapter 1")`` reads as
 written, no maths escaping needed) with a horizontal rule beneath it, and the
 whole thing is moved to the top of the frame.
 
-**The frame it moves to the top of is Manim's, not Algan's, and it lands flush
-against the edge.** Manim's frame is 8 world units tall and its ``to_edge``
-leaves a 0.5 gap, so the title's top comes to rest at ``y = 3.5`` -- which is
-exactly where Algan's default camera puts its top border. Nothing is cut off,
-but the text touches the frame edge with no margin at all. Call
-:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` to
-inset it by the usual buffer, or ``.move(DOWN * 1)`` to place it by hand.
+It is placed in Manim's frame, which a new Scene frames the same way: 8 world
+units tall, with Manim's ``to_edge`` gap of 0.5, so the title's top comes to
+rest at ``y = 3.5``, half a unit below the top of the picture, exactly where
+Manim puts it. ``.move(DOWN * 1)`` and the like place it by hand.
 
-The default rule is sized from Manim's frame too, at ``frame_width - 2``, which
-comes out just narrower than Algan's visible width. Pass
+The default rule is sized from Manim's frame too, at ``frame_width - 2``: one
+world unit short of each side of the picture. Pass
 ``match_underline_width_to_text=True`` for a rule the width of the words.
 
 Animation
