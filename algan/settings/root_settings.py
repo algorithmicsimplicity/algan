@@ -185,6 +185,13 @@ class AlganSettings:
             ):
                 Scene.save_video("smooth")
 
+        "Every section" includes the ones the call did not name: the block
+        ends by restoring all of ``SETTINGS`` to what it was on entry, so a
+        ``SETTINGS.paths.set(...)`` written inside the block is undone with
+        the rest. Fields that did not change keep the objects they held. To
+        keep a change made inside a block, use the section's own
+        ``override``, which puts back only the fields it was given.
+
         Parameters
         ----------
         **sections

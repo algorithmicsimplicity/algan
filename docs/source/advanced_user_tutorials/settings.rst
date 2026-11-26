@@ -145,6 +145,17 @@ Use the root override for multiple sections:
         Scene.save_video("fast_preview.mp4")
 
 Both forms restore the previous settings even when the body raises an exception.
+They differ in how much they restore. A section override puts back only the
+fields it was given. The root override puts back all of ``SETTINGS`` as it was
+when the block began, so a setting changed inside the block, in any section,
+is undone when the block ends:
+
+.. code-block:: python
+
+    with SETTINGS.override(video={"frames_per_second": 12}):
+        SETTINGS.paths.set(output_directory="drafts")
+    # output_directory is back to what it was before the block
+
 For longer-lived save/restore flows, use ``snapshot = SETTINGS.snapshot()`` and
 ``SETTINGS.restore(snapshot)``.
 

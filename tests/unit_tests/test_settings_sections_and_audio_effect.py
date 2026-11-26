@@ -83,6 +83,21 @@ def test_override_applies_and_restores():
     assert settings.style.buffer == pytest.approx(0.6)
 
 
+def test_root_override_undoes_a_change_made_inside_it_to_another_section():
+    """Documented, and different from a section override on purpose."""
+    settings = AlganSettings()
+    with settings.override(video={"frames_per_second": 12}):
+        settings.style.set(buffer=3.0)
+    assert settings.style.buffer == pytest.approx(0.6)
+
+
+def test_section_override_keeps_a_change_made_inside_it_to_another_field():
+    settings = AlganSettings()
+    with settings.video.override(frames_per_second=12):
+        settings.style.set(buffer=3.0)
+    assert settings.style.buffer == pytest.approx(3.0)
+
+
 def test_override_restores_after_exception():
     settings = AlganSettings()
     with pytest.raises(RuntimeError):
