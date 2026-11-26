@@ -51,8 +51,10 @@ keys the generated graph on compiler options but leaves the automatically
 selected CPU ISA out. Reusing an AVX-512 graph on an AVX2 host then compiles
 16-lane loops against 8-lane vector types, leaving parts of intermediate
 arrays unwritten. Resolve ``cpp.simdlen`` before handing options to Inductor
-so cached graphs and the C++ compiler agree, including after a cache moves
-between machines.
+so cached graphs and the C++ compiler agree. The width is not the whole
+instruction set, and Inductor builds with ``-march=native``, so a cache that
+moves between two CPUs of one width is kept apart by its directory instead:
+``settings/_startup.py`` puts it under a hash of the CPU's model and flags.
 """
 
 from __future__ import annotations

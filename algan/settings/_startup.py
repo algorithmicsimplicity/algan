@@ -15,7 +15,9 @@ longer exists.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
 import warnings
 from pathlib import Path
 
@@ -175,15 +177,55 @@ _CACHE_DIRECTORY = Path(
 # always wins. ``clear_cache()`` removes it with the content caches -- it is
 # seconds to rebuild, not the minutes a compiled kernel costs.
 os.environ.setdefault("CUDA_CACHE_PATH", str(_CACHE_DIRECTORY / "cuda"))
+
+
+def _host_cpu_tag(cpuinfo=None):
+    """A short hash of this CPU's model and instruction-set flags, or ``""``.
+
+    Inductor builds its CPU code with ``-march=native`` on Linux and keys the
+    shared object on the literal command line, so the flag is never expanded
+    into the key: two CPUs with the same vector width (Sapphire Rapids and
+    Skylake-SP both select 512 bits) would share code one of them cannot run,
+    and the other dies of SIGILL. Elsewhere Inductor targets no host CPU
+    (macOS) or ``'auto'`` leaves torch.compile off (Windows), so only Linux
+    reads ``/proc/cpuinfo``. Only the first processor's entry is read: the
+    model and its flags are the same on every core of one machine.
+    """
+    if cpuinfo is None:
+        if not sys.platform.startswith("linux"):
+            return ""
+        try:
+            with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+                cpuinfo = f.read(1 << 16)
+        except OSError:
+            return ""
+    first = cpuinfo.strip().split("\n\n", 1)[0]
+    # x86 names the model and flags; aarch64 has no model name, and names
+    # its implementer and part, and "Features" for its flags.
+    wanted = ("model name", "flags", "cpu implementer", "cpu part", "features")
+    lines = []
+    for line in first.splitlines():
+        name, sep, value = line.partition(":")
+        if sep and name.strip().lower() in wanted:
+            lines.append(f"{name.strip().lower()}:{' '.join(value.split())}")
+    if not lines:
+        return ""
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+
+
 # torch.compile's on-disk cache (Inductor's FX-graph, AOTAutograd and generated
 # code) likewise, instead of its default ``/tmp/torchinductor_<user>``: ``/tmp``
 # is a tmpfs or aged out on many Linux systems, which turns the next process's
 # warm compile into a ~35-40 s cold one, and a cache outside this directory
 # escapes ``ALGAN_CACHE_DIR`` isolation and ``clear_cache()``. Inductor reads
 # the variable lazily, on its first cache access, so setting it after the torch
-# import is in time; ``setdefault`` so an explicit user value always wins.
+# import is in time; ``setdefault`` so an explicit user value always wins. One
+# directory per CPU model and flag set (:func:`_host_cpu_tag`), because the
+# cache can now move between machines (a shared home directory, a restored CI
+# cache) and Inductor's own key does not tell their CPUs apart.
 os.environ.setdefault(
-    "TORCHINDUCTOR_CACHE_DIR", str(_CACHE_DIRECTORY / "torchinductor")
+    "TORCHINDUCTOR_CACHE_DIR",
+    str(_CACHE_DIRECTORY / "torchinductor" / (_host_cpu_tag() or "host")),
 )
 # One cache directory per kernel compiler. The two write different artifact
 # formats under different cache keys, so a shared directory would let one
