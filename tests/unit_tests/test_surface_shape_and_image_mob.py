@@ -3,9 +3,10 @@ from __future__ import annotations
 import pytest
 import torch
 
+from algan import RIGHT, UP, Off
 from algan.constants.color import Color
 from algan.mobs.image_mob import ImageMob
-from algan.mobs.shapes_3d import Cylinder
+from algan.mobs.shapes_3d import Cone, Cylinder
 from algan.mobs.surfaces.surface import Surface
 from algan.scene_manager import SceneManager
 
@@ -276,3 +277,48 @@ def test_set_color_by_function_accepts_rgb_rgba_and_glow_colours(channels):
         # alpha defaults to opaque, glow to none.
         assert torch.allclose(stored[..., 3], torch.zeros_like(stored[..., 3]))
         assert torch.allclose(stored[..., 4], torch.ones_like(stored[..., 4]))
+
+
+def _saddle(uv):
+    x = uv[..., :1] * 4 - 2
+    y = uv[..., 1:] * 4 - 2
+    return torch.cat((x, y, (x**2 - y**2) * 0.4), -1)
+
+
+def test_set_shape_to_takes_a_user_surfaces_own_function():
+    """REGRESSION. It morphed to the target's class method, so a
+    ``Surface(saddle)`` target -- whose shape is the function it was given --
+    flattened the source into the base class's plane instead.
+    """
+    source = Surface(grid_width=10, grid_height=10, add_to_scene=False)
+    target = Surface(_saddle, grid_width=10, grid_height=10, add_to_scene=False)
+
+    with Off():
+        source.set_shape_to(target)
+
+    torch.testing.assert_close(source.grid.location, target.grid.location)
+
+
+def test_set_shape_to_takes_a_turned_targets_shape_as_it_is():
+    """REGRESSION. A Cone aimed by ``direction`` keeps its turn in its grid,
+    not in its coord_function, so the morph went to the unturned cone: a cone
+    pointing RIGHT was copied pointing UP.
+    """
+    source = Surface(grid_width=4, grid_height=4, add_to_scene=False)
+    target = Cone(
+        radius=0.2,
+        height=2,
+        direction=RIGHT,
+        grid_width=9,
+        grid_height=5,
+        add_to_scene=False,
+    )
+    target.move_to(UP * 3)
+
+    with Off():
+        source.set_shape_to(target)
+
+    # The target's shape about the source's own location, on the target's grid.
+    assert (source.grid_width, source.grid_height) == (9, 5)
+    expected = target.grid.location - target.location.reshape(-1, 3)[0]
+    torch.testing.assert_close(source.grid.location, expected, atol=1e-5, rtol=0)
