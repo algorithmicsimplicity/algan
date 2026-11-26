@@ -1415,7 +1415,7 @@ def path_trace_render(
     from algan.rendering.raytracing.pt_volume import prepare_volumes
 
     pt_vol_i, pt_vol_f = prepare_volumes(
-        memory, merged, density_volumes, num_frames, media_offset
+        memory, merged, density_volumes, int(time_end), media_offset
     )
     logger.log(
         PERF,
