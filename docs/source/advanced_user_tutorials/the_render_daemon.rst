@@ -35,7 +35,11 @@ How the handoff works
    no daemon is started for it.
 #. A running daemon publishes a state file at ``~/.algan/daemon.json`` (or
    ``$ALGAN_HOME/daemon.json``). Its absence means "no daemon".
-#. If the file is there, the client sends the daemon the working directory, the
+#. If the file is there, the client first makes whatever is listening on that
+   port prove that it holds the state file's token. Each side proves it with
+   an HMAC, under the token, of two fresh random numbers, so the token itself
+   is never sent, and a process that merely took over a dead daemon's port is
+   sent nothing. The client then sends the daemon the working directory, the
    script path, ``sys.argv`` and the environment, streams the run's stdout and
    stderr back to its own, and exits with the daemon's exit code. The client
    itself never imports Torch or Taichi, so the round trip costs Python start-up
@@ -205,6 +209,16 @@ Stopping it
 Stopping it is also how you clear baked-in configuration: a daemon launched by a
 script that set a non-default renderer toggle serves only scripts that set the
 same one, so stop it if you want one baked with the defaults.
+
+The same holds for eight variables that are not Algan's but are read once, when
+CUDA, Torch, OpenMP or the kernel compiler starts: ``CUDA_VISIBLE_DEVICES``,
+``CUDA_DEVICE_ORDER``, ``HIP_VISIBLE_DEVICES``, ``OMP_NUM_THREADS``,
+``MKL_NUM_THREADS``, ``TI_ARCH``, ``QD_ARCH`` and ``PYTORCH_CUDA_ALLOC_CONF``.
+A daemon cannot adopt a different value for one of these, so a script whose
+value differs from the daemon's is not served by it: the client says which
+variable differs and runs the script in its own process. Unset and empty count
+as different here, because ``CUDA_VISIBLE_DEVICES=`` hides every GPU and an
+unset one shows them all.
 
 Where its output goes
 =====================
