@@ -2570,7 +2570,9 @@ class Mob(
         ---------
         Not animated: the swap happens instantly, inside ``Off()``, and the
         viewer sees no discontinuity. Everything recorded afterwards animates
-        from the Mob's state at this moment.
+        from the Mob's state at this moment. A Mob is re-spawned at this
+        moment only if it, or something below it, was spawned; one that was
+        never spawned stays unspawned.
 
         Returns
         -------
@@ -2578,6 +2580,10 @@ class Mob(
             This Mob, so calls can be chained.
         """
         detach_time = self.animation_manager.context.timespan.current_time
+        # Re-spawned below only if something here was on screen: a Mob that
+        # was never spawned has no history to hand over, and spawning it here
+        # put it on screen -- which is what ``become`` on an unspawned Mob did.
+        was_spawned = self.is_spawned_in_subtree()
         with (
             Off(animation_manager=self.animation_manager),
             NoExtra(priority_level=1, animation_manager=self.animation_manager),
@@ -2644,7 +2650,8 @@ class Mob(
                 clone._pass_identity = orig
             clone_mob.despawn(animate=False)
             self.refresh_history()
-            self.spawn(animate=False)
+            if was_spawned:
+                self.spawn(animate=False)
             timeline.register_updater_history_split(descendant_map)
             return self
 

@@ -60,3 +60,21 @@ def test_set_refuses_an_attribute_only_another_mob_has():
         with pytest.raises(AttributeError, match="roughness"):
             g.set_non_recursive(roughness=0.7)
         assert shiny.set(roughness=0.3) is shiny
+
+
+def test_detaching_or_morphing_an_unspawned_mob_leaves_it_unspawned():
+    # detach_history re-spawned unconditionally, so configuring a shape
+    # before spawning it -- ``s.become(Circle(add_to_scene=False))`` -- put
+    # it on screen at that moment.
+    with Scene():
+        s = Square()
+        s.become(Circle(add_to_scene=False))
+        assert not s.is_spawned()
+        t = Square()
+        assert t.detach_history() is t
+        assert not t.is_spawned()
+
+        # A spawned Mob is still on screen afterwards, as before.
+        u = Square().spawn(animate=False)
+        u.become(Circle(add_to_scene=False))
+        assert u.is_spawned()
