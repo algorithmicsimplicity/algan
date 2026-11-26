@@ -187,10 +187,10 @@ def fxaa(
         # multiplying it, because off an edge the offset need not be a number:
         # a flat black neighbourhood has zero contrast under a zero numerator,
         # so its blend above is 0/0, and ``nan * False`` is still NaN. A NaN
-        # coordinate does not read the pixel it belongs to. The x86 and CUDA
-        # samplers clamp it to coordinate 0, so every pixel of a flat black
+        # coordinate does not read the pixel it belongs to. PyTorch's x86
+        # sampler clamps it to coordinate 0, so every pixel of a flat black
         # region came back as the frame's top-left pixel -- invisible only
-        # while that pixel was black too -- and the aarch64 sampler returns
+        # while that pixel was black too -- and its aarch64 sampler returns
         # NaN. On an edge the two are the same value: ``x * True`` is ``x``.
         torch.mul(luma, 2.0, out=s0)
         _where(edge_mask, s0, zero, out=s0)

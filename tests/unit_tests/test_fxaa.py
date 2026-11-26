@@ -12,8 +12,8 @@ its edges, whatever the edge detection decided.
 "No offset where there is no edge" was a product with the edge mask, and off
 an edge the offset is not always a number: in a flat BLACK neighbourhood the
 blend is 0/0. ``nan * False`` is NaN, so those pixels were sampled at a NaN
-coordinate -- which the x86 and CUDA samplers read as coordinate 0, the
-frame's top-left pixel, and the aarch64 one as NaN.
+coordinate -- which PyTorch's x86 sampler reads as coordinate 0, the frame's
+top-left pixel, and its aarch64 one as NaN.
 
 Tensor assertions on the filter itself: no Taichi, no render.
 """
