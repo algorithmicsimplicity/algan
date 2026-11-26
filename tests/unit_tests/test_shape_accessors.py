@@ -13,11 +13,13 @@ from algan import (
     UP,
     Circle,
     Cone,
+    Dot,
     Line,
     Line3D,
     Off,
     Scene,
 )
+from algan.errors import AlganConfigurationError, AlganWarning
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.image_mob import ImageMob
 
@@ -117,3 +119,53 @@ def test_scene_takes_no_memory_argument():
 )
 def test_methods_that_always_raised_are_gone(cls, name):
     assert not hasattr(cls, name)
+
+
+@pytest.mark.parametrize("make", [lambda: Circle(radius=0), lambda: Dot(radius=0)])
+def test_a_zero_radius_circle_warns_that_it_cannot_grow(make):
+    # Built with all-zero control points and basis, it could never be resized:
+    # ``circle.radius = 1`` left it at 0 without a word.
+    with Scene(), pytest.warns(AlganWarning, match="radius 0") as caught:
+        make()
+    assert caught[0].filename == __file__
+
+
+def test_a_negative_radius_circle_warns_that_it_faces_inward():
+    with Scene(), pytest.warns(AlganWarning, match="negative radius"):
+        circle = Circle(radius=-1)
+    assert float(circle.radius) == pytest.approx(1.0)  # built as it always was
+
+
+def test_a_positive_radius_circle_does_not_warn():
+    import warnings
+
+    with Scene(), warnings.catch_warnings():
+        warnings.simplefilter("error", AlganWarning)
+        Circle(radius=0.5)
+        Dot()
+
+
+@pytest.mark.parametrize("path_arc", [360, -360, 720, 1080])
+def test_a_full_turn_line_arc_is_refused(path_arc):
+    # The arc's radius divides by sin(path_arc / 2): a whole number of turns
+    # built a "line" with coordinates around 1e16.
+    with Scene(), pytest.raises(AlganConfigurationError, match="path_arc"):
+        Line(LEFT, RIGHT, path_arc=path_arc)
+
+
+@pytest.mark.parametrize("path_arc", [60, 359, -270, 400])
+def test_other_line_arcs_still_build_finite_points(path_arc):
+    with Scene():
+        line = Line(LEFT, RIGHT, path_arc=path_arc)
+    points = line.control_points.location
+    assert bool(points.isfinite().all())
+    assert float(points.abs().max()) < 1e3
+
+
+def test_non_finite_control_points_are_refused_by_name():
+    # They failed deep inside the frame derivation with
+    # "IndexError: index 4 is out of bounds for axis 1 with size 4".
+    points = torch.zeros(4, 3)
+    points[1, 0] = float("nan")
+    with Scene(), pytest.raises(AlganConfigurationError, match="control_points"):
+        BezierCircuitCubic(points)

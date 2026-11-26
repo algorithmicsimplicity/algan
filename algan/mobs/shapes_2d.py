@@ -25,6 +25,7 @@ from __future__ import annotations
 import math
 import numbers
 import operator
+import warnings
 
 import torch.nn.functional as F
 
@@ -35,7 +36,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.constants.color import *
 from algan.constants.spatial import INWARD, LEFT, ORIGIN, RIGHT
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganWarning, _user_stacklevel
 from algan.geometry.geometry import get_orthonormal_vector, map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.stroke_style import _warn_background_stroke
@@ -268,6 +269,17 @@ class Line(BezierCircuitCubic):
         if abs(float(path_arc)) > 1e-10:
             import manim as mn
 
+            # The arc's radius is the chord over 2 sin(path_arc / 2), so a
+            # whole number of turns has no radius: the points came out near
+            # 1e16 rather than raising. An arc of almost a turn is still a
+            # (large) arc and is kept.
+            if abs(math.sin(math.radians(float(path_arc)) / 2)) < 1e-9:
+                raise AlganConfigurationError(
+                    f"Line(path_arc={path_arc!r}) asks for an arc of a whole "
+                    "number of turns between two points, which no circle "
+                    "draws. Give path_arc less than 360 degrees in size; for "
+                    "a full circle through both points, use a Circle."
+                )
             arc = mn.ArcBetweenPoints(
                 start_center.detach().reshape(-1, 3)[0].cpu().numpy(),
                 end_center.detach().reshape(-1, 3)[0].cpu().numpy(),
@@ -1259,6 +1271,30 @@ class Square(Rectangle):
         super().__init__(width=size, height=size, **kwargs)
 
 
+def _warn_if_degenerate_radius(name, radius):
+    """Warn about a radius a circle is built from but cannot work with.
+
+    Warned rather than refused, because both build and run today: a zero
+    radius draws nothing, a negative one draws at its size.
+    """
+    radii = cast_to_tensor(radius)
+    if bool((radii == 0).any()):
+        message = (
+            f"{name} of radius 0 has no size to grow from: setting its radius "
+            "later leaves it at 0. Build it at the radius it is to have and "
+            "animate its entrance, or start from a small positive radius."
+        )
+    elif bool((radii < 0).any()):
+        message = (
+            f"{name} with a negative radius is drawn at the radius's size but "
+            "built inside out, facing INWARD rather than towards the viewer. "
+            "Give a positive radius."
+        )
+    else:
+        return
+    warnings.warn(message, AlganWarning, stacklevel=_user_stacklevel())
+
+
 class Circle(BezierCircuitCubic):
     """A circle, drawn as a cubic bezier circuit.
 
@@ -1276,6 +1312,7 @@ class Circle(BezierCircuitCubic):
     def __init__(self, radius=1, color=None, *args, **kwargs):
         if radius is None:
             radius = 1
+        _warn_if_degenerate_radius(type(self).__name__, radius)
         if color is not None:
             kwargs.setdefault("color", color)
         kwargs = _translate_vector_style_kwargs(
