@@ -294,3 +294,37 @@ def test_a_non_positive_timeout_means_no_limit(monkeypatch):
     assert typeset_cache._timeout_seconds() is None
     monkeypatch.delenv("ALGAN_TEX_TIMEOUT")
     assert typeset_cache._timeout_seconds() == typeset_cache._DEFAULT_TIMEOUT_SECONDS
+
+
+def test_one_document_under_two_compilers_is_cached_twice(tex_dir, monkeypatch):
+    # The SVG was named after the source alone, so a latex and an xelatex
+    # template of the same document shared one file.
+    built = []
+
+    def fake_compile(tex_file, compiler, output_format, builds):
+        built.append(compiler)
+        output = tex_file.with_suffix(output_format)
+        output.write_text(compiler)
+        return output
+
+    def fake_convert(output, output_format):
+        svg = output.with_suffix(".svg")
+        svg.write_text(f"<svg>{output.read_text()}</svg>")
+        return svg
+
+    monkeypatch.setattr(typeset_cache, "_compile", fake_compile)
+    monkeypatch.setattr(typeset_cache, "_convert_to_svg", fake_convert)
+    latex = mn.TexTemplate()
+    xelatex = mn.TexTemplate(tex_compiler="xelatex", output_format=".xdv")
+
+    first = typeset_cache.build_tex_svg("x", tex_template=latex)
+    second = typeset_cache.build_tex_svg("x", tex_template=xelatex)
+
+    assert built == ["latex", "xelatex"]
+    assert first != second
+    assert second.read_text() == "<svg>xelatex</svg>"
+    # The default toolchain keeps the name it always had, so SVGs cached
+    # before the compiler was part of the name are still hits.
+    from manim.utils.tex_file_writing import tex_hash
+
+    assert first.name == tex_hash(latex.get_texcode_for_expression("x")) + ".svg"

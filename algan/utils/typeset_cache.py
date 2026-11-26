@@ -20,8 +20,9 @@ beside ``tex_dir``, and only finished files enter the cache, by
 - two processes building the same formula both succeed, and the second rename
   replaces identical bytes.
 
-The layout is unchanged -- ``tex_hash(source) + ".svg"`` beside its ``.tex`` -- so
-SVGs cached by earlier versions are reused, and the build directory is a
+The layout is unchanged -- ``tex_hash(source) + ".svg"`` beside its ``.tex``, the
+hash also covering the compiler when it is not the default ``latex`` -- so SVGs
+cached by earlier versions are reused, and the build directory is a
 *sibling* of ``tex_dir`` rather than inside it, so an older Algan sharing the
 cache, still sweeping ``tex_dir`` after every formula, cannot reach it either.
 
@@ -200,7 +201,7 @@ def build_tex_svg(expression, environment=None, tex_template=None) -> Path:
         source = tex_template.get_texcode_for_expression(expression)
 
     tex_dir = Path(config.get_dir("tex_dir"))
-    stem = tex_hash(source)
+    stem = tex_hash(source + _toolchain_suffix(tex_template))
     svg_file = tex_dir / f"{stem}.svg"
     if svg_file.exists():
         return svg_file
@@ -235,6 +236,23 @@ def build_tex_svg(expression, environment=None, tex_template=None) -> Path:
         if not keep_work:
             shutil.rmtree(work, ignore_errors=True)
     return svg_file
+
+
+def _toolchain_suffix(tex_template) -> str:
+    """What the cache name adds to the source for a non-default toolchain.
+
+    Manim names a formula's SVG after its source alone, so two templates with
+    the same document and different compilers (latex and xelatex) shared one
+    file, and whichever built first answered for both. The default
+    toolchain adds nothing, which keeps every SVG cached before this was
+    added a hit.
+    """
+    compiler = tex_template.tex_compiler
+    if not isinstance(compiler, str):
+        compiler = ",".join(compiler)
+    if (compiler, tex_template.output_format) == ("latex", ".dvi"):
+        return ""
+    return f"\n% compiled by {compiler} to {tex_template.output_format}"
 
 
 def _compile(tex_file: Path, tex_compiler, output_format: str, builds: Path) -> Path:
