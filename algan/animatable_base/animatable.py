@@ -135,39 +135,29 @@ def _check_updater_signature(update_function, extra_positional):
     )
 
 
-def _warn_if_removal_overrides_running_animations(timeline, writes, removal_time, mob):
-    """Warn when ``remove_updater``'s boundary writes land on rows that an
-    animation recorded before it is still animating.
+def _warn_removal_cancels(cancelled, mob):
+    """Warn that ``remove_updater`` cancelled the still-running animations
+    ``cancelled`` (from :meth:`AnimationTimeline.record_updater_removal`).
 
-    The removal records the state the updater left as an instant write at the
-    removal time, after everything recorded so far. An instant write holds
-    what it wrote over an earlier-executed animation still running on its rows
-    (``agent_guidance/timeline.md``, override semantics), so such an animation
-    is cancelled from the removal on. The usual way to get here is
-    ``mob.move(...)`` and then ``mob.remove_updater(...)`` in one ``Sync``:
-    the two start together, but the move is lost, while the other order works.
-    Reordering the recorded edits would need the animation re-run from the
-    boundary state, so the line is reported instead.
+    An animation written just before the removal and starting with it (the
+    two in one ``Sync``) is rebuilt to start from the updater's state. What is
+    left is an animation that started earlier and is still running, or one
+    followed by other writes of the same rows: the removal's write is then
+    recorded after it and holds the updater's state over it
+    (``agent_guidance/timeline.md``, override semantics).
     """
-    for attr_name, indexes, _ in writes:
-        for edit in timeline.attr_to_timeline[attr_name].edits:
-            event = edit.event
-            if event is None or not (event.time.start <= removal_time < event.time.end):
-                continue
-            if not torch.isin(edit.indexes, indexes).any():
-                continue
-            name = getattr(event.function, "__name__", "an animation")
-            warnings.warn(
-                f"remove_updater() on {mob._describe()} cancels its {name}() "
-                f"animation, which was written before it and is still running "
-                f"at the removal: the Mob holds the state the updater left it "
-                f"in from the removal on. Remove the updater before the "
-                f"animation, for example as the first line of the Sync block, "
-                f"so that the animation starts from that state.",
-                AlganWarning,
-                stacklevel=_user_stacklevel(),
-            )
-            return
+    if not cancelled:
+        return
+    name = getattr(cancelled[0].function, "__name__", "an animation")
+    warnings.warn(
+        f"remove_updater() on {mob._describe()} cancels its {name}() "
+        f"animation, which was written before it and is still running at the "
+        f"removal: the Mob holds the state the updater left it in from the "
+        f"removal on. Remove the updater before the animation starts, so that "
+        f"the animation starts from that state.",
+        AlganWarning,
+        stacklevel=_user_stacklevel(),
+    )
 
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
@@ -1006,6 +996,18 @@ class Animatable:
         frames before this point and not after. Removing an already-removed updater
         does nothing.
 
+        An animation of the Mob that starts at the same time is run from the
+        state the updater left, whichever of the two lines comes first: in
+        ``with Sync(): mob.move(UP); mob.remove_updater(i)`` the Mob moves up
+        from where the updater left it. The animation keeps what it recorded, so
+        one aimed at an absolute value worked out from the Mob's state when it
+        was written (``move_to``, assigning an attribute) still travels the
+        change it computed then; write the removal first when that state
+        matters. An animation of the Mob that started earlier and is still
+        running (or one followed in the block by an ``Off()`` write of the same
+        attribute) is cancelled from here on, with an :class:`.AlganWarning`:
+        the Mob holds the updater's state.
+
         Parameters
         ----------
         updater_id
@@ -1076,19 +1078,22 @@ class Animatable:
             # Preserve only the removed updater's boundary writes. Other active
             # updaters were materialized so dependency reads were current, but
             # recording their state here would make later frames apply them on
-            # top of an already-advanced base state.
-            _warn_if_removal_overrides_running_animations(
-                timeline, writes, context.timespan.current_time, event.caller
-            )
-            for attr_name, indexes, value in writes:
-                timeline.modify_attribute_and_record(
-                    attr_name,
+            # top of an already-advanced base state. An animation of those rows
+            # written just before this line, in the same block, is rebuilt to
+            # start from them; the off context keeps its re-run unrecorded.
+            with Off(
+                record_attr_modifications=False,
+                record_funcs=False,
+                priority_level=float("inf"),
+                animation_manager=self.animation_manager,
+            ):
+                cancelled = timeline.record_updater_removal(
+                    writes,
                     event.caller.id,
-                    False,
-                    indexes,
-                    value,
                     span.end_event,
+                    context.timespan.current_time,
                 )
+            _warn_removal_cancels(cancelled, event.caller)
 
     def remove_all_updaters(self):
         """Remove every updater attached to this Mob.

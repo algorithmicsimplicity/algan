@@ -141,6 +141,15 @@ def _call_recorded(function, caller, kwargs):
     return function(caller, *leading, *extra_args, **kwargs)
 
 
+def _rows_of(value, keep, row_count):
+    """``value``'s entries for the rows at positions ``keep`` of a write of
+    ``row_count`` rows (a value broadcast over the rows is returned as is).
+    """
+    if torch.is_tensor(value) and value.dim() >= 2 and value.shape[-2] == row_count:
+        return value.index_select(-2, keep.to(value.device))
+    return value
+
+
 #: Sentinel timestamp for "not yet spawned/despawned".
 def _never():
     return -1
@@ -3153,6 +3162,210 @@ class AnimationTimeline:
         span = self.function_timeline.updaters[updater_id].time
         span.end_event = animation_context.timespan.get_current_time()
         return span
+
+    def record_updater_removal(self, writes, mob_id, end_event, removal_time):
+        """Record the state a removed updater left behind (``writes``, as
+        :meth:`begin_updater_write_capture` collected them) at ``end_event``.
+
+        The state is the base every later animation of those rows starts from,
+        including one written *before* the removal that starts at the removal
+        time: ``dot.move(UP)`` then ``dot.remove_updater(...)`` in one ``Sync``
+        moves the dot up from where the updater left it, as the two lines the
+        other way round do. Recorded after such an animation, the write would
+        hold its value over it (an instant write overrides an earlier-executed
+        animation still running on its rows) and cancel it. So for those rows
+        the write goes into execution order just before the animation, the
+        animation's recorded pre-values become the boundary state, and the
+        animation is re-run at its final parameters, as replay runs it, to
+        rebuild the authoring state it leaves.
+
+        That needs everything recorded on those rows since the animation began
+        to be animations that start at the removal time. Rows where something
+        else runs (an animation that started earlier and is still going, an
+        instant write after it) get the write after everything, as before,
+        which holds its value over what is still running. Returns the
+        functions it cancels that way, for the caller to report.
+        """
+        if not writes:
+            return []
+        # The first function application recorded on each written row that is
+        # still running at the removal, and everything recorded after it.
+        by_attr = {}
+        for attr_name, indexes, value in writes:
+            by_attr.setdefault(attr_name, []).append((indexes.view(-1), value))
+        touched = {}
+        for attr_name, entries in by_attr.items():
+            rows = torch.cat([rows for rows, _ in entries])
+            for edit in self.attr_to_timeline[attr_name].edits:
+                event = edit.event
+                if event is None or not (
+                    event.time.start <= removal_time < event.time.end
+                ):
+                    continue
+                if torch.isin(edit.indexes.view(-1), rows).any():
+                    touched[id(event)] = event
+        if not touched:
+            for attr_name, indexes, value in writes:
+                self.modify_attribute_and_record(
+                    attr_name, mob_id, False, indexes, value, end_event
+                )
+            return []
+
+        running = sorted(touched.values(), key=lambda e: e.seq)
+        first_seq = running[0].seq
+        # Every function recorded since the first running one that writes
+        # those rows (or rows of one of them, transitively) is re-run. They
+        # all have to start no earlier than the removal: one that started
+        # before it, or a plain write among them, has a recorded past the
+        # updater's state cannot be put under.
+        involved = {}
+        for attr_name, entries in by_attr.items():
+            involved[attr_name] = torch.cat([rows for rows, _ in entries])
+        events = []
+        event_ids = set()
+        rebase = True
+        tail = sorted(
+            (entry for entry in self._edits_in_order if entry[0] > first_seq),
+            key=lambda entry: entry[0],
+        )
+        for _, attr_name, edit in tail:
+            event = edit.event
+            if event is not None and id(event) in event_ids:
+                continue
+            rows = involved.get(attr_name)
+            if rows is None or not bool(torch.isin(edit.indexes.view(-1), rows).any()):
+                continue
+            if event is None or event.time.start < removal_time - 1e-9:
+                rebase = False
+                break
+            events.append(event)
+            event_ids.add(id(event))
+            own = {}
+            for (attr, *_), record in zip(
+                event.recorded_edits, event.recorded_edit_records
+            ):
+                rows = record.indexes.view(-1)
+                if attr in own and bool(torch.isin(rows, own[attr]).any()):
+                    # Writes the same rows twice: the second write's
+                    # pre-values are the first's result, which the re-run
+                    # below does not take.
+                    rebase = False
+                    break
+                own[attr] = rows if attr not in own else torch.cat([own[attr], rows])
+                held = involved.get(attr)
+                involved[attr] = rows if held is None else torch.cat([held, rows])
+            if not rebase:
+                break
+        if not rebase:
+            for attr_name, indexes, value in writes:
+                self.modify_attribute_and_record(
+                    attr_name, mob_id, False, indexes, value, end_event
+                )
+            return running
+        event_rows = {}
+        for event in events:
+            for (attr_name, *_), edit in zip(
+                event.recorded_edits, event.recorded_edit_records
+            ):
+                event_rows.setdefault(attr_name, []).append(edit.indexes.view(-1))
+        event_rows = {a: torch.cat(r) for a, r in event_rows.items()}
+
+        # Roll the running functions' rows back to what they held before the
+        # first of them ran (their recorded pre-values, latest first).
+        records = [
+            (attr_name, edit)
+            for event in events
+            for (attr_name, *_), edit in zip(
+                event.recorded_edits, event.recorded_edit_records
+            )
+        ]
+        for attr_name, edit in reversed(records):
+            self.attr_to_timeline[attr_name].modify(edit.indexes.view(-1), edit.values)
+        # The boundary write: rows a running function covers are inserted
+        # before it in execution order, the rest are recorded as usual. The
+        # inserted edit's seq sits between the edits recorded before the first
+        # running function and that function itself (whose place among plain
+        # writes is its seq + 0.5).
+        boundary_seq = first_seq + 0.25
+        for attr_name, entries in by_attr.items():
+            timeline = self.attr_to_timeline[attr_name]
+            covered_rows = event_rows.get(attr_name)
+            for rows, value in entries:
+                covered = (
+                    torch.zeros_like(rows, dtype=torch.bool)
+                    if covered_rows is None
+                    else torch.isin(rows, covered_rows)
+                )
+                if not bool(covered.all()):
+                    keep = (~covered).nonzero().view(-1)
+                    self.modify_attribute_and_record(
+                        attr_name,
+                        mob_id,
+                        False,
+                        rows[keep],
+                        _rows_of(value, keep, rows.numel()),
+                        end_event,
+                    )
+                if not bool(covered.any()):
+                    continue
+                keep = covered.nonzero().view(-1)
+                inserted_rows = rows[keep]
+                edit = EditRecord(
+                    inserted_rows,
+                    timeline.get(inserted_rows),
+                    end_event,
+                    boundary_seq,
+                    None,
+                )
+                timeline.modify(inserted_rows, _rows_of(value, keep, rows.numel()))
+                position = next(
+                    (k for k, e in enumerate(timeline.edits) if e.seq > boundary_seq),
+                    len(timeline.edits),
+                )
+                timeline.edits.insert(position, edit)
+                self._edits_in_order.append((boundary_seq, attr_name, edit))
+        # Re-run the functions from the boundary state at their final
+        # parameters, exactly as a one-frame replay at their end does, taking
+        # each edit's new pre-values on the way.
+        for event in events:
+            kwargs = dict(event.kwargs.items())
+            a = event.easing(torch.ones((1, 1, 1)))
+            for k in event.animated_args:
+                kwargs[k] = torch.lerp(
+                    cast_to_tensor(event.animated_args[k]), event.kwargs[k], a
+                )
+            if TIME_PARAMETER_NAME in kwargs:
+                kwargs[TIME_PARAMETER_NAME] = cast_to_tensor(
+                    event.time.end - event.time.start
+                ).view(-1, 1, 1)
+            for (attr_name, *_), edit in zip(
+                event.recorded_edits, event.recorded_edit_records
+            ):
+                edit.values = self.attr_to_timeline[attr_name].get(
+                    edit.indexes.view(-1)
+                )
+            previous_event = self._active_replay_event
+            previous_edit_index = self._active_replay_edit_index
+            self._active_replay_event = event
+            self._active_replay_edit_index = 0
+            try:
+                _call_recorded(event.function, event.caller, kwargs)
+            finally:
+                self._active_replay_event = previous_event
+                self._active_replay_edit_index = previous_edit_index
+        # Edits were inserted and earlier pre-values rewritten: what was
+        # prepared or resolved from the log no longer describes it.
+        self._edit_order_dirty = True
+        self._edit_order_dirty_ever = True
+        self._resolved_prefix_count = 0
+        self._resolved_prefix_seq = -1
+        self._resolved_row_ends = {}
+        self._row_ends_capacity = {}
+        self._replay_windows_resolved = False
+        for timeline in self.attr_to_timeline.values():
+            timeline.invalidate_prepared_queries()
+        self.function_timeline.invalidate_window_cache()
+        return []
 
     def note_hierarchy_change(self, parent):
         """Warn if ``parent``'s children just changed underneath a live updater.

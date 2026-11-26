@@ -20,7 +20,7 @@ import torch
 from algan import Mob
 from algan.animation_timeline.animation_contexts import Audio, Off, Seq, Speech, Sync
 from algan.constants import easings
-from algan.constants.spatial import RIGHT, UP
+from algan.constants.spatial import OUT, RIGHT, UP
 from algan.errors import AlganWarning
 from algan.scene_manager import SceneManager
 
@@ -126,9 +126,9 @@ def test_removing_an_updater_in_a_compressed_block_keeps_its_instant_writes():
     )
 
 
-def _follow_then_move(remove_first):
+def _follow_then_animate(remove_first, animate):
     """A dot follows a leader through an updater, then in one ``Sync`` the
-    updater is removed and the dot moves up.
+    updater is removed and ``animate(dot)`` runs.
     """
     scene = SceneManager.instance().current_scene
     leader = Mob().spawn(animate=False)
@@ -138,25 +138,76 @@ def _follow_then_move(remove_first):
     with Sync(easing=easings.identity):
         if remove_first:
             dot.remove_updater(updater)
-            dot.move(UP)
+            animate(dot)
         else:
-            dot.move(UP)
+            animate(dot)
             dot.remove_updater(updater)
     scene.wait(1)
     return dot
 
 
-def test_removing_an_updater_after_an_animation_of_its_mob_in_a_sync_warns():
-    """Written after the move in the same ``Sync``, the removal's boundary
-    write is recorded after the move and overrides it: the dot never moves.
-    The removal written first is the spelling that works, and stays silent.
+def _move_then_move_on(dot):
+    with Seq():
+        dot.move(UP)
+        dot.move(RIGHT)
+
+
+@pytest.mark.parametrize(
+    "animate",
+    [
+        pytest.param(lambda dot: dot.move(UP), id="move"),
+        # The second move is recorded after the first and starts after the
+        # removal: it is rebuilt from the first one's new end.
+        pytest.param(_move_then_move_on, id="Seq"),
+        pytest.param(lambda dot: (dot.move(UP), dot.rotate(90, OUT)), id="rotate"),
+    ],
+)
+def test_an_animation_written_before_remove_updater_in_a_sync_still_runs(animate):
+    """In one ``Sync`` the removal and the animation start together, so their
+    order must not decide whether the animation exists. Written after the
+    move, the removal's write of the updater's state used to be recorded
+    after it and hold its value over it: the dot never moved, and a warning
+    said to swap the lines. Now the animation starts from where the updater
+    left the dot either way, and nothing warns.
     """
+    times = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
     with warnings.catch_warnings():
         warnings.simplefilter("error", AlganWarning)
-        dot = _follow_then_move(remove_first=True)
-    y = _materialize([1.0, 1.5, 2.5], dot)[:, 0, 1].tolist()
-    assert y == pytest.approx([1.0, 1.5, 2.0], abs=1e-5)
+        dot = _follow_then_animate(remove_first=False, animate=animate)
+    after = _materialize(times, dot)
+    after_basis = _materialize(times, dot, "basis")
+    after_location = dot.location.clone()
 
     SceneManager.reset()
-    with pytest.warns(AlganWarning, match="before the animation"):
-        _follow_then_move(remove_first=False)
+    dot = _follow_then_animate(remove_first=True, animate=animate)
+    assert after == pytest.approx(_materialize(times, dot), abs=1e-5)
+    assert after_basis == pytest.approx(_materialize(times, dot, "basis"), abs=1e-5)
+    assert after_location == pytest.approx(dot.location, abs=1e-5)
+
+
+def test_the_move_written_before_remove_updater_completes():
+    """The finding's scenario, as numbers: the dot follows the leader to
+    x = 1, then moves up from y = 1 to y = 2 over the ``Sync``.
+    """
+    dot = _follow_then_animate(remove_first=False, animate=lambda d: d.move(UP))
+    xy = _materialize([1.0, 1.5, 2.0, 2.5], dot)[:, 0, :2]
+    assert xy[:, 0].tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0], abs=1e-5)
+    assert xy[:, 1].tolist() == pytest.approx([1.0, 1.5, 2.0, 2.0], abs=1e-5)
+
+
+def test_removing_an_updater_in_the_middle_of_a_running_animation_warns():
+    """A move that started before the removal and is still running cannot be
+    put under the updater's state (it was running under the updater until
+    then), so the removal still holds that state over it, and says so.
+    """
+    scene = SceneManager.instance().current_scene
+    leader = Mob().spawn(animate=False)
+    dot = Mob().spawn(animate=False)
+    updater = dot.add_updater(lambda mob, _t: mob.move_to(leader.location + UP))
+    leader.move(RIGHT)
+    with Sync(easing=easings.identity):
+        dot.move(UP)
+        with Seq():
+            scene.wait(0.5)
+            with pytest.warns(AlganWarning, match="cancels its"):
+                dot.remove_updater(updater)
