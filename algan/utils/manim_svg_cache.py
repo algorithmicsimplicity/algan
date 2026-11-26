@@ -17,7 +17,10 @@ The design mirrors the on-disk geometry cache used by
 :mod:`algan.mobs.triangulated_bezier_circuit`: a stable ``sha256`` content key
 selects a file under ``SETTINGS.paths.cache_directory``; the value is the
 per-glyph point arrays + style, saved with :func:`torch.save` and rebuilt into
-lightweight VMobjects (no LaTeX, no ``svgelements`` parse, no deep copy).
+lightweight VMobjects (no LaTeX, no ``svgelements`` parse, no deep copy). It is
+saved as plain data, loaded with ``weights_only=True``, and may name only
+vendored-Manim classes (see :func:`_encode`), so a file planted in a shared
+cache directory cannot run code.
 
 Manim 0.21 added ``SVGMobject.id_to_vgroup_dict``, which maps each SVG element
 id to a ``VGroup`` of the glyphs beneath it. ``MathTex._break_up_by_substrings``
@@ -44,13 +47,14 @@ and the only one in the process. Importing this module installs the patch once.
 from __future__ import annotations
 
 import contextlib
+import enum
 import hashlib
 import importlib
 import logging
 import os
 import threading
 from functools import wraps
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import numpy as np
 import torch
@@ -79,6 +83,9 @@ _SKIP_KEYS = ("path_obj", "submobjects", "updaters")
 # _warnings_logged); one written before it did has none to log again, which is
 # not worth every cached SVG being parsed afresh to recover.
 _RECIPE_TAG = "algan-manim-svg-recipe-v4"
+
+#: The disk file's format, in its name (see :func:`_disk_path`).
+_DISK_FORMAT = "data1"
 
 #: The logger the vendored Manim logs on (see its ``_config/__init__.py``).
 _MANIM_LOGGER = "algan.manim"
@@ -327,17 +334,126 @@ def _restore_value(v):
 
 _class_cache: dict[tuple, type] = {}
 
+#: The only modules a recipe may name a class from: Algan's vendored Manim,
+#: under either of the names it is imported by, and Pillow for its enums
+#: alone (an image glyph's resampling filter).
+_RECIPE_MODULE_PREFIXES = ("manim.", "algan.external_libraries.manim.")
+_ENUM_ONLY_MODULE_PREFIXES = ("PIL.",)
+
+
+class _NotPlainData(Exception):
+    """A value the disk format has no encoding for, or one it refuses."""
+
+
+def _allowed_recipe_class(cls) -> bool:
+    """Whether a recipe may rebuild an instance of ``cls``.
+
+    Only a vendored-Manim Mobject, color or enum, or a Pillow enum, never an
+    arbitrary class.
+    """
+    from manim.mobject.mobject import Mobject
+    from manim.utils.color import ManimColor
+
+    if not isinstance(cls, type):
+        return False
+    if cls.__module__.startswith(_ENUM_ONLY_MODULE_PREFIXES):
+        return issubclass(cls, enum.Enum)
+    return cls.__module__.startswith(_RECIPE_MODULE_PREFIXES) and issubclass(
+        cls, (Mobject, ManimColor, enum.Enum)
+    )
+
 
 def _resolve_class(module: str, qualname: str) -> type:
     key = (module, qualname)
     cls = _class_cache.get(key)
     if cls is None:
+        if not isinstance(module, str) or not module.startswith(
+            _RECIPE_MODULE_PREFIXES + _ENUM_ONLY_MODULE_PREFIXES
+        ):
+            raise _NotPlainData(f"a recipe may not name a class from {module!r}")
         obj = importlib.import_module(module)
         for part in qualname.split("."):
             obj = getattr(obj, part)
+        if not _allowed_recipe_class(obj):
+            raise _NotPlainData(f"a recipe may not rebuild {module}.{qualname}")
         cls = obj
         _class_cache[key] = cls
     return cls
+
+
+# The disk format. A recipe is pickled-free plain data: every value is a
+# ``None``, ``bool``, ``int``, ``float`` or ``str`` as itself, or a tagged list
+# whose first element says what it was -- a list, tuple or dict of encoded
+# values, a NumPy array (carried as a tensor), a NumPy scalar, a path, or an
+# instance
+# of a vendored-Manim class (by module and name, with its encoded
+# ``__dict__``). That loads with ``torch.load(weights_only=True)``, which
+# constructs nothing but tensors and containers, and the classes it names are
+# checked by ``_resolve_class`` before anything is built. The pickles this
+# replaced ran whatever code a file in the cache directory named, so anyone
+# able to write there -- a shared or CI-restored cache -- could run code in
+# the next process to typeset the matching string.
+_PLAIN = (type(None), bool, int, float, str)
+
+
+def _encode(value):
+    if type(value) in _PLAIN:
+        return value
+    if isinstance(value, np.ndarray):
+        try:
+            return ["ndarray", torch.from_numpy(np.array(value, copy=True))]
+        except (TypeError, ValueError) as error:  # e.g. an object array
+            raise _NotPlainData(str(error)) from None
+    if isinstance(value, np.generic):
+        return ["npscalar", value.dtype.str, value.item()]
+    if type(value) is list:
+        return ["list", [_encode(item) for item in value]]
+    if type(value) is tuple:
+        return ["tuple", [_encode(item) for item in value]]
+    if type(value) is dict:
+        return ["dict", [[_encode(k), _encode(v)] for k, v in value.items()]]
+    if isinstance(value, PurePath):
+        return ["path", str(value)]
+    cls = type(value)
+    if not _allowed_recipe_class(cls):
+        raise _NotPlainData(f"no disk encoding for {cls.__module__}.{cls.__qualname__}")
+    if isinstance(value, enum.Enum):
+        return ["enum", cls.__module__, cls.__qualname__, _encode(value.value)]
+    if not hasattr(value, "__dict__"):
+        raise _NotPlainData(f"no disk encoding for {cls.__module__}.{cls.__qualname__}")
+    return ["object", cls.__module__, cls.__qualname__, _encode(vars(value))]
+
+
+def _decode(value):
+    if type(value) in _PLAIN:
+        return value
+    if type(value) is not list or not value or type(value[0]) is not str:
+        raise _NotPlainData(f"not an encoded value: {type(value).__name__}")
+    tag, *rest = value
+    if tag == "ndarray":
+        (tensor,) = rest
+        return tensor.numpy()
+    if tag == "npscalar":
+        dtype, item = rest
+        return np.dtype(dtype).type(item)
+    if tag == "list":
+        return [_decode(item) for item in rest[0]]
+    if tag == "tuple":
+        return tuple(_decode(item) for item in rest[0])
+    if tag == "dict":
+        return {_decode(k): _decode(v) for k, v in rest[0]}
+    if tag == "path":
+        return Path(rest[0])
+    if tag == "enum":
+        module, qualname, item = rest
+        return _resolve_class(module, qualname)(_decode(item))
+    if tag == "object":
+        module, qualname, state = rest
+        cls = _resolve_class(module, qualname)
+        instance = cls.__new__(cls)
+        instance.__dict__.update(_decode(state))
+        return instance
+    raise _NotPlainData(f"unknown tag {tag!r}")
 
 
 def _rebuild_node(node: tuple):
@@ -394,12 +510,19 @@ def _memoize(key: str, recipe: tuple) -> None:
         _MEM_CACHE[key] = recipe
 
 
+def _disk_path(key: str) -> Path:
+    # Its own suffix, so a pickle an older Algan wrote under ``{key}.pt`` is
+    # never opened: it is simply a miss, re-parsed and saved in this format,
+    # and the old file ages out under the cap like any unused entry.
+    return _cache_dir() / f"{key}.{_DISK_FORMAT}.pt"
+
+
 def _load_disk(key: str):
-    path = _cache_dir() / f"{key}.pt"
+    path = _disk_path(key)
     if not path.exists():
         return None
     try:
-        recipe = torch.load(path, map_location="cpu", weights_only=False)
+        recipe = _decode(torch.load(path, map_location="cpu", weights_only=True))
     except Exception as e:  # noqa: BLE001 - a corrupt cache must never be fatal
         get_logger().warning(f"manim_svg_cache: failed to load {path.name}: {e}")
         return None
@@ -444,12 +567,18 @@ def _enforce_cap() -> None:
 
 
 def _save_disk(key: str, recipe: tuple) -> None:
+    try:
+        encoded = _encode(recipe)
+    except _NotPlainData as e:
+        # Kept in memory, just not shared through the disk.
+        get_logger().debug(f"manim_svg_cache: not saving {key[:12]}: {e}")
+        return
     d = _cache_dir()
     d.mkdir(parents=True, exist_ok=True)
-    path = d / f"{key}.pt"
+    path = _disk_path(key)
     tmp = d / f"{key}.pt.{os.getpid()}.tmp"
     try:
-        torch.save(recipe, tmp)
+        torch.save(encoded, tmp)
         os.replace(tmp, path)  # atomic: never leave a half-written cache file
     except Exception as e:  # noqa: BLE001
         get_logger().warning(f"manim_svg_cache: failed to save {path.name}: {e}")

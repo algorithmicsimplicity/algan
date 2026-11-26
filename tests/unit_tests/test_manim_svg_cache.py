@@ -11,6 +11,7 @@ succeeded and every later one died on ``KeyError: 'root'``.
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 
 import manim as mn
@@ -469,3 +470,59 @@ def test_the_in_process_recipe_memo_is_bounded(monkeypatch):
         assert len(svg_cache._MEM_CACHE) <= 8
     assert "key19" in svg_cache._MEM_CACHE
     assert "key0" not in svg_cache._MEM_CACHE
+
+
+class _RunsCodeWhenUnpickled:
+    marker = None
+
+    def __reduce__(self):
+        return (pathlib.Path.touch, (pathlib.Path(self.marker),))
+
+
+def test_a_cache_file_is_never_unpickled(isolated_svg_cache, tmp_path):
+    # The disk layer used torch.load(weights_only=False), so anyone who could
+    # write into the cache directory ran code in the next process to typeset
+    # the matching string.
+    marker = tmp_path / "ran"
+    payload = _RunsCodeWhenUnpickled()
+    payload.marker = os.fspath(marker)
+    svg_cache._cache_dir().mkdir(parents=True, exist_ok=True)
+    for path in (
+        svg_cache._disk_path("planted"),
+        svg_cache._cache_dir() / "planted.pt",
+    ):
+        torch.save(payload, path)
+        assert svg_cache._load_disk("planted") is None
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        ["object", "os", "system", ["dict", []]],
+        ["object", "builtins", "object", ["dict", []]],
+        ["object", "manim.utils.file_ops", "Path", ["dict", []]],
+        ["enum", "subprocess", "Popen", 0],
+    ],
+)
+def test_a_recipe_naming_a_class_outside_vendored_manim_is_refused(node):
+    with pytest.raises(svg_cache._NotPlainData):
+        svg_cache._decode(node)
+
+
+def test_recipes_are_saved_as_plain_data_and_rebuild_the_same_glyphs(
+    isolated_svg_cache,
+):
+    text = mn.Text("plain data", use_svg_cache=True)
+    [path] = sorted(svg_cache._cache_dir().glob("*.pt"))
+    assert path.name.endswith(f".{svg_cache._DISK_FORMAT}.pt")
+    torch.load(path, weights_only=True)  # constructs nothing but containers
+
+    svg_cache._MEM_CACHE.clear()
+    again = mn.Text("plain data", use_svg_cache=True)
+    for before, after in zip(
+        text.family_members_with_points(), again.family_members_with_points()
+    ):
+        assert type(before) is type(after)
+        assert before.points.tobytes() == after.points.tobytes()
+        assert before.fill_rgbas.tobytes() == after.fill_rgbas.tobytes()
