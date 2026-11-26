@@ -9,6 +9,12 @@ and then read with the pixel-centre convention, which put pixel ``i`` at
 the middle -- so every FXAA render was softened and slightly stretched toward
 its edges, whatever the edge detection decided.
 
+"No offset where there is no edge" was a product with the edge mask, and off
+an edge the offset is not always a number: in a flat BLACK neighbourhood the
+blend is 0/0. ``nan * False`` is NaN, so those pixels were sampled at a NaN
+coordinate -- which the x86 and CUDA samplers read as coordinate 0, the
+frame's top-left pixel, and the aarch64 one as NaN.
+
 Tensor assertions on the filter itself: no Taichi, no render.
 """
 
@@ -57,3 +63,19 @@ def test_a_faint_one_pixel_feature_stays_in_its_own_pixel():
 
     assert out[0, 0, 1, 3].item() > 0.04 - 1e-6
     assert (out - image).abs().max().item() < 1e-6
+
+
+def test_a_flat_black_area_is_not_painted_with_the_top_left_pixel():
+    """A bright block in the top-left corner of a black frame. The black
+    pixels clear of the block have no contrast and no luma, the 0/0 case, and
+    used to come back as the block's colour (as NaN on aarch64). The block's
+    own border is an edge and FXAA's to move, so it is left out.
+    """
+    image = torch.zeros(1, 3, 8, 16)
+    image[..., :3, :3] = 0.9
+
+    out = _filter(image)
+
+    assert not torch.isnan(out).any()
+    assert out[0, :, 5:, :].abs().max().item() == 0.0
+    assert out[0, :, :, 5:].abs().max().item() == 0.0
