@@ -16,7 +16,6 @@ save was not the origin added back on load.
 
 from __future__ import annotations
 
-import hashlib
 import math
 import os
 import shutil
@@ -133,23 +132,32 @@ def _ellipse_outline():
     )
 
 
-def _tessellation_digest(tiles, tile_counts):
-    digest = hashlib.sha256()
-    for part in (tiles, tile_counts[0], tile_counts[1]):
-        digest.update(part.cpu().contiguous().numpy().tobytes())
-    return digest.hexdigest()
+def _tile_region_as_the_reseeding_version_drew(monkeypatch, **arguments):
+    """``tile_region``'s result with its draw made the way it used to be made.
+
+    The one ``torch.randn`` call is answered by reseeding the GLOBAL generator
+    with 42 and drawing from it, which is what the function did before it had
+    a generator of its own. Everything else is the code under test, on this
+    machine -- so the comparison holds on any CPU, where a digest recorded on
+    one does not: the outline's ``cos`` and ``sin`` already differ in their
+    last bit between PyTorch's AVX, scalar and NEON kernels.
+    """
+    draws = []
+
+    def reseeded_global_draw(size, *, generator, dtype, device):
+        draws.append(tuple(size))
+        torch.manual_seed(42)
+        return torch.randn_like(torch.empty(size, dtype=dtype, device=device))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(torch, "randn", reseeded_global_draw)
+        result = tbc.tile_region(**arguments)
+    assert len(draws) == 1, "the stand-in must be what tile_region drew from"
+    return result
 
 
-# Digests of ``tile_region``'s output for ``_ellipse_outline()``, recorded from
-# the implementation that reseeded the global RNG with ``torch.manual_seed(42)``.
-_TILE_REGION_DIGESTS = {
-    0.0: "0ecffbd2735d59b5eb231dca33d4b91f60f6db3f3099c2d6a456829a50585125",
-    0.5: "cd322c5c429c7b9553dc33ecd93bfae259472a67dee149a5abd8a231c74b29cb",
-}
-
-
-@pytest.mark.parametrize("perturbation", sorted(_TILE_REGION_DIGESTS))
-def test_tessellating_leaves_the_global_rng_alone(perturbation):
+@pytest.mark.parametrize("perturbation", [0.0, 0.5])
+def test_tessellating_leaves_the_global_rng_alone(perturbation, monkeypatch):
     """A tessellation must neither read nor reset the caller's torch RNG.
 
     It used to call ``torch.manual_seed(42)``, so a script that seeded torch,
@@ -157,20 +165,24 @@ def test_tessellating_leaves_the_global_rng_alone(perturbation):
     the same stream whatever seed it had set. The tiles must still be exactly
     the ones that reseeding produced.
     """
+    arguments = {
+        "perimeter_points": _ellipse_outline(),
+        "tile_size": 0.04,
+        "random_perturbation": perturbation,
+    }
     torch.manual_seed(1234)
     state_before = torch.get_rng_state()
-    tiles, tile_counts = tbc.tile_region(
-        _ellipse_outline(), tile_size=0.04, random_perturbation=perturbation
-    )
+    tiles, tile_counts = tbc.tile_region(**arguments)
     assert torch.equal(torch.get_rng_state(), state_before)
 
-    if tbc._ANIMATION_DEVICE.type == "cpu":
-        # The digests were recorded on the CPU; another device rounds the grid
-        # differently, which is not what this test is about.
-        assert (
-            _tessellation_digest(tiles, tile_counts)
-            == (_TILE_REGION_DIGESTS[perturbation])
-        )
+    old_tiles, old_tile_counts = _tile_region_as_the_reseeding_version_drew(
+        monkeypatch, **arguments
+    )
+    assert torch.equal(tiles, old_tiles)
+    # Triangles per cell and the cells' ids, then the grid's two dimensions.
+    assert torch.equal(tile_counts[0], old_tile_counts[0])
+    assert torch.equal(tile_counts[1], old_tile_counts[1])
+    assert tile_counts[2:] == old_tile_counts[2:]
 
 
 def test_a_truncated_entry_is_re_tessellated(isolated_tessellation_cache, monkeypatch):
