@@ -183,11 +183,11 @@ arguments; check their signatures rather than generalizing.
 transforms (`rotate`, `look`, camera `fov`) and constructor angles such as
 `RegularPolygon(start_angle=...)`, `Line(path_arc=...)`, `Arc(angle=...)` and
 `Wiggle(rotation_angle=...)`. Only `algan.manim` classes take Manim's radians.
-Those constructor angles, `rotate` and `orbit` warn when given an angle that
-looks like radians (a non-integer number no larger than a full turn, such as
-`PI / 4` or `TAU`); fix the value rather than ignoring the warning. Other
-degree arguments, such as `look`, camera `fov` and `move(arc_angle=...)`, do not
-warn, so write them in degrees yourself.
+Those constructor angles warn when given an angle that looks like radians (a
+non-integer number smaller than a full turn, such as `PI / 4`); fix the value
+rather than ignoring the warning. Do not wait for a warning anywhere else:
+`look`, camera `fov` and `move(arc_angle=...)` never give one, so write every
+angle in degrees yourself.
 `move(v)` is a displacement; `move_to(p)` is an absolute destination. Use
 `easings.identity` for a specified linear interpolation and `easing=` to select
 a requested easing. Do not write Manim's `Scene.play`, `.animate`, or

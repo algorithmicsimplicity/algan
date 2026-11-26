@@ -88,6 +88,10 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sheet_compaction.py::test_oracle_claims_no_more_than_the_pixel_still_shows",
     "tests/unit_tests/test_sheet_compaction.py::test_oracle_redistributes_only_outside_the_sheets_mask",
     "tests/unit_tests/test_sheet_compaction.py::test_oracle_drops_a_nan_area",
+    # What the docs and the agent skill say about the repository: every public
+    # class has a reference page, and the skill names one commit and the
+    # package's version. Reads files; no Scene.
+    "tests/unit_tests/test_docs_consistency.py::",
     # MPS-friendly mode spends the closed-shell ceiling per segment.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_float32_shell_ceiling_spend_does_not_degrade_with_stream_length",
     "tests/unit_tests/test_sheet_chain_kernels.py::test_float32_segment_prefix_matches_the_float64_global_difference",
@@ -195,6 +199,9 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_display_referred_coverage.py::",
     # The resolve kernel against its sequential oracle.
     "tests/unit_tests/test_sheet_resolve_parity.py::",
+    # The agent skill's example scripts build their scenes: two of them
+    # construct 3D Mobs or compile a stage, so they are not CI-sized.
+    "tests/unit_tests/test_doc_examples.py::test_skill_example_authors_without_error",
     # Big triangles just in front of the camera plane, and the emission's
     # write-pass miss and chunk cap.
     "tests/unit_tests/test_raster_lattice_bound.py::",
