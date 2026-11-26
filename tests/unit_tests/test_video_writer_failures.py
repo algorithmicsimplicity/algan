@@ -363,3 +363,37 @@ def test_an_odd_sized_h264_video_says_it_will_not_play_in_a_browser(
             params, None, None,
         )  # fmt: skip
     writer.close()
+
+
+def test_save_video_temporaries_are_its_own_and_hidden(tmp_path, monkeypatch):
+    """``clip.mp4`` rendered through ``clip_temp.mp4`` and ``clip_temp.wav``
+    and then deleted both, whoever had made them, and two processes rendering
+    one destination wrote the same temporary.
+    """
+    import os
+
+    from algan import SMOKE_TEST, Square
+    from algan.scene_manager import SceneManager
+
+    scene = SceneManager.instance().current_scene
+    Square().spawn()
+    for name in ("clip_temp.mp4", "clip_temp.wav"):
+        (tmp_path / name).write_bytes(b"the user's own")
+    used = []
+
+    def render(file_writer, file_path, file_path_out, **_kwargs):
+        file_writer.close()
+        used.append(file_path)
+        os.replace(file_path, file_path_out)
+
+    monkeypatch.setattr(scene, "_render_to_video", render)
+    scene.save_video(tmp_path / "clip.mp4", SMOKE_TEST)
+    (path,) = used
+    assert os.path.basename(path) == f".clip.{os.getpid()}.tmp.mp4"
+    for name in ("clip_temp.mp4", "clip_temp.wav"):
+        assert (tmp_path / name).read_bytes() == b"the user's own"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "clip.mp4",
+        "clip_temp.mp4",
+        "clip_temp.wav",
+    ]

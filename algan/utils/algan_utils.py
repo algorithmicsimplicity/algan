@@ -671,10 +671,15 @@ def _render_scene_to_file(
 
         logger.info(f"Encoding video with {codec}")
 
-        temp_file_path = destination.with_name(
-            f"{destination.stem}_temp{destination.suffix}"
-        )
-        audio_file_path = destination.with_name(f"{destination.stem}_temp.wav")
+        # Hidden, and named for this process, as a still's temporary is
+        # (``_still_frames._save_image``): ``intro_temp.mp4`` could be a file
+        # of the user's, which FFmpeg's ``-y`` overwrote and the cleanup below
+        # then deleted, and two processes rendering one destination at once (a
+        # daemon run beside a direct one) wrote the same file. The suffix is
+        # kept: FFmpeg picks the container from it.
+        hidden = f".{destination.stem}.{os.getpid()}.tmp"
+        temp_file_path = destination.with_name(f"{hidden}{destination.suffix}")
+        audio_file_path = destination.with_name(f"{hidden}.wav")
         script_file_path = destination.with_name(f"{destination.stem}_script.txt")
 
         logger.info(f"Began rendering {destination}")
