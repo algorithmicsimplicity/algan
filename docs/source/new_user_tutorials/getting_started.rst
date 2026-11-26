@@ -33,6 +33,14 @@ directory there should be a video file ``my_video.mp4``. Open this video file,
 and you will see your first Algan animation playing: "Hello World!" appearing on
 screen.
 
+The ``algan`` command can run the script too: ``algan render my_first_algan.py``
+does what ``python my_first_algan.py`` does, and takes ``-q`` to choose a quality
+preset (``preview``, ``ld``, ``md``, ``hd``, ``production`` or ``uhd``) and ``-o``
+to choose where the output goes, for a script that does not set them itself.
+``algan preview my_first_algan.py`` is ``algan render -q preview``. ``algan new
+my_scene.py`` writes a short starter script for you to edit, and ``algan --help``
+lists the other commands.
+
 Explanation
 ===========
 
