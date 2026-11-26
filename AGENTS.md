@@ -78,7 +78,7 @@ identify the patch set.
 
 ### Linting — read before running ruff
 - **`*_taichi.py` files are linted but never formatted.** They must keep the `_taichi` suffix: the config keys three things off it. `I002` is off there because the `from __future__ import annotations` it would insert turns a kernel's runtime-evaluated annotations (`ti.f32`, `ti.types.ndarray()`) into strings and breaks compilation. `SIM` is off because its advice is unsound in a kernel — `SIM109`'s `x in (a, b)` is a `TaichiSyntaxError`, and `SIM102` collapsing `if ti.static(gate): if cond:` into one `and` turns a compile-time gate into a runtime one. And `[tool.ruff.format]` excludes them outright, so `ruff format` never rewraps a kernel body.
-- Ruff's `F401` fix is the one to watch in kernel modules: they re-export names to each other (`wavefront_kernels_taichi` gets `max_shadow_lights` via `raytrace_kernels_taichi`), and dropping an "unused" import breaks the import at load time. Mark a deliberate hop `# noqa: F401` with a comment saying who consumes it.
+- Ruff's `F401` fix is the one to watch in kernel modules: they import names from each other rather than from where each is defined, so an import nothing in its own module reads can be the hop another module loads through, and dropping it breaks that import at load time. Mark a deliberate hop `# noqa: F401` with a comment saying who consumes it.
 
 ### Authoring Algan
 

@@ -76,7 +76,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
     finalize_pixel_color,
     kbuf,
-    max_shadow_lights,
     max_surfaces_per_ray,
     megakernel_register_cap,
     min_alpha,
@@ -473,18 +472,6 @@ def _first_covered_position(msk):
             if (m & 4) == 0:
                 pos = 3
     return pos
-
-# Deferred shadows (the ``deferred_shadows`` compile-time template of the
-# shade kernel; currently never enabled -- the tracer always passes 0, the
-# separate shadow kernel having measured slower than inline shadows) pack a
-# per-(K-buffer hit, light) occlusion bit into a single int32, so at most
-# 32 // kbuf lights fit.
-# The inline (default) shadow path sizes its payload per batch
-# (``shadow_vis_slots``, bounded by ``max_shadow_lights``); only
-# the deferred bit-packing is bounded here (lights past it stay lit in
-# deferred mode -- a no-op unless a user both enables deferred shadows and
-# uses more than 32 // kbuf lights).
-_DEFERRED_SHADOW_LIGHTS = max(1, min(max_shadow_lights, 32 // kbuf))
 
 
 @ti.func
@@ -1468,8 +1455,14 @@ def _env_brdf_approx(f0, n_dot_v, roughness):
 
     The analytic fit rather than the usual 2-D LUT: a LUT is another texture to
     pack, upload and address inside the shade kernel for what is a four-term
-    polynomial (Karis 2014, "Mobile"), whose error against the numerically
-    integrated table is under 1% over the whole ``(n.v, roughness)`` square.
+    polynomial (Karis 2014, "Mobile"). The fit is NOT exact. Against a Monte
+    Carlo integral of the lobe the stages evaluate (GGX, height-correlated
+    Smith, Schlick) it reads low on a smooth-to-mid metal -- 0.835 for 0.989
+    at ``f0 = 1``, roughness 0.3 and normal incidence, 0.725 for 0.915 at
+    roughness 0.5 -- agrees by roughness 0.8, and stays within about 15% on
+    a dielectric. So a prefiltered reflection on such a metal comes out
+    15-21% dark. The path tracer's tabulated albedo (``ggx_albedo.py``) is
+    the exact one.
 
     It degenerates to Schlick as roughness goes to zero -- ``f0`` at normal
     incidence, 1 at grazing -- which is what lets the mirror path below
