@@ -37,7 +37,7 @@ mobject -- the cache key is content-addressed, not version-keyed, so a
 re-vendoring would otherwise read a recipe written by the previous version.
 
 The directory is bounded: each save evicts least-recently-used entries once the
-total exceeds a cap (default 512 MB, override via ``ALGAN_MANIM_SVG_CACHE_MB``).
+total exceeds a cap (default 1024 MB, override via ``ALGAN_MANIM_SVG_CACHE_MB``).
 
 It is wired in by :func:`install`, which monkeypatches
 ``SVGMobject.init_svg_mobject`` on ``manim`` -- Algan's vendored Manim subset,
@@ -62,6 +62,7 @@ import torch
 from algan.environment import env_float
 from algan.logging.logger import get_logger
 from algan.settings import SETTINGS
+from algan.utils.typeset_cache import building
 
 # Keys we never persist per glyph: ``path_obj`` is a large ``svgelements`` Path
 # that is only needed to *produce* the points (already done); ``submobjects``
@@ -576,15 +577,14 @@ def _save_disk(key: str, recipe: tuple) -> None:
     d = _cache_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = _disk_path(key)
-    tmp = d / f"{key}.pt.{os.getpid()}.tmp"
     try:
-        torch.save(encoded, tmp)
-        os.replace(tmp, path)  # atomic: never leave a half-written cache file
+        # Atomic, through a temporary name unique to this call: the name used
+        # to be fixed per process, so two threads saving one key (a Text built
+        # in an updater on the batch-prep worker, say) wrote the same file.
+        with building(path) as partial:
+            torch.save(encoded, partial)
     except Exception as e:  # noqa: BLE001
         get_logger().warning(f"manim_svg_cache: failed to save {path.name}: {e}")
-        if tmp.exists():
-            with contextlib.suppress(OSError):
-                tmp.unlink()
         return
     _enforce_cap()
 

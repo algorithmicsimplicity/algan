@@ -526,3 +526,24 @@ def test_recipes_are_saved_as_plain_data_and_rebuild_the_same_glyphs(
         assert type(before) is type(after)
         assert before.points.tobytes() == after.points.tobytes()
         assert before.fill_rgbas.tobytes() == after.fill_rgbas.tobytes()
+
+
+def test_two_saves_of_one_key_write_through_different_temporary_files(
+    isolated_svg_cache, monkeypatch
+):
+    # The temporary name was ``{key}.pt.{pid}.tmp``, shared by every thread of
+    # a process saving the same key.
+    written = []
+    original_save = torch.save
+
+    def watching_save(obj, f, *args, **kwargs):
+        written.append(os.fspath(f))
+        return original_save(obj, f, *args, **kwargs)
+
+    monkeypatch.setattr(svg_cache.torch, "save", watching_save)
+    svg_cache._save_disk("samekey", (svg_cache._RECIPE_TAG, (), None, ()))
+    svg_cache._save_disk("samekey", (svg_cache._RECIPE_TAG, (), None, ()))
+
+    assert len(set(written)) == 2
+    assert os.fspath(svg_cache._disk_path("samekey")) not in written
+    assert svg_cache._load_disk("samekey") == (svg_cache._RECIPE_TAG, (), None, ())
