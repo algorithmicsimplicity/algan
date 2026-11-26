@@ -18,6 +18,7 @@ dense glyph batch is expensive and perfectly reproducible.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 from collections import defaultdict
@@ -30,6 +31,7 @@ from algan.animatable_base.mob import Mob
 from algan.constants.color import GREEN, WHITE
 from algan.constants.spatial import DOWN, RIGHT
 from algan.geometry.geometry import get_2d_polygon_mask
+from algan.logging.logger import get_logger
 from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.settings import SETTINGS
@@ -40,6 +42,7 @@ from algan.utils.tensor_utils import (
     squish,
     unpack_tensor,
 )
+from algan.utils.typeset_cache import building
 
 
 def get_corners(g, i, j):
@@ -571,6 +574,27 @@ def _denormalize_tiles(tiles, offset):
     return tiles + _tile_origin(offset)
 
 
+def _load_tessellation(file_path):
+    """A cached ``(tiles, tile_counts)``, or ``None`` to tessellate afresh.
+
+    An entry that cannot be read -- truncated by an Algan older than the
+    atomic write, or damaged on disk -- is deleted rather than raised, so it
+    is rebuilt and re-saved by this build instead of failing every later one.
+    """
+    if not os.path.exists(file_path):
+        return None
+    try:
+        return torch.load(file_path, map_location=_ANIMATION_DEVICE)
+    except Exception as error:  # noqa: BLE001 - a corrupt cache must never be fatal
+        get_logger().warning(
+            f"Tessellation cache entry {os.path.basename(file_path)} could not "
+            f"be read ({error}); re-tessellating it."
+        )
+        with contextlib.suppress(OSError):
+            os.remove(file_path)
+        return None
+
+
 class TriangulatedBezierCircuit(Mob):
     def __init__(
         self,
@@ -634,10 +658,9 @@ class TriangulatedBezierCircuit(Mob):
                     "tessellations",
                     f"{hash_bytes}.txt",
                 )
-                if os.path.exists(file_path):
-                    tiles, tile_counts = torch.load(
-                        file_path, map_location=_ANIMATION_DEVICE
-                    )
+                cached = _load_tessellation(file_path)
+                if cached is not None:
+                    tiles, tile_counts = cached
                     tiles = _denormalize_tiles(tiles, offset)
                     found_hash = True
 
@@ -673,7 +696,10 @@ class TriangulatedBezierCircuit(Mob):
                 if hash_key is not None:
                     Path(file_path).parent.mkdir(parents=True, exist_ok=True)
                     normalized = tiles - _tile_origin(offset)
-                    torch.save((normalized, tile_counts), file_path)
+                    # Published by rename, so a process killed mid-write (or a
+                    # full disk) can never leave a truncated entry behind.
+                    with building(Path(file_path)) as partial:
+                        torch.save((normalized, tile_counts), partial)
                     # Replay the round-trip every later run gets off the cache,
                     # so a freshly tessellated glyph and a cached one are the
                     # same bits rather than the same to within float32 rounding.

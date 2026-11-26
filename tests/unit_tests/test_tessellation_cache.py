@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import shutil
 
 import pytest
@@ -170,3 +171,47 @@ def test_tessellating_leaves_the_global_rng_alone(perturbation):
             _tessellation_digest(tiles, tile_counts)
             == (_TILE_REGION_DIGESTS[perturbation])
         )
+
+
+def test_a_truncated_entry_is_re_tessellated(isolated_tessellation_cache, monkeypatch):
+    """A cache file cut short (a killed write, a full disk) must not be fatal.
+
+    It used to raise ``OSError`` from ``torch.load`` on every later build of
+    that glyph, in every process, until the cache was cleared by hand.
+    """
+    make_mob = lambda: TextTriangulated("mesh", font_size=38)  # noqa: E731
+    fresh = _tiles_for(make_mob, monkeypatch)
+    entries = sorted(isolated_tessellation_cache.glob("*.txt"))
+    assert entries, "nothing was cached"
+    for entry in entries:
+        data = entry.read_bytes()
+        entry.write_bytes(data[: len(data) // 2])
+
+    rebuilt = _tiles_for(make_mob, monkeypatch)
+
+    assert len(rebuilt) == len(fresh)
+    for before, after in zip(fresh, rebuilt):
+        assert torch.equal(before, after)
+    # The bad entries were replaced by whole ones, so the next build hits.
+    for entry in entries:
+        torch.load(entry)
+
+
+def test_an_entry_is_published_whole(isolated_tessellation_cache, monkeypatch):
+    """Nothing but a finished file ever appears under an entry's final name."""
+    written = []
+    original_save = torch.save
+
+    def watching_save(obj, f, *args, **kwargs):
+        written.append(os.fspath(f))
+        return original_save(obj, f, *args, **kwargs)
+
+    monkeypatch.setattr(tbc.torch, "save", watching_save)
+    TextTriangulated("m", font_size=38)
+    monkeypatch.undo()
+
+    entries = {os.fspath(entry) for entry in isolated_tessellation_cache.glob("*.txt")}
+    assert written
+    assert entries
+    assert not entries & set(written), "torch.save wrote to the entry's final name"
+    assert not list(isolated_tessellation_cache.glob("*.partial"))
