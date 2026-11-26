@@ -61,6 +61,7 @@ from algan.animation_timeline.timeline import (  # noqa: F401
 from algan.constants.color import BLACK, Color
 from algan.errors import (
     AlganConfigurationError,
+    AlganWarning,
     AnimatedBeforeSpawnWarning,
     DespawnedMobWarning,
     HierarchyError,
@@ -132,6 +133,41 @@ def _check_updater_signature(update_function, extra_positional):
         f"tensor, and must appear even when unused:\n\n"
         f"    mob.add_updater(lambda mob, t: mob.set_location(RIGHT * t))\n"
     )
+
+
+def _warn_if_removal_overrides_running_animations(timeline, writes, removal_time, mob):
+    """Warn when ``remove_updater``'s boundary writes land on rows that an
+    animation recorded before it is still animating.
+
+    The removal records the state the updater left as an instant write at the
+    removal time, after everything recorded so far. An instant write holds
+    what it wrote over an earlier-executed animation still running on its rows
+    (``agent_guidance/timeline.md``, override semantics), so such an animation
+    is cancelled from the removal on. The usual way to get here is
+    ``mob.move(...)`` and then ``mob.remove_updater(...)`` in one ``Sync``:
+    the two start together, but the move is lost, while the other order works.
+    Reordering the recorded edits would need the animation re-run from the
+    boundary state, so the line is reported instead.
+    """
+    for attr_name, indexes, _ in writes:
+        for edit in timeline.attr_to_timeline[attr_name].edits:
+            event = edit.event
+            if event is None or not (event.time.start <= removal_time < event.time.end):
+                continue
+            if not torch.isin(edit.indexes, indexes).any():
+                continue
+            name = getattr(event.function, "__name__", "an animation")
+            warnings.warn(
+                f"remove_updater() on {mob._describe()} cancels its {name}() "
+                f"animation, which was written before it and is still running "
+                f"at the removal: the Mob holds the state the updater left it "
+                f"in from the removal on. Remove the updater before the "
+                f"animation, for example as the first line of the Sync block, "
+                f"so that the animation starts from that state.",
+                AlganWarning,
+                stacklevel=_user_stacklevel(),
+            )
+            return
 
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
@@ -1034,6 +1070,9 @@ class Animatable:
             # updaters were materialized so dependency reads were current, but
             # recording their state here would make later frames apply them on
             # top of an already-advanced base state.
+            _warn_if_removal_overrides_running_animations(
+                timeline, writes, context.timespan.current_time, event.caller
+            )
             for attr_name, indexes, value in writes:
                 timeline.modify_attribute_and_record(
                     attr_name,

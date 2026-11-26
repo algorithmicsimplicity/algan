@@ -11,6 +11,7 @@ does it, with no rendering.
 """
 
 import math
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +20,8 @@ import torch
 from algan import Mob
 from algan.animation_timeline.animation_contexts import Audio, Off, Seq, Speech, Sync
 from algan.constants import easings
-from algan.constants.spatial import RIGHT
+from algan.constants.spatial import RIGHT, UP
+from algan.errors import AlganWarning
 from algan.scene_manager import SceneManager
 
 
@@ -122,3 +124,39 @@ def test_removing_an_updater_in_a_compressed_block_keeps_its_instant_writes():
     assert opacity[:, 0, 0].tolist() == pytest.approx(
         [1.0, 1.0, 0.3, 0.3, 0.6, 0.6], abs=1e-5
     )
+
+
+def _follow_then_move(remove_first):
+    """A dot follows a leader through an updater, then in one ``Sync`` the
+    updater is removed and the dot moves up.
+    """
+    scene = SceneManager.instance().current_scene
+    leader = Mob().spawn(animate=False)
+    dot = Mob().spawn(animate=False)
+    updater = dot.add_updater(lambda mob, _t: mob.move_to(leader.location + UP))
+    leader.move(RIGHT)
+    with Sync(easing=easings.identity):
+        if remove_first:
+            dot.remove_updater(updater)
+            dot.move(UP)
+        else:
+            dot.move(UP)
+            dot.remove_updater(updater)
+    scene.wait(1)
+    return dot
+
+
+def test_removing_an_updater_after_an_animation_of_its_mob_in_a_sync_warns():
+    """Written after the move in the same ``Sync``, the removal's boundary
+    write is recorded after the move and overrides it: the dot never moves.
+    The removal written first is the spelling that works, and stays silent.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", AlganWarning)
+        dot = _follow_then_move(remove_first=True)
+    y = _materialize([1.0, 1.5, 2.5], dot)[:, 0, 1].tolist()
+    assert y == pytest.approx([1.0, 1.5, 2.0], abs=1e-5)
+
+    SceneManager.reset()
+    with pytest.warns(AlganWarning, match="before the animation"):
+        _follow_then_move(remove_first=False)
