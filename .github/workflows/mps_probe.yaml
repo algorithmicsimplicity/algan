@@ -1,11 +1,12 @@
 name: MPS capability probe
 
-# Diagnostic/measurement companion to the ordinary MPS regression gate in
-# `test.yaml`. The required test matrix now sets `ALGAN_RENDER_DEVICE=mps` on
-# the Apple-silicon hosted runner, asserts that Algan actually resolves `mps`,
-# and runs the portable unit/fast scope with the normal locked published
-# `algan-quadrants` dependency. A regression no longer needs this workflow to
-# make an ordinary PR or release check red.
+# Diagnostic/measurement companion to the MPS regression arm in `test.yaml`.
+# That arm sets `ALGAN_RENDER_DEVICE=mps` on the Apple-silicon hosted runner,
+# asserts that Algan actually resolves `mps`, and runs the portable unit/fast
+# scope with the normal locked published `algan-quadrants` dependency. It runs
+# in the full scope only -- weekly, on dispatch, or on a `full-ci` pull request
+# -- so an ordinary pull request does not run it; a regression turns the next
+# weekly run red without needing this workflow.
 #
 # This workflow remains deliberately separate because its capability, timing,
 # control-arm and custom-wheel sections answer diagnostic questions rather than

@@ -115,9 +115,12 @@ jobs:
       # Keep the supported Python floor on both operating systems and the
       # ceiling on Linux. macOS deliberately has two independent 3.10 arms:
       # CPU preserves the portability check that existed before MPS support;
-      # MPS is the required Apple-GPU regression gate. Keeping the entries
-      # explicit makes the device visible in the PR check name and avoids an
-      # accidental Cartesian product when another device or Python is added.
+      # MPS is the Apple-GPU regression arm. It runs in the full scope only
+      # (weekly, on dispatch, or on a `full-ci` pull request), so an ordinary
+      # pull request does not run it and no MPS check is required to merge.
+      # Keeping the entries explicit makes the device visible in the PR check
+      # name and avoids an accidental Cartesian product when another device or
+      # Python is added.
       #
       # 3.10 is the floor because `algan-quadrants` publishes no cp39 wheel --
       # it moved there from 3.9 when Quadrants became the kernel compiler. Testing the floor is not a formality: it is the version whose
@@ -148,9 +151,9 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     # The two macOS arms are intentionally explicit. The CPU arm keeps macOS
-    # portability coverage. The MPS arm is an ordinary required test arm: the
-    # hosted macOS runner is Apple Silicon and exposes a real Metal device, and
-    # the sanity step below fails before pytest if Algan does not actually
+    # portability coverage. The MPS arm (full scope only) runs on a real GPU:
+    # the hosted macOS runner is Apple Silicon and exposes a real Metal device,
+    # and the sanity step below fails before pytest if Algan does not actually
     # resolve this request to MPS. Both use the normal locked dependency graph,
     # including the published patched `algan-quadrants` wheel; no private
     # compiler artifact is installed here.
@@ -333,7 +336,7 @@ jobs:
           find ~/.algan/cache/quadrants -type f ! -name algan_kernel_specs.json | sort > "$RUNNER_TEMP/kernels-before.txt"
           echo "$(wc -l < "$RUNNER_TEMP/kernels-before.txt" | tr -d ' ') files restored"
 
-      # A required MPS check must not be able to go green after silently running
+      # The MPS arm must not be able to go green after silently running
       # on CPU. Ask Algan's startup resolver -- the same source the renderer
       # uses -- and separately verify that torch sees an MPS device. Printing
       # the distribution version also leaves evidence that this ordinary gate
@@ -446,7 +449,7 @@ jobs:
       # defect it is waiting on, and tests/conftest.py applies it ONLY when the
       # resolved render device is MPS. They are strict xfails, so the arm goes
       # red on an XPASS -- a fix cannot leave a stale entry behind -- and the
-      # summary counts them on every run, which is what keeps a required check
+      # summary counts them on every run, which is what keeps the arm
       # from quietly meaning less than it looks like it means.
       # DESIGN_mps_support.md §4 is the scoreboard.
       - name: Run tests

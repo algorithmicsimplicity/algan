@@ -468,9 +468,10 @@ def _known_mps_failures():
 def _mark_known_mps_failures(items):
     """xfail the tests ``tests/mps_known_failures.py`` names, on MPS only.
 
-    The macOS MPS arm of ``test.yaml`` is a required check and the port is not
-    finished, so the arm needs a way to be honest about what is outstanding
-    without either going red on every PR or hiding it. ``xfail(strict=True)``
+    The macOS MPS arm of ``test.yaml`` (the weekly and ``full-ci`` scope) is a
+    test arm like any other and the port is not finished, so the arm needs a
+    way to be honest about what is outstanding without either going red on
+    every run or hiding it. ``xfail(strict=True)``
     is that way: the listed tests still run and still report, the summary
     counts them, and a fix that makes one pass turns the arm red with
     ``XPASS(strict)`` until its line is removed. The list, and why each entry
