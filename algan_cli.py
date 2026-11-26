@@ -429,6 +429,38 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     return daemon.main([])
 
 
+def _daemon_client():
+    """``algan.daemon_client``, loaded without running ``algan/__init__.py``.
+
+    A trigger verb is what an editor key sends on every press, and the client
+    module needs only the standard library and ``algan.environment``. Imported
+    the ordinary way it would first run the package's ``__init__`` -- torch
+    and the rest, about 3 s and 600 MB -- to send one line over a socket.
+
+    So the package's module is put in place unexecuted for exactly as long as
+    the client takes to import, and every ``algan`` entry this added is taken
+    out of ``sys.modules`` again: a later real ``import algan`` in this process
+    then imports the package properly instead of finding a hollow one. The
+    returned module keeps working, since it holds its own references.
+    """
+    import importlib
+    import importlib.util
+
+    if "algan" in sys.modules:
+        return importlib.import_module("algan.daemon_client")
+    spec = importlib.util.find_spec("algan")
+    if spec is None:
+        return importlib.import_module("algan.daemon_client")
+    before = set(sys.modules)
+    sys.modules["algan"] = importlib.util.module_from_spec(spec)
+    try:
+        return importlib.import_module("algan.daemon_client")
+    finally:
+        for name in set(sys.modules) - before:
+            if name == "algan" or name.startswith("algan."):
+                del sys.modules[name]
+
+
 def _trigger_daemon(verb: str) -> int:
     """Send one trigger verb, with the state file's token, to the daemon.
 
@@ -439,7 +471,7 @@ def _trigger_daemon(verb: str) -> int:
     """
     import socket
 
-    from algan import daemon_client
+    daemon_client = _daemon_client()
 
     state = daemon_client.read_state()
     if state is None:
@@ -526,11 +558,13 @@ def _cmd_render(args: argparse.Namespace) -> int:
 
 def _run_as_subprocess(target: Path, args: argparse.Namespace) -> int:
     """Run the script the way a shell would, so the render daemon serves it."""
-    from algan.environment import env_overrides
-
     env = os.environ.copy()
     if args.no_daemon:
-        env.update(env_overrides(ALGAN_USE_DAEMON="0"))
+        # Set directly rather than through ``algan.environment.env_overrides``:
+        # importing that runs the package's ``__init__`` (torch and the rest,
+        # about 3 s and 600 MB held for the whole run) in a process that only
+        # launches the script. ``test_cli`` checks the name is declared.
+        env["ALGAN_USE_DAEMON"] = "0"
     return subprocess.call(
         [sys.executable, str(target), *(args.extra_args or [])], env=env
     )
