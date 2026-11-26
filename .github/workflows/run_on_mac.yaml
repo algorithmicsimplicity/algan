@@ -210,30 +210,6 @@ jobs:
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
-      # Algan's MPS renderer keeps its arena in native Metal storage, which
-      # PyTorch can import only from 2.13 on, and the lock holds the CPU and
-      # CUDA minimum. These are the versions the required MPS arm in test.yaml
-      # installs, for the same reason; torch_compile_ab.yaml has the run that
-      # found the gap. So the MPS arm runs a newer PyTorch than the CPU arms.
-      #
-      # `UV_NO_SYNC` because later steps go through `uv run`, whose sync would
-      # put the locked PyTorch straight back.
-      - name: Install the PyTorch the MPS renderer needs
-        if: ${{ matrix.device == 'mps' }}
-        run: |
-          uv pip install --python .venv/bin/python \
-            "torch==2.13.0" "torchaudio==2.11.0"
-          .venv/bin/python - <<'PYTHON'
-          import torch
-          from algan.rendering import mps_arena
-          assert torch.__version__.split("+", 1)[0] == "2.13.0", torch.__version__
-          tensor = mps_arena.allocate(4096)
-          tensor.fill_(7)
-          assert tensor[:8].cpu().tolist() == [7] * 8
-          print("MPS arm: native-owned arena; torch", torch.__version__)
-          PYTHON
-          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
-
       # macOS only, and not merely because Linux does not need it: the artifact
       # is an arm64-macos wheel, so on a Linux arm `uv pip install` fails
       # outright ("no wheels with a matching platform tag") and takes the
@@ -319,6 +295,33 @@ jobs:
           print('quadrants', qd.__version__, '-- patched (ExternalMetalNdarray present)')
           "
           echo "ALGAN_TAICHI_BACKEND=quadrants" >> "$GITHUB_ENV"
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+
+      # Algan's MPS renderer keeps its arena in native Metal storage, which
+      # PyTorch can import only from 2.13 on, and the lock holds the CPU and
+      # CUDA minimum. These are the versions the required MPS arm in test.yaml
+      # installs, for the same reason; torch_compile_ab.yaml has the run that
+      # found the gap. So the MPS arm runs a newer PyTorch than the CPU arms.
+      #
+      # After the wheel steps, so that the check below imports Algan against
+      # the compiler the arm will render with.
+      #
+      # `UV_NO_SYNC` because later steps go through `uv run`, whose sync would
+      # put the locked PyTorch straight back.
+      - name: Install the PyTorch the MPS renderer needs
+        if: ${{ matrix.device == 'mps' }}
+        run: |
+          uv pip install --python .venv/bin/python \
+            "torch==2.13.0" "torchaudio==2.11.0"
+          .venv/bin/python - <<'PYTHON'
+          import torch
+          from algan.rendering import mps_arena
+          assert torch.__version__.split("+", 1)[0] == "2.13.0", torch.__version__
+          tensor = mps_arena.allocate(4096)
+          tensor.fill_(7)
+          assert tensor[:8].cpu().tolist() == [7] * 8
+          print("MPS arm: native-owned arena; torch", torch.__version__)
+          PYTHON
           echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
 
       # In the clear, before any number is taken: which device Algan actually
