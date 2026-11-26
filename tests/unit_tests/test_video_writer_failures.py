@@ -397,3 +397,37 @@ def test_save_video_temporaries_are_its_own_and_hidden(tmp_path, monkeypatch):
         "clip_temp.mp4",
         "clip_temp.wav",
     ]
+
+
+def test_a_dead_renders_temporaries_are_removed_and_a_live_ones_kept(tmp_path):
+    """Temporaries are named for their process, so a render killed outright
+    left a hidden file nothing would overwrite. The next render of the same
+    destination removes those whose process is gone, and only those.
+    """
+    import os
+
+    import psutil
+
+    from algan.utils.algan_utils import _remove_stale_video_temporaries
+
+    dead = 2**22 + 12345
+    while psutil.pid_exists(dead):
+        dead += 1
+    names = {
+        f".clip.{dead}.tmp.mp4": False,
+        f".clip.{dead}.tmp.wav": False,
+        f".clip.{os.getppid()}.tmp.mp4": True,  # another live process
+        f".clip.{os.getpid()}.tmp.wav": True,  # this one
+        f".clip.{dead}.tmp.mov": True,  # another destination's container
+        f".clip.extra.{dead}.tmp.mp4": True,  # another stem
+        f".clip.{dead}x.tmp.mp4": True,
+        f".clip.{dead}.tmp.mp4.bak": True,
+        ".clip.config": True,  # the user's own dotfile
+        "clip.mp4": True,
+    }
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+    _remove_stale_video_temporaries(tmp_path / "clip.mp4")
+    assert {p.name for p in tmp_path.iterdir()} == {
+        name for name, kept in names.items() if kept
+    }

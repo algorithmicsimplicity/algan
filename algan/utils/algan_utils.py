@@ -116,6 +116,42 @@ def _warn_if_h264_cannot_be_420(size, codec, ffmpeg_params):
     )
 
 
+def _remove_stale_video_temporaries(destination):
+    """Delete the temporaries a dead render of ``destination`` left behind.
+
+    A render's temporaries are named for its process
+    (``.{stem}.{pid}.tmp{suffix}`` and ``.{stem}.{pid}.tmp.wav``), so one
+    killed outright (SIGKILL, a crash) leaves a hidden, possibly
+    multi-hundred-megabyte file that no later render overwrites. Before
+    writing its own, a render removes those of this destination whose process
+    no longer exists. A live process's are left alone: it may be rendering
+    the same destination right now. The match is exact, so no other file can
+    be taken for one, and a file that cannot be deleted (locked on Windows)
+    is left for the next render.
+    """
+    import psutil
+
+    pattern = re.compile(
+        rf"\.{re.escape(destination.stem)}\.([0-9]+)\.tmp"
+        rf"(?:{re.escape(destination.suffix)}|\.wav)"
+    )
+    try:
+        siblings = list(destination.parent.iterdir())
+    except OSError:
+        return
+    for sibling in siblings:
+        match = pattern.fullmatch(sibling.name)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        if pid == os.getpid() or psutil.pid_exists(pid):
+            continue
+        try:
+            sibling.unlink()
+        except OSError:
+            logger.debug("Could not remove stale temporary %s", sibling, exc_info=True)
+
+
 def get_file_writer(
     temp_file_path,
     video_settings_resolution,
@@ -677,6 +713,7 @@ def _render_scene_to_file(
         # then deleted, and two processes rendering one destination at once (a
         # daemon run beside a direct one) wrote the same file. The suffix is
         # kept: FFmpeg picks the container from it.
+        _remove_stale_video_temporaries(destination)
         hidden = f".{destination.stem}.{os.getpid()}.tmp"
         temp_file_path = destination.with_name(f"{hidden}{destination.suffix}")
         audio_file_path = destination.with_name(f"{hidden}.wav")
