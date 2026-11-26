@@ -1773,7 +1773,12 @@ class Project:
         )
 
     def concatenate_videos(self, *, threads: int | None = None, reencode=False):
-        """Concatenate the project's scene videos into ``file_path``."""
+        """Concatenate the project's scene videos into ``file_path``.
+
+        The scenes must share a resolution and frame rate, and a silent scene
+        is given a silent track so the narration of the others is kept; see
+        :func:`algan.concatenate_videos`.
+        """
         from algan.utils.algan_utils import concatenate_videos
 
         self.file_path.parent.mkdir(parents=True, exist_ok=True)

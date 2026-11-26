@@ -871,6 +871,185 @@ def profile_func(func):
     return out
 
 
+@dataclass(frozen=True)
+class _ClipStreams:
+    """What one concatenation input carries, as FFmpeg reports it."""
+
+    path: Path
+    duration: float | None
+    video_codec: str | None
+    pixel_format: str | None
+    size: tuple[int, int] | None
+    fps: str | None
+    audio_codec: str | None = None
+    sample_rate: int | None = None
+    channel_layout: str | None = None
+
+
+# FFmpeg's ``-i`` report names the codec a stream holds; padding a silent clip
+# needs the encoder that writes it. A codec missing here is encoded under its
+# own name, which is right for FLAC, ALAC and the PCM family.
+_AUDIO_ENCODERS = {
+    "aac": "aac",
+    "mp3": "libmp3lame",
+    "opus": "libopus",
+    "vorbis": "libvorbis",
+}
+
+
+def _probe_clip(binary: str, path: Path) -> _ClipStreams:
+    """Read the stream layout of ``path`` from FFmpeg's ``-i`` report.
+
+    FFmpeg exits non-zero here (no output was named), so only its report is
+    read. The first video and first audio stream are the ones the concat
+    demuxer joins.
+    """
+    report = subprocess.run(
+        [binary, "-hide_banner", "-i", str(path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stderr
+    duration = None
+    if match := re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", report):
+        hours, minutes, seconds = match.groups()
+        duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    video = re.search(r"Stream #\d+:\d+\S*: Video: (.*)", report)
+    audio = re.search(r"Stream #\d+:\d+\S*: Audio: (.*)", report)
+    video_codec = pixel_format = size = fps = None
+    if video:
+        description = video.group(1)
+        video_codec = description.split()[0].rstrip(",")
+        fields = [field.strip() for field in description.split(",")]
+        if len(fields) > 1:
+            pixel_format = fields[1].split("(")[0].strip()
+        # After a comma: the codec tag before it, "(avc1 / 0x31637661)",
+        # also reads as WxH.
+        if match := re.search(r",\s*(\d+)x(\d+)\b", description):
+            size = (int(match.group(1)), int(match.group(2)))
+        if match := re.search(r"([\d.]+(?:k)?) (?:fps|tbr)", description):
+            fps = match.group(1)
+    audio_codec = sample_rate = channel_layout = None
+    if audio:
+        description = audio.group(1)
+        audio_codec = description.split()[0].rstrip(",")
+        if match := re.search(r"(\d+) Hz, ([^,]+)", description):
+            sample_rate = int(match.group(1))
+            channel_layout = match.group(2).strip()
+    return _ClipStreams(
+        path,
+        duration,
+        video_codec,
+        pixel_format,
+        size,
+        fps,
+        audio_codec,
+        sample_rate,
+        channel_layout,
+    )
+
+
+def _check_clips_can_be_joined(clips: list[_ClipStreams], reencode: bool) -> None:
+    """Refuse inputs the concat demuxer would join into a broken file.
+
+    The demuxer takes its stream layout from the first input and FFmpeg exits
+    0 regardless, so a mismatch has to be caught here or it is silent: a
+    resolution or frame-rate change gives a malformed file even when
+    re-encoding, and stream copying also needs the codecs to agree.
+    """
+    first = clips[0]
+    no_video = [clip.path.name for clip in clips if clip.video_codec is None]
+    if no_video:
+        raise AlganConfigurationError(
+            "Cannot concatenate videos; FFmpeg finds no video stream in "
+            + ", ".join(no_video)
+            + ". Render those scenes again."
+        )
+    checked = [("resolution", "size"), ("frame rate", "fps")]
+    if not reencode:
+        checked += [("video codec", "video_codec"), ("pixel format", "pixel_format")]
+    for label, attribute in checked:
+        differing = [
+            clip
+            for clip in clips
+            if getattr(clip, attribute) != getattr(first, attribute)
+        ]
+        if differing:
+            other = differing[0]
+            hint = (
+                "Render every scene with the same video settings, then join them."
+                if attribute in ("size", "fps")
+                else "Pass reencode=True to re-encode them to one codec."
+            )
+            raise AlganConfigurationError(
+                f"Cannot concatenate videos with different {label}s: "
+                f"{first.path.name} has {getattr(first, attribute)} but "
+                f"{other.path.name} has {getattr(other, attribute)}. {hint}"
+            )
+    if not reencode:
+        with_audio = [clip for clip in clips if clip.audio_codec is not None]
+        for clip in with_audio[1:]:
+            layout = (clip.audio_codec, clip.sample_rate, clip.channel_layout)
+            expected = (
+                with_audio[0].audio_codec,
+                with_audio[0].sample_rate,
+                with_audio[0].channel_layout,
+            )
+            if layout != expected:
+                raise AlganConfigurationError(
+                    "Cannot stream-copy audio tracks that differ: "
+                    f"{with_audio[0].path.name} has {expected} but "
+                    f"{clip.path.name} has {layout}. Pass reencode=True to "
+                    "re-encode them to one format."
+                )
+
+
+def _with_silent_track(
+    binary: str, clip: _ClipStreams, like: _ClipStreams, padded: Path
+) -> Path:
+    """Copy ``clip`` with a silent audio track shaped like ``like``'s audio.
+
+    Algan writes no audio stream at all for a scene with no sound, and the
+    concat demuxer takes its stream layout from the first input, so a silent
+    first scene used to drop every later scene's narration. The video is
+    stream-copied; only the silence is encoded, in the codec, sample rate and
+    channel layout of the clips it is joined to, so stream copying still
+    applies to the joined audio.
+    """
+    encoder = _AUDIO_ENCODERS.get(like.audio_codec, like.audio_codec)
+    # The silence is cut to the clip's length, so the clip keeps its duration
+    # and the scenes after it stay in sync with their sound.
+    command = [binary, "-v", "error", "-i", str(clip.path), "-f", "lavfi"]
+    if clip.duration is not None:
+        command += ["-t", f"{clip.duration:.6f}"]
+    command += [
+        "-i",
+        f"anullsrc=r={like.sample_rate}:cl={like.channel_layout}",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        encoder,
+        "-shortest",
+        "-y",
+        str(padded),
+    ]
+    result = subprocess.run(
+        command, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
+    if result.returncode != 0:
+        raise AlganConfigurationError(
+            f"Could not give the silent clip {clip.path.name} an audio track to "
+            f"match {like.path.name} ({like.audio_codec}, {like.sample_rate} Hz, "
+            f"{like.channel_layout}): {result.stderr.strip()}"
+        )
+    return padded
+
+
 def concatenate_videos(
     directory: str | Path,
     threads: int | None = None,
@@ -895,7 +1074,11 @@ def concatenate_videos(
         FFmpeg encoder thread count. Defaults to ``None``, using the CPU count.
     reencode
         Re-encode to H.264/AAC instead of copying streams. Defaults to ``False``;
-        stream copying requires compatible input codecs and stream layouts.
+        stream copying requires the clips to share their video codec, pixel
+        format and audio format. Either way every clip must have the same
+        resolution and frame rate. When some clips have sound and others have
+        none, the silent ones are given a silent track first, so a silent
+        opening scene does not drop the narration of the scenes after it.
     output_file
         Output path, absolute or relative to ``directory``. Defaults to
         ``"output.mp4"``. An existing output is overwritten when FFmpeg runs.
@@ -916,6 +1099,10 @@ def concatenate_videos(
     ValueError
         If an explicit input is not an MP4, names the output itself, or a path
         contains a newline that FFmpeg's concat format cannot represent.
+    AlganConfigurationError
+        If the clips differ in resolution or frame rate, or, without
+        ``reencode``, in codec, pixel format or audio format. It is a
+        ``ValueError``.
 
     Examples
     --------
@@ -988,9 +1175,40 @@ def concatenate_videos(
         sorted(mp4_files, key=get_prefix_number) if input_files is None else mp4_files
     )
 
+    # The binary save_video encodes with, so concatenation works wherever
+    # rendering does -- including with no FFmpeg on the PATH.
+    binary = _software_ffmpeg_binary()
+    clips = [_probe_clip(binary, path) for path in sorted_files]
+    _check_clips_can_be_joined(clips, reencode)
+
     # Create concat list file for ffmpeg
     concat_file = dir_path / "ffmpeg_concat_list.txt"
+    padding = None
     try:
+        with_audio = [clip for clip in clips if clip.audio_codec is not None]
+        if with_audio and len(with_audio) < len(clips):
+            import tempfile
+
+            # Beside the output, so the padded copies are on its filesystem
+            # and are removed with the concat list whatever happens.
+            padding = tempfile.TemporaryDirectory(
+                prefix=".algan_concat_", dir=output_path.parent
+            )
+            sorted_files = [
+                clip.path
+                if clip.audio_codec is not None
+                else _with_silent_track(
+                    binary,
+                    clip,
+                    with_audio[0],
+                    Path(padding.name) / f"{index}_{clip.path.stem}.mp4",
+                )
+                for index, clip in enumerate(clips)
+            ]
+            logger.info(
+                f"Gave {len(clips) - len(with_audio)} silent clip(s) a silent "
+                "audio track so the joined video keeps every scene's sound."
+            )
         with open(concat_file, "w", encoding="utf-8") as f:
             for video_file in sorted_files:
                 # Absolute paths, single-quoted. Inside the quotes FFmpeg reads a
@@ -1004,9 +1222,7 @@ def concatenate_videos(
                 abs_path = abs_path.replace("'", "'\\''")
                 f.write(f"file '{abs_path}'\n")
 
-        # The binary save_video encodes with, so concatenation works wherever
-        # rendering does -- including with no FFmpeg on the PATH.
-        cmd = [_software_ffmpeg_binary(), "-f", "concat", "-safe", "0"]
+        cmd = [binary, "-f", "concat", "-safe", "0"]
         cmd.extend(["-i", str(concat_file)])
 
         if reencode:
@@ -1036,8 +1252,8 @@ def concatenate_videos(
         cmd.extend(["-y", str(output_path)])  # -y to overwrite without asking
 
         logger.info(f"\nConcatenating {len(sorted_files)} videos:")
-        for i, f in enumerate(sorted_files, 1):
-            logger.info(f"  {i}. {f.name}")
+        for i, clip in enumerate(clips, 1):
+            logger.info(f"  {i}. {clip.path.name}")
         logger.info(f"\nOutput: {output_path}\n")
 
         # Run ffmpeg
@@ -1058,6 +1274,8 @@ def concatenate_videos(
         # Clean up concat list file
         if concat_file.exists():
             concat_file.unlink()
+        if padding is not None:
+            padding.cleanup()
 
 
 def combine_scenes(directory):

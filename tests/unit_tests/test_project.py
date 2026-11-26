@@ -573,6 +573,111 @@ def test_project_concat_joins_every_scene_in_project_order(tmp_path):
     assert (blue[:, 0] < 60).all()
 
 
+def _narrated_clip(path, color, size="16x16"):
+    """A one-second clip with a 440 Hz tone in MP3, the codec Algan writes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            _software_ffmpeg_binary(),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color={color}:s={size}:r=2:d=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=44100:duration=1",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "libmp3lame",
+            "-shortest",
+            "-y",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _stream_kinds(path):
+    report = subprocess.run(
+        [_software_ffmpeg_binary(), "-hide_banner", "-i", str(path)],
+        capture_output=True,
+        text=True,
+    ).stderr
+    return [
+        line.split(": ")[1].split(":")[0].strip()
+        for line in report.splitlines()
+        if line.strip().startswith("Stream #")
+    ]
+
+
+def _decoded_audio(path):
+    raw = subprocess.run(
+        [
+            _software_ffmpeg_binary(),
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:a:0",
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+
+
+@pytest.mark.parametrize("reencode", [False, True])
+def test_project_concat_keeps_narration_after_a_silent_first_scene(tmp_path, reencode):
+    # Algan writes no audio stream at all for a scene without sound, and
+    # FFmpeg's concat demuxer takes its stream layout from the first input:
+    # a silent title card used to drop every later scene's narration.
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    _narrated_clip(project.video_directory / "1_café ending.mp4", "blue")
+
+    output = project.concatenate_videos(reencode=reencode)
+
+    assert output == project.file_path.resolve()
+    assert sorted(_stream_kinds(output)) == ["Audio", "Video"]
+    assert len(_mean_frame_colors(output)) == 4
+    audio = _decoded_audio(output)
+    # Silence for the first second, then the second scene's tone: the padding
+    # kept the intro's length, so the narration still starts with its scene.
+    assert 1.8 * 8000 < len(audio) < 2.2 * 8000
+    assert np.abs(audio[: int(0.8 * 8000)]).max() < 50
+    assert np.sqrt(np.mean(audio[int(1.2 * 8000) : int(1.8 * 8000)] ** 2)) > 1000
+    # The padded copy is a temporary, not a file left beside the output.
+    assert not any(
+        p.name.startswith(".algan_concat_") for p in project.file_path.parent.iterdir()
+    )
+
+
+@pytest.mark.parametrize("reencode", [False, True])
+def test_project_concat_refuses_scenes_of_different_resolutions(tmp_path, reencode):
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    _narrated_clip(project.video_directory / "1_café ending.mp4", "blue", "32x32")
+    project.file_path.write_bytes(b"previous complete export")
+
+    with pytest.raises(AlganConfigurationError, match="different resolutions"):
+        project.concatenate_videos(reencode=reencode)
+
+    assert project.file_path.read_bytes() == b"previous complete export"
+
+
 def test_project_run_cli_dispatches_project_actions(monkeypatch, tmp_path):
     def first():
         pass
