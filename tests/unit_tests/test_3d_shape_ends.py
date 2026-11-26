@@ -178,6 +178,35 @@ def test_move_between_points_spans_exactly_those_points(scene, height):
     _assert_ring(end, RIGHT + UP, axis, 0.2)
 
 
+@pytest.mark.parametrize("built_at_a_point", [True, False])
+def test_a_line_through_zero_length_keeps_its_round_cross_section(
+    scene, built_at_a_point
+):
+    """REGRESSION. At zero length the tube has no axis: its forward row came
+    out zero, and since the next stretch reads its scales back off the basis,
+    it stayed zero. A line grown out of a point, or collapsed to one and grown
+    again, was a flat ribbon -- here no thicker than nothing in z.
+    """
+    origin = _point((0, 0, 0))
+    if built_at_a_point:
+        line = Line3D(start=origin, end=origin, radius=0.05)
+    else:
+        line = Line3D(start=origin, end=RIGHT, radius=0.05)
+        with Off():
+            line.move_between_points(origin, origin)
+    with Off():
+        line.move_between_points(origin, UP * 2)
+
+    start, end = _end_rings(line, UP)
+    _assert_ring(start, origin, UP, 0.05)
+    _assert_ring(end, UP * 2, UP, 0.05)
+    for cap, centre in ((line.bottom_cap, origin), (line.top_cap, UP * 2)):
+        rim = cap.grid.location.reshape(-1, 3)
+        assert float((rim - _point(centre)).norm(dim=-1).max()) == pytest.approx(
+            0.05, abs=ATOL
+        )
+
+
 @pytest.mark.parametrize("height", [2.0, 0.5])
 def test_moving_one_end_leaves_the_other_where_it_was(scene, height):
     """REGRESSION. ``set_start_point`` and ``set_end_point`` took the ends to
