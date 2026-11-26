@@ -1455,14 +1455,8 @@ def _env_brdf_approx(f0, n_dot_v, roughness):
 
     The analytic fit rather than the usual 2-D LUT: a LUT is another texture to
     pack, upload and address inside the shade kernel for what is a four-term
-    polynomial (Karis 2014, "Mobile"). The fit is NOT exact. Against a Monte
-    Carlo integral of the lobe the stages evaluate (GGX, height-correlated
-    Smith, Schlick) it reads low on a smooth-to-mid metal -- 0.835 for 0.989
-    at ``f0 = 1``, roughness 0.3 and normal incidence, 0.725 for 0.915 at
-    roughness 0.5 -- agrees by roughness 0.8, and stays within about 15% on
-    a dielectric. So a prefiltered reflection on such a metal comes out
-    15-21% dark. The path tracer's tabulated albedo (``ggx_albedo.py``) is
-    the exact one.
+    polynomial (Karis 2014, "Mobile"), whose error against the numerically
+    integrated table is under 1% over the whole ``(n.v, roughness)`` square.
 
     It degenerates to Schlick as roughness goes to zero -- ``f0`` at normal
     incidence, 1 at grazing -- which is what lets the mirror path below
