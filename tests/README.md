@@ -170,7 +170,7 @@ anyway.
 | Batch sizing, the arena, texture memory, post-processing memory | Cheap, but they only move when their own module does; the fast render exercises the real path | `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py`, … |
 | Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the CI group catches on every pull request (they are pinned into it; see "Test groups") | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
 | The other six render scenes | ~2 minutes each | `tests/full_renders/` |
-| Brute-force tracer references | Taichi specialises a megakernel per test's geometry; tens of seconds each | `tests/unit_tests/test_raytracing_unit.py` |
+| Brute-force tracer references | None at present: the two in `test_raytracing_unit.py` (`test_blended_render_vs_brute_force`, `test_deep_translucent_stack`) skip on every machine, because the megakernel they drove was removed and they were never ported to the wavefront tracer | Nothing yet; `tests/fast` and `tests/full_renders` compare the tracer's pixels against baselines, not against a reference |
 | PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
 | Shadows, refraction, glow, Monte Carlo, glTF, camera moves | Another kernel variant or tracer path each | `tests/full_renders/` |
 
@@ -722,7 +722,11 @@ Organised by subsystem. The files worth knowing about (★ = in the fast suite):
   batch sizing and the arena. Cheap, and they guard a component that silently
   degrades rather than failing — but they only move when their own module does,
   and the fast suite's render exercises the real path.
-- `test_raytracing_unit.py` — brute-force references for the tracer. Expensive.
+- `test_raytracing_unit.py` — the Morton codes and the STBVH's structure. Its two
+  brute-force references for the tracer skip on every machine: the megakernel they
+  drove was removed, and they have not been ported to the wavefront tracer
+  (`algan/rendering/raytracing/tracer.py`), although their oracle,
+  `_reference_blend`, is still there.
 - `test_render_truncations.py` — the instrument on the render path's four fixed
   ceilings: what each reports, that a ceiling warns once per render rather than
   once per batch, and two scenes built to exceed one. A feature test — it breaks
