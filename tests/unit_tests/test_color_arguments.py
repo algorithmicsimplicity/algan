@@ -256,3 +256,46 @@ def test_glow_and_opacity_keywords_override_a_five_channel_color(color, expected
     torch.testing.assert_close(
         color().as_subclass(torch.Tensor).reshape(-1), torch.tensor(expected)
     )
+
+
+def test_an_integer_tuple_is_manims_0_255_under_algan_manim():
+    """REGRESSION. Under ``algan.manim`` an integer tuple is Manim's 0-255
+    spelling, ``ManimColor((255, 128, 0))``: orange. It went through Algan's
+    0-1 parser first, kept 255 in the red channel, and was clamped on the way
+    to Manim, so ``mn.Circle(color=(255, 128, 0))`` drew yellow.
+    """
+    circle = mn.Circle(color=(255, 128, 0), add_to_scene=False)
+    assert circle.manim_mobject.get_stroke_color().to_hex().upper() == "#FF8000"
+    torch.testing.assert_close(
+        _first_row(circle.stroke_color)[:3],
+        torch.tensor([1.0, 128 / 255, 0.0]),
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: Square(color=(255, 128, 0), add_to_scene=False),
+        lambda: algan.Arc(angle=90, color=(255, 128, 0), add_to_scene=False),
+        lambda: Color((255, 128, 0)),
+        lambda: Color([255, 128, 0, 1]),
+        lambda: to_color((255, 128, 0)),
+    ],
+    ids=["root Square", "root adapter", "Color", "Color RGBA list", "to_color"],
+)
+def test_an_integer_tuple_above_one_is_refused_at_the_root(build):
+    """REGRESSION. ``Square(color=(255, 128, 0))`` stored a red of 255 that
+    nothing rejected. Algan's channels are 0-1, so the error says what to
+    write.
+    """
+    with pytest.raises(algan.errors.InvalidColorError, match=r"0-255.*'#FF8000'"):
+        build()
+
+
+def test_whole_number_channels_in_range_are_still_a_color():
+    torch.testing.assert_close(
+        Color((1, 0, 0)).reshape(5), torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0])
+    )
+    torch.testing.assert_close(
+        to_color((0, 1, 0)).reshape(5), torch.tensor([0.0, 1.0, 0.0, 0.0, 1.0])
+    )

@@ -170,6 +170,29 @@ def _channel_count_error(value):
     )
 
 
+def _reject_8bit_channels(value):
+    """Raise for an integer RGB sequence with a channel above 1.
+
+    Algan's channels are in ``[0, 1]``, but ``(255, 128, 0)`` is how Manim,
+    Pillow and CSS's ``rgb()`` write orange, and it used to be stored as it
+    was: a red of 255 that nothing rejected and the renderer clamped, so it
+    drew yellow. Only integers are checked -- a float above 1 can be a
+    deliberate over-bright value, while an integer above 1 has only one
+    plausible meaning.
+    """
+    rgb = value[:3]
+    if all(
+        isinstance(channel, (int, np.integer)) and not isinstance(channel, bool)
+        for channel in rgb
+    ) and any(channel > 1 for channel in rgb):
+        scaled = ", ".join(f"{int(channel) / 255:.3g}" for channel in rgb)
+        hex_code = "#" + "".join(f"{int(channel) & 0xFF:02X}" for channel in rgb)
+        raise InvalidColorError(
+            f"{tuple(value)!r} looks like 0-255 channels, but Algan's color "
+            f"channels are in [0, 1]. Write ({scaled}) or {hex_code!r}."
+        )
+
+
 class Color(torch.Tensor):
     """A color, as five channels: red, green, blue, glow and opacity.
 
@@ -235,8 +258,9 @@ class Color(torch.Tensor):
     Raises
     ------
     :class:`.InvalidColorError`
-        If a string is neither a hex code nor a known CSS color name, or an
-        array's final axis does not have three, four or five channels.
+        If a string is neither a hex code nor a known CSS color name, an
+        array's final axis does not have three, four or five channels, or a
+        sequence of integers has a channel above 1 (it is 0-255, not 0-1).
     :class:`~algan.errors.AlganConfigurationError`
         On assigning to ``rgb``, ``glow`` or ``opacity`` of a named palette
         constant such as ``BLUE``.
@@ -285,6 +309,7 @@ class Color(torch.Tensor):
             if opacity is None:
                 opacity = extracted_opacity
         elif isinstance(rgb, (tuple, list)):
+            _reject_8bit_channels(rgb)
             if len(rgb) == 4:
                 rgb, carried_opacity = tuple(rgb[:3]), rgb[3]
                 opacity = carried_opacity if opacity is None else opacity
@@ -635,7 +660,9 @@ def to_color(value):
     Raises
     ------
     :class:`~algan.errors.InvalidColorError`
-        If ``value`` is a string that names no color, or a bool.
+        If ``value`` is a string that names no color, a bool, or a sequence
+        of integers with a channel above 1 (``(255, 128, 0)``, which is 0-255
+        rather than Algan's 0-1).
     """
     if value is None:
         return value
@@ -675,6 +702,7 @@ def to_color(value):
         and 3 <= len(value) <= 5
         and all(_is_channel(channel) for channel in value)
     ):
+        _reject_8bit_channels(value)
         return Color(tuple(float(channel) for channel in value))
     return value
 

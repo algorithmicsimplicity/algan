@@ -208,6 +208,39 @@ def _as_manim_color_arg(value):
     return value
 
 
+def _is_int_rgb(value):
+    """Whether ``value`` is an RGB or RGBA sequence of integers.
+
+    Manim reads integer channels as 0-255 (``ManimColor((255, 128, 0))`` is
+    orange) where Algan's colors are 0-1, so the two libraries disagree about
+    what such a tuple means.
+    """
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) in (3, 4)
+        and all(
+            isinstance(channel, (int, np.integer)) and not isinstance(channel, bool)
+            for channel in value
+        )
+    )
+
+
+def _color_kwarg_to_manim(value, root_conventions):
+    """A color keyword of a compatibility constructor, ready for ``to_manim``.
+
+    Under ``algan.manim`` a name follows Manim's conventions, and Manim reads
+    an integer tuple as 0-255: ``ManimColor((255, 128, 0))`` is orange.
+    Converting it through Algan's :func:`to_color` first kept 255 in a 0-1
+    channel, which ``_color_to_manim`` then clamped to 1, so
+    ``mn.Circle(color=(255, 128, 0))`` drew yellow. It reaches Manim's parser
+    as written instead. The root adapters follow Algan's conventions, so there
+    everything goes through ``to_color``, which refuses such a tuple.
+    """
+    if not root_conventions and _is_int_rgb(value):
+        return _manim.ManimColor(tuple(int(channel) for channel in value))
+    return _as_manim_color_arg(value)
+
+
 def _uniform_color_and_opacity(color, opacity):
     """Return one Manim-compatible RGB string and effective opacity."""
     color = color.reshape(-1, color.shape[-1])[0]
@@ -989,6 +1022,11 @@ class ManimCompatMob(ManimMob):
     #: than as a ``FileNotFoundError: 'latex'`` from inside Manim after it has
     #: written a scratch file. Set by :func:`_make_manim_wrapper`.
     _needs_latex = False
+    #: True for the root adapters (``algan.mobs.manim_adapters``), which read
+    #: their arguments under Algan's conventions; False for the ``algan.manim``
+    #: classes, which read them as Manim does. Only color keywords consult it
+    #: here -- the adapters convert angles and stroke widths themselves.
+    _root_conventions = False
     #: The constructor takes Manim's keywords as Manim spells them, so of the
     #: hints for Manim spellings only the ones about what no Mob constructor
     #: takes in either library -- timing, which Algan sets with a context --
@@ -1024,8 +1062,13 @@ class ManimCompatMob(ManimMob):
         # *list of colors* and rejects each element. Everything Algan accepts
         # -- a Color, a hex string, a hex int, an RGB sequence -- becomes one
         # Color here, and to_manim renders that as a value Manim does take.
+        # Except where Manim's own reading differs: see _color_kwarg_to_manim.
         kwargs = {
-            key: (_as_manim_color_arg(value) if "color" in key else value)
+            key: (
+                _color_kwarg_to_manim(value, self._root_conventions)
+                if "color" in key
+                else value
+            )
             for key, value in kwargs.items()
         }
         manim_kwargs = {key: to_manim(value) for key, value in kwargs.items()}

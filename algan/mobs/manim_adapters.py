@@ -714,6 +714,7 @@ def _make_adapter(name: str, angle_params: tuple[str, ...]):
         {
             "__init__": __init__,
             "__module__": __name__,
+            "_root_conventions": True,
             "__doc__": _root_docstring(
                 name, root_name, wrapper, root_sig, angle_params
             ),
