@@ -773,6 +773,12 @@ Who casts and who receives
   traversed by shadow rays, and a partially transparent occluder attenuates the
   light by its opacity rather than blocking it. Stacked occluders multiply.
   Texture alpha counts.
+* **A translucent closed solid's shadow is darker than the solid looks.**
+  Viewed directly, a closed solid attenuates the light behind it once however
+  many of its faces a ray crosses. The deterministic renderer's shadow ray
+  attenuates once per face it crosses instead, so the light reaching the
+  shadow of a sphere with ``opacity=0.5`` is a quarter, not a half: its shadow
+  ray crosses two faces.
 * **Receivers: fragment-shaded triangle geometry only.** Bezier circuits never
   receive shadows (see :ref:`limits-lit`), and neither do the four per-vertex
   materials or :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`.
