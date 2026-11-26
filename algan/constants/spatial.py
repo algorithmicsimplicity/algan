@@ -29,10 +29,15 @@ where a new Scene's camera sits, looking ``INWARD`` at the Mobs that face it.
 
 Distances are in world units throughout; angles are in **degrees**, which is the
 convention that most often surprises users arriving from Manim.
+
+Each constant is one tensor shared by the whole process, so write ``p = ORIGIN +
+RIGHT`` rather than ``p = ORIGIN; p += RIGHT``: the in-place form moves
+``ORIGIN`` itself, for the rest of the script.
 """
 
 from __future__ import annotations
 
+from algan.constants._shared import _register_shared_constants
 from algan.constants.color import *
 
 RIGHT = torch.tensor((1, 0, 0), dtype=torch.get_default_dtype())
@@ -64,3 +69,8 @@ ORIGIN = torch.zeros_like(OUTWARD)
 CAMERA_ORIGIN = ORIGIN + OUTWARD * 7
 
 NUM_DIMENSIONS = 3
+
+# Last: record the directions as shared constants, so that a process running
+# several scripts can undo an in-place edit one of them made through an alias
+# (``o = ORIGIN; o += 1.0``). See algan/constants/_shared.py.
+_register_shared_constants(globals())

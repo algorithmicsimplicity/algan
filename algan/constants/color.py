@@ -25,7 +25,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from algan.errors import InvalidColorError
+from algan.constants._shared import _register_shared_constants
+from algan.constants._shared import is_shared_constant as _is_shared_constant
+from algan.errors import AlganConfigurationError, InvalidColorError
 from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import (
     broadcast,
@@ -180,7 +182,16 @@ class Color(torch.Tensor):
     travel with the color through ordinary arithmetic: ``BLUE * 0.5`` dims the
     color *and* halves its alpha, and interpolating between two colors
     interpolates their emissive strength too. When you want to change one
-    channel alone, use :meth:`set_opacity` or assign to :attr:`glow`.
+    channel alone, use :meth:`set_opacity`, :meth:`set_glow` or
+    :meth:`set_rgb`, which return a changed copy: ``BLUE.set_glow(2)`` is a
+    glowing blue, and ``BLUE`` itself stays as it was.
+
+    The named palette constants are shared by every Mob and script in the
+    process, so assigning to one's channels -- ``BLUE.glow = 2``, or
+    ``c = BLUE; c.glow = 2``, which is the same object -- raises rather than
+    changing ``BLUE`` everywhere. Assigning to the channels of a color you
+    built yourself (``c = Color(BLUE)``) is fine. In-place arithmetic such as
+    ``c *= 0.5`` cannot be refused, so write ``c = c * 0.5`` on a constant.
 
     A ``Color`` is a :class:`torch.Tensor` subclass, so it takes part in tensor
     arithmetic and can carry batch dimensions -- a ``(*, 5)`` array of them is
@@ -212,17 +223,23 @@ class Color(torch.Tensor):
     Attributes
     ----------
     rgb
-        The first three channels, shape ``(*, 3)``. Assignable.
+        The first three channels, shape ``(*, 3)``. Assignable, except on a
+        named palette constant.
     glow
-        The fourth channel, shape ``(*, 1)``. Assignable.
+        The fourth channel, shape ``(*, 1)``. Assignable, except on a named
+        palette constant.
     opacity
-        The fifth channel, shape ``(*, 1)``, in ``[0, 1]``. Assignable.
+        The fifth channel, shape ``(*, 1)``, in ``[0, 1]``. Assignable, except
+        on a named palette constant.
 
     Raises
     ------
     :class:`.InvalidColorError`
         If a string is neither a hex code nor a known CSS color name, or an
         array's final axis does not have three, four or five channels.
+    :class:`~algan.errors.AlganConfigurationError`
+        On assigning to ``rgb``, ``glow`` or ``opacity`` of a named palette
+        constant such as ``BLUE``.
 
     See Also
     --------
@@ -321,6 +338,7 @@ class Color(torch.Tensor):
 
     @opacity.setter
     def opacity(self, value):
+        self._refuse_shared_constant("opacity", "set_opacity")
         self.data[..., -1:] = self._channel_value(value)
 
     @property
@@ -343,6 +361,7 @@ class Color(torch.Tensor):
 
     @glow.setter
     def glow(self, value):
+        self._refuse_shared_constant("glow", "set_glow")
         self.data[..., -2:-1] = self._channel_value(value)
 
     @property
@@ -353,7 +372,27 @@ class Color(torch.Tensor):
 
     @rgb.setter
     def rgb(self, value):
+        self._refuse_shared_constant("rgb", "set_rgb")
         self.data[..., :3] = self._channel_value(value)
+
+    def _refuse_shared_constant(self, channel, setter):
+        """Internal: raise if this color is (a view of) a palette constant.
+
+        A palette constant is one object shared by every Mob and script in the
+        process -- and, on the warm daemon, by every later script -- so writing
+        its channels in place recolors all of them. The setters are the
+        spelling the docs used to recommend (``c = BLUE; c.glow = 2``), so they
+        refuse with the copy-returning method to use instead.
+        """
+        if _is_shared_constant(self):
+            raise AlganConfigurationError(
+                f"Cannot assign {channel} on a named palette color such as "
+                f"BLUE: it is one object shared by every Mob in the process, so "
+                f"the change would recolor all of them. Use "
+                f"{setter}(...), which returns a changed copy "
+                f"(c = BLUE.{setter}(...)), or assign on your own copy "
+                f"(c = Color(BLUE); c.{channel} = ...)."
+            )
 
     def _channel_value(self, value):
         """Internal: ``value`` as a tensor matching this color's dtype and device.
@@ -737,3 +776,8 @@ GRAY_BROWN = Color("#736357")
 GREY_BROWN = Color("#736357")
 CYAN = Color("#00FFFF")
 MAGENTA = Color("#FF00FF")
+
+# Last, once every palette entry exists: record each as a shared constant, so
+# that the channel setters refuse it and a multi-script process can put it back
+# (see algan/constants/_shared.py).
+_register_shared_constants(globals())
