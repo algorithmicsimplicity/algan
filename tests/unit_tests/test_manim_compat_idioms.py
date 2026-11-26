@@ -10,9 +10,10 @@ compatibility layer changes.
 from __future__ import annotations
 
 import pytest
+import torch
 
 import algan.manim as mn
-from algan import Arc, Axes
+from algan import RED, Arc, Axes
 from algan.scene_manager import SceneManager
 
 
@@ -41,3 +42,26 @@ def test_animate_names_the_algan_spelling(build):
     with pytest.raises(AttributeError, match="Algan records animations"):
         mob.animate
     assert not hasattr(mob, "animate")
+
+
+def test_matching_an_unfilled_mobs_color_keeps_the_target_visible():
+    """REGRESSION. ``get_color`` on an unfilled compatibility Mob returned its
+    fill row, whose alpha is the fill opacity of 0, so ``set_color`` with it
+    made the target's stroke invisible.
+    """
+    arc = Arc(angle=90, color=RED)
+    color = arc.get_color()
+    torch.testing.assert_close(_row(color)[:3], _row(arc.stroke_color)[:3])
+    assert float(_row(color)[4]) == 1.0
+    square = mn.Square()
+    square.set_color(color)
+    stroke = _row(square.stroke_color)
+    torch.testing.assert_close(stroke[:3], _row(RED)[:3])
+    assert float(stroke[4]) == 1.0
+
+
+def test_get_color_of_a_filled_mob_is_its_fill():
+    square = mn.Square(color="#58C4DD", fill_color="#FC6255", fill_opacity=0.5)
+    color = _row(square.get_color())
+    torch.testing.assert_close(color[:3], _row(square.color)[:3])
+    assert float(color[4]) == 1.0

@@ -1707,6 +1707,37 @@ class ManimCompatMob(ManimMob):
             return super().__len__()
         return len(self.manim_mobject)
 
+    def _generated_accessor(self, name):
+        # ``get_color`` is defined below with Manim's meaning. The generic
+        # accessor would otherwise be built into the instance and shadow it
+        # (_generate_animatable_attr_set_get_methods builds the ones a class
+        # defines).
+        if name == "get_color":
+            return None
+        return super()._generated_accessor(name)
+
+    def get_color(self):
+        """Get the color this Mob is drawn in, the way Manim's ``get_color`` does.
+
+        An unfilled shape -- a line, an arc, axes, an unfilled polygon -- is
+        drawn by its stroke alone, so its stroke color is the answer, and the
+        color is returned opaque: Manim's colors carry no opacity, and its
+        ``set_color`` keeps the target's. Algan's generic ``get_color`` returned
+        the fill row instead, whose alpha is the shape's fill opacity of 0, so
+        ``b.set_color(a.get_color())`` -- the usual way to match two Mobs'
+        colors -- made ``b`` invisible.
+
+        Returns
+        -------
+        :class:`~algan.constants.color.Color`
+            The fill color if the fill is at all visible, else the stroke
+            color, with opacity 1 and glow kept, shape ``(*, 5)``.
+        """
+        color = self.color
+        if not bool((color[..., -1] > 1e-5).any()):
+            color = self.stroke_color
+        return Color(color).set_opacity(1)
+
     def __getattr__(self, name):
         # Normal Mob/Animatable attribute lookup gets first chance.  This method
         # is reached only for Manim-specific APIs -- and for an Algan
