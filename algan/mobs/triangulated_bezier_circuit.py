@@ -52,26 +52,6 @@ def get_corners(g, i, j):
 from algan.external_libraries.ground.base import get_context
 from algan.external_libraries.sect.triangulation import Triangulation
 
-"""import triangle as tr
-import numpy as np
-
-
-def circle(N, R):
-    i = np.arange(N)
-    theta = i * 2 * np.pi / N
-    pts = np.stack([np.cos(theta), np.sin(theta)], axis=1) * R
-    seg = np.stack([i, i + 1], axis=1) % N
-    return pts, seg
-
-
-pts0, seg0 = circle(30, 1.4)
-pts1, seg1 = circle(16, 0.6)
-pts = np.vstack([pts0, pts1])
-seg = np.vstack([seg0, seg1 + seg0.shape[0]])
-
-A = dict(vertices=pts, segments=seg, holes=[[0, 0]])
-B = tr.triangulate(A, 'qpa0.05')"""
-
 
 def triangulate_simple_polygon(polygons):
     all_triangles = []
@@ -416,23 +396,6 @@ def tile_region(
                     if k == 0 and ordered[(i + 1) % len(ordered)][1] == 2:
                         next_enters.append([j, enterj])
                         break
-                """for i in range(4):
-                    ep = (e - i) % 4
-                    if i == 0:
-                        if ((exit[0] - i) % 4 == first_enter[0]):
-                            if s <= q <= (e - i) % 4:
-                                next_enters.append([j, enterj])
-                                break
-                        elif ((ep - 1) <= q <= (ep)) or (ep + 3 <= q <= ep + 4):
-                            next_enters.append([j, enterj])
-                            break
-                    if ((exit[0] - i) % 4 == first_enter[0]):
-                        if s <= q <= (e-i)%4:
-                            next_enters.append([j, enterj])
-                        break
-                    elif ((ep - 1) <= q <= (ep)) or (ep+3 <= q <= ep+4):
-                        next_enters.append([j, enterj])
-                        break"""
 
             used_paths.append(current_ind)
 
@@ -451,13 +414,6 @@ def tile_region(
                     if k <= e:
                         break
                     polygons[-1].append(grid4[c, k.item() % 4])
-
-                """for i in range(3):
-                    if (i == 0) and ((s[0]-i) % 4 == e[0]) and ((get_peri_dist(s) - i)%4 >= get_peri_dist(e)):
-                        break
-                    if ((s[0]-i) % 4 == e[0]):
-                        break
-                    polygons[-1].append(grid4[c, (s[0]-i) % 4])"""
 
             if len(next_enters) == 0:
                 add_corners(exit_point, first_enter)
@@ -787,16 +743,3 @@ class TriangulatedBezierCircuit(Mob):
         # before spawn, as set_shader requires.
         self.set_shader(null_shader)
         self.parents.clear()
-
-    def get_local_coord_bounding_box(self):
-        all_points = torch.stack([point_to_tensor2(_.end) for _ in self.path], 0)
-        mn, mx = (all_points.amin(-2)), (all_points.amax(-2))
-        return torch.stack(
-            (
-                mn,
-                torch.stack((mn[..., 0], mx[..., 1]), -1),
-                mx,
-                torch.stack((mx[..., 0], mn[..., 1]), -1),
-            ),
-            -1,
-        ).unsqueeze(-3)
