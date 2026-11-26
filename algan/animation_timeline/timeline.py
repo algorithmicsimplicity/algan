@@ -199,6 +199,18 @@ def bump_spawn_version():
     SPAWN_VERSION[0] += 1
 
 
+#: Bumped whenever recording changes the timeline in place instead of
+#: appending to it: a lifespan stamped (spawn, despawn), a packed member's
+#: pending reveal, a topology split's migrated edits, an updater removal that
+#: re-ran an animation. AnimationTimeline.roll_back_recording undoes only an
+#: appended tail, so it refuses a stretch in which this moved.
+RECORDING_REWRITE_VERSION = [0]
+
+
+def bump_recording_rewrite_version():
+    RECORDING_REWRITE_VERSION[0] += 1
+
+
 def bump_timing_version():
     TIMING_VERSION[0] += 1
 
@@ -503,6 +515,7 @@ class Lifespan:
         self._start = value
         bump_spawn_version()
         bump_timing_version()
+        bump_recording_rewrite_version()
 
     @property
     def end(self):
@@ -512,6 +525,7 @@ class Lifespan:
     def end(self, value):
         self._end = value
         bump_timing_version()
+        bump_recording_rewrite_version()
 
 
 class EditRecord:
@@ -2775,6 +2789,9 @@ class AnimationTimeline:
         # still render.
         self._edits_in_order = []
         self._edit_order_dirty = False
+        # Every UpdaterSpan end_updater closed, in order, so a failed block's
+        # removals can be reopened (roll_back_recording).
+        self._updater_end_log = []
         # Whether any edit was ever inserted out of execution order (a
         # migration, see register_migrated_edit): per-attribute edit lists are
         # then no longer sorted by seq past that point.
@@ -3161,7 +3178,106 @@ class AnimationTimeline:
     def end_updater(self, updater_id, animation_context):
         span = self.function_timeline.updaters[updater_id].time
         span.end_event = animation_context.timespan.get_current_time()
+        self._updater_end_log.append(span)
         return span
+
+    def recording_checkpoint(self):
+        """Where the recording stands: what :meth:`roll_back_recording` needs
+        to take the timeline back here. Cheap; every entered context takes one.
+        """
+        functions = self.function_timeline
+        return (
+            len(self._edits_in_order),
+            self._edit_seq,
+            len(functions.function_applications),
+            len(functions.updaters),
+            len(self._updater_end_log),
+            self.last_recorded_event,
+            RECORDING_REWRITE_VERSION[0],
+        )
+
+    def roll_back_recording(self, checkpoint):
+        """Drop everything recorded since ``checkpoint``
+        (:meth:`recording_checkpoint`): attribute edits, with the authoring
+        state they wrote, function applications, updaters added, and updater
+        removals. A context whose body raised calls this, so a caught
+        exception leaves no half of a block on the timeline.
+
+        Returns False, changing nothing, when something since the checkpoint
+        rewrote the recording in place rather than adding to it (a spawn or
+        despawn, a topology split, a removal that re-ran an animation): those
+        cannot be taken back from the log alone.
+        """
+        (
+            edit_count,
+            edit_seq,
+            function_count,
+            updater_count,
+            end_count,
+            last_event,
+            version,
+        ) = checkpoint
+        functions = self.function_timeline
+        if (
+            len(self._edits_in_order) == edit_count
+            and len(functions.function_applications) == function_count
+            and len(functions.updaters) == updater_count
+            and len(self._updater_end_log) == end_count
+        ):
+            return True
+        if version != RECORDING_REWRITE_VERSION[0]:
+            return False
+        if self._materialization_times is not None:
+            # Frames are being materialized: nothing records then, and the
+            # buffers are windows, not the authoring state.
+            return False
+        # The block's edits are the tail of the execution order (seqs only
+        # grow, and an out-of-order insertion bumps the version above). Undo
+        # them latest first, each writing back what its rows held before it.
+        tail = self._edits_in_order[edit_count:]
+        for _, attr_name, edit in reversed(tail):
+            timeline = self.attr_to_timeline[attr_name]
+            timeline.modify(edit.indexes.view(-1), edit.values)
+            edits = timeline.edits
+            if edits and edits[-1] is edit:
+                edits.pop()
+            else:
+                for k in range(len(edits) - 1, -1, -1):
+                    if edits[k] is edit:
+                        del edits[k]
+                        break
+        del self._edits_in_order[edit_count:]
+        self._edit_seq = edit_seq
+        for event in functions.function_applications[function_count:]:
+            bucket = functions._by_caller.get(id(event.caller))
+            if bucket is None:
+                continue
+            for k in range(len(bucket) - 1, -1, -1):
+                if bucket[k] is event:
+                    del bucket[k]
+                    break
+            if not bucket:
+                del functions._by_caller[id(event.caller)]
+        del functions.function_applications[function_count:]
+        del functions.updaters[updater_count:]
+        for span in self._updater_end_log[end_count:]:
+            span.end_event = None
+        del self._updater_end_log[end_count:]
+        self.last_recorded_event = last_event
+        if self._resolved_prefix_count > edit_count:
+            self._resolved_prefix_count = 0
+            self._resolved_prefix_seq = -1
+            self._resolved_row_ends = {}
+            self._row_ends_capacity = {}
+        replays = self._plain_write_replays
+        while replays and replays[-1][0] > self._resolved_prefix_seq:
+            replays.pop()
+        self._plain_write_window_cache = None
+        self._replay_windows_resolved = False
+        for timeline in self.attr_to_timeline.values():
+            timeline.invalidate_prepared_queries()
+        functions.invalidate_window_cache()
+        return True
 
     def record_updater_removal(self, writes, mob_id, end_event, removal_time):
         """Record the state a removed updater left behind (``writes``, as
@@ -3270,6 +3386,7 @@ class AnimationTimeline:
                 event_rows.setdefault(attr_name, []).append(edit.indexes.view(-1))
         event_rows = {a: torch.cat(r) for a, r in event_rows.items()}
 
+        bump_recording_rewrite_version()
         # Roll the running functions' rows back to what they held before the
         # first of them ran (their recorded pre-values, latest first).
         records = [
@@ -3458,6 +3575,7 @@ class AnimationTimeline:
         it marks the order dirty and invalidates a resolved checkpoint only
         when the changed source lies inside that checkpoint.
         """
+        bump_recording_rewrite_version()
         attr_timeline.edits.append(migrated_edit)
         self._edits_in_order.append((migrated_edit.seq, attr_name, migrated_edit))
         self._edit_order_dirty = True

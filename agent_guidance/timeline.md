@@ -160,6 +160,10 @@ recording available for another render. Explicit finalization, such as
 add authored work; see [api_settings.md](api_settings.md) for the complete reset
 contract.
 
+### A block that raises
+
+`AnimationContext.__enter__` takes `AnimationTimeline.recording_checkpoint()` (counts, not copies) plus the Scene's audio list lengths, and `__exit__` with an exception calls `roll_back_recording`: the edits past the checkpoint are undone latest first (each writes its pre-values back), and the function applications, updaters and updater removals (`_updater_end_log`) past it are dropped. That only works for a recording that was appended to. Anything that changes it in place calls `bump_recording_rewrite_version()` (lifespan stamps, packed-member reveals and hides, topology migration, `record_updater_removal`'s re-run); a failed block during which the version moved keeps its recording and warns. A new in-place change to recorded state must bump it too, or a failed block will half undo it. `test_failed_block_rollback.py` pins this.
+
 ### Structural batch rewrites
 
 Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr_and_rebatch_without_record`, which re-allocates a mob's rows. Recorded history stays with the old rows, so this is only valid on mobs with fresh history (`detach_history` provides that).

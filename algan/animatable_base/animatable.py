@@ -57,6 +57,7 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     _arguments_by_name,
     _call_recorded,
     _opt_disabled,
+    bump_recording_rewrite_version,
 )
 from algan.constants.color import BLACK, Color
 from algan.errors import (
@@ -278,6 +279,9 @@ def animated_function(
     object holds by then; Algan warns with
     :class:`~algan.errors.DivergentReplayWarning` when that reaches a Mob made
     after the call.
+
+    A call whose body raises records nothing, as for a ``with`` block that
+    raises (see :class:`~.AnimationContext`).
 
     Parameters
     ----------
@@ -2234,6 +2238,8 @@ class Animatable:
         opacity = timeline.attr_to_timeline.get("opacity")
         if opacity is None or not hasattr(self, "_apply_change"):
             return
+        # The pending reveals below are kept in place, outside the edit log.
+        bump_recording_rewrite_version()
         standard_fades = None
         by_id = defaultdict(list)
         for node in self.get_descendants():
@@ -2604,6 +2610,7 @@ class Animatable:
         """
         timeline = self.scene.timeline_manager
         opacity = timeline.attr_to_timeline["opacity"]
+        bump_recording_rewrite_version()
         for mob_id, (nodes, rows) in hidden.items():
             if rows.numel() == 0:
                 continue

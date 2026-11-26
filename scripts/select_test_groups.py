@@ -72,10 +72,12 @@ ALWAYS_CI = (
     "tests/unit_tests/test_manim_animation_audit.py::test_high_value_animation_api_is_exported",
     "tests/unit_tests/test_scene_pixel_lengths.py::test_every_public_scene_method_answers_on_the_class",
     # Timeline regressions, recorded and materialized without a render:
-    # removing an updater inside a block that rescales on exit, the context
-    # tree and the segment caches after materializing, the parameter-name
-    # memo's hold on a script, a context's repr, and Wiggle beside a move.
+    # removing an updater inside a block that rescales on exit, a block that
+    # raises, the context tree and the segment caches after materializing,
+    # the parameter-name memo's hold on a script, a context's repr, and
+    # Wiggle beside a move.
     "tests/unit_tests/test_updater_removal.py::",
+    "tests/unit_tests/test_failed_block_rollback.py::",
     "tests/unit_tests/test_updater_mob_creation.py::test_materializing_frames_leaves_the_context_tree_as_it_was",
     "tests/unit_tests/test_texture_time_lerp.py::test_a_render_drops_the_segment_window_caches_when_it_ends",
     "tests/unit_tests/test_animated_function_arguments.py::test_a_recorded_function_does_not_keep_its_script_alive",
