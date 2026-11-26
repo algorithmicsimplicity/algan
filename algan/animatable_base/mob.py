@@ -293,7 +293,7 @@ _BASIS_CHANGE_TOLERANCE = 1e-4
 #: every Mob in it. A Mob no Group has measured is in no such cache, which is
 #: what keeps the flags set on helper geometry at construction from dropping
 #: them all.
-BOUNDARY_FLAG_VERSION = [0]
+_BOUNDARY_FLAG_VERSION = [0]
 
 
 #: ``(default dtype, default device, target device) -> interpolation``: the
@@ -2223,7 +2223,7 @@ class Mob(
         if self.__dict__.get("_boundary_measured") and value != self.__dict__.get(
             "_exclude_from_boundary", False
         ):
-            BOUNDARY_FLAG_VERSION[0] += 1
+            _BOUNDARY_FLAG_VERSION[0] += 1
         self.__dict__["_exclude_from_boundary"] = value
 
     @property

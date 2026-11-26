@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import Animatable, _rejecting_timing_kwargs
-from algan.animatable_base.mob import BOUNDARY_FLAG_VERSION, Mob
+from algan.animatable_base.mob import _BOUNDARY_FLAG_VERSION, Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.animation_timeline.timeline import AttributeTimeline, RowRanges
 from algan.constants.spatial import DOWN, ORIGIN, RIGHT
@@ -374,13 +374,13 @@ class Group(Mob):
             and cache["descendants"] is descendants
             and cache["timeline"] is timeline
             and cache["rows_version"] == timeline.rows_version
-            and cache["flag_version"] == BOUNDARY_FLAG_VERSION[0]
+            and cache["flag_version"] == _BOUNDARY_FLAG_VERSION[0]
         ):
             cache = {
                 "descendants": descendants,
                 "timeline": timeline,
                 "rows_version": timeline.rows_version,
-                "flag_version": BOUNDARY_FLAG_VERSION[0],
+                "flag_version": _BOUNDARY_FLAG_VERSION[0],
                 # Index 0 is this Group: its own pivot is not one of its members.
                 "done": 1,
                 "mask": torch.zeros(timeline.pointer, dtype=torch.bool),
