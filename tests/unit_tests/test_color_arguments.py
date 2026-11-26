@@ -299,3 +299,18 @@ def test_whole_number_channels_in_range_are_still_a_color():
     torch.testing.assert_close(
         to_color((0, 1, 0)).reshape(5), torch.tensor([0.0, 1.0, 0.0, 0.0, 1.0])
     )
+
+
+def test_a_color_compares_with_anything_and_hashes_by_identity():
+    """REGRESSION. ``BLUE == None`` and ``"red" in [BLUE]`` raised
+    ``AttributeError: 'NotImplementedType' object has no attribute
+    'as_subclass'``, and a Color could not be a dict key or set member.
+    """
+    assert (BLUE == None) is False  # noqa: E711 -- the comparison under test
+    assert BLUE != "red"
+    assert "red" not in [BLUE]
+    assert BLUE in [GREEN, BLUE]
+    assert {BLUE: 1}[BLUE] == 1
+    assert len({BLUE, BLUE, GREEN}) == 2
+    blue, copy = BLUE, BLUE.clone()
+    assert bool(blue == copy)
