@@ -12,8 +12,9 @@ metadata:
     model formats have optional dependencies. Rendering requires a supported CPU/GPU
     backend. Custom compiled shaders must be defined in real Python source files.
   version: "1.3.0"
-  source-checked: "2026-09-24"
-  algan-source-commit: "45c1d6a3fd47f83b09b7a82bb77f5d080f457556 + local changes (Algan 0.0.2)"
+  source-checked: "2026-11-26"
+  algan-source-commit: "423db6f5e0374b04874d1f09820893a6a348d58c"
+  algan-version: "0.0.3"
 ---
 
 # Algan video production

@@ -299,9 +299,10 @@ The boundary changes conventions. Root `Arc(angle=90)` takes degrees;
 `mn.Arc(angle=PI / 2)` takes radians.
 
 Several names exported at the root are themselves adapters of Manim geometry
-(on Algan 0.0.2: `RoundedRectangle`, `Star`, `Annulus`, `Arc`, `Arrow`,
-`Ellipse`, `Sector`, `AnnularSector`, `DashedLine`, `Elbow`, `Cross`; check
-`type(obj).__module__` for others). Their constructors take Manim's keywords
+(for example `RoundedRectangle`, `Star`, `Annulus`, `Arc`, `Arrow`,
+`Ellipse`, `Sector`, `AnnularSector`, `DashedLine`, `Elbow`, `Cross`, `Axes`
+and `NumberPlane`). For any of them `type(obj).__module__` is
+`algan.mobs.manim_adapters`. Their constructors take Manim's keywords
 converted to Algan's units (degrees, Algan stroke widths), plus Algan's `opacity`,
 `glow`, `unlit`, `name`, `location` and `basis`, and `fill_opacity` /
 `stroke_opacity`. The corresponding `mn` classes keep Manim's radians and stroke
