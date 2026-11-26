@@ -431,6 +431,23 @@ def _test_group_pins(name: str) -> tuple[str, ...]:
     return module.ALWAYS_CI + module.ALWAYS_PRE_PR
 
 
+def _test_group_keeps(item, members: set[str], pins: tuple[str, ...]) -> bool:
+    """Whether ``--group`` runs ``item``: listed, pinned, or in the fast suite.
+
+    The fast suite is in every group by definition, and it has to be decided
+    here rather than in the lists. The lists seed it only when they are
+    regenerated, so a test marked ``fast`` since then -- a new parametrized
+    case of an AST walk over the kernel modules, say -- ran on no pull request
+    at all: the greedy pass never picks a test that covers no new lines, and
+    the guards in the fast suite cover almost none.
+    """
+    return (
+        item.nodeid in members
+        or item.nodeid.startswith(pins)
+        or item.get_closest_marker("fast") is not None
+    )
+
+
 def _known_mps_failures():
     """``tests/mps_known_failures.py``'s table, loaded by path.
 
@@ -499,7 +516,7 @@ def pytest_collection_modifyitems(config, items):
         pins = _test_group_pins(group)
         selected, deselected = [], []
         for item in items:
-            keep = item.nodeid in members or item.nodeid.startswith(pins)
+            keep = _test_group_keeps(item, members, pins)
             (selected if keep else deselected).append(item)
         if deselected:
             config.hook.pytest_deselected(items=deselected)

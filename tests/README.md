@@ -166,7 +166,7 @@ anyway.
 | Per-feature behaviour: the indication animations, `become`, `wave_color`, `DecimalNumber`, materials, fragment shaders, neural nets, the Manim compatibility layer, glTF/FBX import | Breaks when that feature is worked on, not when anything else is | Its own file, plus `tests/full_renders/` for pixels |
 | Renderer internals: PN tessellation, surface autotune, bezier sampling, BVH refit, wavefront compaction, the frag-pid gate | Same, one subsystem each | Its own file |
 | Batch sizing, the arena, texture memory, post-processing memory | Cheap, but they only move when their own module does; the fast render exercises the real path | `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py`, … |
-| Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the full suite and CI catch before a push | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
+| Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the CI group catches on every pull request (they are pinned into it; see "Test groups") | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
 | The other six render scenes | ~2 minutes each | `tests/full_renders/` |
 | Brute-force tracer references | Taichi specialises a megakernel per test's geometry; tens of seconds each | `tests/unit_tests/test_raytracing_unit.py` |
 | PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
@@ -225,12 +225,16 @@ newly covered per second until each budget is spent.
 
 Each test is charged its measured duration plus a fixed per-test overhead
 (`PER_TEST_OVERHEAD`, what a runner actually spends per test beyond the
-reported time), so a thousand trivial tests are not mistaken for free. The CI
-group always contains the fast suite and a short named list (`ALWAYS_CI` in
-the script) of guards that read the source rather than run it, such as
-`test_every_builtin_spec_still_matches_a_live_kernel`, and of the regression
-tests of fixes: both cover almost no lines of their own, so the greedy pass
-would never choose them, yet they are what trips on a change made elsewhere.
+reported time), so a thousand trivial tests are not mistaken for free. Both
+groups always contain the fast suite: `--group` keeps every test marked
+`fast`, whether a list names it yet or not. The CI group also always contains a
+short named list (`ALWAYS_CI` in the script) of guards that read the source
+rather than run it, such as `test_every_builtin_spec_still_matches_a_live_kernel`
+and the repository audits (render coverage, the baseline pointer, the doc
+examples' static tier, the environment registry's source walks and the viewer's
+JavaScript tests), and of the regression tests of fixes: both cover almost no
+lines of their own, so the greedy pass would never choose them, yet they are
+what trips on a change made elsewhere.
 The pre-PR group always contains the whole CI group, plus `ALWAYS_PRE_PR`:
 regression tests too slow for the CI budget, such as the sheet resolve's
 kernel-against-oracle test. `--group ci` runs every test `ALWAYS_CI` names,

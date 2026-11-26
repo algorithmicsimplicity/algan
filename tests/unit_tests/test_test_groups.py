@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import sys
 from functools import cache
 from pathlib import Path
 
@@ -95,6 +96,35 @@ def _names_a_test(pin):
         name.startswith(rest) and name.split("::")[-1].startswith("test")
         for name in _definitions(path)
     )
+
+
+class _Item:
+    """Just enough of a collected test for ``_test_group_keeps``."""
+
+    def __init__(self, nodeid, *markers):
+        self.nodeid = nodeid
+        self._markers = {mark.name: mark for mark in markers}
+
+    def get_closest_marker(self, name):
+        return self._markers.get(name)
+
+
+@pytest.mark.parametrize("group", ["ci", "pre-pr"])
+def test_a_fast_test_runs_in_every_group_whether_listed_or_not(group):
+    """The fast suite is in both groups by definition, not by regeneration.
+
+    The lists seed it only when they are regenerated, so the guards marked
+    ``fast`` since -- the kernel control-flow walk's cases for the two newest
+    kernel modules, the packed-view cost check -- ran on no pull request.
+    """
+    keeps = sys.modules["conftest"]._test_group_keeps
+    members = set(_members(group))
+    pins = sys.modules["conftest"]._test_group_pins(group)
+    nodeid = "tests/unit_tests/test_kernel_control_flow.py::test_a_case_no_list_names"
+    assert nodeid not in members
+    assert not nodeid.startswith(pins)
+    assert keeps(_Item(nodeid, pytest.mark.fast.mark), members, pins)
+    assert not keeps(_Item(nodeid), members, pins)
 
 
 @pytest.mark.parametrize("pins", ["ALWAYS_CI", "ALWAYS_PRE_PR"])

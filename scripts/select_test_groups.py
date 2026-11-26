@@ -182,6 +182,19 @@ ALWAYS_CI = (
     # While a render job runs, only its thread drains torch's MPS caches, and a
     # drain the batch-prep worker asks for waits for that thread: stubs, no GPU.
     "tests/unit_tests/test_mps_cache_drains.py::test_a_drain_asked_for_off_the_render_thread_waits_for_the_render_thread",
+    # The repository audits tests/README.md says gate every pull request. They
+    # read source, docs or committed files rather than run Algan, so they cover
+    # no lines and the greedy pass never chose one: the render-coverage and
+    # scene-convention audits, the committed baseline pointer, the static tier
+    # of the doc examples, the two source walks of the environment registry,
+    # and the viewer's JavaScript, which Python coverage cannot see at all.
+    # Each file or test here runs in under three seconds.
+    "tests/unit_tests/test_render_coverage_audit.py::",
+    "tests/unit_tests/test_baseline_store.py::",
+    "tests/unit_tests/test_doc_examples.py::test_doc_example_uses_public_api",
+    "tests/unit_tests/test_environment.py::test_package_reaches_algan_variables_only_through_the_accessors",
+    "tests/unit_tests/test_environment.py::test_import_time_variables_match_where_the_code_reads_them",
+    "tests/unit_tests/test_viewer_client.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
@@ -235,6 +248,10 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_mps_zero_copy.py::test_an_owner_freed_while_the_cache_lock_is_held_is_evicted_without_deadlock",
     # The glossy pyramid's fused finish sums each texel in its launches' order.
     "tests/unit_tests/test_glossy_fused_finish.py::test_the_fused_finish_matches_the_launches_it_replaces",
+    # The rest of the environment audit: how each variable parses, and the
+    # subprocess that checks an unknown ALGAN_ name warns at import. About
+    # eight seconds for the file.
+    "tests/unit_tests/test_environment.py::",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")
