@@ -231,6 +231,41 @@ def test_the_context_moves_only_with_what_the_source_key_folds_in(monkeypatch):
         SETTINGS.computing.set(rendering_memory_fraction=fraction)
 
 
+def test_the_stamp_covers_what_reaches_a_kernel_and_not_the_authoring_layer():
+    """Editing ``scene.py`` in a source checkout moved the stamp, so the next
+    script re-queued every recorded spec and waited for a pool that found each
+    one cached.
+    """
+    from pathlib import Path
+
+    import algan
+
+    for relpath in (
+        "rendering/raytracing/sheet_compact_taichi.py",
+        "rendering/shaders/fragment_stage_library.py",
+        "rendering/raytracing/settings.py",
+        "settings/raytracing_settings.py",
+        "constants/color.py",
+        "taichi_compat.py",
+        "environment.py",
+        "utils/taichi_source_key.py",
+        "utils/taichi_utils.py",
+    ):
+        assert kp._stamped(relpath), relpath
+    for relpath in (
+        "scene.py",
+        "render_loop.py",
+        "mobs/text.py",
+        "animation_timeline/timeline.py",
+        "utils/algan_utils.py",
+    ):
+        assert not kp._stamped(relpath), relpath
+    # Every kernel or func lives where the stamp looks.
+    root = Path(algan.__file__).parent
+    for path in root.rglob("*_taichi.py"):
+        assert kp._stamped(str(path.relative_to(root))), path
+
+
 def test_the_device_pool_size_is_not_keyed():
     """Workers shrink it; the index must still match (see ``_CONFIG_EXCLUDE_NAMES``)."""
     from algan.utils import taichi_source_key as sk

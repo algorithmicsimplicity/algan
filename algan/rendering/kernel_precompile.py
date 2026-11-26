@@ -498,15 +498,38 @@ _WORKER_ONLY_ENV = frozenset({"ALGAN_PRECOMPILE_WORKER", "ALGAN_PRECOMPILE_JOBS"
 _STAMP = None
 _STAMP_LOCK = threading.Lock()
 
+#: The parts of the package, relative to it, whose source can reach a kernel:
+#: the kernels and shader stages (every ``*_taichi.py``, wherever it is, and
+#: ``rendering/``), the compiler integration
+#: (``taichi_compat.py``, ``utils/taichi_*.py``), and what a kernel folds in
+#: by value (settings, constants, the declared variables). Everything else --
+#: the Scene, Mobs, the timeline, the viewer -- authors and never compiles.
+_STAMPED_DIRECTORIES = ("rendering", "settings", "constants")
+_STAMPED_FILES = ("taichi_compat.py", "environment.py")
+
+
+def _stamped(relpath):
+    """Whether the source file at ``relpath`` (in the package) is in the stamp."""
+    parts = relpath.replace(os.sep, "/").split("/")
+    if parts[0] in _STAMPED_DIRECTORIES or parts[-1].endswith("_taichi.py"):
+        return True
+    if len(parts) == 1:
+        return parts[0] in _STAMPED_FILES
+    return parts[0] == "utils" and parts[-1].startswith("taichi_")
+
 
 def environment_stamp():
     """A signature of everything that can invalidate the whole kernel cache at once.
 
     The compiler and its version, the Python version, Algan's version, and
-    ``(path, size, mtime)`` of every source file in the installed package.
-    Heuristic by design -- a stamp that fails to move only means a spec is not
-    re-checked, never that a wrong kernel is used -- which is why it can afford
-    to be a ``stat`` walk rather than a content hash. Memoized per process.
+    ``(path, size, mtime)`` of every source file in the package that can reach
+    a kernel (:func:`_stamped`). Heuristic by design -- a stamp that fails to
+    move only means a spec is not re-checked, never that a wrong kernel is
+    used -- which is why it can afford to be a ``stat`` walk rather than a
+    content hash. It used to take every source file, so in a source checkout a
+    docstring edit to ``scene.py`` re-queued every recorded spec, and the next
+    script waited for a pool whose every job came back cached (10 jobs, 9 s
+    on a 1.6 s SMOKE_TEST render, on 4 cores). Memoized per process.
     """
     global _STAMP
     with _STAMP_LOCK:
@@ -533,6 +556,8 @@ def environment_stamp():
                 if not name.endswith(".py"):
                     continue
                 path = os.path.join(directory, name)
+                if not _stamped(os.path.relpath(path, root)):
+                    continue
                 with contextlib.suppress(OSError):
                     stat = os.stat(path)
                     digest.update(
