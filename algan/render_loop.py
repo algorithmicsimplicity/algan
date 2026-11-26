@@ -4441,6 +4441,13 @@ class RenderLoopMixin:
             denoise_module = sys.modules.get("algan.rendering.denoise.denoise")
             if denoise_module is not None:
                 denoise_module._begin_render_job()
+            # OptiX asked for on a device it cannot use: the tracer's callers
+            # stop at the device check before asking for a runtime, so say so
+            # here, once per process, rather than render slower in silence.
+            if rt_settings_module.optix and render_device().type != "cuda":
+                from algan.rendering.raytracing.optix import runtime_for
+
+                runtime_for(render_device())
 
         with self._batch_prep_context():
             current_time_ind = start_time_ind
