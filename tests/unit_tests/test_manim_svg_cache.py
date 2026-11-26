@@ -457,3 +457,15 @@ def test_a_replayed_svg_logs_what_its_parse_logged(isolated_svg_cache):
     assert logged_by_import() == parsed, "the replay from memory said nothing"
     svg_cache._MEM_CACHE.clear()
     assert logged_by_import() == parsed, "the replay from disk said nothing"
+
+
+def test_the_in_process_recipe_memo_is_bounded(monkeypatch):
+    # It kept every recipe a process ever parsed: a label built per frame grew
+    # it without limit. Past its size the oldest half goes.
+    monkeypatch.setattr(svg_cache, "_MEM_CACHE", {})
+    monkeypatch.setattr(svg_cache, "_MEM_CACHE_SIZE", 8)
+    for index in range(20):
+        svg_cache._memoize(f"key{index}", ("recipe", index))
+        assert len(svg_cache._MEM_CACHE) <= 8
+    assert "key19" in svg_cache._MEM_CACHE
+    assert "key0" not in svg_cache._MEM_CACHE

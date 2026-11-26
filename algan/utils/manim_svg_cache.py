@@ -86,7 +86,14 @@ _MANIM_LOGGER = "algan.manim"
 # Process-local memo of already-loaded recipes, keyed by the stable hash. This
 # replaces Manim's SVG_HASH_TO_MOB_MAP for the patched path: a cache hit rebuilds
 # fresh mobjects from the recipe instead of deep-copying a stored mobject.
+#
+# Bounded the way ``text._TEX_GLYPH_MEMO`` is: past the limit the oldest half is
+# dropped. Unbounded, a script that builds a distinct label per frame (or a
+# data-labelled scene) kept every recipe it ever parsed resident; a dropped
+# recipe costs only a disk read the next time it is wanted.
 _MEM_CACHE: dict[str, tuple] = {}
+_MEM_CACHE_SIZE = 1024
+_MEM_CACHE_LOCK = threading.Lock()
 
 _installed = False
 
@@ -378,6 +385,15 @@ def _rebuild(svg_mob, nodes: tuple, groups: dict[str, list[int]] | None) -> None
         ]
 
 
+def _memoize(key: str, recipe: tuple) -> None:
+    with _MEM_CACHE_LOCK:
+        if len(_MEM_CACHE) >= _MEM_CACHE_SIZE:
+            # Drop the oldest half: insertion order is age order in a dict.
+            for stale in list(_MEM_CACHE)[: _MEM_CACHE_SIZE // 2]:
+                _MEM_CACHE.pop(stale, None)
+        _MEM_CACHE[key] = recipe
+
+
 def _load_disk(key: str):
     path = _cache_dir() / f"{key}.pt"
     if not path.exists():
@@ -470,7 +486,7 @@ def _patched_init_svg_mobject(self, use_svg_cache: bool):
     if recipe is None:
         recipe = _load_disk(key)
         if recipe is not None:
-            _MEM_CACHE[key] = recipe
+            _memoize(key, recipe)
 
     if recipe is not None:
         nodes, groups = _parse_recipe(recipe)
@@ -494,8 +510,9 @@ def _patched_init_svg_mobject(self, use_svg_cache: bool):
     # Cold (or unusable recipe): parse for real, then persist the result.
     with _warnings_logged() as said:
         self.generate_mobject()
-    _MEM_CACHE[key] = _extract(self, said)
-    _save_disk(key, _MEM_CACHE[key])
+    recipe = _extract(self, said)
+    _memoize(key, recipe)
+    _save_disk(key, recipe)
     return self
 
 
