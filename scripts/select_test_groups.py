@@ -207,6 +207,9 @@ ALWAYS_CI = (
     # Every algan name a benchmark script imports still exists: an AST walk of
     # benchmarks/ against the live package, about two seconds.
     "tests/unit_tests/test_benchmark_imports.py::",
+    # Synthesised narration reaches its cache whole or not at all: a
+    # stand-in engine, no audio.
+    "tests/unit_tests/test_speech_cache.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

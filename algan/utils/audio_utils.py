@@ -571,10 +571,25 @@ def get_pyttsx_speech_generator(script):
     file = os.path.join(SETTINGS.paths.cache_directory, "audio", f"{hash_bytes}.mp3")
     if not os.path.exists(file):
         Path(file).parent.mkdir(parents=True, exist_ok=True)
-        engine = pyttsx3.init()
-        engine.save_to_file(script, file)
-        engine.runAndWait()
-        engine.stop()
+        # Synthesise beside the cache entry and publish it whole, as
+        # _write_alignment_cache does: the entry's existence is what says it is
+        # finished, so a Ctrl-C, a daemon cancel or a crash part way through
+        # must not leave a truncated file at that path for every later run to
+        # trust. Same directory, so os.replace is an atomic rename; same
+        # suffix, in case an engine picks its format from it.
+        descriptor, temporary = tempfile.mkstemp(
+            dir=os.path.dirname(file), prefix=f"{hash_bytes}.", suffix=".mp3"
+        )
+        os.close(descriptor)
+        try:
+            engine = pyttsx3.init()
+            engine.save_to_file(script, temporary)
+            engine.runAndWait()
+            engine.stop()
+            os.replace(temporary, file)
+        finally:
+            with suppress(OSError):
+                os.unlink(temporary)
     return _cached_audio_file_clip(file)
 
 
