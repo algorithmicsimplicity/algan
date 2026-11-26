@@ -2940,7 +2940,10 @@ def compact_sheets(
     cls_o = None
     cls_mixed = None
     if shade_split:
-        cls_o = cls.index_select(0, order)
+        # ``gather_exact``, though a class stays below 2**24 at today's
+        # SHADE_CLASS_QUANT: a finer quantization would pass it, and MPS's
+        # ``index_select`` would then merge or split classes silently.
+        cls_o = gather_exact(cls, order)
         cls = None
         if tri_present and n > 1:
             cls_mixed = ((cls_o[1:] != cls_o[:-1]) & ~new_group[1:]).any()
@@ -3007,11 +3010,15 @@ def compact_sheets(
         # The compaction frees ``sid`` / ``facing`` and their sorted copies
         # long before the clamp runs, so carry the two per-fragment facts
         # it needs -- which surface, which shell -- through with it. Only
-        # scenes with something declared pay for these.
-        shell_sid = (
-            tri_obj[_rows(tri_obj, frame_rel, time_start, row_cache), safe_ref]
-            .to(torch.int64)
-            .index_select(0, order)
+        # scenes with something declared pay for these. ``gather_exact``:
+        # the ids pass 2**24 with that many surfaces in a batch, where MPS's
+        # ``index_select`` rounds them, and two solids that share a rounded id
+        # share one ceiling (as ``_sample_depth_lose_reference``'s gathers).
+        shell_sid = gather_exact(
+            tri_obj[_rows(tri_obj, frame_rel, time_start, row_cache), safe_ref].to(
+                torch.int64
+            ),
+            order,
         )
         shell_back = ((frag_msk & AA_BACKFACE_BIT) != 0).index_select(0, order)
         if near_clip > 0.0:
