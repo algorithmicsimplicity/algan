@@ -1,0 +1,48 @@
+name: CodeQL
+
+# The advanced-setup scan that .github/codeql.yml configures. GitHub's default
+# setup does not read that file, so without this workflow its query filters
+# and its `paths-ignore: algan/external_libraries` applied to nothing, and a
+# default-setup scan, if one is on, reads vendored Manim as Algan's own code.
+#
+# An advanced workflow and default setup cannot both upload for one
+# repository: if Settings -> Code security -> CodeQL analysis shows "Default",
+# switch it to "Advanced" (or disable it) for this workflow's results to land.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Weekly, beside the full test run, so new queries reach unchanged code.
+  schedule:
+    - cron: "23 4 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (python)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Uploading the results is what this permission is for.
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      # Python needs no build: `build-mode: none` analyses the source as it is.
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          build-mode: none
+          config-file: ./.github/codeql.yml
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:python
