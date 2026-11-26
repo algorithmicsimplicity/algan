@@ -34,6 +34,7 @@ from typing import Literal
 from algan.animation_timeline.animation_contexts import Off
 from algan.errors import (
     AlganConfigurationError,
+    AlganWarning,
     LegacySceneDiscoveryWarning,
     NeverSpawnedMobWarning,
     UnsupportedFeatureWarning,
@@ -951,12 +952,15 @@ def _probe_clip(binary: str, path: Path) -> _ClipStreams:
 
 
 def _check_clips_can_be_joined(clips: list[_ClipStreams], reencode: bool) -> None:
-    """Refuse inputs the concat demuxer would join into a broken file.
+    """Refuse inputs the concat demuxer would stream-copy into a broken file.
 
     The demuxer takes its stream layout from the first input and FFmpeg exits
-    0 regardless, so a mismatch has to be caught here or it is silent: a
-    resolution or frame-rate change gives a malformed file even when
-    re-encoding, and stream copying also needs the codecs to agree.
+    0 regardless, so a mismatch has to be caught here or it is silent. A
+    stream copy of clips that differ in resolution, frame rate, codec or
+    pixel format is malformed, so it is refused. Re-encoding does give a
+    playable file, but in the first clip's resolution and frame rate: later
+    clips are scaled to that size without regard to their aspect ratio, so
+    that is warned about rather than refused.
     """
     first = clips[0]
     no_video = [clip.path.name for clip in clips if clip.video_codec is None]
@@ -966,26 +970,49 @@ def _check_clips_can_be_joined(clips: list[_ClipStreams], reencode: bool) -> Non
             + ", ".join(no_video)
             + ". Render those scenes again."
         )
-    checked = [("resolution", "size"), ("frame rate", "fps")]
-    if not reencode:
-        checked += [("video codec", "video_codec"), ("pixel format", "pixel_format")]
+    checked = [
+        ("resolution", "size"),
+        ("frame rate", "fps"),
+        ("video codec", "video_codec"),
+        ("pixel format", "pixel_format"),
+    ]
     for label, attribute in checked:
         differing = [
             clip
             for clip in clips
             if getattr(clip, attribute) != getattr(first, attribute)
         ]
-        if differing:
-            other = differing[0]
+        if not differing:
+            continue
+        other = differing[0]
+        difference = (
+            f"{first.path.name} has {getattr(first, attribute)} but "
+            f"{other.path.name} has {getattr(other, attribute)}"
+        )
+        if not reencode:
             hint = (
-                "Render every scene with the same video settings, then join them."
+                "Render every scene with the same video settings, or pass "
+                f"reencode=True to convert them all to the first clip's {label}."
                 if attribute in ("size", "fps")
                 else "Pass reencode=True to re-encode them to one codec."
             )
             raise AlganConfigurationError(
                 f"Cannot concatenate videos with different {label}s: "
-                f"{first.path.name} has {getattr(first, attribute)} but "
-                f"{other.path.name} has {getattr(other, attribute)}. {hint}"
+                f"{difference}. {hint}"
+            )
+        if attribute in ("size", "fps"):
+            warnings.warn(
+                f"Concatenating videos with different {label}s: {difference}. "
+                f"The joined video uses the first clip's {label}"
+                + (
+                    "; the others are stretched to it, which distorts them "
+                    "if their aspect ratio differs."
+                    if attribute == "size"
+                    else "; frames of the others are dropped or repeated to match."
+                )
+                + " Render every scene with the same video settings to avoid this.",
+                AlganWarning,
+                stacklevel=_user_stacklevel(),
             )
     if not reencode:
         with_audio = [clip for clip in clips if clip.audio_codec is not None]
@@ -1074,10 +1101,11 @@ def concatenate_videos(
         FFmpeg encoder thread count. Defaults to ``None``, using the CPU count.
     reencode
         Re-encode to H.264/AAC instead of copying streams. Defaults to ``False``;
-        stream copying requires the clips to share their video codec, pixel
-        format and audio format. Either way every clip must have the same
-        resolution and frame rate. When some clips have sound and others have
-        none, the silent ones are given a silent track first, so a silent
+        stream copying requires the clips to share their resolution, frame
+        rate, video codec, pixel format and audio format. Re-encoding joins
+        clips that differ, in the first clip's resolution and frame rate, and
+        warns when it has to convert one. When some clips have sound and others
+        have none, the silent ones are given a silent track first, so a silent
         opening scene does not drop the narration of the scenes after it.
     output_file
         Output path, absolute or relative to ``directory``. Defaults to
@@ -1100,9 +1128,15 @@ def concatenate_videos(
         If an explicit input is not an MP4, names the output itself, or a path
         contains a newline that FFmpeg's concat format cannot represent.
     AlganConfigurationError
-        If the clips differ in resolution or frame rate, or, without
-        ``reencode``, in codec, pixel format or audio format. It is a
-        ``ValueError``.
+        If a clip has no video stream, or, without ``reencode``, the clips
+        differ in resolution, frame rate, codec, pixel format or audio format.
+        It is a ``ValueError``.
+
+    Warns
+    -----
+    AlganWarning
+        If ``reencode`` is set and the clips differ in resolution or frame
+        rate, which the joined video takes from the first clip.
 
     Examples
     --------

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from algan import Project, Scene, SceneManager, Speech
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganWarning
 from algan.settings import SETTINGS
 from algan.utils import algan_utils
 from algan.utils.algan_utils import RenderResult, algan_scene
@@ -665,17 +665,33 @@ def test_project_concat_keeps_narration_after_a_silent_first_scene(tmp_path, ree
     )
 
 
-@pytest.mark.parametrize("reencode", [False, True])
-def test_project_concat_refuses_scenes_of_different_resolutions(tmp_path, reencode):
+def test_project_concat_refuses_to_stream_copy_different_resolutions(tmp_path):
     project = _two_scene_project_with_awkward_paths(tmp_path)
     _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
     _narrated_clip(project.video_directory / "1_café ending.mp4", "blue", "32x32")
     project.file_path.write_bytes(b"previous complete export")
 
     with pytest.raises(AlganConfigurationError, match="different resolutions"):
-        project.concatenate_videos(reencode=reencode)
+        project.concatenate_videos()
 
     assert project.file_path.read_bytes() == b"previous complete export"
+
+
+def test_project_concat_reencodes_different_resolutions_with_a_warning(tmp_path):
+    # Re-encoding does join them, into the first clip's size, so a launcher
+    # that mixes resolutions on purpose keeps working and is told what it got.
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    _narrated_clip(project.video_directory / "1_café ending.mp4", "blue", "32x32")
+
+    with pytest.warns(AlganWarning, match="first clip's resolution"):
+        output = project.concatenate_videos(reencode=True)
+
+    assert sorted(_stream_kinds(output)) == ["Audio", "Video"]
+    colors = _mean_frame_colors(output)
+    assert len(colors) == 4
+    assert colors[0][0] > 150
+    assert colors[-1][2] > 150
 
 
 def test_project_run_cli_dispatches_project_actions(monkeypatch, tmp_path):
