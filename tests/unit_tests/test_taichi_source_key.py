@@ -579,6 +579,25 @@ def test_a_miss_sets_the_checksum_so_the_compile_is_indexed(hooks, monkeypatch):
     assert sk.STATS["keyed"] == 1
 
 
+def test_a_miss_tells_the_progress_account(hooks, monkeypatch):
+    """A cold render's header is meant to come with its first index miss."""
+    from algan.rendering import kernel_progress
+
+    try_load, _store, hasher = hooks
+    monkeypatch.setattr(sk, "compute_key", lambda kernel, args: ("KEY", None))
+    missed = []
+    monkeypatch.setattr(kernel_progress, "index_missed", lambda: missed.append(1))
+    assert try_load(_StubKernel(), (), ("k",)) is None
+    assert missed == [1]
+    hasher.value = _CacheValue("CPP")
+    monkeypatch.setattr(sk, "_restore_from_cache_value", lambda *args: None)
+    assert try_load(_StubKernel(), (), ("k",)) is None
+    assert missed == [1, 1], "an artifact that will not load is a miss too"
+    monkeypatch.setattr(sk, "_restore_from_cache_value", lambda *args: {"used"})
+    assert try_load(_StubKernel(), (), ("k",)) == {"used"}
+    assert missed == [1, 1]
+
+
 def test_a_hit_restores_and_returns_the_used_set(hooks, monkeypatch):
     try_load, _store, hasher = hooks
     hasher.value = _CacheValue("CPP")

@@ -1775,6 +1775,18 @@ def _warn_lost_artifact(name, cpp_key, cache_directory):
     )
 
 
+def _report_index_miss():
+    """Tell the render's progress account the frontend is about to run.
+
+    Its header ("Preparing render kernels ...") is meant to come with the
+    first miss of a render; nothing called it, so a cold render printed it
+    only with its first finished compile or the 20 s heartbeat.
+    """
+    from algan.rendering import kernel_progress
+
+    kernel_progress.index_missed()
+
+
 def _restore_from_cache_value(self, key, cache_value, kernel_module, src_hasher):
     """What Quadrants' ``_try_load_fastcache`` does on a validated hit, verbatim in effect.
 
@@ -1926,6 +1938,7 @@ def _build_hooks(
             cache_value = None
         if cache_value is None:
             STATS["misses"] += 1
+            _report_index_miss()
             return None
         self.src_ll_cache_observations.cache_validated = True
         if env_flag("ALGAN_TAICHI_SOURCE_KEY_VERIFY", False):
@@ -1938,6 +1951,7 @@ def _build_hooks(
         )
         if used is None:
             STATS["misses"] += 1
+            _report_index_miss()
             return None
         STATS["hits"] += 1
         return used
