@@ -464,15 +464,14 @@ def _daemon_client():
 
 
 def _trigger_daemon(verb: str) -> int:
-    """Send one trigger verb, with the state file's token, to the daemon.
+    """Send one trigger verb to the daemon the state file names.
 
-    The token is required for every verb (a bare ``quit`` from any local
+    Every verb needs the daemon's token (a bare ``quit`` from any local
     process used to be enough to stop someone else's daemon), and the state
     file is where both the token and the actual port live -- the daemon
-    publishes an ephemeral port there when the preferred one is taken.
+    publishes an ephemeral port there when the preferred one is taken. The
+    token is proved, not sent (``daemon_client.send_verb``).
     """
-    import socket
-
     daemon_client = _daemon_client()
 
     state = daemon_client.read_state()
@@ -481,13 +480,11 @@ def _trigger_daemon(verb: str) -> int:
         return 0 if verb in _MET_WITHOUT_A_DAEMON else 1
     port = int(state["port"])
     try:
-        with socket.create_connection(("127.0.0.1", port), 5) as sock:
-            sock.sendall(f"{verb} {state['token']}\n".encode())
-            reply = sock.recv(128).decode("utf-8", "replace").strip()
-    except OSError as exc:
+        reply = daemon_client.send_verb(state, verb, timeout=5)
+    except (OSError, daemon_client.DaemonUnreachable) as exc:
         # A daemon killed outright leaves its registration behind, and every
         # later run then tries the dead port and falls back cold. Clear it:
-        # whichever verb was asked for, nothing is answering.
+        # whichever verb was asked for, no daemon is answering there.
         daemon_client._clear_stale_state(state)
         print(f"No daemon answered on port {port} ({exc}); cleared its registration.")
         return 0 if verb in _MET_WITHOUT_A_DAEMON else 1

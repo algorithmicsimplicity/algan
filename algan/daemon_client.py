@@ -118,7 +118,14 @@ from algan.environment import (
 #: records the interpreter, prefix, package path and version of the daemon.
 #: 4 -- run requests have an ID; Ctrl-C cancels only that request, including
 #: queued jobs. The acceptance frame closes the enqueue/cancel race.
-PROTOCOL_VERSION = 5
+#: 6 -- ``render``/``ping``/``cancel``/``quit`` prove the token in the same
+#: challenge-response as ``run`` instead of carrying it (:func:`send_verb`).
+PROTOCOL_VERSION = 6
+
+#: The first protocol whose trigger verbs prove the token instead of sending
+#: it. A daemon registered under an older one is spoken to the old way, so
+#: that ``algan daemon quit`` can still stop a daemon started before an upgrade.
+_FIRST_PROTOCOL_WITH_PROVEN_VERBS = 6
 
 
 def connect_timeout():
@@ -871,18 +878,84 @@ def script_may_render(path, search_path=None):
 MAX_RUN_REQUEST_BYTES = 8 * 1024 * 1024
 
 
-def run_proof(token, role, first, second):
-    """``HMAC-SHA256(token, ...)`` for one side of the ``run`` handshake.
+def verb_proof(token, verb, role, first, second, argument=""):
+    """``HMAC-SHA256(token, ...)`` for one side of a verb's handshake.
 
     Each side proves it holds the state file's token without sending it:
     ``role`` is ``"daemon"`` or ``"client"`` so neither proof can be replayed
-    as the other, and the two nonces make every exchange fresh.
+    as the other, the two nonces make every exchange fresh, and ``verb`` and
+    ``argument`` (a ``cancel``'s request id) are covered so a proof given for
+    one request cannot be spent on another.
     """
     import hashlib
     import hmac
 
-    message = f"algan-daemon-run:{role}:{first}:{second}".encode("ascii", "replace")
-    return hmac.new(str(token).encode("utf-8"), message, hashlib.sha256).hexdigest()
+    message = f"algan-daemon-{verb}:{role}:{first}:{second}"
+    if argument:
+        message += f":{argument}"
+    return hmac.new(
+        str(token).encode("utf-8"),
+        message.encode("ascii", "replace"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def run_proof(token, role, first, second):
+    """:func:`verb_proof` for the ``run`` handshake."""
+    return verb_proof(token, "run", role, first, second)
+
+
+def is_nonce(text):
+    """Whether ``text`` is a handshake nonce: 32 lowercase hex digits."""
+    return len(text) == 32 and all(c in "0123456789abcdef" for c in text)
+
+
+def send_verb(state, verb, argument="", timeout=None):
+    """Send ``render``, ``ping``, ``cancel`` or ``quit``; return the reply line.
+
+    Neither side sends the token. The client sends a nonce, the listener
+    answers with its own nonce and an HMAC of both under the token, and only
+    a listener that proved itself is sent the client's HMAC, which is what
+    authorises the verb. So a process that took a dead daemon's port learns
+    nothing it could use, and is not mistaken for the daemon: that raises
+    :class:`DaemonUnreachable`. A connection that fails raises ``OSError``.
+
+    A daemon registered under a protocol older than 6 only understands
+    ``verb token``, so that is what it is sent. That keeps ``algan daemon
+    quit`` able to stop a daemon started before an upgrade, and the token it
+    exposes belongs to that daemon alone.
+    """
+    import hmac
+    import secrets
+
+    token = str(state["token"])
+    port = int(state["port"])
+    suffix = f" {argument}" if argument else ""
+    wait = connect_timeout() if timeout is None else timeout
+    with socket.create_connection(("127.0.0.1", port), wait) as sock:
+        stream = sock.makefile("rwb")
+        proven = state.get("protocol", PROTOCOL_VERSION)
+        if isinstance(proven, int) and proven < _FIRST_PROTOCOL_WITH_PROVEN_VERBS:
+            stream.write(f"{verb} {token}{suffix}\n".encode("ascii", "replace"))
+            stream.flush()
+            return stream.readline(256).decode("utf-8", "replace").strip()
+        client_nonce = secrets.token_hex(16)
+        stream.write(f"{verb} {client_nonce}{suffix}\n".encode("ascii", "replace"))
+        stream.flush()
+        line = stream.readline(256).decode("ascii", "replace").strip()
+        server_nonce, _, proof = line.partition(" ")
+        expected = verb_proof(
+            token, verb, "daemon", client_nonce, server_nonce, argument
+        )
+        if not is_nonce(server_nonce) or not hmac.compare_digest(proof, expected):
+            raise DaemonUnreachable(
+                f"the process listening on 127.0.0.1:{port} did not prove it is "
+                "the daemon that registered there, so nothing was sent to it"
+            )
+        answer = verb_proof(token, verb, "client", server_nonce, client_nonce, argument)
+        stream.write(f"{answer}\n".encode("ascii"))
+        stream.flush()
+        return stream.readline(256).decode("utf-8", "replace").strip()
 
 
 def _prove_daemon(stream, token, port):
@@ -1146,18 +1219,13 @@ def _autostart():
 def is_reachable(state):
     """Whether a daemon is actually answering at ``state``'s address.
 
-    A ``ping`` rather than a bare connect, so a process that merely holds the
-    port does not read as a daemon -- and the token goes with it, as it does
-    with every other verb.
+    A ``ping`` rather than a bare connect, and a ping the listener has to
+    answer with proof that it holds the token (:func:`send_verb`), so a
+    process that merely holds the port does not read as a daemon.
     """
     try:
-        with socket.create_connection(
-            ("127.0.0.1", int(state["port"])), connect_timeout()
-        ) as sock:
-            token = str(state["token"]).encode("ascii", "replace")
-            sock.sendall(b"ping " + token + b"\n")
-            return b"pong" in sock.recv(64)
-    except (OSError, ValueError, KeyError, TypeError):
+        return send_verb(state, "ping") == "pong"
+    except (OSError, DaemonUnavailable, ValueError, KeyError, TypeError):
         return False
 
 
@@ -1297,11 +1365,8 @@ def _install_cancel_handler(state, request_id):
             return
         sent = True
         try:
-            with socket.create_connection(
-                ("127.0.0.1", int(state["port"])), connect_timeout()
-            ) as sock:
-                sock.sendall(f"cancel {state['token']} {request_id}\n".encode("ascii"))
-        except OSError:
+            send_verb(state, "cancel", request_id)
+        except (OSError, DaemonUnavailable):
             raise KeyboardInterrupt from None
 
     def handler(signum, frame):

@@ -972,7 +972,7 @@ def test_a_mismatched_interpreter_names_both(monkeypatch):
 
 def test_a_live_daemon_from_another_virtualenv_is_not_used(home, monkeypatch):
     """It would execute this script against the wrong site-packages."""
-    daemon = _PingableDaemon()
+    daemon = _PingableDaemon(token="t")
     (home / "daemon.json").write_text(
         json.dumps(_identity_state(daemon.port, python="/other/venv/bin/python")),
         encoding="utf-8",
@@ -1006,14 +1006,22 @@ def test_a_dead_registration_from_another_virtualenv_is_replaced(home, monkeypat
 
 
 class _PingableDaemon:
-    """A socket that answers one ``ping <token>`` with ``pong``."""
+    """A socket that serves one verb the way the daemon does, and records it.
 
-    def __init__(self):
+    It proves ``token`` and checks the caller's proof, so a test that gets a
+    reply has shown the client proved the token without sending it.
+    """
+
+    reply = b"pong\n"
+
+    def __init__(self, token="tok"):
+        self.token = token
         self.server = socket.socket()
         self.server.bind(("127.0.0.1", 0))
         self.server.listen(1)
         self.port = self.server.getsockname()[1]
         self.received = None
+        self.proved = False
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -1023,21 +1031,44 @@ class _PingableDaemon:
         except OSError:
             return
         with conn:
-            self.received = conn.recv(128)
-            conn.sendall(b"pong\n")
+            stream = conn.makefile("rwb")
+            self.received = stream.readline()
+            verb, nonce, *rest = self.received.decode().split()
+            argument = rest[0] if rest else ""
+            mine = "1" * 32
+            proof = dc.verb_proof(self.token, verb, "daemon", nonce, mine, argument)
+            stream.write(f"{mine} {proof}\n".encode())
+            stream.flush()
+            answer = stream.readline().decode().strip()
+            self.proved = answer == dc.verb_proof(
+                self.token, verb, "client", mine, nonce, argument
+            )
+            stream.write(self.reply if self.proved else b"err: bad token\n")
+            stream.flush()
 
     def close(self):
         self.thread.join(timeout=5)
         self.server.close()
 
 
-def test_reachability_is_a_token_carrying_ping(home):
+def test_reachability_is_a_ping_that_proves_the_token(home):
     daemon = _PingableDaemon()
     try:
         assert dc.is_reachable({"port": daemon.port, "token": "tok"})
     finally:
         daemon.close()
-    assert daemon.received == b"ping tok\n"
+    assert daemon.proved
+    assert b"tok" not in daemon.received
+
+
+def test_a_listener_that_cannot_prove_the_token_is_not_reachable(home):
+    """A process that took a dead daemon's port is not the daemon."""
+    daemon = _PingableDaemon(token="somebody-else's")
+    try:
+        assert not dc.is_reachable({"port": daemon.port, "token": "tok"})
+    finally:
+        daemon.close()
+    assert not daemon.proved
 
 
 def test_nothing_listening_is_not_reachable():

@@ -153,10 +153,12 @@ most one queued re-run. There are three ways in:
 * **Enter** in the daemon's terminal.
 * **The trigger socket** on ``127.0.0.1``, at whatever port the state file
   names (46711 when it was free). It accepts the line commands ``render``,
-  ``ping`` and ``quit``, and **each must carry the daemon's token** -- this
-  socket executes arbitrary paths and stops the process, so a bare ``quit``
-  from any local process is not enough. The CLI reads both the port and the
-  token for you; bind an editor key to:
+  ``ping``, ``cancel`` and ``quit``, and **each must prove it holds the
+  daemon's token** -- this socket executes arbitrary paths and stops the
+  process, so a bare ``quit`` from any local process is not enough. The token
+  itself is never sent: the two sides run the same handshake as a run. The
+  CLI reads the port and the token and does this for you; bind an editor key
+  to:
 
   .. code-block:: bash
 
@@ -447,7 +449,7 @@ and is what stops the handoff from recursing. Do not set it yourself.
 
     **Anything that can reach ``127.0.0.1`` can ask the daemon to execute a
     path.** Every request -- ``run``, ``cancel``, ``render``, ``ping`` and
-    ``quit`` alike -- must carry the token from the state file, which lives in
+    ``quit`` alike -- must prove the token from the state file, which lives in
     your home directory (mode 0600 where the platform honours it), but do not
     forward the port off-host.
 

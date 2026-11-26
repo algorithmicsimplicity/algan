@@ -22,18 +22,10 @@ def test_early_ctrl_c_waits_for_acceptance_and_restores_signal_handler(monkeypat
 
     sent = []
 
-    class Connection:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def sendall(self, message):
-            sent.append(message)
-
     monkeypatch.setattr(
-        daemon_client.socket, "create_connection", lambda *_args: Connection()
+        daemon_client,
+        "send_verb",
+        lambda state, verb, argument="": sent.append((verb, argument)),
     )
     previous = signal.getsignal(signal.SIGINT)
     accepted, restore = daemon_client._install_cancel_handler(
@@ -44,7 +36,7 @@ def test_early_ctrl_c_waits_for_acceptance_and_restores_signal_handler(monkeypat
         assert sent == []
         accepted()
         accepted()
-        assert sent == [b"cancel secret queued-job\n"]
+        assert sent == [("cancel", "queued-job")]
         with pytest.raises(KeyboardInterrupt):
             signal.raise_signal(signal.SIGINT)
     finally:
@@ -68,17 +60,15 @@ def test_scoped_cancel_does_not_interrupt_a_different_active_job(monkeypatch):
     server.busy.set()
     handler = object.__new__(daemon._TriggerHandler)
     handler.server, handler.wfile = server, io.BytesIO()
-    handler._handle_cancel("wrong", "b")
-    assert not queued.done.is_set()
-    handler._handle_cancel("secret", "b")
-    handler._handle_cancel("secret", "b")
-    handler._handle_cancel("secret", "unknown")
+    handler._handle_cancel("b")
+    handler._handle_cancel("b")
+    handler._handle_cancel("unknown")
     assert queued.cancelled
     assert queued.done.is_set()
     assert interrupts == []
     assert not active.cancelled
-    handler._handle_cancel("secret", "a")
-    handler._handle_cancel("secret", "a")
+    handler._handle_cancel("a")
+    handler._handle_cancel("a")
     assert interrupts == [1]
 
 
@@ -174,7 +164,7 @@ def test_cancelling_queued_remote_client_preserves_active_job(tmp_path):
                     process.wait(timeout=10)
 
 
-def test_cancel_is_authenticated_idle_aware_and_idempotent(monkeypatch):
+def test_cancel_is_idle_aware_and_idempotent(monkeypatch):
     interrupts = []
     monkeypatch.setattr(daemon, "_interrupt_main_thread", lambda: interrupts.append(1))
     server = SimpleNamespace(
@@ -186,13 +176,11 @@ def test_cancel_is_authenticated_idle_aware_and_idempotent(monkeypatch):
     handler = object.__new__(daemon._TriggerHandler)
     handler.server = server
     handler.wfile = io.BytesIO()
-    handler._handle_cancel("wrong")
-    assert handler.wfile.getvalue() == b"err: bad token\n"
-    handler._handle_cancel("secret")
+    handler._handle_cancel()
     assert handler.wfile.getvalue().endswith(b"idle\n")
     server.busy.set()
-    handler._handle_cancel("secret")
-    handler._handle_cancel("secret")
+    handler._handle_cancel()
+    handler._handle_cancel()
     assert interrupts == [1]
     assert server.cancel_pending
 

@@ -37,15 +37,15 @@ coalesce into at most one queued re-run):
   primary workflow: edit in your editor, save, switch to the daemon, Enter.
 * A **localhost TCP socket** (preferred port 46711; ``--port``, or env
   ``ALGAN_DAEMON_PORT``; ``--no-serve`` disables) accepts the line commands
-  ``render`` / ``ping`` / ``quit``, each of which must carry the token from
-  the state file. If the preferred port is taken the daemon binds an
+  ``render`` / ``ping`` / ``cancel`` / ``quit``, each of which must prove
+  that the caller holds the token from the state file. If the preferred port is taken the daemon binds an
   ephemeral one instead of exiting, and publishes it in the state file --
   which is where clients look anyway. Bind an editor key to::
 
       algan daemon render     # also: algan daemon ping, algan daemon quit
 
   Those subcommands read ``$ALGAN_HOME/daemon.json`` for the port and the
-  token and send the line for you.
+  token and run the handshake for you.
 
 * ``--watch`` re-renders when the scene script or any of its imported helper
   modules change on disk (polled; coalesced; never interrupts).
@@ -127,11 +127,12 @@ Three more limits that are specific to serving other processes:
   ones: stop it if you want one baked with the defaults.
 * **Anything that can reach 127.0.0.1 can ask the daemon to execute a path.**
   Every request -- ``run``, ``cancel``, ``render``, ``ping`` and ``quit``
-  alike -- must carry the token from the state file, which lives in the user's
-  home directory (mode 0600 where the platform honours it). ``run`` proves the
-  token in a challenge-response instead of sending it, and the daemon proves it
-  first, so a client never sends its environment to a process that took over
-  the port of a daemon that died. Do not forward the port off-host.
+  alike -- needs the token from the state file, which lives in the user's home
+  directory (mode 0600 where the platform honours it). Each proves the token
+  in a challenge-response instead of sending it, and the daemon proves it
+  first, so a client never sends its environment, or anything else, to a
+  process that took over the port of a daemon that died. Do not forward the
+  port off-host.
 * **The daemon must be the same Algan.** The state file records the
   interpreter, the prefix, the package directory and the version it was
   started with, and a client whose own differ is not served: it runs cold in
@@ -1017,27 +1018,26 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
             line = self.rfile.readline().decode(errors="replace").strip()
         except OSError:
             return
-        # ``verb [token]``. Every verb needs the token: this socket executes
-        # arbitrary paths and stops the process, and a bare ``quit`` from any
-        # local process used to be enough to stop somebody else's daemon.
-        # ``run`` proves it instead, in a handshake (``_handle_run``), so the
-        # client can check this is the daemon before it sends anything.
-        verb, _, token = line.partition(" ")
+        # ``verb nonce [request id]``. Every verb needs the token, since this
+        # socket executes arbitrary paths and stops the process, and none of
+        # them carries it: the caller sends a nonce, this daemon proves it
+        # holds the token, and the caller proves the same back (``_proven``).
+        # ``run`` does it inside ``_handle_run``, where the proof rides in the
+        # request.
+        verb, _, rest = line.partition(" ")
         command = verb.lower()
-        token = token.strip()
+        nonce, _, argument = rest.strip().partition(" ")
         if command == "run":
-            self._handle_run(token)
+            self._handle_run(nonce)
             return
-        if command == "cancel":
-            token, _, request_id = token.partition(" ")
-            self._handle_cancel(token, request_id or None)
-            return
-        if command not in ("render", "ping", "quit"):
+        if command not in ("render", "ping", "cancel", "quit"):
             self.wfile.write(b"err: expected run | cancel | render | ping | quit\n")
             return
-        if not self._token_ok(token):
+        if not self._proven(command, nonce, argument):
             return
-        if command == "render":
+        if command == "cancel":
+            self._handle_cancel(argument or None)
+        elif command == "render":
             self.server.events.put(("render", "socket"))
             self.wfile.write(b"ok\n")
         elif command == "quit":
@@ -1046,15 +1046,41 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         else:
             self.wfile.write(b"pong\n")
 
-    def _token_ok(self, token):
-        """Whether ``token`` is this daemon's. Answers the caller when not."""
-        if secrets.compare_digest(str(token), self.server.state.token):
+    def _proven(self, verb, client_nonce, argument):
+        """Run the handshake for ``verb``; whether the caller holds the token.
+
+        Answers the caller when not. The daemon's proof goes first, so a
+        caller sends its own only to the daemon it meant to reach
+        (``daemon_client.send_verb``).
+        """
+        if not _dc.is_nonce(client_nonce):
+            # A bare verb, or a protocol-5 client that sent the token itself.
+            _say("rejected a trigger that did not start the token handshake")
+            self.wfile.write(
+                b"err: bad token -- this daemon wants proof of the token from "
+                b"its state file, not the token (algan daemon render | ping | "
+                b"cancel | quit do this for you)\n"
+            )
+            return False
+        token = self.server.state.token
+        server_nonce = secrets.token_hex(16)
+        proof = _dc.verb_proof(
+            token, verb, "daemon", client_nonce, server_nonce, argument
+        )
+        try:
+            self.wfile.write(f"{server_nonce} {proof}\n".encode("ascii"))
+            self.wfile.flush()
+            answer = self.rfile.readline(256).decode("ascii", "replace").strip()
+        except OSError:
+            return False
+        expected = _dc.verb_proof(
+            token, verb, "client", server_nonce, client_nonce, argument
+        )
+        if secrets.compare_digest(answer, expected):
             return True
         _say("rejected a trigger with a bad token")
-        self.wfile.write(
-            b"err: bad token -- pass the one from the daemon state file "
-            b"(algan daemon render | ping | quit do this for you)\n"
-        )
+        with contextlib.suppress(OSError):
+            self.wfile.write(b"err: bad token -- is the state file stale?\n")
         return False
 
     def _handle_run(self, client_nonce):
@@ -1066,9 +1092,7 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         sends the token, and the client sends its environment only to a
         listener that proved itself (``daemon_client._prove_daemon``).
         """
-        if len(client_nonce) != 32 or any(
-            c not in "0123456789abcdef" for c in client_nonce
-        ):
+        if not _dc.is_nonce(client_nonce):
             # A protocol-4 client sends ``run`` bare, then its request.
             _refuse(
                 self.wfile,
@@ -1169,10 +1193,7 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         # anything else.
         job.done.wait()
 
-    def _handle_cancel(self, token, request_id=None):
-        if not secrets.compare_digest(str(token), self.server.state.token):
-            self.wfile.write(b"err: bad token\n")
-            return
+    def _handle_cancel(self, request_id=None):
         with self.server.cancel_lock:
             if request_id is not None:
                 job = self.server.jobs.get(request_id)

@@ -68,6 +68,14 @@ def _send(port, line):
 # --------------------------------------------------------------------------
 
 
+def _proved(state, verb, argument="", token=None):
+    """Send ``verb`` the way a client does: prove the token, never send it."""
+    payload = dict(state._payload)
+    if token is not None:
+        payload["token"] = token
+    return dc.send_verb(payload, verb, argument, timeout=5)
+
+
 @pytest.mark.parametrize("verb", ["render", "ping", "cancel", "quit"])
 def test_every_verb_needs_the_token(served, verb):
     events, state = served
@@ -75,23 +83,71 @@ def test_every_verb_needs_the_token(served, verb):
     assert events.empty(), "an untokened verb must not reach the daemon"
 
 
-@pytest.mark.parametrize(("verb", "expected"), [("render", "render"), ("quit", "quit")])
-def test_a_tokened_verb_is_queued(served, verb, expected):
+@pytest.mark.parametrize("verb", ["render", "ping", "cancel", "quit"])
+def test_a_verb_that_carries_the_token_itself_is_refused(served, verb):
+    """What protocol 5 sent. Holding the token is proved now, not shown."""
     events, state = served
-    assert _send(state._payload["port"], f"{verb} {state.token}") == "ok"
+    reply = _send(state._payload["port"], f"{verb} {state.token}")
+    assert reply not in ("ok", "pong")
+    assert events.empty()
+
+
+@pytest.mark.parametrize(("verb", "expected"), [("render", "render"), ("quit", "quit")])
+def test_a_proved_verb_is_queued(served, verb, expected):
+    events, state = served
+    assert _proved(state, verb) == "ok"
     assert events.get_nowait()[0] == expected
 
 
-def test_ping_answers_with_the_token(served):
+def test_ping_answers_a_caller_that_proved_the_token(served):
     events, state = served
-    assert _send(state._payload["port"], f"ping {state.token}") == "pong"
+    assert _proved(state, "ping") == "pong"
     assert events.empty()
 
 
-def test_a_wrong_token_is_refused(served):
+def test_a_proved_cancel_reaches_the_cancel_handler(served):
     events, state = served
-    assert "bad token" in _send(state._payload["port"], "quit not-the-token")
+    assert _proved(state, "cancel") == "idle"
     assert events.empty()
+
+
+def test_a_caller_with_the_wrong_token_is_refused(served):
+    """It learns the daemon is not the one it has a token for, and stops."""
+    events, state = served
+    with pytest.raises(dc.DaemonUnreachable):
+        _proved(state, "quit", token="not-the-token")
+    assert events.empty()
+
+
+def test_a_proof_for_one_verb_does_not_authorise_another(served):
+    """The proof covers the verb, so a relayed ``ping`` cannot become ``quit``."""
+    events, state = served
+    port, token = state._payload["port"], state.token
+    with socket.create_connection(("127.0.0.1", port), 5) as sock:
+        stream = sock.makefile("rwb")
+        nonce = "0" * 32
+        stream.write(f"quit {nonce}\n".encode())
+        stream.flush()
+        server_nonce = stream.readline().decode().split()[0]
+        stream.write(
+            (
+                dc.verb_proof(token, "ping", "client", server_nonce, nonce) + "\n"
+            ).encode()
+        )
+        stream.flush()
+        assert "bad token" in stream.readline().decode()
+    assert events.empty()
+
+
+def test_the_daemon_never_sends_or_receives_the_token(served):
+    events, state = served
+    port, token = state._payload["port"], state.token
+    with socket.create_connection(("127.0.0.1", port), 5) as sock:
+        stream = sock.makefile("rwb")
+        stream.write(b"ping " + b"a" * 32 + b"\n")
+        stream.flush()
+        challenge = stream.readline().decode()
+    assert token not in challenge
 
 
 def test_an_unknown_verb_still_says_what_is_accepted(served):
@@ -172,7 +228,7 @@ def test_a_held_port_falls_back_to_an_ephemeral_one(state):
             # The state file is how clients find it, so it must carry the port
             # actually bound rather than the one that was wanted.
             assert state._payload["port"] == bound
-            assert _send(bound, f"ping {state.token}") == "pong"
+            assert _proved(state, "ping") == "pong"
         finally:
             server.shutdown()
             server.server_close()

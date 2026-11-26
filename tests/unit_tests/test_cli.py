@@ -20,6 +20,7 @@ import pytest
 import algan
 import algan_cli as cli
 from algan import SETTINGS, taichi_compat
+from algan import daemon_client as dc
 
 # --------------------------------------------------------------------------
 # Scripts that report what the CLI did to them, instead of rendering
@@ -302,22 +303,45 @@ def test_a_typo_is_still_an_error_where_no_script_runs(tmp_path):
 
 
 class _FakeDaemon:
-    """A socket that accepts one line and remembers it."""
+    """A socket that serves one verb the way the daemon does, and records it.
 
-    def __init__(self):
+    It proves ``token`` and checks the caller's proof, so a test that gets a
+    reply has shown the client proved the token without sending it.
+    """
+
+    reply = b"ok\n"
+
+    def __init__(self, token="t"):
+        self.token = token
         self.server = socket.socket()
         self.server.bind(("127.0.0.1", 0))
         self.server.listen(1)
         self.port = self.server.getsockname()[1]
         self.received = None
+        self.proved = False
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
     def _serve(self):
-        conn, _ = self.server.accept()
+        try:
+            conn, _ = self.server.accept()
+        except OSError:
+            return
         with conn:
-            self.received = conn.recv(64)
-            conn.sendall(b"ok\n")
+            stream = conn.makefile("rwb")
+            self.received = stream.readline()
+            verb, nonce, *rest = self.received.decode().split()
+            argument = rest[0] if rest else ""
+            mine = "1" * 32
+            proof = dc.verb_proof(self.token, verb, "daemon", nonce, mine, argument)
+            stream.write(f"{mine} {proof}\n".encode())
+            stream.flush()
+            answer = stream.readline().decode().strip()
+            self.proved = answer == dc.verb_proof(
+                self.token, verb, "client", mine, nonce, argument
+            )
+            stream.write(self.reply if self.proved else b"err: bad token\n")
+            stream.flush()
 
     def close(self):
         self.thread.join(timeout=5)
@@ -348,7 +372,9 @@ def test_stop_asks_a_live_daemon_to_quit(home, capsys):
         assert cli.main(["daemon", "--stop"]) == 0
     finally:
         daemon.close()
-    assert daemon.received == b"quit t\n", "the token goes with every verb"
+    assert daemon.received.startswith(b"quit "), "the verb asked for"
+    assert daemon.proved, "the token is proved"
+    assert b" t\n" not in daemon.received, "and never sent"
     assert "4242" in capsys.readouterr().out, "say which process was stopped"
 
 
@@ -366,15 +392,18 @@ def test_stop_clears_a_dead_registration(home, capsys):
 
 
 @pytest.mark.parametrize("verb", ["render", "ping", "cancel", "quit"])
-def test_a_trigger_verb_is_sent_with_the_token(home, capsys, verb):
-    """The raw-socket one-liner these replace could not carry a token."""
-    daemon = _FakeDaemon()
+def test_a_trigger_verb_proves_the_token_and_does_not_send_it(home, capsys, verb):
+    """The raw-socket one-liner these replace could not prove a token."""
+    daemon = _FakeDaemon(token="s3cret")
+    daemon.reply = b"pong\n" if verb == "ping" else b"ok\n"
     _register(home, daemon.port, token="s3cret")
     try:
         assert cli.main(["daemon", verb]) == 0
     finally:
         daemon.close()
-    assert daemon.received == f"{verb} s3cret\n".encode()
+    assert daemon.received.startswith(f"{verb} ".encode())
+    assert b"s3cret" not in daemon.received
+    assert daemon.proved
     assert "4242" in capsys.readouterr().out
 
 
@@ -403,14 +432,8 @@ def test_a_trigger_clears_a_dead_registration(home, capsys, verb, status):
 
 
 def test_a_refused_trigger_is_reported_and_fails(home, capsys):
-    class _Refusing(_FakeDaemon):
-        def _serve(self):
-            conn, _ = self.server.accept()
-            with conn:
-                self.received = conn.recv(64)
-                conn.sendall(b"err: bad token\n")
-
-    daemon = _Refusing()
+    daemon = _FakeDaemon()
+    daemon.reply = b"err: not now\n"
     _register(home, daemon.port)
     try:
         assert cli.main(["daemon", "render"]) == 1
@@ -509,3 +532,38 @@ def test_settings_survive_a_cli_run(reporting_script):
     assert SETTINGS.video.resolution == algan.UHD.resolution
     SETTINGS.restore(before)
     assert SETTINGS.video.resolution != algan.UHD.resolution
+
+
+def test_a_listener_that_cannot_prove_the_token_is_not_obeyed(home, capsys):
+    """Another process on a dead daemon's port: say so and clear the file."""
+    daemon = _FakeDaemon(token="somebody-else's")
+    _register(home, daemon.port, token="mine")
+    try:
+        assert cli.main(["daemon", "ping"]) == 1
+    finally:
+        daemon.close()
+    assert not daemon.proved
+    assert not (home / "daemon.json").exists()
+    assert "cleared its registration" in capsys.readouterr().out
+
+
+def test_a_daemon_from_before_the_upgrade_can_still_be_stopped(home, capsys):
+    """Its protocol only knows ``quit token``, and --stop has to reach it."""
+
+    class _Old(_FakeDaemon):
+        def _serve(self):
+            conn, _ = self.server.accept()
+            with conn:
+                self.received = conn.recv(64)
+                conn.sendall(b"ok\n")
+
+    daemon = _Old()
+    (home / "daemon.json").write_text(
+        json.dumps({"port": daemon.port, "token": "t", "pid": 4242, "protocol": 5}),
+        encoding="utf-8",
+    )
+    try:
+        assert cli.main(["daemon", "--stop"]) == 0
+    finally:
+        daemon.close()
+    assert daemon.received == b"quit t\n"
