@@ -43,6 +43,18 @@ import threading
 import time
 from pathlib import Path
 
+from algan.environment import env_float
+from algan.errors import AlganError
+
+#: How long one LaTeX or dvisvgm run may take, in seconds, before it is
+#: stopped, unless ``ALGAN_TEX_TIMEOUT`` says otherwise (0 or less: no limit).
+#: ``-halt-on-error`` stops LaTeX at the first error but not in a macro that
+#: never stops expanding (``\def\x{\x}\x``), which used to hang the script --
+#: and a warm daemon, with every run queued behind it -- forever. Generous,
+#: because a formula is normally typeset in well under a second, and a slow
+#: one (a large TikZ picture on a loaded machine) must not be cut short.
+_DEFAULT_TIMEOUT_SECONDS = 300.0
+
 #: Build directories older than this are leftovers of a process killed
 #: mid-build (no LaTeX run takes this long), and are swept away.
 _STALE_BUILD_SECONDS = 24 * 3600
@@ -65,6 +77,37 @@ _TEXT_MODE_COMMAND = re.compile(
 
 _swept_build_dirs: set[str] = set()
 _sweep_lock = threading.Lock()
+
+
+class TypesettingTimeoutError(AlganError, TimeoutError):
+    """A LaTeX or dvisvgm run took longer than ``ALGAN_TEX_TIMEOUT`` allows."""
+
+
+def _timeout_seconds() -> float | None:
+    seconds = env_float("ALGAN_TEX_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
+    return seconds if seconds > 0 else None
+
+
+def _run(command, tool: str, subject: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run one typesetting tool, with no stdin and a bounded running time.
+
+    stdin is closed so that nothing can ever wait on the terminal for input
+    (or on the daemon's socket), and :func:`subprocess.run` kills the tool
+    when the time runs out.
+    """
+    timeout = _timeout_seconds()
+    try:
+        return subprocess.run(
+            command, stdin=subprocess.DEVNULL, timeout=timeout, **kwargs
+        )
+    except subprocess.TimeoutExpired:
+        raise TypesettingTimeoutError(
+            f"{tool} was still running on {subject} after {timeout:g} seconds "
+            "and was stopped. A formula normally takes a second or two; one "
+            "that never finishes is usually a macro that keeps expanding "
+            r"itself (such as \def\x{\x}\x), so check the formula. If it is "
+            "only slow, set ALGAN_TEX_TIMEOUT to more seconds (0 for no limit)."
+        ) from None
 
 
 @contextlib.contextmanager
@@ -174,6 +217,10 @@ def build_tex_svg(expression, environment=None, tex_template=None) -> Path:
         output_format = tex_template.output_format
         try:
             built = _compile(tex_file, tex_template.tex_compiler, output_format, builds)
+        except TypesettingTimeoutError as error:
+            raise TypesettingTimeoutError(
+                f"{error}\nThe formula: {expression}"
+            ) from None
         except ValueError as error:
             hint = _math_mode_dollar_hint(expression, environment)
             if hint is None:
@@ -199,7 +246,9 @@ def _compile(tex_file: Path, tex_compiler, output_format: str, builds: Path) -> 
     for compiler in compilers:
         command = make_tex_compilation_command(compiler, output_format, tex_file, work)
         try:
-            completed = subprocess.run(command, stdout=subprocess.DEVNULL)
+            completed = _run(
+                command, compiler, tex_file.name, stdout=subprocess.DEVNULL
+            )
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"LaTeX typesetting needs `{compiler}`, and it was not found on PATH."
@@ -345,8 +394,10 @@ def _convert_to_svg(built: Path, output_format: str) -> Path:
         built.as_posix(),
     ]
     try:
-        completed = subprocess.run(
+        completed = _run(
             command,
+            "dvisvgm",
+            f"converting {built.name} to SVG",
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             encoding="utf-8",

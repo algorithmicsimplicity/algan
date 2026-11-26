@@ -241,3 +241,56 @@ def test_pango_cache_hit_does_not_rewrite_the_cached_svg(tmp_path):
 
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
     assert sorted(p.name for p in tmp_path.iterdir()) == [svg.name]
+
+
+@needs_latex
+def test_a_formula_that_never_finishes_is_stopped(tex_dir, monkeypatch):
+    # -halt-on-error stops at an error, not in a macro that expands forever,
+    # so this used to hang the script (and a warm daemon) for good.
+    monkeypatch.setenv("ALGAN_TEX_TIMEOUT", "3")
+    started = time.monotonic()
+    with pytest.raises(typeset_cache.TypesettingTimeoutError) as caught:
+        _tex_to_svg(rf"\def\x{{\x}}\x {time.time_ns()}")
+
+    assert time.monotonic() - started < 60
+    message = str(caught.value)
+    assert "after 3 seconds" in message
+    assert "ALGAN_TEX_TIMEOUT" in message
+    assert r"\def\x{\x}\x" in message  # the formula itself is named
+
+
+@pytest.mark.parametrize("tool", ["latex", "dvisvgm"])
+def test_every_typesetting_run_is_bounded_and_reads_no_stdin(
+    tmp_path, monkeypatch, tool
+):
+    import subprocess
+
+    monkeypatch.setenv("ALGAN_TEX_TIMEOUT", "7.5")
+    seen = []
+
+    def hung(command, **kwargs):
+        seen.append(kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(typeset_cache.subprocess, "run", hung)
+    source = tmp_path / "formula.tex"
+    runs = {
+        "latex": lambda: typeset_cache._compile(source, "latex", ".dvi", tmp_path),
+        "dvisvgm": lambda: typeset_cache._convert_to_svg(
+            source.with_suffix(".dvi"), ".dvi"
+        ),
+    }
+    with pytest.raises(typeset_cache.TypesettingTimeoutError) as caught:
+        runs[tool]()
+
+    assert seen == [{**seen[0], "stdin": subprocess.DEVNULL, "timeout": 7.5}], (
+        "the run had no time limit, or inherited stdin"
+    )
+    assert str(caught.value).startswith(f"{tool} was still running on ")
+
+
+def test_a_non_positive_timeout_means_no_limit(monkeypatch):
+    monkeypatch.setenv("ALGAN_TEX_TIMEOUT", "0")
+    assert typeset_cache._timeout_seconds() is None
+    monkeypatch.delenv("ALGAN_TEX_TIMEOUT")
+    assert typeset_cache._timeout_seconds() == typeset_cache._DEFAULT_TIMEOUT_SECONDS
