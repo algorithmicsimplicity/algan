@@ -231,7 +231,10 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+# 1.27 is the first hatchling that writes the PEP 639 metadata above
+# (`License-Expression`, `license-files`); an older one, which a downstream
+# packager without build isolation might have, cannot build this.
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.hooks.custom]
