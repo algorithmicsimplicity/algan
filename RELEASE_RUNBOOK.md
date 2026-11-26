@@ -32,11 +32,12 @@ The release gate checks that:
 - every archive named by `tests/baselines.json` downloads and matches its recorded
   SHA-256, via `scripts/gate/verify_baseline_pointer.py`.
 
-The Test gate is not a substitute for reviewing the complete CI matrix and its
-skips. A push to master runs only the CI test group on two arms; the full suite,
-Python 3.14 and the MPS arm run weekly or on dispatch, so dispatch a full Test run
-on the release commit (Actions, Test, Run workflow, on master) and let it finish
-before releasing: the gate then refuses the release if it failed. The gate reads
+The Test gate is the cheap check, not the release's test run. A push to master
+runs only the CI test group on two arms. The release runs the rest itself: its
+`test` job calls the Test workflow at the full scope (every unit test and the
+fast render, on Linux 3.10 and 3.14 and on macOS CPU and MPS), a rehearsal
+runs it too, and `promote` waits for it. Review its skips as well as its
+conclusion. The gate reads
 only the Test workflow; inspect code-quality and documentation checks as well. See [tests/README.md](tests/README.md) for
 portable tests, GPU coverage and separately hosted render baselines.
 
@@ -103,8 +104,8 @@ The workflow is manually dispatched. These are its inputs:
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `version` | Empty | Required for a package release; ignored by `docs_only`. |
-| `dry_run` | `true` | Build and validate, but do not publish refs, docs or distributions. |
-| `docs_only` | `false` | Build docs only; skip package-version, tag, Test and baseline gates. |
+| `dry_run` | `true` | Build, test and validate, but do not publish refs, docs or distributions. |
+| `docs_only` | `false` | Build docs only; skip package-version, tag, Test and baseline gates and the full test run. |
 | `skip_docs_examples` | `false` | Omit rendered examples; useful for a structural check, not a complete example-video build. |
 
 For a release rehearsal, select the intended ref, supply its declared version,
@@ -133,11 +134,15 @@ After a successful rehearsal and a fresh prerequisite check, dispatch the same
 release commit and version with `dry_run=false`. The dependency graph is:
 
 ```text
-gate -> build + build_macos + docs -> promote
+gate -> test + build + build_macos + docs -> promote
                                        |-> publish_docs
                                        |-> github_release (also needs build and build_macos)
                                        `-> PyPI waits for both publication jobs
 ```
+
+`test` is the slow one: about 90 minutes an arm on four arms, two of them on
+hosted Macs. It runs in a rehearsal as well, so a rehearsal is also the
+release's full test run on that commit.
 
 `build_macos` builds the macOS abi3 wheel on a hosted Mac. `promote`,
 `github_release` and PyPI all need it, so a macOS runner failure, or the account's

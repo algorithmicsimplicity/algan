@@ -28,6 +28,16 @@ on:
   # this file is on the default branch: GitHub reads workflow_dispatch from
   # there, not from the ref being dispatched.
   workflow_dispatch:
+  # Lets the Release workflow run this one as a job of its own, so a release
+  # tests the commit it ships at the full scope instead of trusting that some
+  # earlier run did. A called workflow sees its caller's event, and Release is
+  # dispatched by hand, so `plan` gives it the full matrix with no input.
+  # The secret is optional so that a caller without it still runs the tests;
+  # only the coverage upload needs it.
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: false
   # The weekly full run: the whole suite on every platform and Python, and
   # the cold-compile control besides, since it does not restore compiled
   # kernels (see "Restore compiled kernels"). Mondays, 04:23 UTC.
@@ -43,8 +53,12 @@ permissions:
 # Pushes to master and stable, and merge-queue runs, are keyed by run id and so
 # never cancel one another. A label other than `full-ci` gets a group of its
 # own; it starts nothing, and must not cancel the run that is going.
+#
+# The literal `Test`, not `github.workflow`: called from Release, that name is
+# the caller's, and a group shared with the caller's other jobs is not this
+# workflow's to cancel.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
+  group: Test-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:

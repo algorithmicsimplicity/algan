@@ -9,9 +9,11 @@ name: Release
 # moved, a docs deploy re-run, and a GitHub release edited. Everything that can
 # fail should fail before the one step that cannot be taken back.
 #
-# `dry_run` (the default) runs the three read-only jobs -- gate, build, docs --
-# and stops before anything is pushed. Use it to rehearse a release; the wheel
-# and the built HTML land as artifacts you can inspect.
+# `dry_run` (the default) runs the read-only jobs -- gate, build, docs and the
+# full test suite -- and stops before anything is pushed. Use it to rehearse a
+# release; the wheel and the built HTML land as artifacts you can inspect. The
+# suite is the slow one (about 90 minutes an arm, two arms on macOS runners);
+# the other three report within minutes beside it.
 #
 # `docs_only` builds and publishes the documentation and nothing else: no
 # version gate, no wheel, no tag, no PyPI. Two uses. The first is that the Pages
@@ -182,6 +184,33 @@ jobs:
         run: python scripts/gate/verify_baseline_pointer.py
 
   # --------------------------------------------------------------------------
+  # 1b. The whole test suite, on the commit being released.
+  #
+  # The gate's Test-run check above proves only that the CI group passed here,
+  # about a third of the portable tests on two arms. This runs the Test
+  # workflow itself at its full scope -- every unit test and the fast render,
+  # on Linux 3.10 and 3.14 and on macOS CPU and MPS -- and `promote` waits for
+  # it, so nothing is tagged or published from a commit the full suite has not
+  # passed. It needs the gate so that a release that cannot happen (wrong
+  # version, taken tag, red CI) does not spend six runner-hours first.
+  #
+  # The permissions are the most any job of the called workflow asks for: a
+  # nested job may not ask for more than its caller grants, and GitHub checks
+  # that before anything runs, including for the weekly-failure job, which
+  # asks for `issues: write` and never runs from here.
+  # --------------------------------------------------------------------------
+  test:
+    name: Full test suite
+    needs: gate
+    if: ${{ !inputs.docs_only }}
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/test.yaml
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # --------------------------------------------------------------------------
   # 2. Build the distributions.
   # --------------------------------------------------------------------------
   build:
@@ -309,7 +338,7 @@ jobs:
   # --------------------------------------------------------------------------
   promote:
     name: Promote to stable and tag
-    needs: [gate, build, build_macos, docs]
+    needs: [gate, test, build, build_macos, docs]
     if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     permissions:
