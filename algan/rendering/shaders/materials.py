@@ -478,19 +478,22 @@ def _scattering_parameters(sigma_s, g):
     return coefficients.expand(3).clone(), anisotropy
 
 
-def _material_scalar(owner, name, value, *, minimum=None, top=None):
+def _material_scalar(
+    owner, name, value, *, minimum=None, above=None, top=None, bottom=None
+):
     """Check one scalar material property when the material is made, and
     return it unchanged.
 
     Raises :class:`.AlganConfigurationError` naming the property for a value
-    that is not a finite number (or a tensor of them), or that is below
-    ``minimum``: a negative roughness or emissive intensity has no meaning,
-    and nothing downstream would say so -- the kernels clamp some properties
-    and not others, so a typo rendered as negative light. ``top`` is the upper
-    end of the property's documented range. Past it the value is still
-    accepted, with a warning rather than an error, because a value past the
-    top is not always nonsense to its author (a boosted sheen, an imported
-    model's metalness of 1.02) and refusing it could stop existing scripts.
+    that is not a finite number (or a tensor of them), that is below
+    ``minimum``, or that is not above ``above``: a negative roughness or
+    emissive intensity has no meaning, and nothing downstream would say so --
+    the kernels clamp some properties and not others, so a typo rendered as
+    negative light. ``top`` and ``bottom`` are the ends of the property's
+    documented range. Outside them the value is still accepted, with a warning
+    rather than an error, because such a value is not always nonsense to its
+    author (a boosted sheen, an imported model's metalness of 1.02, a relative
+    index below 1) and refusing it could stop existing scripts.
 
     The value is returned exactly as given, so a valid material packs what it
     always did.
@@ -514,6 +517,18 @@ def _material_scalar(owner, name, value, *, minimum=None, top=None):
     if minimum is not None and least < minimum:
         raise AlganConfigurationError(
             f"{owner}: {name} must be at least {minimum:g}, got {least:g}"
+        )
+    if above is not None and least <= above:
+        raise AlganConfigurationError(
+            f"{owner}: {name} must be above {above:g}, got {least:g}"
+        )
+    if bottom is not None and least < bottom:
+        warnings.warn(
+            f"{owner}: {name}={least:g} is below {bottom:g}, the bottom of its "
+            f"documented range (three.js and glTF start it at {bottom:g}). "
+            "It is kept as given; check that it is not a typo",
+            UnsupportedFeatureWarning,
+            stacklevel=_user_stacklevel(),
         )
     if top is not None and most > top:
         warnings.warn(
@@ -704,12 +719,6 @@ class Material:
                 "visible=False does not hide the Mob: no renderer reads it, so "
                 "the Mob still renders. Despawn the Mob, or set its opacity to "
                 "0, to hide it"
-            )
-        if self.transparent:
-            msgs.append(
-                "transparent=True does nothing: Algan blends by opacity alone, "
-                "so the material's and the Mob's opacity decide how "
-                "transparent it is, with or without this flag"
             )
         if not self.tone_mapped:
             msgs.append(
@@ -1014,11 +1023,12 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
     Raises
     ------
     :class:`.AlganConfigurationError`
-        If a scalar property is not a finite number, or is below the bottom
-        of its range: 0 for the strengths, roughnesses, ``transmission`` and
-        ``thickness``, 1 for ``ior``. Also if ``reflectivity`` is 2.5 or more,
+        If a scalar property is not a finite number, or is negative (the
+        strengths, roughnesses, ``transmission`` and ``thickness``), or if
+        ``ior`` is not above 0. Also if ``reflectivity`` is 2.5 or more,
         where its map to ``ior`` has no finite value. A strength above 1
-        (other than ``sheen``) is accepted with a warning.
+        (other than ``sheen``) and an ``ior`` below 1 are accepted with a
+        warning.
     ValueError
         If scattering coefficients are negative, non-finite, or not scalar/RGB,
         or if anisotropy is non-finite or outside its open interval.
@@ -1091,10 +1101,12 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         # Preserve that API: an explicitly supplied reflectivity updates IOR;
         # otherwise the effective reflectivity is derived from IOR.
         if reflectivity is None:
-            # An interior index below air's is not one three.js or glTF
-            # accepts (both start the range at 1), and ior = -1 used to end in
-            # a bare ZeroDivisionError on the line below.
-            self.ior = _material_scalar(owner, "ior", ior, minimum=1.0)
+            # ior = -1 used to end in a bare ZeroDivisionError on the line
+            # below, and no index at or below zero means anything. Between 0
+            # and 1 it is accepted with a warning: three.js and glTF start the
+            # range at 1, but an interior less dense than what surrounds it
+            # (an air bubble in water) is a relative index below 1.
+            self.ior = _material_scalar(owner, "ior", ior, above=0.0, bottom=1.0)
             self.reflectivity = 2.5 * (ior - 1.0) / (ior + 1.0)
         else:
             # The map to ior has a pole at 2.5 and turns negative past it.

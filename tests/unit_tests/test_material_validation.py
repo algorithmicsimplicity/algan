@@ -1,8 +1,8 @@
 """Material arguments are checked when the material is made.
 
 Render-free. A material scalar outside its meaning (a negative roughness, an
-IOR below air's) is refused with an error naming it, a value past the top of
-its documented range is accepted with a warning, and an argument the renderer
+IOR of zero) is refused with an error naming it, a value outside its
+documented range is accepted with a warning, and an argument the renderer
 accepts for three.js parity but does nothing with warns once, naming it, when
 the material is applied.
 """
@@ -45,7 +45,7 @@ from algan.rendering.shaders.materials import (
         # These two used to end in a bare ZeroDivisionError.
         (MeshPhysicalMaterial, {"ior": -1.0}, "ior"),
         (MeshPhysicalMaterial, {"reflectivity": 2.5}, "reflectivity"),
-        (MeshPhysicalMaterial, {"ior": 0.5}, "ior"),
+        (MeshPhysicalMaterial, {"ior": 0.0}, "ior"),
         (MeshPhysicalMaterial, {"reflectivity": -0.5}, "reflectivity"),
         (MeshToonMaterial, {"bands": 0}, "bands"),
         (MeshDepthMaterial, {"near": 5.0, "far": 1.0}, "near"),
@@ -72,6 +72,13 @@ def test_a_value_past_the_top_of_its_range_warns_and_is_kept(cls, kwargs):
     assert getattr(material, name) == value
 
 
+def test_an_index_below_air_warns_and_is_kept():
+    """A relative index below 1 (an air bubble in water) is not refused."""
+    with pytest.warns(UnsupportedFeatureWarning, match="ior=0.75 is below 1"):
+        bubble = MeshPhysicalMaterial(ior=0.75)
+    assert bubble.ior == 0.75
+
+
 def test_valid_materials_are_accepted_silently_and_unchanged():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -96,7 +103,6 @@ def test_valid_materials_are_accepted_silently_and_unchanged():
     ("material", "argument"),
     [
         (MeshBasicMaterial(visible=False), "visible=False"),
-        (MeshStandardMaterial(transparent=True, opacity=0.5), "transparent=True"),
         (MeshStandardMaterial(tone_mapped=False), "tone_mapped=False"),
         (MeshPhysicalMaterial(iridescence=1.0), "iridescence is not rendered"),
         (MeshPhysicalMaterial(iridescence_ior=1.8), "iridescence_ior"),
@@ -119,3 +125,6 @@ def test_default_arguments_do_not_warn():
         Square().set_material(MeshPhysicalMaterial())
         Square().set_material(MeshNormalMaterial())
         Square().set_material(MeshBasicMaterial(opacity=0.5))
+        # three.js's own spelling of a see-through material, which is also
+        # what Algan renders, so it has nothing to report.
+        Square().set_material(MeshStandardMaterial(transparent=True, opacity=0.5))
