@@ -27,8 +27,7 @@ script's to keep or to shadow.
 starts with -- facing ``OUTWARD``, towards the viewer. A new Scene's camera sits
 on the +z axis, 20 units out (``algan.manim_defaults.MANIM_FOCAL_DISTANCE``),
 looking ``INWARD`` at the Mobs that face it, so that it frames Manim's 8 world
-units of height. ``CAMERA_ORIGIN``, 7 units out, is where the camera used to
-sit; nothing in Algan reads it any more.
+units of height.
 
 Distances are in world units throughout; angles are in **degrees**, which is the
 convention that most often surprises users arriving from Manim.
@@ -69,7 +68,6 @@ OUT = OUTWARD
 DEFAULT_BASIS = torch.stack((RIGHT, UP, OUTWARD))
 
 ORIGIN = torch.zeros_like(OUTWARD)
-CAMERA_ORIGIN = ORIGIN + OUTWARD * 7
 
 NUM_DIMENSIONS = 3
 
