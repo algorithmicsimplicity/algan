@@ -1192,10 +1192,35 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
                 if not self.server.cancel_pending:
                     self.server.cancel_pending = True
                     _say("cancel requested by a client")
-                    _thread.interrupt_main()
+                    _interrupt_main_thread()
                 self.wfile.write(b"ok\n")
             else:
                 self.wfile.write(b"idle\n")
+
+
+def _interrupt_main_thread():
+    """Raise ``KeyboardInterrupt`` in the running script, as Ctrl-C would.
+
+    ``_thread.interrupt_main`` only marks the signal pending, so it takes
+    effect when the main thread next runs Python code -- after whatever it is
+    blocked in (``time.sleep``, ``Event.wait``, ``Thread.join``, a subprocess)
+    returns, which can be the rest of the render. A plain ``python scene.py``
+    gets a real SIGINT, which interrupts those waits at once on POSIX, so the
+    daemon sends one to its main thread. Only while SIGINT has a Python
+    handler: under ``SIG_DFL`` a real signal would kill the daemon, and under
+    ``SIG_IGN`` it would do nothing, which is what ``interrupt_main`` does
+    then too. Windows has no ``pthread_kill`` and keeps ``interrupt_main``.
+    """
+    import signal
+
+    pthread_kill = getattr(signal, "pthread_kill", None)
+    if pthread_kill is not None and callable(signal.getsignal(signal.SIGINT)):
+        try:
+            pthread_kill(threading.main_thread().ident, signal.SIGINT)
+            return
+        except (OSError, ValueError):
+            pass
+    _thread.interrupt_main()
 
 
 class _TriggerServer(socketserver.ThreadingTCPServer):

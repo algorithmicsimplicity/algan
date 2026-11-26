@@ -54,7 +54,7 @@ def test_early_ctrl_c_waits_for_acceptance_and_restores_signal_handler(monkeypat
 
 def test_scoped_cancel_does_not_interrupt_a_different_active_job(monkeypatch):
     interrupts = []
-    monkeypatch.setattr(daemon._thread, "interrupt_main", lambda: interrupts.append(1))
+    monkeypatch.setattr(daemon, "_interrupt_main_thread", lambda: interrupts.append(1))
     active = daemon._RunJob({"script": "a.py", "request_id": "a"}, io.BytesIO())
     queued = daemon._RunJob({"script": "b.py", "request_id": "b"}, io.BytesIO())
     server = SimpleNamespace(
@@ -176,7 +176,7 @@ def test_cancelling_queued_remote_client_preserves_active_job(tmp_path):
 
 def test_cancel_is_authenticated_idle_aware_and_idempotent(monkeypatch):
     interrupts = []
-    monkeypatch.setattr(daemon._thread, "interrupt_main", lambda: interrupts.append(1))
+    monkeypatch.setattr(daemon, "_interrupt_main_thread", lambda: interrupts.append(1))
     server = SimpleNamespace(
         state=SimpleNamespace(token="secret"),
         busy=threading.Event(),
@@ -311,3 +311,31 @@ def test_interrupted_render_then_retry_in_same_daemon(tmp_path, recover):
     else:
         assert "KeyError" in output, output
         assert not destination.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pthread_kill is POSIX-only")
+@pytest.mark.parametrize("wait", ["event", "sleep", "join"])
+def test_a_cancel_interrupts_a_blocking_wait_at_once(wait):
+    """``interrupt_main`` waited for the main thread's wait to end on its own.
+
+    A plain ``python scene.py`` gets a real SIGINT, which breaks the wait at
+    once; a cancel on the daemon took effect only when it returned.
+    """
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    blocks = {
+        "event": lambda: threading.Event().wait(5),
+        "sleep": lambda: time.sleep(5),
+        "join": lambda: (lambda t: (t.start(), t.join()))(
+            threading.Thread(target=time.sleep, args=(5,), daemon=True)
+        ),
+    }
+    timer = threading.Timer(0.2, daemon._interrupt_main_thread)
+    started = time.monotonic()
+    try:
+        timer.start()
+        with pytest.raises(KeyboardInterrupt):
+            blocks[wait]()
+        assert time.monotonic() - started < 2
+    finally:
+        timer.cancel()
+        signal.signal(signal.SIGINT, previous)
