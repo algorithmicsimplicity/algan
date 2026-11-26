@@ -3,7 +3,7 @@
 With auto-start, even a user's first ``python scene.py`` runs on a daemon, so
 anything the daemon fails to reproduce becomes a silent behaviour change rather
 than a known cost of opting in. What is reproduced -- and what deliberately is
-not -- is pinned here; see ``DESIGN_daemon_lifecycle.md`` §5.
+not -- is pinned here.
 """
 
 from __future__ import annotations

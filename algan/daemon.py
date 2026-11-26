@@ -403,8 +403,7 @@ class _SourceDigest:
     The daemon's loaded modules are frozen at import; if the files on disk no
     longer match them, a run served here would render with code that is not
     what a fresh interpreter would load. :meth:`changed_since` is what the
-    daemon checks at every run launch to refuse exactly that (see
-    ``DESIGN_daemon_lifecycle.md``).
+    daemon checks at every run launch to refuse exactly that.
 
     Content is hashed rather than stat'd, for two reasons. A gate must never
     *miss* an edit, and mtime can be preserved across one. And ``git
