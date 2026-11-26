@@ -853,13 +853,14 @@ class DecimalNumber(Mob):
         if self.significant_figures is not None:
             self._update_significant_display(value)
             return
-        negative = torch.where((value < 0), 1, 0)
+        is_below_zero = value < 0
         value = value.abs()
         num_i, num_d = self.integer_places, self.decimal_places
         # Largest value the digit slots can show; anything bigger is clamped
         # (also protects against rounding carrying into a non-existent digit).
         limit = (10**num_i) - ((10**-num_d) if num_d > 0 else 1)
         visible_integer_places = []
+        rounds_to_nonzero = []
 
         def get_shown(value):
             all_shown = []
@@ -869,6 +870,9 @@ class DecimalNumber(Mob):
                     x = 0.0
                 x = min(x, limit)
                 value_string = f"{x:.{num_d}f}"
+                # The sign goes with the digits drawn, not the value: -0.001
+                # shows "0.00", as in Manim, rather than "-0.00".
+                rounds_to_nonzero.append(bool(value_string.strip("0.")))
                 int_part, _, frac_part = value_string.partition(".")
                 visible_integer_places.append(len(int_part))
                 int_part = int_part.rjust(num_i, "0")
@@ -884,6 +888,10 @@ class DecimalNumber(Mob):
             return torch.stack(all_shown)
 
         all_shown = torch.stack([get_shown(_) for _ in value], -3)
+        rounds_to_nonzero = torch.tensor(
+            rounds_to_nonzero, device=value.device
+        ).reshape(value.shape)
+        negative = torch.where(is_below_zero & rounds_to_nonzero, 1, 0)
         visible_integer_places = torch.tensor(
             visible_integer_places,
             dtype=value.dtype,

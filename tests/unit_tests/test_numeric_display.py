@@ -154,6 +154,36 @@ def test_negative_sign_tracks_the_first_visible_integer_digit():
             assert float(_drawn(display.negative_sign)[frame]) > 0.5
 
 
+@pytest.mark.parametrize(
+    ("value", "decimal_places", "expected"),
+    [
+        (-0.001, 2, "0.00"),
+        (-0.004999, 2, "0.00"),
+        (-0.005001, 2, "-0.01"),
+        (-0.4, 0, "0"),
+        (-0.6, 0, "-1"),
+    ],
+)
+def test_a_value_that_rounds_to_zero_has_no_minus_sign(value, decimal_places, expected):
+    # Manim shows 0.00 here, and a counter running from -5 to 5 with no
+    # decimal places showed "-0" for every frame in (-0.5, 0).
+    with Scene():
+        display = DecimalNumber(value, decimal_places=decimal_places).spawn(
+            animate=False
+        )
+        assert _displayed_value(display) == expected
+
+
+def test_a_count_through_zero_never_shows_minus_zero():
+    with Scene() as scene:
+        display = DecimalNumber(-2, decimal_places=0).spawn(animate=False)
+        with Sync(runtime=1, easing=easings.identity):
+            display.value = 2
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0, 0.3, 0.45, 0.6]))
+        shown = [_displayed_value(display, frame) for frame in range(4)]
+        assert shown == ["-2", "-1", "0", "0"]
+
+
 def _assert_hidden(display, frames):
     # Inspect geometry descendants too: the root's masked opacity alone cannot
     # catch a glyph write that re-enables the renderable rows during replay.
