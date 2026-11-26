@@ -35,6 +35,7 @@ legacy distance-falloff convention.
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -42,7 +43,7 @@ import torch.nn.functional as F
 from algan.animatable_base.mob import Mob
 from algan.constants.color import WHITE, Color
 from algan.constants.spatial import ORIGIN, UP
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganWarning, _user_stacklevel
 from algan.rendering.raytracing import settings as rt_settings
 from algan.utils.color_space import srgb_to_linear
 from algan.utils.tensor_utils import cast_to_tensor
@@ -70,6 +71,10 @@ LIGHT_ENV_SH = 6.0
 # Number of aux columns following the RGB color in a packed light row
 # (packed row width 18 = 3 color + 15 aux).
 LIGHT_AUX_COLS = 15
+
+# A targeted light closer to its target than this, in world units, is taken to
+# sit on it: its direction is the zero vector, and it emits nothing.
+_COINCIDENT_TARGET_DISTANCE = 1e-6
 
 
 def _finite_number(
@@ -492,7 +497,7 @@ class _TargetedLight(Light):
         super().__init__(*args, **kwargs)
 
     def set_target(self, target):
-        """Aim the light at a point, swinging its beam.
+        """Aim the light at a point.
 
         The emission direction is recomputed each frame as
         ``normalize(target - location)``, so a light aimed at a point keeps pointing
@@ -500,8 +505,12 @@ class _TargetedLight(Light):
 
         Animation
         ---------
-        Not animated: the new target applies from this point in the timeline onwards.
-        Animate the light's :attr:`~.Mob.location` to swing the beam smoothly.
+        Not animated, and not recorded: the target is one point for the whole
+        render, and every frame -- including frames before this call -- is lit
+        with whichever target was set last before the render. A Mob passed as
+        ``target`` is read for its location once, here; the light does not
+        follow it. To swing the beam over time, animate the light's
+        :attr:`~.Mob.location` instead.
 
         Parameters
         ----------
@@ -518,7 +527,39 @@ class _TargetedLight(Light):
 
     def _directions(self, location):
         """Unit emission direction per frame, ``[T, 3]``."""
-        return F.normalize(self.target.to(location.device) - location, p=2, dim=-1)
+        offset = self.target.to(location.device) - location
+        if not self.__dict__.get("_warned_no_direction", False):
+            self._warn_if_no_direction(offset)
+        return F.normalize(offset, p=2, dim=-1)
+
+    def _warn_if_no_direction(self, offset):
+        """Warn, once per light, when a frame puts the light on its target.
+
+        ``F.normalize`` of a zero offset is the zero vector, which the kernels
+        read as a light facing nowhere: it emits nothing on those frames, and
+        a rect area light also loses its frame. Nothing else would say so, and
+        the defaults make it the first thing a user tries --
+        ``DirectionalLight()`` sits at ``ORIGIN`` aimed at ``ORIGIN``. Checked
+        here, where the per-frame directions are made, rather than at
+        construction or in ``set_target``: a light is routinely placed after it
+        is made (``light.location = UP``), so only the frames being rendered
+        say whether it really coincides with its target.
+        """
+        coincide = offset.norm(dim=-1) < _COINCIDENT_TARGET_DISTANCE
+        if not bool(coincide.any()):
+            return
+        self._warned_no_direction = True
+        frames = int(coincide.sum())
+        warnings.warn(
+            f"{self._describe()} emits no light on {frames} of the "
+            f"{coincide.numel()} frame(s) just packed: its location and its "
+            "target are the same point, so it has no direction to shine in. "
+            "Give it a location or a target away from the other (for example "
+            "location=UP with the default target=ORIGIN, which shines "
+            "straight down).",
+            AlganWarning,
+            stacklevel=_user_stacklevel(),
+        )
 
 
 class DirectionalLight(_TargetedLight):
@@ -537,6 +578,10 @@ class DirectionalLight(_TargetedLight):
     *args, **kwargs
         Passed to :class:`~.Light` -- notably ``location``, which with
         ``target`` sets the direction of the rays, and ``color``.
+        ``location`` defaults to ``ORIGIN``, the same point as the default
+        ``target``: a light left at both defaults has no direction and emits
+        nothing, and the render warns that it does. Give it a ``location``,
+        such as ``UP`` to shine straight down.
 
     Raises
     ------
