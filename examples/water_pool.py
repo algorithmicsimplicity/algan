@@ -1,8 +1,9 @@
 """Sunlit water rippling over the tiles of a swimming pool, path traced.
 
 The water is a Surface deformed by a sum of Gerstner waves (a Homotopy), with a
-refractive physical material. Algan does not trace caustics, so the script
-computes them itself: every frame it refracts a dense grid of sun rays through
+refractive physical material. The script computes the caustics itself and
+bakes them into the floor (the path tracer's opt-in ``pt_caustics`` could trace
+them instead, at a cost in render time): every frame it refracts a dense grid of sun rays through
 the same wave surface, gathers where they land on the pool floor, and paints
 the result into the floor's texture.
 
