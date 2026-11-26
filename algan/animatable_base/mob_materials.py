@@ -41,6 +41,27 @@ _POSITIONAL = (
 )
 
 
+def _spawned_description(mob):
+    """``mob``, and the spawned Mob that makes it unconfigurable, or None.
+
+    The shader and material setters write every descendant, so it is the
+    subtree that must be unspawned, not just ``mob``. A Group built before its
+    members spawn is not spawned itself, and checking only it let every
+    spawned member record its material parameters, colour and opacity as
+    animations, one after another, while the shader (read at render time)
+    still applied from the first frame.
+    """
+    if not mob.is_spawned_in_subtree():
+        return None
+    if mob.is_spawned():
+        return f"{mob._describe()} because it has already been spawned"
+    spawned = next(d for d in mob.get_descendants() if d.is_spawned())
+    return (
+        f"{mob._describe()} because its member {spawned._describe()} has "
+        "already been spawned"
+    )
+
+
 def _vertex_shader_parameters(shader):
     """``shader``'s parameters, checked against how the renderer calls it.
 
@@ -163,7 +184,7 @@ class MobMaterialsMixin:
         Raises
         ------
         :class:`.ModifiedProtectedAttributeError`
-            If called on a Mob that has already been spawned.
+            If this Mob, or any Mob below it, has already been spawned.
         :class:`.AlganConfigurationError`
             If ``shader`` cannot be called that way: it takes fewer than nine
             parameters, or a parameter by keyword only.
@@ -175,10 +196,10 @@ class MobMaterialsMixin:
         :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
             Shade per fragment instead of per vertex.
         """
-        if self.is_spawned():
-            mob_name = self._describe()
+        mob_name = _spawned_description(self)
+        if mob_name is not None:
             raise ModifiedProtectedAttributeError(
-                f"Cannot change shader on {mob_name} because it has already been spawned. "
+                f"Cannot change shader on {mob_name}. "
                 "Shaders and materials must be configured before calling .spawn(). "
                 "To change shaders after spawning, create an unspawned clone with `with Off(): clone = mob.clone(spawn=False)`, "
                 "configure its shader, despawn the old mob, and spawn the new one."
@@ -257,12 +278,12 @@ class MobMaterialsMixin:
         Raises
         ------
         :class:`.ModifiedProtectedAttributeError`
-            If called on a Mob that has already been spawned.
+            If this Mob, or any Mob below it, has already been spawned.
         """
-        if self.is_spawned():
-            mob_name = self._describe()
+        mob_name = _spawned_description(self)
+        if mob_name is not None:
             raise ModifiedProtectedAttributeError(
-                f"Cannot change fragment shader on {mob_name} because it has already been spawned. "
+                f"Cannot change fragment shader on {mob_name}. "
                 "Shaders must be configured before calling .spawn(). "
                 "To change fragment shaders after spawning, create an unspawned clone with `with Off(): clone = mob.clone(spawn=False)`, "
                 "configure its fragment shader, despawn the old mob, and spawn the new one."
@@ -360,7 +381,7 @@ class MobMaterialsMixin:
             :class:`~algan.rendering.shaders.materials.Material` (e.g. a color
             such as ``GOLD``).
         :class:`.ModifiedProtectedAttributeError`
-            If called on a Mob that has already been spawned.
+            If this Mob, or any Mob below it, has already been spawned.
 
         Examples
         --------
@@ -395,10 +416,10 @@ class MobMaterialsMixin:
                 f"mob.color instead."
             )
 
-        if self.is_spawned():
-            mob_name = self._describe()
+        mob_name = _spawned_description(self)
+        if mob_name is not None:
             raise ModifiedProtectedAttributeError(
-                f"Cannot set material on {mob_name} because it has already been spawned. "
+                f"Cannot set material on {mob_name}. "
                 "Materials must be configured before calling .spawn(). "
                 "To change materials after spawning, create an unspawned clone with `with Off(): clone = mob.clone(spawn=False)`, "
                 "configure its material, despawn the old mob, and spawn the new one."
