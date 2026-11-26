@@ -546,11 +546,8 @@ def set_denoise_precision(value):
 # the gain in isolation.
 gate_empty_traversals = True
 
-# Wavefront traversal rollouts. Changes to sibling revalidation and child
-# ordering are enabled by default after parity validation; the opaque paths
-# remain opt-in until their scene classification and shading gates are proven.
-wf_revalidate_pending = env_flag("ALGAN_WF_REVALIDATE_PENDING", False)
-wf_near_first = env_flag("ALGAN_WF_NEAR_FIRST", False)
+# Wavefront traversal rollouts: the opaque paths remain opt-in until their
+# scene classification and shading gates are proven.
 wf_opaque_closest = env_flag("ALGAN_WF_OPAQUE_CLOSEST", False)
 wf_opaque_prepass = env_flag("ALGAN_WF_OPAQUE_PREPASS", False)
 
