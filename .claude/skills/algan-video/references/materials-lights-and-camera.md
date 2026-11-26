@@ -214,7 +214,9 @@ units, and `center_on` resizes it rather than moving the camera.
 `set_perspective()` switches back; both switches animate as a dolly zoom over
 the context's runtime, so wrap setup in `with Off():`. `set_fov` and
 `set_distance_to_screen` are perspective controls and switch back too.
-`set_near_orthographic()` is the old name of `set_orthographic()`.
+`set_near_orthographic()` is the old name: called with no argument it does
+exactly what `set_orthographic()` does, but it has no `frame_height`, and a
+`distance` argument raises. Write `set_orthographic()`.
 `set_near(...)` and `set_far(...)` configure clip distances; they are not
 animated timeline controls. Establish them during setup, not as purported
 mid-shot keyframes. Depth of field is `camera.aperture` (lens diameter, world

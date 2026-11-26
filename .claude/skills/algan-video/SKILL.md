@@ -83,7 +83,7 @@ actual limitation.
    Place named `Scene.save_frame` checkpoints throughout the script. Authoring
    checkpoints does not mean rendering every checkpoint on every iteration.
    ```python
-   Scene.save_frame("important_moment", at=[0.0, 2.5, 5.0])   # check_0.0.png, check_2.5.png, ...
+   Scene.save_frame("important_moment", at=[0.0, 2.5, 5.0])   # important_moment_0.0.png, important_moment_2.5.png, ...
    ```
    `at` is seconds on the timeline; a negative value counts back from the current
    time. Use `at` to get stills before, during, and after key animations.
