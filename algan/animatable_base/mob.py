@@ -2833,8 +2833,13 @@ class Mob(
         """
         prs = self._prevent_recursive_sets
         self._prevent_recursive_sets = True
-        self.set(**kwargs)
-        self._prevent_recursive_sets = prs
+        # Restored however ``set`` exits: left on after a caught error (a
+        # misspelt name, an out-of-range value), every later transform of
+        # this Mob would silently stop carrying its children.
+        try:
+            self.set(**kwargs)
+        finally:
+            self._prevent_recursive_sets = prs
         return self
 
     def set(self, **kwargs) -> Mob:
@@ -2909,10 +2914,12 @@ class Mob(
         with Seq(animation_manager=self.animation_manager):
             prs = self._prevent_recursive_sets
             self._prevent_recursive_sets = True
-            with Off(animation_manager=self.animation_manager):
-                self.opacity = 0
-            self.opacity = opacity
-            self._prevent_recursive_sets = prs
+            try:
+                with Off(animation_manager=self.animation_manager):
+                    self.opacity = 0
+                self.opacity = opacity
+            finally:
+                self._prevent_recursive_sets = prs
 
     # Spawning a subtree records this entrance once for the whole set rather
     # than once per Mob (Animatable._collated_fade_in). The marker is what
