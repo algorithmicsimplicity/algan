@@ -4,11 +4,12 @@
 in-place edit through an alias used to reach every later Mob -- and, on the
 warm daemon, every later script: ``c = BLUE; c.glow = 2`` (which ``Color``'s
 own docstring recommended) made every later ``BLUE`` glow, and
-``o = ORIGIN; o += 1.0`` moved the origin. The two spellings are
-``probes/lead/daemon_constant_leak_a.py`` from the 2026-11-26 audit.
+``o = ORIGIN; o += 1.0`` moved the origin.
 """
 
 from __future__ import annotations
+
+import runpy
 
 import pytest
 import torch
@@ -117,3 +118,53 @@ def test_every_direction_and_palette_entry_is_registered():
         for name, value in vars(module).items():
             if name.isupper() and isinstance(value, torch.Tensor):
                 assert id(value) in registered, name
+
+
+def test_the_daemon_restores_the_constants_between_scripts(tmp_path, monkeypatch):
+    """REGRESSION. The warm daemon served a second script the first one's
+    ``ORIGIN``: one edit, one re-render, and the origin had moved by one.
+    """
+    from algan import daemon as d
+
+    script = tmp_path / "main.py"
+    script.write_text(
+        "from algan import *\n"
+        "SEEN = ORIGIN.clone()\n"
+        "o = ORIGIN\n"
+        "o += 1.0\n"
+        "x = RED\n"
+        "x *= 0.5\n",
+        encoding="utf-8",
+    )
+    seen = []
+    events = None
+
+    class Watcher:
+        def __init__(self, queue):
+            pass
+
+        def set_paths(self, paths):
+            pass
+
+    def stdin(queue):
+        nonlocal events
+        events = queue
+
+    original = runpy.run_path
+
+    def run(path, **kwargs):
+        result = original(path, **kwargs)
+        seen.append(result["SEEN"])
+        events.put(("render", "test edit") if len(seen) == 1 else ("quit", "done"))
+        return result
+
+    monkeypatch.setattr(d, "_start_stdin", stdin)
+    monkeypatch.setattr(d, "_Watcher", Watcher)
+    monkeypatch.setattr(d, "_release_run_memory", lambda: None)
+    monkeypatch.setattr(d._StateFile, "remove", lambda self: None)
+    monkeypatch.setattr(d.runpy, "run_path", run)
+    assert d.main([str(script), "--no-serve", "--watch"]) == 0
+    assert len(seen) == 2
+    assert torch.equal(seen[1], torch.zeros(3))
+    assert torch.equal(spatial.ORIGIN, torch.zeros(3))
+    assert torch.equal(color.RED, color.Color("#FC6255"))
