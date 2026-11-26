@@ -62,6 +62,7 @@ jobs:
   # Python 3.10" by name, so both arms run in every scope.
   plan:
     name: Plan the run
+    timeout-minutes: 5
     # Not on a draft pull request; see `on.pull_request`. Nor for a label
     # other than `full-ci`, which changes nothing about what should run.
     if: >-
@@ -102,6 +103,11 @@ jobs:
     name: ${{ matrix.os }} / Python ${{ matrix.python_version }}${{ matrix.render_device == 'mps' && ' / render=mps' || '' }}
     runs-on: ${{ matrix.os }}
     needs: [plan]
+    # The full scope takes about 90 minutes on a cold arm. Without a limit a
+    # hung arm (the hosted Mac's GPU has hung before; DESIGN_mps_support.md)
+    # holds a runner, one of five macOS slots for the MPS arm, for GitHub's
+    # default six hours.
+    timeout-minutes: 150
     strategy:
       # One platform or render device failing must not cancel the others. The
       # matrix is the portability/release gate, so every arm should report.
@@ -537,3 +543,33 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: true
           verbose: true
+
+  # The weekly full run is the backstop for everything the CI group leaves
+  # out: about 70% of the portable tests, Python 3.14 and the MPS arm. A red
+  # one used to reach nobody but whoever last edited the cron, by GitHub's
+  # default email. This opens an issue for it, or comments on the one still
+  # open from an earlier week, so a failure stays visible until it is fixed.
+  report_weekly_failure:
+    name: Report a failed weekly run
+    needs: [plan, build]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="The weekly full test run failed"
+          body="The scheduled full run of the Test workflow failed on $GITHUB_SHA: $RUN_URL"
+          number=$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

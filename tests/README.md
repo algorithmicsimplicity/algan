@@ -267,7 +267,9 @@ container comfortably holds.
 tests/fast` on all four arms with a cold kernel cache, plus the Sphinx build
 and the packaging jobs. `tests/full_renders` and `tests/path_traced` are not in
 it: their baselines are per machine (see "Baselines are per machine too"
-below), so they gate locally. A PR labelled `full-ci` gets the same run.
+below), so they gate locally. A PR labelled `full-ci` gets the same run. When
+the scheduled Test run fails, its last job opens an issue titled "The weekly
+full test run failed", or comments on the one still open.
 
 ## The full suite
 
