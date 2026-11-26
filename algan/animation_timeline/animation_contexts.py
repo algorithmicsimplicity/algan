@@ -38,7 +38,7 @@ import typing
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any
 
@@ -575,14 +575,17 @@ class AnimationContext:
     combine_easing: bool = False
     record_funcs: bool | None = None
     record_attr_modifications: bool | None = None
-    prev_context: AnimationContext | None = None
+    # Out of the generated repr: these reach the whole context tree, every
+    # Mob made in it and the Scene, so printing one context printed all of
+    # them (megabytes for a real scene, from one debugger hover).
+    prev_context: AnimationContext | None = field(default=None, repr=False)
     spawn_at_end: bool | None = None
     new_animation: bool | None = False
     finished: bool = False
-    new_mobs: list | None = None
-    child_contexts: list | None = None
-    kwargs: Any = None
-    animation_manager: Any = None
+    new_mobs: list | None = field(default=None, repr=False)
+    child_contexts: list | None = field(default=None, repr=False)
+    kwargs: Any = field(default=None, repr=False)
+    animation_manager: Any = field(default=None, repr=False)
 
     def __post_init__(self):
         self.runtime = _reject_invalid_runtime("runtime", self.runtime)
