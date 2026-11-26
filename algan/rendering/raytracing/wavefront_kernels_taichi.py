@@ -3780,9 +3780,14 @@ def wavefront_shade_arena(
                     # bloom channel, and a Fresnel highlight is not authored
                     # emission -- leaving it at zero keeps every existing
                     # bloom pass reading exactly what it read before.
+                    #
+                    # Any surface that hands a share to a ray, opaque or not:
+                    # an opaque metal loses its highlight to ``R`` exactly as
+                    # glass loses it to ``trans_share``. The last test only
+                    # skips the light loop where the weight is zero anyway.
                     if ti.static(direct_spec != 0 and frag_shading != 0) \
                             and (htype == 1) and (reflectivity >= 0.0) \
-                            and (T > 1e-4):
+                            and ((T > 1e-4) or (r_glow > 0.0)):
                         sa = (weight * alpha) * (R + trans_share) \
                             * direct_specular_lobe(
                                 f, prim, ro + t_hit * rd, -rd, normal,

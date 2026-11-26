@@ -259,3 +259,66 @@ def test_the_lobe_is_off_for_a_non_pbr_material():
         FRONT, metalness=-1.0, roughness=0.35, albedo=(1.0, 0.5, 0.2)
     )
     assert (lobe == 0).all(), f"a non-PBR material grew a lobe: {lobe.tolist()}"
+
+
+def test_an_opaque_metal_keeps_its_highlight_when_the_render_has_bounces(tmp_path):
+    """The add-back reaches every surface that hands a share to a ray, not
+    only a transmissive one.
+
+    It used to be gated on transmission, so an opaque metal -- whose reflected
+    share is most of its lobe -- kept only the remainder of its own highlight:
+    this sphere rendered at half the light with the default bounces that it
+    did with none, and a mirror at almost nothing. Against black there is
+    nothing for the reflected ray to find, so the two renders may differ only
+    by the ambient fill the ray replaces, which is a few bytes along the limb.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from algan import (
+        BLACK,
+        SETTINGS,
+        WHITE,
+        Off,
+        PointLight,
+        Scene,
+        Sphere,
+        VideoSettings,
+    )
+    from algan.rendering.shaders.materials import MeshStandardMaterial
+
+    bounces = SETTINGS.raytracing.max_bounces
+    assert bounces > 0, "the default render is expected to trace reflections"
+
+    def render(name, max_bounces):
+        SETTINGS.raytracing.set(shadows=False, max_bounces=max_bounces)
+        with Scene() as scene:
+            with Off():
+                sphere = Sphere(radius=1.2)
+                sphere.set_material(
+                    MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.3)
+                )
+                sphere.spawn()
+                PointLight(
+                    location=torch.tensor([2.0, 2.0, 4.0]), intensity=40.0
+                ).spawn()
+            result = scene.save_frame(
+                tmp_path / name,
+                VideoSettings(resolution=(96, 64), supersampling=1),
+                overwrite=True,
+                background=BLACK,
+            )
+        with Image.open(result.output_path) as image:
+            return np.asarray(image.convert("RGB")).astype(np.float64)
+
+    unbounced = render("unbounced.png", 0)
+    bounced = render("bounced.png", bounces)
+
+    assert unbounced.max() == 255, "the test sphere has no highlight to lose"
+    kept = bounced.sum() / unbounced.sum()
+    assert kept > 0.9, (
+        f"with bounces the metal shows {kept:.0%} of the light it shows without"
+    )
+    assert (bounced <= unbounced + 2).all(), (
+        "the restored highlight is brighter than the surface's own shading"
+    )

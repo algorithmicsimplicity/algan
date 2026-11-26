@@ -206,6 +206,8 @@ ALWAYS_PRE_PR = (
     # and rough glass with and without the prefilter.
     "tests/unit_tests/test_sheet_resolve_shading.py::",
     "tests/unit_tests/test_glossy_prefilter.py::test_rough_glass_reflects_the_same_with_and_without_the_prefilter",
+    # An opaque metal keeps its direct-light highlight when the render bounces.
+    "tests/unit_tests/test_direct_specular_lobe.py::test_an_opaque_metal_keeps_its_highlight_when_the_render_has_bounces",
     # The closed-shell ceiling's torch arm and its segment order keep their
     # integer gathers exact past MPS's 2**24: a real frame's fragments in a 4K
     # window, and a float32 spend over 2**24 rows.

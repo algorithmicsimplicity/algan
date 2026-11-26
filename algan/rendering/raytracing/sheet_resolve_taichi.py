@@ -1117,13 +1117,48 @@ def sheet_resolve_shade_arena(
             lit = ti.math.vec4(
                 share[0], share[1], share[2],
                 w_glow * alpha * (1.0 - r_glow - trans_share)) * color
+            # The direct lights' share of the REFLECTED lobe. The continuation
+            # spawned below carries ``R`` of that lobe, but it is a ray and a
+            # delta light has nothing for a ray to hit, so it can only return
+            # the environment. Added at exactly the weight the ray took,
+            # which puts the lobe's total weight at 1 alongside ``share``.
+            # See ``shading_taichi.direct_specular_lobe``. The 4th (glow)
+            # lane takes nothing: glow is the authored bloom channel and a
+            # Fresnel highlight is not authored emission, so every existing
+            # bloom pass reads exactly what it read before.
+            spec_add = ti.math.vec3(0.0, 0.0, 0.0)
+            if ti.static(frag_shading != 0 and mode != 1 and direct_spec != 0):
+                # Triangles/PN only. A bezier circuit is never material-
+                # shaded -- its color is sampled, not lit, so it carries no
+                # GGX term to restore -- and its ``prim`` indexes
+                # ``circuit_meta``, not ``tri_mat``, so reading a material
+                # block with it would silently pick another primitive's.
+                #
+                # Any surface that hands a share to a ray, opaque or not: an
+                # opaque metal loses its highlight to ``R`` exactly as glass
+                # loses it to ``trans_share``. The runtime test only skips
+                # the light loop where the weight below is zero anyway (a
+                # surface that reflects nothing, and every hit of a render
+                # that is out of bounces).
+                if (not fetched_bez) and (reflectivity >= 0.0) \
+                        and ((T > 1e-4) or (r_glow > 0.0)):
+                    spec_add = (weight * alpha) * (R + trans_share) \
+                        * direct_specular_lobe(
+                            f, prim, surf_pos, -surf_rd, normal, geo_normal,
+                            reflectivity, rough, ior, albedo3, tri_mat,
+                            light_pos, light_col, num_lights,
+                            ti.static(1 if mode == 2 else 0), lvis)
             # Display-referred resolve (``display_cap``, §4.8). The area this
             # sheet claims shows at most ``display_cap`` per channel, so that
             # is all its local shading may put in the pixel. The tracer sets
             # the cap only on an opaque batch, whose claims sit side by side
             # and partition the pixel, so the clamp gives exactly the area
             # average of the displayed colour -- over another sheet as much as
-            # over the background, and across a crease. A reflected share
+            # over the background, and across a crease. The highlight added
+            # back above is local shading too (the same analytic term, at the
+            # weight ``share`` gave up), so the two are clamped as one sum:
+            # a metal's edge then antialiases the same whether or not the
+            # render has a bounce to give it. What the reflected RAY returns
             # lands on the same area and stays out of the clamp, so a
             # reflector can come out brighter than that average, never
             # darker. Exempt: a glowing sheet, whose radiance bloom reads,
@@ -1134,30 +1169,14 @@ def sheet_resolve_shade_arena(
                 lit = ti.math.vec4(ti.min(lit[0], ceiling[0]),
                                    ti.min(lit[1], ceiling[1]),
                                    ti.min(lit[2], ceiling[2]), lit[3])
+                if ti.static(frag_shading != 0 and mode != 1
+                             and direct_spec != 0):
+                    spec_add = ti.min(
+                        spec_add,
+                        ceiling - ti.math.vec3(lit[0], lit[1], lit[2]))
             acc += lit
-            # The direct lights' share of the REFLECTED lobe. The continuation
-            # spawned below carries ``R`` of that lobe, but it is a ray and a
-            # delta light has nothing for a ray to hit, so it can only return
-            # the environment. Added here at exactly the weight the ray took,
-            # which puts the lobe's total weight at 1 alongside ``share``.
-            # See ``shading_taichi.direct_specular_lobe``. The 4th (glow)
-            # lane takes nothing: glow is the authored bloom channel and a
-            # Fresnel highlight is not authored emission, so every existing
-            # bloom pass reads exactly what it read before.
             if ti.static(frag_shading != 0 and mode != 1 and direct_spec != 0):
-                # Triangles/PN only. A bezier circuit is never material-
-                # shaded -- its color is sampled, not lit, so it carries no
-                # GGX term to restore -- and its ``prim`` indexes
-                # ``circuit_meta``, not ``tri_mat``, so reading a material
-                # block with it would silently pick another primitive's.
-                if (not fetched_bez) and (reflectivity >= 0.0) and (T > 1e-4):
-                    sa = (weight * alpha) * (R + trans_share) \
-                        * direct_specular_lobe(
-                            f, prim, surf_pos, -surf_rd, normal, geo_normal,
-                            reflectivity, rough, ior, albedo3, tri_mat,
-                            light_pos, light_col, num_lights,
-                            ti.static(1 if mode == 2 else 0), lvis)
-                    acc += ti.math.vec4(sa[0], sa[1], sa[2], 0.0)
+                acc += ti.math.vec4(spec_add[0], spec_add[1], spec_add[2], 0.0)
             refl_energy = alpha * R
             refl_max = ti.max(refl_energy[0],
                               ti.max(refl_energy[1], refl_energy[2]))
