@@ -12,6 +12,10 @@ on:
   # Weekly, beside the full test run in test.yaml, for the packaging jobs.
   schedule:
     - cron: "23 4 * * 1"
+# Read-only unless a job asks for more; nothing here writes to the repository.
+permissions:
+  contents: read
+
 # One run per pull request; see test.yaml for why another label gets a group
 # of its own.
 concurrency:

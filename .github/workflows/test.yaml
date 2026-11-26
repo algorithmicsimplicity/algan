@@ -39,6 +39,10 @@ on:
 # Pushes to master and stable, and merge-queue runs, are keyed by run id and so
 # never cancel one another. A label other than `full-ci` gets a group of its
 # own; it starts nothing, and must not cancel the run that is going.
+# Read-only unless a job asks for more; nothing here writes to the repository.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
@@ -429,7 +433,7 @@ jobs:
       # shapes_and_timeline matched exactly. See tests/README.md.
       #
       # The full scope names paths rather than running with --fast on purpose:
-      # --fast runs only the 191 hand-picked tests marked 'fast', while
+      # --fast runs only the hand-picked tests marked 'fast', while
       # everything under these two paths is portable and passes here. That is
       # what the weekly run and a `full-ci` pull request run; everything else
       # runs the CI group (see the `plan` job).
@@ -540,7 +544,9 @@ jobs:
       # matching the OS and Python version here.
       - name: Upload coverage to Codecov
         if: matrix.coverage
-        uses: codecov/codecov-action@v4
+        # By commit, not tag: a moved tag would run other code with the Codecov
+        # token. b9fd7d1 is v4.6.0, what v4 named when it was pinned.
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml

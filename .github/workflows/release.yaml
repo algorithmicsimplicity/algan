@@ -291,8 +291,11 @@ jobs:
           videos=$(find docs/build/html -name '*.mp4' | wc -l)
           echo "rendered videos: $videos" >> "$GITHUB_STEP_SUMMARY"
           du -sh docs/build/html >> "$GITHUB_STEP_SUMMARY"
+          # An error, not a warning: as a warning, a videoless site still went
+          # on to publish_docs. skip_docs_examples is the way to ask for one.
           if [ "$videos" -eq 0 ] && [ "${{ inputs.skip_docs_examples }}" != "true" ]; then
-            echo "::warning::the docs build produced no example videos"
+            echo "::error::the docs build produced no example videos; set skip_docs_examples to publish a site without them"
+            exit 1
           fi
 
       - uses: actions/upload-artifact@v4
@@ -454,6 +457,9 @@ jobs:
 
       # Trusted Publishing, same as quadrants_build.yaml's publish job. No
       # token lives in this repository.
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # By commit, not branch: this job holds `id-token: write`, and a branch
+      # ref runs whatever is pushed to it. 7245906 is v1.14.3, the head of
+      # release/v1 when it was pinned.
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist

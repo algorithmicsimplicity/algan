@@ -4,6 +4,7 @@ runs:
   using: "composite"
   steps:
     - name: Install uv
-      uses: astral-sh/setup-uv@v3
+      # By commit, not tag: caf0cab is v3.2.4, what v3 named when it was pinned.
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
       with:
         version: "0.4.25"
