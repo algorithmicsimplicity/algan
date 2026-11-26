@@ -1692,6 +1692,35 @@ def _warn_poisoned(kernel, reason):
     )
 
 
+#: One entry once a kernel cache the index could not use has been reported.
+#: A list rather than a flag so a test can reset it with ``monkeypatch``.
+_WARNED_UNWRITABLE = []
+
+
+def _warn_cache_unusable(error):
+    """Report, once per process, that the index met a cache it cannot use.
+
+    Quadrants' index touches an entry's access time on every hit and writes
+    each new entry through ``mkstemp``, and neither catches an ``OSError``: on
+    a read-only cache (a shared or read-only mount, one ``sudo algan warmup``
+    made) or a full disk, both raised out of the kernel launch. The index only
+    saves time, so the hooks treat such a failure as a miss and a skipped
+    store, which is what the same cache costs with the index off.
+    """
+    if _WARNED_UNWRITABLE:
+        return
+    _WARNED_UNWRITABLE.append(True)
+    where = getattr(error, "filename", None) or "the kernel cache"
+    warnings.warn(
+        f"taichi_source_key: cannot use {where} ({error.strerror or error}); "
+        "kernels compile as if the cache were empty and nothing new is saved. "
+        "Make the cache directory writable, or set ALGAN_CACHE_DIR to a "
+        "directory you can write.",
+        RuntimeWarning,
+        stacklevel=4,
+    )
+
+
 def _restore_from_cache_value(self, key, cache_value, kernel_module, src_hasher):
     """What Quadrants' ``_try_load_fastcache`` does on a validated hit, verbatim in effect.
 
@@ -1831,7 +1860,11 @@ def _build_hooks(
         self._algan_source_keyed = True
         self.fast_checksum = fast_key
         self.src_ll_cache_observations.cache_key_generated = True
-        cache_value = src_hasher.load(fast_key)
+        try:
+            cache_value = src_hasher.load(fast_key)
+        except OSError as error:
+            _warn_cache_unusable(error)
+            cache_value = None
         if cache_value is None:
             STATS["misses"] += 1
             return None
@@ -1860,7 +1893,12 @@ def _build_hooks(
                     f"{fast_cache_key} to C++ key {expected}, but a full transform "
                     f"produced {frontend_cache_key}. The key is missing an input."
                 )
-        return original_store(frontend_cache_key, fast_cache_key, *args, **kwargs)
+        try:
+            return original_store(frontend_cache_key, fast_cache_key, *args, **kwargs)
+        except OSError as error:
+            # The kernel has compiled and runs; only its index entry is lost.
+            _warn_cache_unusable(error)
+            return None
 
     _try_load_fastcache._algan_original = original_try_load
     _store._algan_original = original_store

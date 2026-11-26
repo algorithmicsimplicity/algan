@@ -608,6 +608,36 @@ def test_a_hit_whose_artifact_is_gone_counts_as_a_miss(hooks, monkeypatch):
     assert sk.STATS["hits"] == 0
 
 
+def test_an_index_that_cannot_be_written_is_a_miss_not_a_crash(hooks, monkeypatch):
+    """A read-only kernel cache (a shared mount, one a root container made)
+    makes Quadrants' index raise ``PermissionError``: on a hit from the
+    access-time touch in ``load``, on a miss from ``mkstemp`` in ``store``.
+    Uncaught, it crashed every launch; the index's job is speed, so a cache
+    it cannot use must cost only the compile, as it does with the index off.
+    """
+    try_load, store, hasher = hooks
+    monkeypatch.setattr(sk, "compute_key", lambda kernel, args: ("KEY", None))
+    monkeypatch.setattr(sk, "_WARNED_UNWRITABLE", [])
+
+    def denied(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted", "/cache/x.cache.txt")
+
+    hasher.load = denied
+    kernel = _StubKernel()
+    with pytest.warns(RuntimeWarning, match="/cache/x.cache.txt"):
+        assert try_load(kernel, (), ("k",)) is None
+    assert sk.STATS["misses"] == 1
+
+    _try_load, store, _persist = sk._build_hooks(
+        None, hasher, "NONE", lambda *args: None, denied
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert store("CPP", "KEY", set()) is None
+        assert try_load(kernel, (), ("k",)) is None
+    assert not caught, "an unusable cache must warn once per process"
+
+
 def test_verify_mode_takes_the_full_path_and_compares_the_cpp_key(hooks, monkeypatch):
     try_load, store, hasher = hooks
     hasher.value = _CacheValue("CPP")
