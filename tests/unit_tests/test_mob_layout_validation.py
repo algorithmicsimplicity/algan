@@ -75,3 +75,18 @@ def test_a_group_of_only_excluded_members_can_still_be_placed():
         g = Group(a, b)
         g.move_next_to(Circle(), UP)
         g.get_boundary_points_recursive()
+
+
+def test_facing_nowhere_is_refused_by_the_argument_that_was_passed():
+    # Both used to fail inside rotate() with "axis must be a non-zero
+    # direction ... would collapse the Mob", naming an argument neither call
+    # takes.
+    with Scene(), Off():
+        mob = Square().move_to(RIGHT)
+        with pytest.raises(AlganConfigurationError, match=r"look\(\) needs"):
+            mob.look(ORIGIN)
+        with pytest.raises(AlganConfigurationError, match="its own location"):
+            mob.look_at(RIGHT)
+        # A real direction and a real point still turn it.
+        mob.look(UP)
+        mob.look_at(ORIGIN)
