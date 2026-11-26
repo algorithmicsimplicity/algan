@@ -70,7 +70,11 @@ _ALGAN_MEANING_WINS = frozenset({"animate"})
 
 def _tensor_to_manim(value: torch.Tensor):
     value = value.detach().cpu()
-    if value.ndim == 0:
+    if value.numel() == 1:
+        # A scalar: ``get_width()`` is a ``(1, 1, 1)`` tensor, and Manim tests
+        # some numbers with ``isinstance(value, float)`` -- RoundedRectangle's
+        # ``corner_radius`` took a one-element array for a list of radii and
+        # failed. A point or a direction is never one element.
         return value.item()
     # Algan carries a leading batch dimension that Manim's geometry does not:
     # Manim points are ``(N, 3)`` and single vectors are ``(3,)``.  Drop the

@@ -12,8 +12,9 @@ from __future__ import annotations
 import pytest
 import torch
 
+import algan
 import algan.manim as mn
-from algan import RED, Arc, Axes
+from algan import RED, Arc, Axes, Square
 from algan.scene_manager import SceneManager
 
 
@@ -65,3 +66,14 @@ def test_get_color_of_a_filled_mob_is_its_fill():
     color = _row(square.get_color())
     torch.testing.assert_close(color[:3], _row(square.color)[:3])
     assert float(color[4]) == 1.0
+
+
+def test_a_scalar_from_algan_reaches_manim_as_a_number():
+    """REGRESSION. A ``(1, 1, 1)`` tensor such as ``get_width()`` reached Manim
+    as a one-element array, and ``RoundedRectangle`` (which tests
+    ``isinstance(corner_radius, float)``) failed with ``zip() argument 2 is
+    longer than argument 1``.
+    """
+    width = Square().get_width()
+    mob = algan.RoundedRectangle(corner_radius=width * 0.1)
+    assert mob.manim_mobject.corner_radius == pytest.approx(0.2)
