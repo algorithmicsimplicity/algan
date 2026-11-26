@@ -2788,16 +2788,42 @@ class Mob(
         # ``set`` a set copy of the class's whole settable namespace.
         class_settable = self._class_settable_property_names()
         own = self.animatable_attrs
-        # attr_to_timeline is Scene-wide, so it also accepts an attribute owned
-        # by some other Mob in the Scene (where setting it does nothing). It
-        # gates the check as it always has, but is not advertised in the message.
-        timelines = self.scene.timeline_manager.attr_to_timeline
         for p in property_names:
             # The membership tests first: ``hasattr`` on an animatable
             # attribute runs its getter, a timeline read per name, which every
             # ``set`` paid only to learn what the registry already said.
-            if p in class_settable or p in own or p in timelines or hasattr(self, p):
+            if p in own:
                 continue
+            member = getattr(type(self), p, None) if p in class_settable else None
+            fset = getattr(member, "fset", None)
+            if member is not None and not getattr(
+                fset, "_forwards_to_set_animated_attribute", False
+            ):
+                # A property the class itself defines.
+                continue
+            # What is left is a name some other Mob registered: a generated
+            # property attached to this class by another instance (a material
+            # on one Sphere puts ``roughness`` on every Sphere), or any name
+            # in the Scene-wide timeline registry. Accepting those let
+            # ``square.set(roughness=0.9)`` record a second of nothing once
+            # any Mob in the Scene had a material. A write reaches the Mobs
+            # that animate the name, which is this Mob's subtree unless the
+            # write is non-recursive (then it is this Mob, ``own``, above).
+            if not self._prevent_recursive_sets and any(
+                p in d.animatable_attrs for d in self.get_descendants()
+            ):
+                continue
+            if member is None and hasattr(self, p):
+                continue
+            if member is not None or p in self.scene.timeline_manager.attr_to_timeline:
+                raise AttributeError(
+                    f'"{p}" is not an animatable attribute of {self._describe()}'
+                    + ("" if self._prevent_recursive_sets else " or its members")
+                    + ": another Mob in the Scene has it, registered there by "
+                    "a material, a shader or register_attrs_as_animatable(). "
+                    "Give this Mob the same material or shader before spawning "
+                    "it, or set the attribute on the Mob that has it."
+                )
             settable = self._settable_property_names()
             suggestion = difflib.get_close_matches(p, sorted(settable), n=1)
             hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
