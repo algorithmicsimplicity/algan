@@ -146,6 +146,7 @@ import types
 import warnings
 
 from algan.environment import env_flag, env_str
+from algan.utils import taichi_early_return
 
 #: Bumped whenever what this module puts in the key, or how it renders a
 #: component, changes -- an entry written by an older rule set must miss.
@@ -1614,6 +1615,11 @@ def compute_key(kernel, args):
         # changes among them) does.
         out.append(f"distribution:{backend_distribution()}")
         out.append(f"schema:{fast_caching._CACHE_VALUE_SCHEMA_VERSION}")
+        # The one Algan-side transform that changes a func's IR: a rewritten
+        # body is keyed by its source, so the rewrite's own revision has to be
+        # keyed beside it (``taichi_early_return.REWRITE_REVISION``).
+        if taichi_early_return.REWRITE_REVISION:
+            out.append(f"early-return:{taichi_early_return.REWRITE_REVISION}")
         out.append(f"autodiff:{kernel.autodiff_mode}")
         # Decorator flags the transformer branches on (`@qd.kernel(graph=,
         # checkpoints=)`), and whether the first parameter is a class `self`.

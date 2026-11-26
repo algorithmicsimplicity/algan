@@ -148,6 +148,17 @@ VALUE = "__algan_ret_val"
 UNTOUCHED = "untouched"
 REWRITTEN = "rewritten"
 
+#: The revision of what the rewrite produces. **Bump it with every change to
+#: the code a rewritten body becomes**, however small. The source key
+#: (``taichi_source_key.compute_key``) hashes a func's own source, not this
+#: module, and on an index hit the compiler's key is read from the index rather
+#: than recomputed over the rewritten IR, so without a bump a cache built
+#: before the change keeps serving the old IR for unchanged user source. Only a
+#: nonzero revision enters the key, so every key stayed what it was when the
+#: revision was introduced; a bump moves every kernel's key once (each then
+#: pays the frontend once, and still finds its backend artifact).
+REWRITE_REVISION = 0
+
 #: What the hook has decided, by outcome. A body found not to need the rewrite
 #: (or refused) is remembered on the raw function and counted once; a rewritten
 #: one is counted at every call site that re-parses it, since the rewrite has
