@@ -12,10 +12,15 @@ to be named, and any past the named parameters handed back by position.
 
 from __future__ import annotations
 
+import functools
+import gc
+import weakref
+
 import pytest
 import torch
 
 from algan import RIGHT, Off, Square, animated_function
+from algan.animation_timeline.timeline import _positional_parameters
 from algan.scene_manager import SceneManager
 
 
@@ -148,3 +153,52 @@ def test_a_call_without_the_mob_names_the_missing_first_argument():
         slide(t=1)
     with pytest.raises(TypeError, match="must be a Mob"):
         slide(3, Square())
+
+
+def test_a_recorded_function_does_not_keep_its_script_alive():
+    """The parameter-name memo used to hold every function it saw, and with it
+    the function's globals. For an ``@animated_function`` defined in a script,
+    those are the script's namespace -- its Scene and every Mob -- so the warm
+    daemon kept each earlier run's Scene alive.
+    """
+    namespace = {"animated_function": animated_function, "RIGHT": RIGHT}
+    exec(
+        "@animated_function(animated_args={'t': 0})\n"
+        "def slide(mob, t=1):\n"
+        "    mob.location = mob.location + RIGHT * t.reshape(-1, 1, 1)\n",
+        namespace,
+    )
+    square = Square().spawn(animate=False)
+    namespace["slide"](square)
+    namespace["held"] = held = Square(add_to_scene=False)
+    held_ref = weakref.ref(held)
+    del held, square, namespace
+    SceneManager.reset()
+    gc.collect()
+    assert held_ref() is None
+
+
+def test_functions_sharing_a_code_object_keep_their_own_parameter_names():
+    """Two functions wrapped by one decorator share the wrapper's code object
+    but not their signatures, which ``inspect.signature`` reads through
+    ``__wrapped__``: the memo must not key on the code.
+    """
+
+    def wrap(function):
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    @wrap
+    def first(mob, a, b):
+        pass
+
+    @wrap
+    def second(mob, c, *rest):
+        pass
+
+    assert first.__code__ is second.__code__
+    assert _positional_parameters(first) == (("a", "b"), None)
+    assert _positional_parameters(second) == (("c",), "rest")

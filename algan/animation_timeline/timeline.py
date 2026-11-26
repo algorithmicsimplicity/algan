@@ -27,7 +27,6 @@ from __future__ import annotations
 import bisect
 import contextlib
 import copy
-import functools
 import inspect
 import math
 import os
@@ -63,11 +62,36 @@ _NUMPY_DTYPES = {
 TIME_PARAMETER_NAME = "time_elapsed"
 
 
-@functools.lru_cache(maxsize=1024)
+#: ``_positional_parameters``'s memo, held weakly. A strong cache (it was an
+#: ``lru_cache``) kept each function alive, and with it its ``__globals__``:
+#: for an ``@animated_function`` defined in a script that is the script's
+#: namespace, which holds its Scene, every Mob and every timeline buffer, so
+#: the warm daemon kept every earlier run's Scene. Keying on ``__code__``
+#: instead would be wrong: ``inspect.signature`` follows ``__wrapped__``,
+#: ``__signature__`` and ``functools.partial``, so two functions with one code
+#: object -- two functions wrapped by one decorator -- can name different
+#: parameters.
+_POSITIONAL_PARAMETERS = weakref.WeakKeyDictionary()
+
+
 def _positional_parameters(function):
     """Name ``function``'s positional parameters after its first, and its
     ``*args`` parameter (``None`` when it has none).
     """
+    try:
+        return _POSITIONAL_PARAMETERS[function]
+    except KeyError:
+        pass
+    except TypeError:
+        # Unhashable, or not weakly referenceable: nothing to key a weak memo
+        # on, so read the signature every time.
+        return _read_positional_parameters(function)
+    result = _read_positional_parameters(function)
+    _POSITIONAL_PARAMETERS[function] = result
+    return result
+
+
+def _read_positional_parameters(function):
     params = list(inspect.signature(function).parameters.values())[1:]
     named = tuple(
         param.name
