@@ -139,8 +139,8 @@ def _tile_region_as_the_reseeding_version_drew(monkeypatch, **arguments):
     with 42 and drawing from it, which is what the function did before it had
     a generator of its own. Everything else is the code under test, on this
     machine -- so the comparison holds on any CPU, where a digest recorded on
-    one does not: the outline's ``cos`` and ``sin`` already differ in their
-    last bit between PyTorch's AVX, scalar and NEON kernels.
+    one does not: two of the outline's 41 ``linspace`` values are an ulp apart
+    between PyTorch's AVX-512 and scalar kernels, before any tessellating.
     """
     draws = []
 
