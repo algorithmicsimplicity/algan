@@ -241,3 +241,29 @@ def test_constant_intensity_snapshot_matches_legacy_arithmetic():
         )
 
         assert torch.equal(got, legacy)
+
+
+@pytest.mark.parametrize("hex_color", [0x8B4513, "#8B4513"])
+def test_hemisphere_ground_color_accepts_hex_like_every_material_color(hex_color):
+    # three.js writes ``new HemisphereLight(0x87ceeb, 0x8b4513)``. Unparsed, the
+    # int packed as a one-element radiance of 9127187 on every channel (about
+    # 4.5e16 once decoded), and the string raised a bare TypeError from inside
+    # the render loop.
+    with Scene():
+        from_hex = HemisphereLight(ground_color=hex_color)
+        from_color = HemisphereLight(ground_color=Color("#8B4513"))
+        location = torch.zeros(2, 3)
+        got = from_hex._build_aux(location)[..., 9:12]
+        expected = from_color._build_aux(location)[..., 9:12]
+
+    assert torch.equal(got, expected)
+    assert float(got.max()) < 1.0
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["not a color", (0.5, 0.5), (0.5, float("nan"), 0.5), (0.5, -0.1, 0.5), True],
+)
+def test_hemisphere_ground_color_is_validated_at_construction(bad):
+    with Scene(), pytest.raises(AlganConfigurationError, match="ground_color"):
+        HemisphereLight(ground_color=bad)

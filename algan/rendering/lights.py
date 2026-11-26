@@ -139,6 +139,51 @@ def _positive_sample_count(value):
     return result
 
 
+def _ground_color(value):
+    """Validate a :class:`HemisphereLight` ``ground_color`` at construction.
+
+    A hex int or a hex string is parsed the way every material color is
+    (``materials._to_color5``): unparsed, ``_build_aux`` used to hand it to
+    ``torch.tensor`` at render time, so ``0x8B4513`` became a one-element
+    radiance of 9127187 on every channel and ``"#8B4513"`` a ``TypeError`` from
+    inside the render loop. Any other value is kept exactly as given -- it is
+    what ``_build_aux`` has always packed -- once it is known to hold three
+    finite, non-negative channels.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise AlganConfigurationError(
+            f"ground_color must be a color, got {value!r}; pass a color such as "
+            "DARK_BROWN, an RGB triple, a hex int or a hex string, or None for black"
+        )
+    if isinstance(value, (int, str)):
+        from algan.rendering.shaders.materials import _to_color5
+
+        try:
+            return _to_color5(value)
+        except ValueError as exc:
+            raise AlganConfigurationError(
+                f"ground_color {value!r} is not a color: {exc}"
+            ) from exc
+    try:
+        channels = torch.as_tensor(value, dtype=torch.float32).reshape(-1)[:3]
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise AlganConfigurationError(
+            f"ground_color must be a color, got {value!r}; pass a color such as "
+            "DARK_BROWN, an RGB triple, a hex int or a hex string, or None for black"
+        ) from exc
+    if channels.numel() < 3:
+        raise AlganConfigurationError(
+            f"ground_color must have three channels (R, G, B), got {value!r}"
+        )
+    if not bool(torch.isfinite(channels).all()) or bool((channels < 0).any()):
+        raise AlganConfigurationError(
+            f"ground_color must hold finite, non-negative channels, got {value!r}"
+        )
+    return value
+
+
 def _as_direction_target(target):
     t = target.location if isinstance(target, Mob) else target
     if not torch.is_tensor(t):
@@ -567,7 +612,8 @@ class HemisphereLight(Light):
     ----------
     ground_color
         Color of the illumination coming from below, as an RGB triple in
-        ``[0, 1]`` or a color constant such as ``DARK_BROWN``. Defaults to
+        ``[0, 1]``, a color constant such as ``DARK_BROWN``, or a hex int or
+        string as three.js writes it (``0x8B4513``, ``"#8B4513"``). Defaults to
         ``None``, meaning black: no light from below.
     up
         The sky direction, shape ``(3,)``: surfaces facing it receive the full
@@ -576,6 +622,12 @@ class HemisphereLight(Light):
         Passed to :class:`~.Light` -- notably ``color``, the sky's color, and
         ``intensity``. ``location`` has no effect on the lighting and defaults
         to ``ORIGIN``.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``ground_color`` is not a color: a string no color parses, or a
+        value without three finite, non-negative channels.
     """
 
     light_type = LIGHT_HEMISPHERE
@@ -588,7 +640,7 @@ class HemisphereLight(Light):
     def __init__(self, *args, ground_color=None, up=UP, **kwargs):
         if not args and "location" not in kwargs:
             kwargs["location"] = ORIGIN
-        self.ground_color = ground_color
+        self.ground_color = _ground_color(ground_color)
         # ``up`` is the constructor's name for it; the attribute is spelled
         # differently because ``Mob.up`` is the mob's own up direction.
         self.sky_direction = _as_direction_target(up)
