@@ -802,6 +802,7 @@ def test_prefix_search_skips_a_runtime_already_known_to_fail(monkeypatch):
 
     scene = Scene.__new__(Scene)
     scene._begin_batch_cost_measurement()
+    scene._project_peak_ratio = PeakRatioModel(rt_module.project_gpu_peak_factor)
     probes = []
     monkeypatch.setattr(Scene, "_gpu_merge_headroom_bytes", lambda self: 1 << 30)
     scene._can_slice_fetched_batch = lambda batch, total: True
@@ -839,6 +840,50 @@ def test_prefix_search_skips_a_runtime_already_known_to_fail(monkeypatch):
         [object()], {}, 8, (), False, known_failing=9
     )
     assert probes[0] == 8
+
+
+def test_prefix_search_bounds_projection_by_the_measured_model(monkeypatch):
+    """The preflight prices projection with the job's measured
+    ``_project_peak_ratio``; the prefix search used the raw seed factor, so a
+    measured ratio below the seed cut every fetched batch to a shorter prefix
+    than the preflight would have accepted.
+    """
+    import algan.rendering.raytracing.scene_builder as scene_builder
+
+    class Scene(RenderLoopMixin):
+        pass
+
+    mb = 1 << 20
+    monkeypatch.setattr(rt_module, "project_gpu_peak_factor", 8.0)
+    monkeypatch.setattr(Scene, "_gpu_merge_headroom_bytes", lambda self: 1 << 30)
+    monkeypatch.setattr(
+        scene_builder,
+        "gpu_project_input_bytes",
+        lambda candidate: candidate[0].duration * 4 * mb,
+    )
+
+    def selected(model):
+        scene = Scene.__new__(Scene)
+        scene._begin_batch_cost_measurement()
+        scene._project_peak_ratio = model
+        scene._can_slice_fetched_batch = lambda batch, total: True
+        scene._slice_fetched_batch = lambda batch, state, duration, total: (
+            [SimpleNamespace(duration=duration)],
+            state,
+        )
+        scene._release_preflight_candidate = lambda batch: None
+        scene._prepared_batch_fits_render_arena = lambda *args, **kwargs: True
+        return scene._select_largest_fitting_fetched_prefix(
+            [object()], {}, 64, (), False
+        )[1]
+
+    # Unmeasured, the model is the seed: 8 x 4 MB a frame in 1 GiB is 32.
+    assert selected(PeakRatioModel(8.0)) == 32
+    # Measured at 2x (2.5x with its safety margin), the whole batch fits.
+    measured = PeakRatioModel(8.0)
+    measured.observe(40 * mb, 80 * mb)
+    measured.observe(80 * mb, 160 * mb)
+    assert selected(measured) == 64
 
 
 def _make_sliceable_loop_scene(monkeypatch, *, calibrate=True):

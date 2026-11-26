@@ -1501,10 +1501,12 @@ class RenderLoopMixin:
             candidate, _ = self._slice_fetched_batch(
                 primitive_batch, render_state, duration, total_frames
             )
-            from algan.rendering.raytracing import settings as rt_settings
-
-            estimated_peak = int(
-                rt_settings.project_gpu_peak_factor * gpu_project_input_bytes(candidate)
+            # The job's measured model, as the preflight prices it: the raw
+            # seed factor cut every batch short whenever the measured ratio
+            # was below it, and let through windows the preflight then
+            # rejected whenever it was above. Unmeasured, the model is the seed.
+            estimated_peak = self._project_peak_ratio.predict(
+                gpu_project_input_bytes(candidate)
             )
             return estimated_peak <= headroom
 
