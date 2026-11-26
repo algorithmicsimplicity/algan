@@ -280,6 +280,33 @@ def _torch_reserved_bytes():
         return None
 
 
+def _end_of_run():
+    """Undo what a finished run left running in the process, before the reset.
+
+    The one place for end-of-run cleanup that is not the generic reset: a run
+    in its own process would have taken these with it when it exited, so the
+    daemon has to end them itself for a run to stay indistinguishable from a
+    cold one. Called by ``release_after_run`` before the Scene reset, whether
+    the run succeeded or not. Each step is guarded on its own, so one that
+    fails cannot skip the others or the reset that follows.
+    """
+    # Only if the run imported the viewer at all; importing it here would
+    # cost every run that never opened one.
+    viewer = sys.modules.get("algan.viewer.viewer")
+    if viewer is not None:
+        try:
+            stopped = viewer.stop_background_viewers()
+        except Exception:  # noqa: BLE001 -- tidying must not kill the daemon
+            traceback.print_exc()
+        else:
+            if stopped:
+                _say(
+                    f"stopped {stopped} viewer(s) the script left running "
+                    "(Scene.view(block=False) ends with the script, as it "
+                    "does in a process of its own)"
+                )
+
+
 def _release_run_memory():
     """Hand a finished run's GPU memory back to the driver.
 
@@ -1480,6 +1507,7 @@ def main(argv=None):
             # still warrants recovery before another script uses the compiler.
             clean["interrupted"] = True
         try:
+            _end_of_run()
             reset_state()
             # Before the memory release: on a CUDA context an error left
             # unusable that raises, and this is the write that must not miss.
