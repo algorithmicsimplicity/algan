@@ -628,3 +628,26 @@ def test_tilde_in_an_output_directory_is_the_home_directory(monkeypatch, tmp_pat
     assert [Path(p) for p in options["input_files"]] == [
         (home / "vids" / "0_intro.mp4").resolve()
     ]
+
+
+@pytest.mark.parametrize(
+    "typo", ["--render_video", "--concat_videos", "--render-vidoe=1"]
+)
+def test_run_cli_names_an_action_it_did_not_recognise(tmp_path, algan_logs, typo):
+    # Unknown arguments are ignored so launchers can add their own; a typo of
+    # an action used to make run_cli render nothing without a word.
+    def scene():
+        pass
+
+    project = Project([scene], **_paths(tmp_path))
+    assert project.run_cli([typo]) is False
+    assert any(typo in message for message in _warnings(algan_logs))
+
+
+def test_run_cli_stays_quiet_about_a_launchers_own_arguments(tmp_path, algan_logs):
+    def scene():
+        pass
+
+    project = Project([scene], **_paths(tmp_path))
+    assert project.run_cli(["--external-option", "value"]) is False
+    assert _warnings(algan_logs) == []

@@ -1106,6 +1106,27 @@ class Project:
         if arguments.concatenate_videos:
             self.concatenate_videos()
             return True
+        # Unknown arguments are ignored so launchers can add their own, but
+        # one spelled like an action is almost certainly a typo for it
+        # (``--render_video``), and ignoring it renders nothing in silence.
+        near_misses = [
+            argument
+            for argument in _unknown
+            if argument.startswith("--")
+            and argument.split("=")[0]
+            .lower()
+            .replace("_", "-")
+            .startswith(
+                ("--render", "--concat", "--validate", "--profile", "--estimate")
+            )
+        ]
+        if near_misses:
+            logger.warning(
+                f"Project.run_cli ran no project action: it does not recognise "
+                f"{', '.join(repr(_) for _ in near_misses)}. The actions are "
+                "--render-screenshots, --render-video, --validate, --profile, "
+                "--estimate-render-time and --concatenate-videos; see --help."
+            )
         return False
 
     @staticmethod

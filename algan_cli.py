@@ -357,7 +357,9 @@ def _cmd_new(args: argparse.Namespace) -> int:
     """Scaffold a new Algan scene script."""
     target = Path(args.name)
     if not target.name.endswith(".py"):
-        target = target.with_suffix(".py")
+        # Appended, not ``with_suffix``: that replaced a dot already in the
+        # name, so ``algan new my.scene`` wrote ``my.py``.
+        target = target.with_name(target.name + ".py")
 
     if target.exists() and not args.force:
         print(

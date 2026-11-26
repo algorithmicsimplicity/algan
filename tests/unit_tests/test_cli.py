@@ -453,6 +453,15 @@ def test_new_creates_the_folders_it_names(tmp_path, capsys):
     assert target.is_file()
 
 
+@pytest.mark.parametrize(
+    ("name", "written"), [("intro", "intro.py"), ("my.scene", "my.scene.py")]
+)
+def test_new_appends_py_to_a_name_without_it(tmp_path, capsys, name, written):
+    # ``with_suffix`` replaced the dot already in the name: my.scene -> my.py.
+    assert cli.main(["new", str(tmp_path / name)]) == 0
+    assert sorted(p.name for p in tmp_path.iterdir()) == [written]
+
+
 def test_check_reports_the_environment(capsys):
     assert cli.main(["check"]) == 0
     printed = capsys.readouterr().out
