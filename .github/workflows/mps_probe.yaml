@@ -564,7 +564,13 @@ jobs:
       # rather than exceptions, so this survives what the render does not --
       # and it runs first for exactly that reason: a render that aborts leaves
       # nothing behind, and this leaves a table.
+      #
+      # Taichi only. The probe compiles its cases with the literal `taichi`
+      # package and refuses to start under any other backend, so on the
+      # default (Quadrants) it would stop the job here, before the render that
+      # is the point of it. It runs when a patched Taichi wheel was asked for.
       - name: Probe what Metal will compile
+        if: ${{ env.ALGAN_TAICHI_BACKEND == 'taichi' }}
         run: uv run python benchmarks/_mps_metal_codegen_probe.py
 
       # And before that, the torch half. The sheet compaction is almost
