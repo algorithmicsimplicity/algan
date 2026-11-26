@@ -42,8 +42,8 @@ jobs:
       # failed several minutes into the test job, on `uv sync --locked`, with a
       # message about syncing rather than about the lockfile.
       #
-      # `--locked` is the spelling uv 0.4.25 (pinned in ./actions/install-uv)
-      # understands. Newer uv shows it as `--check`; both still work.
+      # `--locked` is the spelling the pinned uv (./actions/install-uv)
+      # documents. Newer uv shows it as `--check`; both still work.
       - run: uv lock --locked
 
   linting:

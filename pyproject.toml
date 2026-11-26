@@ -197,6 +197,14 @@ pango = [
 taichi = [
     "taichi>=1.7.4; python_version < '3.14'",
 ]
+
+# Tooling for working on Algan: tests, lint, docs. A dependency group, not an
+# extra, so it is not part of the published metadata (`pip install
+# "algan[dev]"` used to pull ruff and sphinx into a user's environment) and so
+# `uv sync` and `uv sync --dev` install it, which they did not while it was an
+# extra. Needs uv 0.4.27 or newer; CI pins a newer one in
+# `.github/actions/install-uv`.
+[dependency-groups]
 dev = [
     # Tests and benchmarks decode rendered frames and probe video metadata
     # with OpenCV. The library itself no longer imports cv2 (its one image
@@ -221,12 +229,11 @@ dev = [
     "types-pillow>=10.2.0.20240822",
     "types-pygments>=2.19.0.20250107",
     "requests>=2.32.3",
-    # `taichi` is in here as well as in `--all-extras`: an install of the
-    # `dev` extra alone (`uv sync --extra dev`) still has to be able to run
-    # the A/B control arm (`ALGAN_TAICHI_BACKEND=taichi`), which is half of
-    # every backend report. `dev` is an extra, not a dependency group, so
-    # `uv sync --dev` without `--all-extras` or `--extra dev` installs none
-    # of this; every documented command passes `--all-extras`.
+    # The extras a development session needs, `taichi` among them: a plain
+    # `uv sync` (which installs this group) still has to be able to run the
+    # A/B control arm (`ALGAN_TAICHI_BACKEND=taichi`), which is half of every
+    # backend report. `pango` is left to `--all-extras`, since it builds from
+    # source on Linux.
     "algan[audio,fbx,taichi,typst]",
 ]
 
