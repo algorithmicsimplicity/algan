@@ -280,8 +280,14 @@ It sets four things, and each can be declined with a keyword:
        comes out byte-identical to Manim's.
    * - ``background``
      - Black, Manim's default.
+   * - ``stroke_geometry``
+     - Manim's stroke layout: a filled shape's stroke straddles its outline
+       rather than running inside it, and the compatibility layer converts
+       stroke widths by Manim's exact ratio of 2.0202 rather than 2. Both are
+       process-wide settings (``SETTINGS.style``), so pass ``False`` to leave
+       other Scenes alone.
 
-All three default to ``True``. Two extras default to ``False``:
+All four default to ``True``. Two extras default to ``False``:
 ``video_settings=True`` also switches the output to Manim's 1920x1080 at 60 fps,
 and ``shape_defaults=True`` makes Algan's *own* shapes (``Square``, ``Circle``,
 ...) adopt Manim's colors and stroke styling rather than Algan's.
@@ -299,10 +305,9 @@ flat fills are exact, unfilled strokes land within about a third of a pixel, a
 filled shape's outline is offset by half its stroke width, and 3-D solids are
 shaded by a ray tracer rather than by Manim's two-point gradient.
 
-Without ``use_manim_defaults``, imported diagrams usually want a modest
-:meth:`~algan.animatable_base.mob.Mob.scale` or
-:meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`
-instead.
+Without ``use_manim_defaults``, imported geometry still lands at the size and
+place Manim gave it, because a new Scene already frames Manim's 8 units; only
+the lighting, materials and colour differ.
 
 Transforms
 ==========
@@ -338,14 +343,12 @@ outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.
 
 .. note::
 
-    ``Title`` is the mobject most people meet when Manim's frame size bites (see
-    `Matching Manim's defaults`_ above). Manim's ``to_edge(UP)`` leaves a 0.5 gap
-    below its own frame top, putting the title's top at ``y = 3.5`` -- exactly
-    Algan's top border. Nothing is cut off, but it sits flush against the frame
-    edge with no margin. Call
-    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` to
-    inset it by Algan's usual buffer, or place it by hand with
-    ``.move(DOWN * 1)``.
+    ``Title`` places itself the way Manim does: ``to_edge(UP)`` leaves a 0.5
+    gap below the top of Manim's 8-unit frame, putting the title's top at
+    ``y = 3.5``. A new Algan Scene frames the same 8 units (see
+    `Matching Manim's defaults`_ above), so the title sits where Manim puts it.
+    To place it by Algan's own margin instead, call
+    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge`.
 
 For a compatible Manim vector mobject, wrap it in
 :class:`~algan.mobs.manim_mob.ManimMob`:
@@ -505,15 +508,18 @@ see :doc:`advanced_user_tutorials/multi_scene_projects`.
 Manim names that still work
 ===========================
 
-The compatibility layer exports a handful of Manim spellings so a ported
-script keeps reading the way its author wrote it. ``Mobject`` is
-:class:`~algan.animatable_base.mob.Mob`, ``GenericGraph`` is
-:class:`~algan.mobs.manim_compat.Graph`, and Manim's OpenGL-renderer class names
-(``OpenGLVMobject``, ``OpenGLGroup``, ...) resolve to their renderer-independent
-Algan equivalents. They are the same objects, not wrappers -- ``Mob is Mobject``
+``algan.manim`` keeps a handful of Manim spellings so a ported script keeps
+reading the way its author wrote it. ``mn.Mobject`` is
+:class:`~algan.animatable_base.mob.Mob`, ``mn.GenericGraph`` is ``mn.Graph``,
+and most of Manim's OpenGL-renderer class names are the class ``mn.`` gives the
+plain name: ``mn.OpenGLVMobject`` is ``mn.VMobject`` and ``mn.OpenGLGroup`` is
+``mn.Group``. They are the same objects, not wrappers -- ``mn.Mobject is Mob``
 is ``True`` -- so there is no conversion step and no behavioural difference.
 
-Prefer the Algan name in new code; there is nothing to fix in old code.
+These spellings exist only under ``mn.``. At the root, after
+``from algan import *``, ``Mobject``, ``GenericGraph`` and the ``OpenGL`` names
+are not defined, so a ported script either writes them as ``mn.Mobject`` or
+uses the Algan name. Prefer the Algan name in new code.
 
 Manim names that do not
 =======================
