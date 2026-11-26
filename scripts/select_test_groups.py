@@ -204,6 +204,9 @@ ALWAYS_CI = (
     # The torch floor in pyproject.toml admits every torch function algan/
     # calls: reads the two, well under a second.
     "tests/unit_tests/test_dependency_floors.py::",
+    # Every algan name a benchmark script imports still exists: an AST walk of
+    # benchmarks/ against the live package, about two seconds.
+    "tests/unit_tests/test_benchmark_imports.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
