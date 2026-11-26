@@ -2833,7 +2833,9 @@ class AnimationTimeline:
         # recomputed post-state of an edit (its pre-values plus its event's
         # recorded change; one image add per animated edit, reused across
         # every batch the animation spans) and the per-(attr, mob) list of
-        # that mob's edits, keyed by the log length it was built at.
+        # that mob's edits, keyed by the log length it was built at. Both are
+        # dropped when a render that preserves authoring state ends (see
+        # preserving_authoring_state); a resetting render discards the Scene.
         self._segment_window_attrs = set()
         self._segment_windows = {}
         self._segment_post_cache = {}
@@ -3710,6 +3712,12 @@ class AnimationTimeline:
                 # be none) is outside the snapshot, so drop cached windows
                 # rather than trust them.
                 self.function_timeline.invalidate_window_cache()
+            # The segment-window caches live for one render: each post-state
+            # entry is a whole texture image, and nothing else drops them, so
+            # every animated texture edit a render described kept its image
+            # for the Scene's life.
+            self._segment_post_cache = {}
+            self._segment_edit_cache = {}
             for mob_id in [
                 mob_id
                 for mob_id in self.mob_id_to_lifespan
