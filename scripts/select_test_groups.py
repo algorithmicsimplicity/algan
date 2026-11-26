@@ -254,6 +254,11 @@ ALWAYS_PRE_PR = (
     # A tube stretched through zero length keeps its round cross-section: it
     # builds a Line3D, whose geometry search is what takes the time.
     "tests/unit_tests/test_3d_shape_ends.py::test_a_line_through_zero_length_keeps_its_round_cross_section",
+    # A point cloud built point by point packs its spheres once, and a
+    # spawned one still rebuilds at the edit: Dot3D's geometry search is the
+    # cost.
+    "tests/unit_tests/test_point_cloud_api.py::test_building_a_cloud_point_by_point_packs_the_spheres_once",
+    "tests/unit_tests/test_point_cloud_api.py::test_an_edit_to_a_spawned_cloud_still_rebuilds_at_once",
     # The zero-copy cache evicts an owner the garbage collector frees while its
     # lock is held, instead of deadlocking: a subprocess, with a timeout.
     "tests/unit_tests/test_mps_zero_copy.py::test_an_owner_freed_while_the_cache_lock_is_held_is_evicted_without_deadlock",
