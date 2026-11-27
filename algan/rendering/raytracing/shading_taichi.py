@@ -1280,7 +1280,15 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         ndf = _ggx_distribution(n_dot_h, roughness)
         geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
         spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
-        k_d = (one - fresnel) * (1.0 - metalness)
+        # The diffuse layer sits under the DIELECTRIC interface only, so it
+        # loses that interface's Fresnel share and the metal fraction, and
+        # nothing else (glTF: mix(fresnel_mix(diffuse, specular), metal,
+        # metalness)). Weighing it by the blended ``fresnel`` took the metal's
+        # F0 off it a second time: a RED 0.4 metal kept 0.35 of its diffuse
+        # red where it should keep 0.58, and rendered 25/255 darker than the
+        # path tracer.
+        tail = ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
+        k_d = one * ((0.96 - 0.96 * tail) * (1.0 - metalness))
         kd = _diffuse_norm(spec_w)
         diffuse = k_d * rgb * lc * (n_dot_l * kd)
         refl += (diffuse + spec * lc * (n_dot_l * spec_w)) * v
@@ -1363,7 +1371,11 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         ndf = _ggx_distribution(n_dot_h, roughness)
         geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
         spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
-        k_d = (one - fresnel) * ((1.0 - metalness) * (1.0 - transmission))
+        # Under the dielectric interface only -- see ``_stage_standard``.
+        f0_d = specular_color * (ratio * ratio * specular_intensity)
+        fresnel_d = f0_d + (one - f0_d) * ti.pow(
+            ti.max(1.0 - v_dot_h, 0.0), 5.0)
+        k_d = (one - fresnel_d) * ((1.0 - metalness) * (1.0 - transmission))
         # SHEEN, and what it takes from the layer underneath. The fibre lobe
         # is Charlie x Neubelt (KHR_materials_sheen, and Three.js's
         # ``BRDF_Sheen`` term for term), and Three.js's ``RE_Direct_Physical``

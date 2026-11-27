@@ -622,7 +622,10 @@ def _standard_fused(
     geom = smith_geometry(n_dot_v, n_dot_l, roughness)
     specular = (ndf * geom * fresnel) / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
 
-    k_d = (1.0 - fresnel) * (1.0 - metalness)
+    # Diffuse sits under the dielectric interface only: it loses that
+    # interface's Fresnel share and the metal fraction, not the blended lobe's
+    # (``shading_taichi._stage_standard``).
+    k_d = (1.0 - fresnel_schlick(v_dot_h, 0.04)) * (1.0 - metalness)
     diffuse = k_d * rgb * radiance * (n_dot_l * _INV_PI)
     direct = diffuse + specular * radiance * n_dot_l
 
@@ -731,7 +734,12 @@ def _physical_fused(
     geom = smith_geometry(n_dot_v, n_dot_l, roughness)
     specular = (ndf * geom * fresnel) / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
 
-    k_d = (1.0 - fresnel) * (1.0 - metalness) * (1.0 - transmission)
+    # Under the dielectric interface only (``shading_taichi._stage_standard``).
+    k_d = (
+        (1.0 - fresnel_schlick(v_dot_h, dielectric_f0))
+        * (1.0 - metalness)
+        * (1.0 - transmission)
+    )
 
     # Sheen, and what it takes from the layer underneath -- the in-torch twin
     # of shading_taichi._stage_physical; see the long comment there for why
