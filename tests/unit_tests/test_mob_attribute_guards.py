@@ -172,3 +172,28 @@ def test_negative_glow_is_rejected_on_assignment():
         with pytest.raises(AlganConfigurationError, match="glow must be zero or more"):
             square.glow = -1
         square.glow = 0.5
+
+
+def test_a_scalar_shader_parameter_named_with_color_still_takes_a_float():
+    # Only ``color`` and ``stroke_color`` refuse a lone float: a shader
+    # parameter whose name merely contains "color" may be a scalar.
+    def shader(
+        memory,
+        vertex_location,
+        vertex_normal,
+        albedo_color,
+        camera_location,
+        light_origin,
+        light_color,
+        light_intensity,
+        ambient_light_intensity,
+        color_mix=0.25,
+    ):
+        return albedo_color
+
+    with Scene():
+        square = Square()
+        square.set_shader(shader)
+        square.spawn(animate=False)
+        square.color_mix = 0.5
+        assert float(square.color_mix.reshape(-1)[0]) == pytest.approx(0.5)

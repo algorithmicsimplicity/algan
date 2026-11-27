@@ -325,10 +325,16 @@ def _coerce_if_color(attr, value):
     if "color" not in attr:
         return value
     value = to_color(value)
-    if isinstance(value, numbers.Real) and not isinstance(value, numbers.Integral):
+    if (
+        attr in _FIVE_CHANNEL_COLOR_ATTRS
+        and isinstance(value, numbers.Real)
+        and not isinstance(value, numbers.Integral)
+    ):
         # ``to_color`` hands a lone float back for callers that give it their
-        # own meaning. On a Mob it used to die on ``reshape`` in a constructor
-        # or paint every channel, glow included, on assignment.
+        # own meaning. On ``color`` it used to die on ``reshape`` in a
+        # constructor or paint every channel, glow included, on assignment.
+        # Only the Mob's own color attributes: a shader parameter whose name
+        # merely contains "color" (``color_mix``) may be a scalar.
         raise InvalidColorError(
             f"Invalid color value for {attr}: {value!r}. A color is a Color "
             f"such as RED, a hex string ('#ff0000') or CSS name ('red'), a hex "
