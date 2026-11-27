@@ -74,8 +74,10 @@ from algan.utils.memory_utils import (
     _coalesced_memory_reclamation,
     auto_record_enabled,
     begin_cuda_peak,
+    cuda_allocator_is_held,
     end_cuda_peak,
     get_num_available_bytes,
+    hold_cuda_allocator_to_dedicated_memory,
     is_cuda_oom,
     note_nonarena_peak,
     raise_if_cuda_context_lost,
@@ -174,11 +176,21 @@ def _next_arena_fetch_cap(duration, arena_frames):
 
 
 def _one_frame_does_not_fit_message():
-    return (
+    message = (
         "The prepared scene plus one rendered frame does not fit in the "
         "allocated render memory. Please lower the resolution, anti-alias "
         "level, or scene complexity." + path_tracer_fallback_hint()
     )
+    if cuda_allocator_is_held():
+        # The one thing the hold can take away: a frame the driver would have
+        # paged through, slowly, rather than refused.
+        message += (
+            " On Windows, Algan keeps PyTorch inside the GPU's dedicated "
+            "memory while it renders; ALGAN_CUDA_DEDICATED_HOLD=0 lets the "
+            "driver use shared system memory instead, which is much slower "
+            "but can finish a frame this large."
+        )
+    return message
 
 
 def _render_device_pool_bytes(device):
@@ -4506,6 +4518,15 @@ class RenderLoopMixin:
         # render with a live view probes and faults its arena in once rather
         # than once per pass of every window.
         pass_resources = self.__dict__.get("_camera_view_resources")
+        # On Windows, torch must refuse memory the card's dedicated memory
+        # cannot hold rather than let the driver page it into shared system
+        # memory; see memory_utils._CUDA_DEDICATED_HOLD. Taken here, after the
+        # job's collection and before its arena, so that what the process
+        # holds besides this render can be told apart from it. A render
+        # without the hold is only slower where it pages, so a failure to
+        # take it is not said.
+        with contextlib.suppress(Exception):
+            hold_cuda_allocator_to_dedicated_memory()
         if pass_resources is None:
             self.memory = ManualMemory(
                 SETTINGS.computing.rendering_memory_fraction,

@@ -1335,6 +1335,12 @@ def render_job_holding_the_arch():
                 from algan.utils.memory_utils import release_mps_allocator_hold
 
                 release_mps_allocator_hold()
+            # The hold a Windows CUDA render takes on torch's allocator where
+            # it allocates its arena (memory_utils._CUDA_DEDICATED_HOLD).
+            with contextlib.suppress(Exception):
+                from algan.utils.memory_utils import release_cuda_allocator_hold
+
+                release_cuda_allocator_hold()
             with contextlib.suppress(Exception):
                 from algan.rendering import kernel_precompile, kernel_progress
 

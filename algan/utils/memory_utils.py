@@ -451,6 +451,136 @@ def release_mps_allocator_hold():
     torch.mps.set_per_process_memory_fraction(_TORCH_MPS_HIGH_WATERMARK)
 
 
+#: Share of a CUDA device's memory torch's allocator may hold during a render
+#: job on Windows (``ALGAN_CUDA_DEDICATED_HOLD``; 0 or 1 turns the hold off).
+#:
+#: A WDDM driver does not refuse an allocation the card's dedicated memory
+#: cannot hold: it backs it with shared system memory, and everything that
+#: then touches those pages runs across the bus. torch's caching allocator
+#: makes that easy to reach, because a request no cached block fits is passed
+#: to the driver while gigabytes of freed blocks sit in the cache. On an RTX
+#: 5080 (16,276 MiB) a PREVIEW render whose live allocations peaked at 11.7 GB
+#: still paged: scene-merge calls that take 0.3 s took 3 to 5 s, and a batch
+#: that really did need more than the card took 45 s instead of raising the
+#: out-of-memory error the batch loop is built to answer by shrinking the
+#: window. 11.2 GB of shared memory was in use beside 15.9 GB of dedicated.
+#:
+#: Held to a limit, torch frees its cache and tries again before it refuses,
+#: and refuses with the ordinary :class:`torch.OutOfMemoryError` -- so a
+#: Windows render meets the same boundary a Linux one does, where the driver
+#: itself refuses. The same clip rendered in 34 s instead of 60 s (145 s
+#: before its texture windows were priced, see
+#: ``AnimationTimeline.dense_window_changes``), with the same frame windows.
+#:
+#: The share is of the device's total, not of what is free when the job
+#: starts, so it is the same limit whatever else is on the card. Another
+#: tenant is neither refused nor protected: with 8 GiB held by another
+#: process the limit is not reached before the driver starts paging, as
+#: without it, and the render still finishes (and sooner: 202 s against
+#: 348 s for the clip above).
+#:
+#: The out-of-arena budgets are deliberately *not* shares of the limit:
+#: ``render_loop._render_device_pool_bytes`` stays the device's total. They
+#: size frame windows, and windows move pixels: with the merge headroom and
+#: the preparation budget read off the limit, 11 of a 30-scene video's clips
+#: differed from the unheld render by up to 53 levels on a few frames each;
+#: with them left alone every clip the hold does not rescue is byte for
+#: byte the unheld render. The budgets leave room enough as they are: over
+#: that video, three of its scenes at HD and the graphics workload at UHD,
+#: no preflight was under-modelled and no batch was retried for memory.
+#:
+#: Of this card's 16,276 MiB the driver offers a process 15,213 (free plus
+#: used, at start, with nothing else on it), and the process holds memory
+#: outside torch's allocator that the limit cannot see -- the CUDA context,
+#: Quadrants' own pool, the video encoder and FFT plans: 424 MiB at PREVIEW
+#: with the software encoder, 830 to 845 MiB at HD with NVENC, and up to
+#: about 1.5 GiB at UHD with NVENC. 0.84 leaves that 1.5 GiB under what the
+#: driver offers; at 0.86 a UHD render ended 47 MiB short of it.
+_CUDA_DEDICATED_HOLD = 0.84
+
+#: Share of the device the process may already hold in live torch tensors
+#: when a render's arena is about to be allocated, above which the render is
+#: not held. The limit presumes the process's CUDA memory is the render's own.
+#: Where it is not -- a model loaded beside the render, or earlier renders'
+#: arenas a caller still references -- the arena is still sized from what the
+#: driver has free, so it fits the card, but the fixed limit no longer leaves
+#: the render its room: six one-frame renders whose arenas a test kept alive
+#: reached 13.3 GiB live, and the seventh's 458 MiB arena was refused under a
+#: 13.35 GiB limit on a card with 1.1 GiB free. Such a render runs as it did
+#: before the hold existed.
+_CUDA_HOLD_FOREIGN_SHARE = 0.125
+
+#: The device torch's CUDA allocator is held on for the running render job.
+_CUDA_ALLOCATOR_HELD = None
+
+
+def cuda_dedicated_hold_fraction():
+    """The share of a CUDA device a render job holds torch's allocator to,
+    or None where there is no hold (see :data:`_CUDA_DEDICATED_HOLD`).
+
+    Windows only: elsewhere the driver refuses what the card cannot hold.
+    """
+    if sys.platform != "win32":
+        return None
+    fraction = env_float("ALGAN_CUDA_DEDICATED_HOLD", _CUDA_DEDICATED_HOLD)
+    if not 0.0 < fraction < 1.0:
+        return None
+    return fraction
+
+
+def hold_cuda_allocator_to_dedicated_memory():
+    """Hold torch's CUDA allocator inside the card's dedicated memory for a
+    render job.
+
+    Called where a render job is about to allocate its arena
+    (``RenderLoopMixin._get_frames_impl``), which is after the job's
+    collection has freed what earlier renders left, so the live figure read
+    here is what the process holds *besides* this render
+    (:data:`_CUDA_HOLD_FOREIGN_SHARE`). The outermost job's end calls
+    :func:`release_cuda_allocator_hold`
+    (``taichi_runtime.render_job_holding_the_arch``).
+    :data:`_CUDA_DEDICATED_HOLD` says why and what the limit is.
+
+    Returns whether it holds the allocator now.
+    """
+    global _CUDA_ALLOCATOR_HELD
+    if _CUDA_ALLOCATOR_HELD is not None:
+        return True
+    device = render_device()
+    if device.type != "cuda":
+        return False
+    fraction = cuda_dedicated_hold_fraction()
+    if fraction is None:
+        return False
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    total_bytes = torch.cuda.get_device_properties(index).total_memory
+    if torch.cuda.memory_allocated(index) > _CUDA_HOLD_FOREIGN_SHARE * total_bytes:
+        return False
+    torch.cuda.set_per_process_memory_fraction(fraction, index)
+    _CUDA_ALLOCATOR_HELD = (torch.device("cuda", index), fraction)
+    return True
+
+
+def cuda_allocator_is_held():
+    """Whether a render job holds torch's CUDA allocator to its limit now."""
+    return _CUDA_ALLOCATOR_HELD is not None
+
+
+def release_cuda_allocator_hold():
+    """Lift the render job's limit on torch's CUDA allocator.
+
+    torch has no "unset": the limit goes back to the whole device, which is
+    its default in every respect but one -- memory past the device's total,
+    which only a driver that pages (WDDM) hands out, stays refused.
+    """
+    global _CUDA_ALLOCATOR_HELD
+    held = _CUDA_ALLOCATOR_HELD
+    if held is None:
+        return
+    _CUDA_ALLOCATOR_HELD = None
+    torch.cuda.set_per_process_memory_fraction(1.0, held[0].index)
+
+
 #: PyTorch's caching allocator rounds a request above this many bytes up to a
 #: whole number of ``_CUDA_LARGE_SEGMENT_ROUND`` and gives it a segment of its
 #: own (``get_allocation_size`` in c10/cuda/CUDACachingAllocator.cpp).
