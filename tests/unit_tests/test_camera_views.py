@@ -277,3 +277,104 @@ def test_camera_view_passes_share_one_truncation_job(monkeypatch):
     _frames(scene, (0, 3, 8))
     assert len(resets) == 1
     assert "_render_job_owner" not in scene.__dict__
+
+
+def _view_scene():
+    scene = _scene()
+    with Off():
+        target = Square(size=1, color=algan.RED).spawn()
+        Circle(radius=0.4, color=algan.GREEN).move(algan.LEFT * 2).spawn()
+        CameraView(resolution=(24, 16), height=2).focus_on(target, 0.3).move_to(
+            algan.RIGHT * 3 + algan.OUT
+        ).spawn()
+    target.color = algan.BLUE
+    return scene
+
+
+def test_camera_view_windows_share_one_arena_models_and_prep_worker(monkeypatch):
+    """A render with a live CameraView runs in windows, each a capture pass
+    and a main pass. Every pass used to make its own render arena, chunk-peak
+    and peak-ratio models and batch-prep worker, so each window probed with
+    single-frame chunks again, faulted a fresh arena in and started a thread.
+    The job now makes one arena and one worker, and one set of models for each
+    pass (the capture's and the main camera's) that later windows reuse.
+    """
+    import threading
+
+    from algan import render_loop
+    from algan.rendering import camera_views
+
+    made = {"arena": 0, "chunk": 0, "ratio": 0, "worker": 0}
+    memory, chunk, ratio = (
+        render_loop.ManualMemory,
+        render_loop.ChunkMemoryModel,
+        render_loop.PeakRatioModel,
+    )
+    worker = render_loop.ThreadPoolExecutor
+
+    def counted(name, factory):
+        def make(*args, **kwargs):
+            # (Unmanaged arenas are one-byte stand-ins, not render arenas.)
+            made[name] += kwargs.get("managed", True)
+            return factory(*args, **kwargs)
+
+        return make
+
+    monkeypatch.setattr(render_loop, "ManualMemory", counted("arena", memory))
+    monkeypatch.setattr(render_loop, "ChunkMemoryModel", counted("chunk", chunk))
+    monkeypatch.setattr(render_loop, "PeakRatioModel", counted("ratio", ratio))
+    monkeypatch.setattr(render_loop, "ThreadPoolExecutor", counted("worker", worker))
+    monkeypatch.setattr(
+        camera_views, "ThreadPoolExecutor", counted("worker", worker), raising=False
+    )
+    monkeypatch.setattr(camera_views, "_window_size", lambda views: 2)
+    scene = _view_scene()
+    frames = _frames(scene, (0, 1, 3, 4, 6, 8))  # three windows of two
+    assert frames.shape[0] == 6
+    assert made == {"arena": 1, "chunk": 2, "ratio": 4, "worker": 1}
+    assert not [t for t in threading.enumerate() if t.name.startswith("algan-batch")]
+    assert scene.memory is None
+    assert "_camera_view_resources" not in scene.__dict__
+
+
+def test_shared_window_resources_render_the_same_frames(monkeypatch):
+    """Sharing the arena between windows must not let a later pass write over
+    frames an earlier one already handed out, and calibrated models must not
+    move a pixel: the frames are those of passes that each start afresh.
+    """
+    from algan.rendering import camera_views
+
+    monkeypatch.setattr(camera_views, "_window_size", lambda views: 2)
+    indices = (0, 1, 3, 4, 6, 8)
+    arenas = []
+    arena = camera_views._JobPassResources.arena
+
+    def noted(self, factory):
+        memory = arena(self, factory)
+        storage = memory.data.untyped_storage()
+        arenas.append((storage.data_ptr(), storage.nbytes()))
+        return memory
+
+    monkeypatch.setattr(camera_views._JobPassResources, "arena", noted)
+    scene = _view_scene()
+    with contextlib.closing(
+        scene.get_frames(0, len(indices), frame_indices=indices, post_processes=())
+    ) as stream:
+        batches = list(stream)
+    start, size = arenas[0]
+    assert len(set(arenas)) == 1
+    for batch in batches:
+        pointer = batch.untyped_storage().data_ptr()
+        assert not start <= pointer < start + size
+    shared = torch.cat(batches)
+
+    render_pass = camera_views._render_pass
+    monkeypatch.setattr(
+        camera_views,
+        "_render_pass",
+        lambda scene, camera, actors, resolution, *_: render_pass(
+            scene, camera, actors, resolution
+        ),
+    )
+    fresh = _frames(_view_scene(), indices)
+    assert torch.equal(shared, fresh)

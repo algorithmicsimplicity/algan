@@ -1,13 +1,20 @@
 """Bounded, sequential render-to-texture passes on one recorded Scene.
 
-Each pass owns its arena and projection caches. Finish each pass (including its
-prep worker) before the next materializes the shared timeline. Only a bounded
-window of host textures survives into the main camera's pass.
+Each pass owns its projection caches. Finish each pass (including its prep
+work) before the next materializes the shared timeline. Only a bounded window
+of host textures survives into the main camera's pass.
+
+What a pass would otherwise rebuild for every window -- the render arena, the
+measured chunk-peak and peak-ratio models, the batch-prep worker -- belongs to
+the job instead (:class:`_JobPassResources`): one arena and one worker for all
+of its passes, and one set of models per pass (each capture's, and the main
+camera's), so only the first window probes.
 """
 
 from __future__ import annotations
 
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
@@ -26,7 +33,68 @@ def _live_views(scene):
     ]
 
 
-def _render_pass(scene, camera, actors, resolution):
+class _PassModels:
+    """The batch-sizing models one pass carries from window to window."""
+
+    def __init__(self, chunk, merge_peak_ratio, project_peak_ratio):
+        self.chunk = chunk
+        self.merge_peak_ratio = merge_peak_ratio
+        self.project_peak_ratio = project_peak_ratio
+
+
+class _JobPassResources:
+    """What every window of one camera-view render job shares.
+
+    The passes run strictly one after another, and each finishes its batch
+    preparation before returning, so one arena and one prep worker serve them
+    all; the arena is reset at the start of each pass. The chunk-peak and
+    peak-ratio models are measurements of one pass's geometry at one
+    resolution, so they are kept per pass, keyed by the capturing view (or
+    ``None`` for the main camera). Before this a render with a live view made
+    each of these afresh for every pass of every window, so every window
+    probed with single-frame chunks, faulted a new arena in and could not
+    prefetch past its own end.
+
+    Used from the render loop (``RenderLoopMixin._get_frames_impl``), which
+    finds it on the pass as ``_camera_view_resources``; :meth:`close` releases
+    it when the job's last window is done.
+    """
+
+    def __init__(self):
+        self.memory = None
+        self._executor = None
+        self._models = {}
+
+    def arena(self, factory):
+        if self.memory is None:
+            self.memory = factory()
+        else:
+            self.memory.reset()
+        return self.memory
+
+    def models(self, key, factory):
+        if key not in self._models:
+            self._models[key] = factory()
+        return self._models[key]
+
+    def executor(self):
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="algan-batch-prep"
+            )
+        return self._executor
+
+    def close(self):
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
+        if self.memory is not None:
+            self.memory.data = None
+            self.memory = None
+        self._models.clear()
+
+
+def _render_pass(scene, camera, actors, resolution, resources=None, key=None):
     # Scene returns itself from copy/deepcopy. This is instead a private,
     # non-owning render context: no constructor, SceneManager push, timeline
     # registration, Mob cloning or authored camera replacement.
@@ -39,6 +107,9 @@ def _render_pass(scene, camera, actors, resolution):
     result.__dict__.pop("_bezier_geometry_cache", None)
     result._camera_view_pass = True
     result._camera_view_captures = {}
+    if resources is not None:
+        result._camera_view_resources = resources
+        result._camera_view_pass_key = key
     result.set_video_settings(scene.video_settings.set(resolution=resolution))
     return result
 
@@ -125,76 +196,90 @@ def _render_with_camera_views(
         for mob in actor.get_descendants()
     }
     step = _window_size(views)
-    for offset in range(start, end, step):
-        stop = min(offset + step, end)
-        indices = (
-            tuple(frame_indices[offset:stop])
-            if frame_indices is not None
-            else tuple(range(offset, stop))
-        )
-        captures = {}
-        for view in views:
-            spawn, despawn = view.lifespan.start(), view.lifespan.end()
-            times = [index / scene.frames_per_second for index in indices]
-            if not any(t >= spawn and (despawn < 0 or t <= despawn) for t in times):
-                continue
-            excluded = excluded_displays | {
-                id(mob)
-                for root in view.capture_exclude
-                for mob in root.get_descendants()
-            }
-            capture = _render_pass(
+    resources = _JobPassResources()
+    try:
+        for offset in range(start, end, step):
+            stop = min(offset + step, end)
+            indices = (
+                tuple(frame_indices[offset:stop])
+                if frame_indices is not None
+                else tuple(range(offset, stop))
+            )
+            captures = {}
+            for view in views:
+                spawn, despawn = view.lifespan.start(), view.lifespan.end()
+                times = [index / scene.frames_per_second for index in indices]
+                if not any(t >= spawn and (despawn < 0 or t <= despawn) for t in times):
+                    continue
+                excluded = excluded_displays | {
+                    id(mob)
+                    for root in view.capture_exclude
+                    for mob in root.get_descendants()
+                }
+                capture = _render_pass(
+                    scene,
+                    view.camera,
+                    [actor for actor in scene.actors if id(actor) not in excluded],
+                    view.capture_resolution,
+                    resources,
+                    id(view),
+                )
+                capture._linear_output = True
+                capture.light_sources = [
+                    light for light in scene.light_sources if id(light) not in excluded
+                ]
+                capture.premultiplied_over = False
+                # Even the legacy in-composite tone mapping mode needs an HDR
+                # intermediate here. Restore the setting before the main pass.
+                with (
+                    _geometry_view(scene, capture),
+                    SETTINGS.raytracing.experimental.override(
+                        post_process_tonemap=True
+                    ),
+                    contextlib.closing(
+                        capture.get_frames(
+                            0,
+                            len(indices),
+                            background=background,
+                            post_processes=(),
+                            manual_memory=manual_memory,
+                            frame_indices=indices,
+                            **independent,
+                        )
+                    ) as stream,
+                ):
+                    textures = [_texture_from_capture(batch) for batch in stream]
+                captures[id(view)] = (indices, torch.cat(textures, dim=0))
+                del textures, capture
+            main = _render_pass(
                 scene,
-                view.camera,
-                [actor for actor in scene.actors if id(actor) not in excluded],
-                view.capture_resolution,
+                scene.camera,
+                scene.actors,
+                scene.video_settings.resolution,
+                resources,
+                None,
             )
-            capture._linear_output = True
-            capture.light_sources = [
-                light for light in scene.light_sources if id(light) not in excluded
-            ]
-            capture.premultiplied_over = False
-            # Even the legacy in-composite tone mapping mode needs an HDR
-            # intermediate here. Restore the setting before the main pass.
-            with (
-                _geometry_view(scene, capture),
-                SETTINGS.raytracing.experimental.override(post_process_tonemap=True),
-                contextlib.closing(
-                    capture.get_frames(
-                        0,
-                        len(indices),
-                        background=background,
-                        post_processes=(),
-                        manual_memory=manual_memory,
-                        frame_indices=indices,
-                        **independent,
-                    )
-                ) as stream,
-            ):
-                textures = [_texture_from_capture(batch) for batch in stream]
-            captures[id(view)] = (indices, torch.cat(textures, dim=0))
-            del textures, capture
-        main = _render_pass(
-            scene, scene.camera, scene.actors, scene.video_settings.resolution
-        )
-        main._camera_view_captures = captures
-        with contextlib.closing(
-            main.get_frames(
-                0,
-                len(indices),
-                background=background,
-                post_processes=post_processes,
-                manual_memory=manual_memory,
-                frame_indices=indices,
-                **aux_kwargs,
-                **independent,
-            )
-        ) as stream:
-            for frames in stream:
-                if hasattr(main, "last_render_plan"):
-                    scene.last_render_plan = main.last_render_plan
-                yield frames
-        del main, captures
+            main._camera_view_captures = captures
+            with contextlib.closing(
+                main.get_frames(
+                    0,
+                    len(indices),
+                    background=background,
+                    post_processes=post_processes,
+                    manual_memory=manual_memory,
+                    frame_indices=indices,
+                    **aux_kwargs,
+                    **independent,
+                )
+            ) as stream:
+                for frames in stream:
+                    if hasattr(main, "last_render_plan"):
+                        scene.last_render_plan = main.last_render_plan
+                    yield frames
+            del main, captures
+
+    finally:
+        resources.close()
 
 
 def _view_primitive(view, capture, time_indices):

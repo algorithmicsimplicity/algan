@@ -503,8 +503,10 @@ pt_caustics_deferred = False
 # never denoises, whatever this says.
 denoise = env_flag("ALGAN_DENOISE", True)
 # Tile edge (pixels) for the denoiser's U-Net inference; frames larger than
-# a tile run as overlapping tiles (32-pixel overlap, cores stitched) so
-# activation memory is bounded by the tile, not the frame. Floors at 128.
+# a tile run as overlapping tiles (96-pixel overlap, cores stitched) so
+# activation memory is bounded by the tile, not the frame. A size below 384
+# runs as 384 (the overlap leaves a 192-pixel core); a validated setting
+# floors at 128.
 denoise_tile_size = env_int("ALGAN_DENOISE_TILE_SIZE", 512)
 # Explicit path to an OIDN rt_hdr_alb_nrm .tza weights file, overriding the
 # cache-and-download resolution (offline machines, pinned deployments).

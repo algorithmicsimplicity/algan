@@ -217,6 +217,55 @@ def test_exact_pixels_pass_through_and_exact_tiles_are_skipped():
         SETTINGS.raytracing.experimental.set(denoise_tile_size=512)
 
 
+def _seam_deviation(filt, size, tile_size):
+    """Largest deviation of a tiled denoise from the whole-frame one, beside
+    the tiles' seams and away from them, relative to the output's range.
+
+    A short frame (one row of tiles) keeps it cheap: every tile spans the
+    full height, so only the vertical seams differ from the whole frame.
+    """
+    height, width = size
+    gen = torch.Generator().manual_seed(5)
+    color = torch.rand((1, height, width, 3), generator=gen)
+    albedo = torch.rand((1, height, width, 3), generator=gen)
+    normal = torch.rand((1, height, width, 3), generator=gen) * 2 - 1
+    snapshot = SETTINGS.snapshot()
+    try:
+        SETTINGS.raytracing.experimental.set(denoise_tile_size=4096)
+        whole = filt(color, albedo, normal)
+        SETTINGS.raytracing.experimental.set(denoise_tile_size=tile_size)
+        tiled = filt(color, albedo, normal)
+    finally:
+        SETTINGS.restore(snapshot)
+    deviation = (tiled - whole).abs().amax(dim=(0, 1, 3)) / whole.abs().max()
+    tile = max(denoise_mod._MIN_TILE, tile_size)
+    # The cores the filter stitches, wherever it starts them.
+    core = tile - 2 * denoise_mod._TILE_OVERLAP
+    core -= core % 16
+    seams = torch.arange(core, width, core)
+    distance = (torch.arange(width).unsqueeze(1) - seams).abs().amin(1)
+    return float(deviation[distance < 64].max()), float(deviation[distance >= 64].max())
+
+
+@pytest.mark.parametrize("tile_size", [384, 390])
+def test_a_tiled_denoise_is_the_whole_frame_denoise_at_its_seams(tile_size):
+    """Each tile must see the network's whole receptive field around its core
+    (a radius of about 94 pixels), and start that core on the network's
+    16-pixel pooling grid, or its edge pixels are computed from truncated or
+    differently pooled context and the stitched frame steps at every seam.
+    The 32-pixel overlap did: with the real weights, on HD path-traced frames,
+    tiled output differed from the whole frame by up to 4.5 8-bit levels
+    within 48 pixels of a seam and not at all elsewhere. The structure, not the
+    weights, decides it, so random weights of the real shapes check it: the
+    seams (and, at 390, a core off the grid) differed by 7% and 14% of the
+    output range, and now differ by float rounding.
+    """
+    filt = denoise_mod.Denoiser(OidnUNet(_random_weights(), torch.device("cpu")))
+    at_seams, elsewhere = _seam_deviation(filt, (32, 640), tile_size)
+    assert at_seams < 1e-4, f"tile seams deviate by {at_seams:.2e}"
+    assert elsewhere < 1e-4, f"tile interiors deviate by {elsewhere:.2e}"
+
+
 def test_unet_rejects_wrong_shapes():
     tensors = _random_weights()
     tensors["dec_conv0.weight"] = torch.randn(3, 31, 3, 3)
@@ -564,26 +613,13 @@ def test_real_weights_reduce_synthetic_noise():
 
 
 def test_real_weights_tile_seamlessly():
-    """Tiled inference (tiny tile, forced) must agree with the single-tile
-    result away from nothing -- the overlap blending is copy-the-core, so
-    the two runs differ only by floating error at worst.
+    """With the trained weights too, a tiled denoise is the whole-frame one
+    at its seams, not only away from them (see
+    ``test_a_tiled_denoise_is_the_whole_frame_denoise_at_its_seams``).
     """
-    denoiser = _real_denoiser()
-    gen = torch.Generator().manual_seed(4)
-    img = torch.rand((1, 96, 160, 3), generator=gen) * 0.5
-    albedo = torch.rand((1, 96, 160, 3), generator=gen)
-    normal = torch.zeros_like(img)
-    normal[..., 2] = -1.0
-    snapshot = SETTINGS.snapshot()
-    try:
-        SETTINGS.raytracing.experimental.set(denoise_tile_size=4096)
-        whole = denoiser(img, albedo, normal)
-        SETTINGS.raytracing.experimental.set(denoise_tile_size=128)
-        tiled = denoiser(img, albedo, normal)
-    finally:
-        SETTINGS.restore(snapshot)
-    err = float((whole - tiled).abs().max())
-    assert err < 0.02, f"tile seams: max deviation {err:.4f}"
+    at_seams, elsewhere = _seam_deviation(_real_denoiser(), (32, 640), 384)
+    assert at_seams < 1e-4, f"tile seams deviate by {at_seams:.2e}"
+    assert elsewhere < 1e-4, f"tile interiors deviate by {elsewhere:.2e}"
 
 
 def test_denoising_moves_the_frame_toward_the_reference(tmp_path):

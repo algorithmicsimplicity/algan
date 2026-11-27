@@ -30,9 +30,12 @@ silently. `test_stroke_styles.py` covers geometry, import, packing and real rend
 `rendering/camera_views.py`: secondary passes render the same recorded timestamps
 into bounded host texture windows, then the main pass draws their textured
 surfaces. Private render contexts share the authored timeline and actors but own
-their camera, resolution, arena and projection caches. Complete each pass and
-join its prep worker before another pass materializes the timeline. Do not nest
-arenas or render secondary views on the main pass's prefetch worker.
+their camera, resolution and projection caches. The job's `_JobPassResources`
+holds what every window shares: one arena (reset per pass), one prep worker, and
+each pass's chunk-peak and peak-ratio models, so only the first window probes.
+Complete each pass and drain its prep work before another pass materializes the
+timeline. Do not nest arenas or render secondary views on the main pass's
+prefetch worker.
 
 Captures exclude every live display and its descendants. Their HDR output skips
 exposure, tone mapping and post-processing; unpremultiply transparent captures

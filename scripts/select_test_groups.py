@@ -420,6 +420,13 @@ ALWAYS_CI = (
 ALWAYS_PRE_PR = (
     # Which resolve variant each launch specialises on, and which scenes reach it.
     "tests/unit_tests/test_sheet_resolve_variants.py::",
+    # A live CameraView's windows share one arena, one prep worker and each
+    # pass's batch-sizing models, and render the frames fresh passes do.
+    "tests/unit_tests/test_camera_views.py::test_camera_view_windows_share_one_arena_models_and_prep_worker",
+    "tests/unit_tests/test_camera_views.py::test_shared_window_resources_render_the_same_frames",
+    # A tiled denoise is the whole-frame one at its seams: random weights of
+    # the real shapes, an aligned and an unaligned tile size.
+    "tests/unit_tests/test_denoise.py::test_a_tiled_denoise_is_the_whole_frame_denoise_at_its_seams",
     # Partial coverage resolved the way a supersampled render is.
     "tests/unit_tests/test_display_referred_coverage.py::",
     # The resolve kernel against its sequential oracle.

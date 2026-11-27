@@ -118,6 +118,27 @@ reason: the committed CPU baselines were made on Linux. The signal read there
 was the verified/poisoned counts and the absence of a raise, not the
 comparison.)
 
+Re-audited on CPU on 2026-11-26, after ``6bbfe8d`` narrowed the two belts
+(host-only computing fields and settings-seed variables out of the key) and
+``80cc4b5`` keyed the early-return rewrite: Linux x86-64 (Xeon @ 2.30 GHz),
+``algan-quadrants 1.3.3.post3``, the shared kernel cache. Each render test ran
+once with the index on to fill it, then under VERIFY, then with the index on
+(every kernel a hit) and off:
+
+=================================================  =====  ========  ========  ==========
+CPU (``x64``)                                      keyed  verified  poisoned  mismatches
+=================================================  =====  ========  ========  ==========
+``tests/fast`` (the fast render)                   46     46        0         0
+``tests/path_traced``: ``lit_and_shadowed``        10     10        0         0
+``tests/full_renders``: ``text_and_media``         50     50        0         0
+=================================================  =====  ========  ========  ==========
+
+and each scene's video came out byte-identical across the VERIFY, index-on
+and index-off runs. (The fast render also matched its committed baseline;
+the other two differ from their release baselines on this machine in all
+three arms alike, by up to 28 and 221 channel values, which no arm of the
+index explains.) Not re-run on CUDA.
+
 So this is now **on unless ``ALGAN_TAICHI_SOURCE_KEY=0``**. Turn it off if a
 render's picture is ever in question -- an unsound key is a stale *kernel*, so
 it shows as a wrong picture rather than an error, and the off arm is the
