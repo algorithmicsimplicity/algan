@@ -24,13 +24,26 @@ import torch
 
 # (live constant, pristine copy) for every registered constant, in the order
 # they were registered. Names do not matter here: ``IN is INWARD``, and the
-# same object is recorded once.
+# same object is recorded once. Holding the live object keeps every constant
+# alive for the life of the process.
 _PRISTINE: list[tuple[torch.Tensor, torch.Tensor]] = []
 _REGISTERED_IDS: set[int] = set()
-# The storages the constants live in. A channel setter checks against these
-# rather than against object identity, so a view or ``as_subclass`` alias of a
-# constant -- the same memory under another Python object -- is refused too.
-_SHARED_STORAGES: set[int] = set()
+# Storage address -> the constants registered as living there. A channel
+# setter checks a tensor's storage against these rather than against object
+# identity, so a view or ``as_subclass`` alias of a constant -- the same
+# memory under another Python object -- is refused too.
+#
+# An address alone is not evidence. A constant can leave its storage
+# (``BLUE.data = ...``, ``set_``, a ``resize_`` that reallocates), and once
+# that memory is freed the allocator hands the same address to whatever is
+# allocated next. So the map is only an index: :func:`is_shared_constant`
+# believes an entry while one of its constants still lives at that address,
+# and drops it otherwise.
+_SHARED_STORAGES: dict[int, list[torch.Tensor]] = {}
+
+
+def _address(tensor: torch.Tensor) -> int:
+    return tensor.untyped_storage().data_ptr()
 
 
 def _register_shared_constants(namespace: dict) -> None:
@@ -46,12 +59,32 @@ def _register_shared_constants(namespace: dict) -> None:
             continue
         _REGISTERED_IDS.add(id(value))
         _PRISTINE.append((value, value.detach().clone()))
-        _SHARED_STORAGES.add(value.untyped_storage().data_ptr())
+        _SHARED_STORAGES.setdefault(_address(value), []).append(value)
 
 
 def is_shared_constant(tensor: torch.Tensor) -> bool:
-    """Whether ``tensor`` is, or shares memory with, a shared constant."""
-    return tensor.untyped_storage().data_ptr() in _SHARED_STORAGES
+    """Whether ``tensor`` is, or shares memory with, a shared constant.
+
+    One dictionary lookup for a tensor that is not: the channel setters call
+    this on every assignment.
+    """
+    address = _address(tensor)
+    registered = _SHARED_STORAGES.get(address)
+    if registered is None:
+        return False
+    # Two live storages cannot start at one address, so a constant that still
+    # lives here shares its storage with ``tensor``.
+    if any(_address(live) == address for live in registered):
+        return True
+    # Every constant registered here has since moved: the address now belongs
+    # to memory that was never a constant's, or no longer is.
+    del _SHARED_STORAGES[address]
+    return False
+
+
+def _lives_where_registered(live: torch.Tensor) -> bool:
+    """Whether ``live`` is still in the storage it was registered in."""
+    return any(other is live for other in _SHARED_STORAGES.get(_address(live), ()))
 
 
 def restore_shared_constants() -> None:
@@ -63,7 +96,7 @@ def restore_shared_constants() -> None:
     """
     for live, pristine in _PRISTINE:
         if (
-            is_shared_constant(live)
+            _lives_where_registered(live)
             and live.shape == pristine.shape
             and live.dtype == pristine.dtype
             and live.device == pristine.device
@@ -73,7 +106,12 @@ def restore_shared_constants() -> None:
             continue
         # ``BLUE.data = ...`` or a ``resize_`` replaced the storage itself.
         # Copying into the replacement would write into memory the script may
-        # still hold under another name, so give the constant a fresh storage
-        # of its own instead, and record that as the shared one.
+        # still hold under another name -- or into another constant, after
+        # ``WHITE.data = BLUE`` -- so give the constant a fresh storage of its
+        # own instead.
         live.data = pristine.clone()
-        _SHARED_STORAGES.add(live.untyped_storage().data_ptr())
+    # Index the constants where they live now. Rebuilding, rather than adding
+    # the fresh storages, is what forgets every address a constant has left.
+    _SHARED_STORAGES.clear()
+    for live, _ in _PRISTINE:
+        _SHARED_STORAGES.setdefault(_address(live), []).append(live)
