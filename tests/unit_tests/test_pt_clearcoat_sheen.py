@@ -320,6 +320,41 @@ def test_sheen_and_clearcoat_together_stay_energy_conserving(angle):
     )
 
 
+@pytest.mark.parametrize("angle", [0.0, 60.0, 80.0])
+def test_the_clearcoat_attenuates_the_sheen_under_it(angle):
+    """The coat takes what it reflects from every layer under it, and the
+    fibres are under it: ``f = (1 - cc F_c(n.v)) [s f_base + f_sheen] + cc
+    f_coat``, which is Three.js's ``outgoingLight * (1 - clearcoat * Fcc)``
+    applied after the sheen is added and ``_stage_physical``'s ``refl *
+    cc_att``. The sheen used to skip that factor here, so under a full coat
+    it kept its whole lobe: 0.437 where 0.258 is right at 80 degrees.
+
+    A black base isolates the lobe. Its selection weight carries the same
+    factor, so the continuation picks it as often as it is worth.
+    """
+    sheen = {"sheen": 1.0, "sheen_roughness": 1.0, "sheen_color": (1.0, 1.0, 1.0)}
+    coat = {"clearcoat": 1.0, "clearcoat_roughness": 0.5}
+    alone = _integrals(_physical_params(**sheen), albedo=0.0, angle_deg=angle)
+    coated = _integrals(_physical_params(**coat, **sheen), albedo=0.0, angle_deg=angle)
+    passed = 1.0 - (0.04 + 0.96 * (1.0 - math.cos(math.radians(angle))) ** 5)
+    assert alone[4] > 0.01
+    assert coated[4] == pytest.approx(passed * alone[4], rel=1e-4)
+
+    w_sheen = []
+    for params in (_physical_params(**sheen), _physical_params(**coat, **sheen)):
+        w = torch.zeros(4)
+        _lobe_weights(
+            torch.from_numpy(pt_energy_tables()),
+            params,
+            0.0,
+            0.5,
+            math.radians(angle),
+            w,
+        )
+        w_sheen.append(float(w[3]))
+    assert w_sheen[1] == pytest.approx(passed * w_sheen[0], rel=1e-4)
+
+
 @pytest.mark.parametrize("angle", [0.0, 50.0])
 def test_mixture_pdf_carries_every_lobe_at_its_selection_probability(angle):
     """``_pt_lit_f_pdf``'s mixture is the continuation's: each lobe's own

@@ -86,6 +86,8 @@ ALWAYS_CI = (
     "tests/unit_tests/test_indication_animations.py::test_wiggle_composes_with_a_move_running_alongside_it",
     "tests/unit_tests/test_shape_style_profiles.py::test_snapshot_matches_the_installed_manim",
     "tests/unit_tests/test_renderer_audit_contract.py::test_every_audit_scene_normalizes_identically_in_both_bridges",
+    # FXAA returns a frame with no edge in it unchanged: tensors only.
+    "tests/unit_tests/test_fxaa.py::",
     # The sheet resolve's event pass compiles none of its continuation fans.
     "tests/unit_tests/test_sheet_resolve_variants.py::test_mode_1_unrolls_no_continuation_fan",
     # Nor, under the glossy prefilter, spreads one over the GGX lobe.
@@ -260,6 +262,8 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_raster_lattice_bound.py::",
     "tests/unit_tests/test_near_camera_plane_render.py::",
     "tests/unit_tests/test_emission_write_miss.py::",
+    # The path tracer's clearcoat attenuates the sheen under it.
+    "tests/unit_tests/test_pt_clearcoat_sheen.py::test_the_clearcoat_attenuates_the_sheen_under_it",
     # The resolve's shading against renders: the glass rim, the refracting
     # variant against the oracle and the solids its ceiling must leave alone,
     # a NaN area, the byte buffer under a bright sky, partial-coverage tint,

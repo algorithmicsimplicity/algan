@@ -103,11 +103,6 @@ def concat_aux_passes(parts, height, width):
     return {key: torch.cat([part[key] for part in parts], 0) for key in AUX_PASS_KEYS}
 
 
-def aux_frame_count(aux):
-    """Frame count of an aux dict (its leading dimension)."""
-    return int(aux["depth"].shape[0])
-
-
 def _host_id_table(values):
     """An optional id table as a flat host int32 array (``None`` if absent)."""
     if values is None:

@@ -1526,7 +1526,9 @@ def _pt_physical_layer(params: ti.template(), tm, prim, n_dot_v):
         if sheen_max > 0.0:
             e_v = _ibl_sheen_brdf(ti.math.clamp(n_dot_v, 0.0, 1.0), sheen_r)
             layer[_PL_SHEEN_EV] = e_v
-            layer[_PL_W_SHEEN] = sheen_max * e_v
+            # The fibres sit under the coat, so the lobe is worth what the
+            # coat passes of it (``_pt_sheen_f_pdf``). Exactly 1 uncoated.
+            layer[_PL_W_SHEEN] = layer[_PL_ATT] * sheen_max * e_v
     return layer
 
 
@@ -1622,6 +1624,13 @@ def _pt_sheen_f_pdf(layer, n, rd, wi):
     """The sheen lobe toward ``wi``: ``(f_cos, pdf)`` -- Charlie x Neubelt
     (``_stage_physical``'s lobe, term for term) times cosine, and the
     cosine-hemisphere density it is sampled with.
+
+    Times ``_PL_ATT`` as well: the coat takes what it reflects from every
+    layer under it, the fibres included (``f = (1 - cc F_c(n.v)) [s f_base +
+    f_sheen] + cc f_coat``; ``_stage_physical`` multiplies its whole ``refl``,
+    sheen and all, by ``cc_att``). The factor is here rather than at the call
+    sites so that next-event estimation and the sampled weight in
+    ``_pt_sample_layer`` cannot disagree about it.
     """
     f_cos = ti.math.vec3(0.0, 0.0, 0.0)
     pdf = 0.0
@@ -1633,7 +1642,7 @@ def _pt_sheen_f_pdf(layer, n, rd, wi):
         lobe = _d_charlie(n_dot_h, layer[_PL_SHEEN_R]) \
             * _v_neubelt(cos_v, cos_l) * cos_l
         f_cos = ti.math.vec3(layer[_PL_SHEEN_C + 0], layer[_PL_SHEEN_C + 1],
-                             layer[_PL_SHEEN_C + 2]) * lobe
+                             layer[_PL_SHEEN_C + 2]) * (lobe * layer[_PL_ATT])
         pdf = cos_l * _INV_PI
     return f_cos, pdf
 

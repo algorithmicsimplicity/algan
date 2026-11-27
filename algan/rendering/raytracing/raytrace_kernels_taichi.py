@@ -75,10 +75,6 @@ from algan.rendering.raytracing.color_space_taichi import srgb_to_linear_f
 from algan.rendering.raytracing.shading_taichi import (
     _run_frag_pipeline,
     _vis_max_component,
-    # Re-exported: wavefront_kernels_taichi imports max_shadow_lights from
-    # here rather than from shading_taichi, so this hop is load-bearing even
-    # though nothing in this module reads the name.
-    max_shadow_lights,  # noqa: F401
 )
 from algan.rendering.raytracing.stbvh import (
     bvh_arity,

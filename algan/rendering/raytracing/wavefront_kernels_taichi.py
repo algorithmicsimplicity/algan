@@ -80,7 +80,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
     finalize_pixel_color,
     kbuf,
-    max_shadow_lights,
     max_surfaces_per_ray,
     megakernel_register_cap,
     min_alpha,
@@ -477,18 +476,6 @@ def _first_covered_position(msk):
             if (m & 4) == 0:
                 pos = 3
     return pos
-
-# Deferred shadows (the ``deferred_shadows`` compile-time template of the
-# shade kernel; currently never enabled -- the tracer always passes 0, the
-# separate shadow kernel having measured slower than inline shadows) pack a
-# per-(K-buffer hit, light) occlusion bit into a single int32, so at most
-# 32 // kbuf lights fit.
-# The inline (default) shadow path sizes its payload per batch
-# (``shadow_vis_slots``, bounded by ``max_shadow_lights``); only
-# the deferred bit-packing is bounded here (lights past it stay lit in
-# deferred mode -- a no-op unless a user both enables deferred shadows and
-# uses more than 32 // kbuf lights).
-_DEFERRED_SHADOW_LIGHTS = max(1, min(max_shadow_lights, 32 // kbuf))
 
 
 @ti.func
