@@ -582,6 +582,25 @@ explainer PREVIEW 0.58 vs 0.66 s, graphics PREVIEW 1.78 vs 1.88 s (pinned:
   collections 12 → 8. The recorded timeline is unchanged byte for byte. An
   accessor whose name the class defines (`Mob.set_location`) is still built
   at construction, so it shadows the class method as it always has.
+- **SVG recipes on disk (November 27).** The recipe cache's `data1` format
+  (torch, `weights_only=True`) cost a pure-Python unpickle of every value and
+  one tensor per glyph array: scene 6 spent 18-22 s reading 83 code-page
+  recipes. `data2` is the same tagged tree as JSON plus the arrays' raw bytes
+  (`_write_disk_file`/`_read_disk_file`): no pickle, numeric dtypes only, every
+  class still checked; `data1` entries are read and carried over once. Scene
+  6 reads them in 2.3 s. A replay's `id_to_vgroup_dict` is built on first read
+  (a property installed on `SVGMobject`): a Pango Text has thousands of groups
+  per page that nothing reads, 5.8 s -> 0.3 s.
+- **Circuit frames without temporaries.** `_circuit_centroids` computes its
+  Bezier samples laid out `(B, M, 3, S)` and accumulates in place, writes
+  steps straight into its buffers, skips the centroid the selection discards,
+  and `_halving_sum` no longer materializes padding (it still adds the zero:
+  `-0.0 + 0.0` is `0.0`). Bit-identical; a code page frames 2.1x faster.
+- **Clones share immutable name sets.** `_ctor_names` (every Mob's frozenset of
+  construction-time attribute names) was deep-copied name by name on every
+  clone and view: 135 of a glyph view's 181 deepcopy dispatches. Scene 6
+  under equal load, origin/master -> these four changes: `validate` 68-75 -> 33-39 s,
+  recorded timeline unchanged byte for byte.
 
 All of these memos reproduce the uncached state bit for bit
 (`tests/unit_tests/test_authoring_memos.py`). The daemon keeps them warm
@@ -823,3 +842,124 @@ which sorts once. On the T4 it lost to that one radix sort at every density.
 The commit that added it (`52df5e9`) timed an 8.9M-fragment HD chunk at 44 ms
 with fused keys against 76 ms for one packed sort, on a card it does not name.
 Run `benchmarks/_binned_sort_density.py` on that card before removing it.
+
+## A Windows card that pages instead of refusing: the allocator hold, and texture windows priced for their own window (November 27)
+
+Measured on the backprop video (30 scenes, 9,767 frames at PREVIEW) on an RTX
+5080 under WDDM, lossless, master and branch alternated in fresh processes:
+the whole video 375-410 s -> 258-301 s (render 231-269 -> 149-172 s, authoring
+138-144 -> 109-129 s; the authoring part is the SVG-recipe, circuit-frame and
+clone changes under "Authoring memos"). Scene 15 (`zoom_in`) rendered in
+33-37 s against 92-129 s, and in 109-125 s against 409 s at HD; scenes 4 and
+5 in 6-7 s against 9-14 s.
+
+**What was wrong.** A WDDM driver does not refuse an allocation the card's
+dedicated memory cannot hold. It backs it with shared system memory, and what
+touches those pages runs across the bus. Master's render of that video had
+torch *reserving* 25.7 GB on a 16.3 GB card (11.2 GB of shared memory in use
+beside 15.9 GB of dedicated). Two things got it there:
+
+- torch's caching allocator passes a request no cached block fits to the
+  driver, however many freed blocks sit in its cache. A render whose live
+  allocations peaked at 11.7 GB still paged: scene merges that take 0.3 s
+  took 3 to 5 s.
+- The out-of-memory retry never fired, because nothing ran out. A batch that
+  needed more than the card took 45 s instead of raising. Everything in this
+  file that says "the OOM retry is the backstop" was describing Linux.
+
+**The hold** (`memory_utils._CUDA_DEDICATED_HOLD`, 0.84 of the device;
+`ALGAN_CUDA_DEDICATED_HOLD`, 0 turns it off). A render job on Windows limits
+torch with `set_per_process_memory_fraction`, as the MPS render holds torch
+under Metal's working set. Held, torch frees its cache and retries before it
+refuses, and refuses with `torch.OutOfMemoryError`, the error every retry
+path already answers. Four choices in it were measured, not assumed:
+
+- **A share of the device's total, not of what is free.** With 8 GiB held by
+  another process the limit is not reached before the driver pages, so the
+  hold neither refuses nor protects that tenant; the render still finishes
+  (140-202 s against 348 s for scene 15).
+- **The out-of-arena budgets stay on the device's total**
+  (`_render_device_pool_bytes` is untouched). Read off the limit, the merge
+  headroom and the preparation budget shrank every memory-bound window, and
+  11 of the 30 clips differed from master by up to 53 levels. Left alone, 29
+  clips are byte for byte master's and the graphics workload at UHD is too.
+  Over the video, scenes 15 and 16 at HD and graphics at UHD that cost two
+  preflight retries (scene 5's merges, in a scene that still rendered twice
+  as fast) and two preparation retries (scene 15 at HD), no under-modelled
+  preflight and no failure.
+- **Taken where the arena is allocated, and not beside other memory.** The
+  limit presumes the process's CUDA memory is the render's.
+  `test_sheet_resolve_variants.py` keeps the arenas of six one-frame renders
+  alive; each next arena is sized from what the driver has free, so it fits
+  the card, but at 13.3 GiB live the seventh's 458 MiB was refused under the
+  limit. The hold is therefore taken in `_get_frames_impl`, before the arena,
+  and not at all when the process holds more than an eighth of the device in
+  live tensors that are not the render's (`_CUDA_HOLD_FOREIGN_SHARE`): that
+  render runs as it did unheld. "Not the render's" is what was live both
+  when the outermost job began (`note_cuda_memory_before_render_job`, called
+  from `render_job_holding_the_arch`) and at the arena. The arena reading
+  alone is wrong: `_static_frame_runs` moves the timeline's prepared queries
+  to the device before anything is fetched, 2.5 GiB of them for scene 15 at
+  any resolution, and with only that reading scene 15 -- the clip the hold
+  matters most to -- ran unheld (HD render 195 s with torch reserving
+  16.3 GB; beside a second tenant 326 s, master's 348 s). With both readings
+  it is held again: HD 107 s inside 13.6 GB, beside the tenant 149 s. The one
+  thing the hold can still take away is a single frame the driver would have
+  paged through; `_one_frame_does_not_fit_message` names the switch then.
+- **0.84.** The driver offers a process 15,213 of this card's 16,276 MiB, and
+  the process holds memory outside torch's allocator that the limit cannot
+  see: 424 MiB at PREVIEW with the software encoder, 830-845 MiB at HD with
+  NVENC, up to about 1.5 GiB at UHD with NVENC. At 0.885 an HD render and at
+  0.86 a UHD render each ended 47 MiB short of what the driver offers.
+
+**Texture windows priced for their own window** (`AnimationTimeline.
+dense_window_changes`, `RenderLoopMixin._price_actors_per_timestep`;
+`ALGAN_OPT_DISABLE=densepricing`). A Surface prices its color texture off its
+previous primitive build: constant or segment-described costs about one image
+a batch, dense and animated five a frame. Scene 15 cross-fades 2048x2048
+maps between zoom levels on a Surface an updater depends on (it moves the
+grid; the segment gate declines the Mob all the same), so each fade's first
+batch was dense, priced as the still batch before it, and two to three times
+too long: 12 to 24 frames carrying 1.3 to 2.6 GB of texels, where the dense
+price gives 9. Those four batches took 14, 17, 24 and 45 s. The sizer now
+prices such an actor twice (as it stands, and with those textures dense) and
+charges the difference for every candidate window the recording proves dense
+and animated: the gate run as a probe on the frame times the fetch would
+materialize, plus a recorded write of the rows between them. Nothing else is
+re-priced, so only windows that were under-priced move. Alone it took scene
+15 from 145 to 60 s; the hold alone, 48 s (through retries); both, 34 s.
+`tests/unit_tests/test_texture_dense_pricing.py` and
+`test_cuda_dedicated_hold.py` hold the two.
+
+Scene 15 is the one clip whose pixels moved (thin edge pixels on a few
+frames, up to 34 levels; its windows changed). It is not a stable fixture
+on either side: two master renders of it differ by 10 levels on 6 frames,
+and two branch renders by up to 31 on 4, where a memory retry lands
+differently. The six full-render scenes, the fast scene and the explainer
+and graphics workloads at PREVIEW and UHD decode identical to master's.
+
+All of the timings above are with lossless software encoding and debug
+logging in both arms, the daemon off. Measured on one 16 GiB card: the
+0.84 share and the amounts it leaves room for are that card's, and the
+path tracer, the denoiser and the OptiX side path were not run
+memory-bound under the hold.
+
+Not done, with what was measured:
+
+- **Frames per chunk where a chunk needs several tiles.** The chunk model
+  plans the longest chunk that fits, and each frame it adds takes arena the
+  ray tiles would have had. Graphics at UHD renders warm in 47 s at 5 to 11
+  frames a chunk (1,264-1,567 tile attempts) and in 38 s at one frame a chunk
+  (433-472), byte-identical, at a 7.6 GB peak instead of 12. The same cap
+  doubles a render whose chunks take one tile (explainer UHD 1.6 -> 3.0 s,
+  graphics PREVIEW 1.0 -> 1.8 s), so it has to be decided from tile counts.
+  A process's first graphics UHD render already lands on one-frame chunks
+  when its 8-frame probe is split, which is why first renders there beat warm
+  ones. The backprop video is not tile-bound at HD (294 chunks, 294 tiles in
+  scene 15), so this was left alone.
+- **Describing a cross-fade as segments when an updater depends on the Mob
+  but never touches the texture.** It would remove scene 15's dense windows
+  altogether. The gate is the safety argument for that path
+  (`agent_guidance/timeline.md`), updater dependencies are recorded per Mob
+  rather than per attribute, and several row accesses (`detach_history`,
+  topology migration) do not pass through the traced one.

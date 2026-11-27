@@ -74,8 +74,10 @@ from algan.utils.memory_utils import (
     _coalesced_memory_reclamation,
     auto_record_enabled,
     begin_cuda_peak,
+    cuda_allocator_is_held,
     end_cuda_peak,
     get_num_available_bytes,
+    hold_cuda_allocator_to_dedicated_memory,
     is_cuda_oom,
     note_nonarena_peak,
     raise_if_cuda_context_lost,
@@ -174,11 +176,21 @@ def _next_arena_fetch_cap(duration, arena_frames):
 
 
 def _one_frame_does_not_fit_message():
-    return (
+    message = (
         "The prepared scene plus one rendered frame does not fit in the "
         "allocated render memory. Please lower the resolution, anti-alias "
         "level, or scene complexity." + path_tracer_fallback_hint()
     )
+    if cuda_allocator_is_held():
+        # The one thing the hold can take away: a frame the driver would have
+        # paged through, slowly, rather than refused.
+        message += (
+            " On Windows, Algan keeps PyTorch inside the GPU's dedicated "
+            "memory while it renders; ALGAN_CUDA_DEDICATED_HOLD=0 lets the "
+            "driver use shared system memory instead, which is much slower "
+            "but can finish a frame this large."
+        )
+    return message
 
 
 def _render_device_pool_bytes(device):
@@ -3191,6 +3203,86 @@ class RenderLoopMixin:
         )
         return int(outside_arena * _RENDER_PREP_FRACTION)
 
+    @staticmethod
+    def _batch_time_inds(start_time_ind, duration, frame_indices):
+        """The frame indices of a fetch's first ``duration`` frames."""
+        if frame_indices is not None:
+            return torch.tensor(
+                frame_indices[start_time_ind : start_time_ind + duration],
+                dtype=torch.int64,
+            )
+        return torch.arange(start_time_ind, start_time_ind + duration)
+
+    def _price_actors_per_timestep(self, primitive_actors):
+        """Each actor's per-frame bytes on the animation and render devices.
+
+        Returns ``(actor_mem, dense_actor_mem)``. ``actor_mem`` holds one
+        ``(spawn, animation bytes, render bytes)`` per actor, as the actors
+        price themselves. ``dense_actor_mem`` holds, for each actor whose
+        price leaned on a color texture its previous build found constant or
+        described as segments, ``(spawn, keys, extra animation bytes, extra
+        render bytes)``: what the same actor costs *more* per frame when
+        those textures (``keys``, their ``(attr, mob id)``) materialize one
+        image per frame. The fetch charges it for a candidate window the
+        recording says is dense and animated
+        (``AnimationTimeline.dense_window_changes``).
+
+        The previous build says what the last window's texture was. The first
+        window of a cross-fade that is not described as segments was priced
+        as the still window before it, sized two to three times too long,
+        and overran the device -- which under WDDM pages into shared memory
+        instead of failing, at tens of seconds a batch.
+        ``ALGAN_OPT_DISABLE=densepricing`` returns no second list.
+        """
+        timeline = self.timeline_manager
+        # Deferred with the module's other timeline imports; the switch is
+        # read once per process.
+        from algan.animation_timeline.timeline import _opt_disabled
+
+        if not timeline._segment_window_attrs or _opt_disabled("densepricing"):
+            return (
+                [
+                    (
+                        spawn,
+                        actor._get_memory_used_per_timestep(),
+                        actor._get_render_device_memory_used_per_timestep(),
+                    )
+                    for actor, spawn in primitive_actors
+                ],
+                [],
+            )
+        actor_mem, dense_actor_mem = [], []
+        keys = timeline._sizing_keys = []
+        try:
+            for actor, spawn in primitive_actors:
+                mem = actor._get_memory_used_per_timestep()
+                render_mem = actor._get_render_device_memory_used_per_timestep()
+                actor_mem.append((spawn, mem, render_mem))
+                if not keys:
+                    continue
+                # A texture of this actor read as cheap: price the actor
+                # again with every such texture dense.
+                asked = tuple(dict.fromkeys(keys))
+                timeline._sizing_dense = True
+                try:
+                    dense_mem = actor._get_memory_used_per_timestep()
+                    dense_render_mem = (
+                        actor._get_render_device_memory_used_per_timestep()
+                    )
+                finally:
+                    timeline._sizing_dense = False
+                    keys.clear()
+                extra = (
+                    max(0, dense_mem - mem),
+                    max(0, dense_render_mem - render_mem),
+                )
+                if any(extra):
+                    dense_actor_mem.append((spawn, asked, *extra))
+        finally:
+            timeline._sizing_keys = None
+            timeline._sizing_dense = False
+        return actor_mem, dense_actor_mem
+
     def _get_batch_of_primitives(
         self,
         start_time_ind,
@@ -3229,14 +3321,7 @@ class RenderLoopMixin:
         ]
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
-        actor_mem = [
-            (
-                spawn,
-                actor._get_memory_used_per_timestep(),
-                actor._get_render_device_memory_used_per_timestep(),
-            )
-            for actor, spawn in primitive_actors
-        ]
+        actor_mem, dense_actor_mem = self._price_actors_per_timestep(primitive_actors)
         # Unknown callback dependencies materialize all texture rows, even
         # panels outside this actor window. The actor-only estimate misses
         # those entirely. Use the full requested interval conservatively;
@@ -3265,6 +3350,22 @@ class RenderLoopMixin:
                 max_end_time_ind - start_time_ind,
                 SETTINGS.computing.max_animation_batch_size,
             )
+            dense_windows = {}
+
+            def window_is_dense(keys, duration):
+                # Whether any of these textures is dense and animated over
+                # the fetch's first ``duration`` frames, by the recording.
+                answer = dense_windows.get((keys, duration))
+                if answer is None:
+                    times = (
+                        self._batch_time_inds(start_time_ind, duration, frame_indices)
+                        / self.frames_per_second
+                    )
+                    answer = dense_windows[(keys, duration)] = any(
+                        self.timeline_manager.dense_window_changes(attr, mob_id, times)
+                        for attr, mob_id in keys
+                    )
+                return answer
 
             def fits(duration):
                 _, last = _frame_window_bounds(
@@ -3277,6 +3378,10 @@ class RenderLoopMixin:
                     if spawn <= cutoff:
                         mem_used += mem * duration
                         render_mem_used += render_mem * duration
+                for spawn, keys, extra_mem, extra_render_mem in dense_actor_mem:
+                    if spawn <= cutoff and window_is_dense(keys, duration):
+                        mem_used += extra_mem * duration
+                        render_mem_used += extra_render_mem * duration
                 mem_used = max(mem_used, fallback_animation_mem * duration)
                 render_mem_used = max(render_mem_used, fallback_render_mem * duration)
                 return (
@@ -3299,11 +3404,7 @@ class RenderLoopMixin:
             if frame_indices is not None
             else None
         )
-        time_inds = (
-            torch.tensor(selected_indices, dtype=torch.int64)
-            if selected_indices is not None
-            else torch.arange(start_time_ind, start_time_ind + duration)
-        )
+        time_inds = self._batch_time_inds(start_time_ind, duration, frame_indices)
 
         timeline = self.timeline_manager
         # Restrict base-state queries to actors that can contribute to this
@@ -4417,6 +4518,15 @@ class RenderLoopMixin:
         # render with a live view probes and faults its arena in once rather
         # than once per pass of every window.
         pass_resources = self.__dict__.get("_camera_view_resources")
+        # On Windows, torch must refuse memory the card's dedicated memory
+        # cannot hold rather than let the driver page it into shared system
+        # memory; see memory_utils._CUDA_DEDICATED_HOLD. Taken here, before
+        # the arena: what is live both now and when the job began is what the
+        # process holds besides this render, and a process holding much of
+        # that is left alone. A render without the hold is only slower where
+        # it pages, so a failure to take it is not said.
+        with contextlib.suppress(Exception):
+            hold_cuda_allocator_to_dedicated_memory()
         if pass_resources is None:
             self.memory = ManualMemory(
                 SETTINGS.computing.rendering_memory_fraction,

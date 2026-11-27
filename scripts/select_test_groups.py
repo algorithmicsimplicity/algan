@@ -432,6 +432,12 @@ ALWAYS_CI = (
     # A render warns about a name set on a Mob that looks like a misspelt
     # Algan attribute, and about nothing the library itself set: record-only.
     "tests/unit_tests/test_unknown_mob_attribute_lint.py::",
+    # A Windows CUDA render holds torch's allocator inside the card's
+    # dedicated memory, and where it does not: stand-ins, no device.
+    "tests/unit_tests/test_cuda_dedicated_hold.py::",
+    # The batch sizer prices a color texture for the window it is fetching,
+    # from the recording: timeline queries and one sizer call, no render.
+    "tests/unit_tests/test_texture_dense_pricing.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

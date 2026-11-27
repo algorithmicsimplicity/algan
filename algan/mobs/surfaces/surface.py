@@ -3604,9 +3604,10 @@ class Surface(Mob):
             copies = 2 if getattr(self, "_texture_is_wrap_padded", False) else 1
         else:
             copies = 3 if getattr(self, "_texture_is_wrap_padded", False) else 2
-        if getattr(self, "_texture_window_collapsed", False) or getattr(
-            self, "_texture_window_lerp", False
-        ):
+        if (
+            getattr(self, "_texture_window_collapsed", False)
+            or getattr(self, "_texture_window_lerp", False)
+        ) and not self._texture_window_will_be_dense(attr):
             # The previous build proved the window constant and collapsed it
             # (texture_window_collapse), so the premultiply/pad copies are per
             # batch rather than per frame; only the materialized window itself
@@ -3622,6 +3623,33 @@ class Surface(Mob):
             # prices the same envelope.
             copies = 1
         return rows * texels * 4 * copies
+
+    def _texture_window_will_be_dense(self, attr) -> bool:
+        """Whether to price the color texture as a dense, animated window
+        although the previous build saw a constant or segment-described one.
+
+        The two estimates around this read ``_texture_window_collapsed`` /
+        ``_texture_window_lerp``, which say what the *last* window was. The
+        batch sizer (``RenderLoopMixin._price_actors_per_timestep``) prices
+        every actor once as it stands, collecting here which textures read as
+        cheap, then prices those actors again with this answering True, and
+        decides per candidate window which price holds by asking the
+        recording (:meth:`AnimationTimeline.dense_window_changes`). So a
+        cross-fade the segment description declines is sized as dense from
+        its first batch rather than from its second. False outside the
+        sizer, where the estimates read as they always have.
+        """
+        if not (
+            getattr(self, "_texture_window_collapsed", False)
+            or getattr(self, "_texture_window_lerp", False)
+        ):
+            return False
+        timeline = self.scene.timeline_manager
+        keys = timeline._sizing_keys
+        if keys is None:
+            return False
+        keys.append((attr, self.id))
+        return timeline._sizing_dense
 
     def _get_render_device_memory_used_per_timestep(self) -> int:
         """This surface's color-texture cost for one frame on the render device.
@@ -3652,6 +3680,10 @@ class Surface(Mob):
         # under texture_opacity_in_kernel (the opacity rides the bank as
         # per-frame scalars instead).
         factor = 5 if _rts.texture_opacity_in_kernel_active() else 6
+        if self._texture_window_will_be_dense(attr):
+            # The window being sized is dense and animated whatever the
+            # previous build saw: every image of the chain is per frame.
+            return rows * texels * 4 * factor
         if getattr(self, "_texture_window_collapsed", False):
             # The previous build collapsed the window's downstream copies to
             # one frame (texture_window_collapse): the per-frame residue is

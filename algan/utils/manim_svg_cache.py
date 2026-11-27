@@ -16,11 +16,10 @@ every subsequent run.
 The design mirrors the on-disk geometry cache used by
 :mod:`algan.mobs.triangulated_bezier_circuit`: a stable ``sha256`` content key
 selects a file under ``SETTINGS.paths.cache_directory``; the value is the
-per-glyph point arrays + style, saved with :func:`torch.save` and rebuilt into
-lightweight VMobjects (no LaTeX, no ``svgelements`` parse, no deep copy). It is
-saved as plain data, loaded with ``weights_only=True``, and may name only
-vendored-Manim classes (see :func:`_encode`), so a file planted in a shared
-cache directory cannot run code.
+per-glyph point arrays + style, saved as JSON plus raw array bytes and rebuilt
+into lightweight VMobjects (no LaTeX, no ``svgelements`` parse, no deep copy).
+It is plain data and may name only vendored-Manim classes (see :func:`_encode`),
+so a file planted in a shared cache directory cannot run code.
 
 Manim 0.21 added ``SVGMobject.id_to_vgroup_dict``, which maps each SVG element
 id to a ``VGroup`` of the glyphs beneath it. ``MathTex._break_up_by_substrings``
@@ -50,7 +49,9 @@ import contextlib
 import enum
 import hashlib
 import importlib
+import json
 import logging
+import math
 import os
 import threading
 from functools import wraps
@@ -85,8 +86,11 @@ _SKIP_KEYS = ("path_obj", "submobjects", "updaters")
 # not worth every cached SVG being parsed afresh to recover.
 _RECIPE_TAG = "algan-manim-svg-recipe-v4"
 
-#: The disk file's format, in its name (see :func:`_disk_path`).
-_DISK_FORMAT = "data1"
+#: The disk file's format and suffix, in its name (see :func:`_disk_path`).
+_DISK_FORMAT = "data2"
+_DISK_SUFFIX = ".svgrecipe"
+#: The format before it, still read and carried over (see _load_legacy_disk).
+_LEGACY_DISK_FORMAT = "data1"
 
 #: The logger the vendored Manim logs on (see its ``_config/__init__.py``).
 _MANIM_LOGGER = "algan.manim"
@@ -382,79 +386,221 @@ def _resolve_class(module: str, qualname: str) -> type:
     return cls
 
 
-# The disk format. A recipe is pickled-free plain data: every value is a
+# The disk format. A recipe is pickle-free plain data: every value is a
 # ``None``, ``bool``, ``int``, ``float`` or ``str`` as itself, or a tagged list
 # whose first element says what it was -- a list, tuple or dict of encoded
-# values, a NumPy array (carried as a tensor), a NumPy scalar, a path, or an
-# instance
-# of a vendored-Manim class (by module and name, with its encoded
-# ``__dict__``). That loads with ``torch.load(weights_only=True)``, which
-# constructs nothing but tensors and containers, and the classes it names are
-# checked by ``_resolve_class`` before anything is built. The pickles this
-# replaced ran whatever code a file in the cache directory named, so anyone
-# able to write there -- a shared or CI-restored cache -- could run code in
-# the next process to typeset the matching string.
+# values, a NumPy array (by its index among the file's arrays), a NumPy scalar,
+# a path, or an instance of a vendored-Manim class (by module and name, with
+# its encoded ``__dict__``). The classes a recipe names are checked by
+# ``_resolve_class`` before anything is built. The pickles this replaced ran
+# whatever code a file in the cache directory named, so anyone able to write
+# there -- a shared or CI-restored cache -- could run code in the next process
+# to typeset the matching string.
+#
+# A file (``data2``, see :func:`_write_disk_file`) is that tree as JSON plus
+# the raw bytes of its arrays, so reading one runs ``json.loads`` and
+# ``np.frombuffer`` and nothing else. Its predecessor, ``data1``, carried the
+# same tree with every array as a tensor, through ``torch.save``; it was
+# equally safe to load with ``weights_only=True``, but that unpickler is pure
+# Python, and a page of code text -- a few thousand glyphs, two hundred
+# thousand values and arrays -- took a quarter of a second to read back.
 _PLAIN = (type(None), bool, int, float, str)
 
 
-def _encode(value):
+def _encode(value, arrays):
+    """Encode ``value`` as tagged plain data, appending its arrays to ``arrays``."""
     if type(value) in _PLAIN:
         return value
     if isinstance(value, np.ndarray):
-        try:
-            return ["ndarray", torch.from_numpy(np.array(value, copy=True))]
-        except (TypeError, ValueError) as error:  # e.g. an object array
-            raise _NotPlainData(str(error)) from None
+        if value.dtype.kind not in _ARRAY_KINDS or value.dtype.fields is not None:
+            # An object array, a string array, a record: none is plain data.
+            raise _NotPlainData(f"no disk encoding for a {value.dtype} array")
+        arrays.append(np.array(value, copy=True))
+        return ["ndarray", len(arrays) - 1]
     if isinstance(value, np.generic):
         return ["npscalar", value.dtype.str, value.item()]
     if type(value) is list:
-        return ["list", [_encode(item) for item in value]]
+        return ["list", [_encode(item, arrays) for item in value]]
     if type(value) is tuple:
-        return ["tuple", [_encode(item) for item in value]]
+        return ["tuple", [_encode(item, arrays) for item in value]]
     if type(value) is dict:
-        return ["dict", [[_encode(k), _encode(v)] for k, v in value.items()]]
+        return [
+            "dict",
+            [[_encode(k, arrays), _encode(v, arrays)] for k, v in value.items()],
+        ]
     if isinstance(value, PurePath):
         return ["path", str(value)]
     cls = type(value)
     if not _allowed_recipe_class(cls):
         raise _NotPlainData(f"no disk encoding for {cls.__module__}.{cls.__qualname__}")
     if isinstance(value, enum.Enum):
-        return ["enum", cls.__module__, cls.__qualname__, _encode(value.value)]
+        return ["enum", cls.__module__, cls.__qualname__, _encode(value.value, arrays)]
     if not hasattr(value, "__dict__"):
         raise _NotPlainData(f"no disk encoding for {cls.__module__}.{cls.__qualname__}")
-    return ["object", cls.__module__, cls.__qualname__, _encode(vars(value))]
+    return ["object", cls.__module__, cls.__qualname__, _encode(vars(value), arrays)]
 
 
-def _decode(value):
+def _decode(value, arrays=None):
+    """Rebuild an encoded value.
+
+    ``arrays`` is the file's arrays, which a ``data2`` value names by index;
+    ``None`` for a ``data1`` value, which carries each array as a tensor.
+    """
     if type(value) in _PLAIN:
         return value
     if type(value) is not list or not value or type(value[0]) is not str:
         raise _NotPlainData(f"not an encoded value: {type(value).__name__}")
     tag, *rest = value
     if tag == "ndarray":
-        (tensor,) = rest
-        return tensor.numpy()
+        (array,) = rest
+        if arrays is None:
+            return array.numpy()
+        if type(array) is not int or not 0 <= array < len(arrays):
+            raise _NotPlainData(f"no array {array!r} in this file")
+        return arrays[array]
     if tag == "npscalar":
         dtype, item = rest
         return np.dtype(dtype).type(item)
     if tag == "list":
-        return [_decode(item) for item in rest[0]]
+        return [_decode(item, arrays) for item in rest[0]]
     if tag == "tuple":
-        return tuple(_decode(item) for item in rest[0])
+        return tuple(_decode(item, arrays) for item in rest[0])
     if tag == "dict":
-        return {_decode(k): _decode(v) for k, v in rest[0]}
+        return {_decode(k, arrays): _decode(v, arrays) for k, v in rest[0]}
     if tag == "path":
         return Path(rest[0])
     if tag == "enum":
         module, qualname, item = rest
-        return _resolve_class(module, qualname)(_decode(item))
+        return _resolve_class(module, qualname)(_decode(item, arrays))
     if tag == "object":
         module, qualname, state = rest
         cls = _resolve_class(module, qualname)
         instance = cls.__new__(cls)
-        instance.__dict__.update(_decode(state))
+        instance.__dict__.update(_decode(state, arrays))
         return instance
     raise _NotPlainData(f"unknown tag {tag!r}")
+
+
+#: What a ``data2`` file starts with.
+_DISK_MAGIC = b"algan-svg-recipe\x00\x02"
+#: Array byte offsets within a file's blob are multiples of this.
+_ARRAY_ALIGNMENT = 64
+#: The array dtypes a file may carry: booleans and numbers (``dtype.kind``).
+_ARRAY_KINDS = frozenset("biufc")
+
+
+def _array_dtype(spelling) -> np.dtype:
+    """The dtype a file names for an array, refusing anything not plain numbers."""
+    if type(spelling) is not str:
+        raise _NotPlainData(f"not a dtype: {spelling!r}")
+    dtype = np.dtype(spelling)
+    if (
+        dtype.kind not in _ARRAY_KINDS
+        or dtype.hasobject
+        or dtype.fields is not None
+        or dtype.subdtype is not None
+    ):
+        raise _NotPlainData(f"a recipe may not carry a {dtype} array")
+    return dtype
+
+
+def _write_disk_file(path, recipe) -> None:
+    """Write ``recipe`` to ``path`` in the ``data2`` format.
+
+    The file is :data:`_DISK_MAGIC`, the header's length (8 bytes, little
+    endian), the header -- UTF-8 JSON holding the encoded tree and, per array,
+    its dtype, shape, memory order, byte offset and byte count -- then zero
+    padding to :data:`_ARRAY_ALIGNMENT` and every array's raw bytes. An array
+    keeps the memory order it was saved in (C or Fortran), as ``data1``'s
+    tensors kept their strides.
+
+    Raises :class:`_NotPlainData` for a recipe the format cannot carry.
+    """
+    arrays = []
+    tree = _encode(recipe, arrays)
+    specs = []
+    chunks = []
+    offset = 0
+    for array in arrays:
+        if array.flags.c_contiguous:
+            order, data = "C", array.tobytes(order="C")
+        elif array.flags.f_contiguous:
+            order, data = "F", array.tobytes(order="F")
+        else:
+            order, data = "C", np.ascontiguousarray(array).tobytes()
+        pad = -offset % _ARRAY_ALIGNMENT
+        if pad:
+            chunks.append(b"\x00" * pad)
+            offset += pad
+        specs.append([array.dtype.str, list(array.shape), order, offset, len(data)])
+        chunks.append(data)
+        offset += len(data)
+    try:
+        header = json.dumps(
+            {"tree": tree, "arrays": specs}, separators=(",", ":")
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:  # e.g. a complex NumPy scalar
+        raise _NotPlainData(str(error)) from None
+    start = len(_DISK_MAGIC) + 8 + len(header)
+    with open(path, "wb") as file:
+        file.write(_DISK_MAGIC)
+        file.write(len(header).to_bytes(8, "little"))
+        file.write(header)
+        file.write(b"\x00" * (-start % _ARRAY_ALIGNMENT))
+        for chunk in chunks:
+            file.write(chunk)
+
+
+def _read_disk_file(path):
+    """Read a recipe :func:`_write_disk_file` wrote. Constructs no object
+    beyond JSON values and NumPy arrays of plain numbers before
+    :func:`_decode` checks every class the recipe names.
+    """
+    data = Path(path).read_bytes()
+    head = len(_DISK_MAGIC)
+    if data[:head] != _DISK_MAGIC:
+        raise _NotPlainData("not an Algan SVG recipe file")
+    length = int.from_bytes(data[head : head + 8], "little")
+    start = head + 8 + length
+    if start > len(data):
+        raise _NotPlainData("truncated recipe file")
+    header = json.loads(data[head + 8 : start].decode("utf-8"))
+    start += -start % _ARRAY_ALIGNMENT
+    # One writable buffer the arrays share without overlapping: a replay
+    # copies what it mutates (_restore_value), as it did a tensor's memory.
+    blob = bytearray(data[start:])
+    arrays = []
+    dtypes = {}
+    for spelling, shape, order, offset, size in header["arrays"]:
+        dtype = dtypes.get(spelling)
+        if dtype is None:
+            dtype = dtypes[spelling] = _array_dtype(spelling)
+        if (
+            type(shape) is not list
+            or order not in ("C", "F")
+            or type(offset) is not int
+            or type(size) is not int
+        ):
+            raise _NotPlainData("malformed array entry")
+        # Per entry, not per dimension: a file holds one array per glyph part.
+        # A non-integer or negative dimension makes ``count`` a non-integer or
+        # negative, or (two negatives) fails the reshape below.
+        count = math.prod(shape)
+        if (
+            type(count) is not int
+            or count < 0
+            or count * dtype.itemsize != size
+            or not 0 <= offset <= len(blob) - size
+        ):
+            raise _NotPlainData("array entry does not fit the file")
+        if count == 0:
+            array = np.empty(shape, dtype=dtype, order=order)
+        elif order == "C":
+            array = np.frombuffer(blob, dtype, count, offset).reshape(shape)
+        else:
+            array = np.frombuffer(blob, dtype, count, offset).reshape(shape[::-1]).T
+        arrays.append(array)
+    return _decode(header["tree"], arrays)
 
 
 def _rebuild_node(node: tuple):
@@ -467,6 +613,55 @@ def _rebuild_node(node: tuple):
     return mob
 
 
+def _build_group_map(children, member_indices):
+    """``id_to_vgroup_dict``: per group id, a VGroup of its members."""
+    from manim.mobject.types.vectorized_mobject import VGroup
+
+    groups = {}
+    for name, indices in member_indices.items():
+        vgroup = VGroup()
+        if indices:
+            vgroup.add(*(children[i] for i in indices))
+        groups[name] = vgroup
+    return groups
+
+
+class _PendingGroupMap:
+    """A replayed SVG's group map, not built yet (see :data:`_LAZY_GROUP_MAP`)."""
+
+    __slots__ = ("children", "member_indices")
+
+    def __init__(self, children, member_indices):
+        self.children = children
+        self.member_indices = member_indices
+
+
+def _get_group_map(svg_mob):
+    state = svg_mob.__dict__
+    try:
+        value = state["id_to_vgroup_dict"]
+    except KeyError:
+        raise AttributeError("id_to_vgroup_dict") from None
+    if type(value) is _PendingGroupMap:
+        value = state["id_to_vgroup_dict"] = _build_group_map(
+            value.children, value.member_indices
+        )
+    return value
+
+
+def _set_group_map(svg_mob, value):
+    svg_mob.__dict__["id_to_vgroup_dict"] = value
+
+
+#: ``SVGMobject.id_to_vgroup_dict``, as installed by :func:`install`: an
+#: ordinary attribute, except that a replayed recipe's map is built the first
+#: time it is read. Building it eagerly made a VGroup per SVG group -- for a
+#: Pango Text, thousands per page of code, each a full VMobject construction
+#: -- that only MathTex and Typst ever read. The VGroups hold the same glyph
+#: objects whenever they are built, and building one changes nothing else.
+_LAZY_GROUP_MAP = property(_get_group_map, _set_group_map)
+
+
 def _rebuild(svg_mob, nodes: tuple, groups: dict[str, list[int]] | None) -> None:
     """Replay a recipe onto ``svg_mob``: glyph tree first, then the group map.
 
@@ -474,21 +669,22 @@ def _rebuild(svg_mob, nodes: tuple, groups: dict[str, list[int]] | None) -> None
     raises part-way leaves ``svg_mob`` untouched for the caller to re-parse.
     """
     children = [_rebuild_node(node) for node in nodes]
-    rebuilt_groups = None
+    member_indices = None
     if groups is not None:
-        from manim.mobject.types.vectorized_mobject import VGroup
-
-        rebuilt_groups = {}
-        for name, indices in groups.items():
-            members = [children[i] for i in indices if 0 <= i < len(children)]
-            vgroup = VGroup()
-            if members:
-                vgroup.add(*members)
-            rebuilt_groups[name] = vgroup
+        count = len(children)
+        member_indices = {
+            name: [i for i in indices if 0 <= i < count]
+            for name, indices in groups.items()
+        }
 
     svg_mob.add(*children)
-    if rebuilt_groups is not None:
-        svg_mob.id_to_vgroup_dict = rebuilt_groups
+    if member_indices is not None:
+        if getattr(type(svg_mob), "id_to_vgroup_dict", None) is _LAZY_GROUP_MAP:
+            # Built when first read (see _lazy_group_map). A Pango Text never
+            # reads it, and a page of code text has thousands of groups.
+            svg_mob.id_to_vgroup_dict = _PendingGroupMap(children, member_indices)
+        else:
+            svg_mob.id_to_vgroup_dict = _build_group_map(children, member_indices)
     # The recipes retain per-path metadata, but these owner-side lists are
     # populated by Typst's parser callbacks only on a cold parse. Reconnect
     # them to the freshly rebuilt paths before Typst scales the imported SVG.
@@ -515,11 +711,40 @@ def _disk_path(key: str) -> Path:
     # Its own suffix, so a pickle an older Algan wrote under ``{key}.pt`` is
     # never opened: it is simply a miss, re-parsed and saved in this format,
     # and the old file ages out under the cap like any unused entry.
-    return _cache_dir() / f"{key}.{_DISK_FORMAT}.pt"
+    return _cache_dir() / f"{key}.{_DISK_FORMAT}{_DISK_SUFFIX}"
+
+
+def _legacy_disk_path(key: str) -> Path:
+    """Where the ``data1`` format (torch, ``weights_only``) kept ``key``."""
+    return _cache_dir() / f"{key}.{_LEGACY_DISK_FORMAT}.pt"
 
 
 def _load_disk(key: str):
     path = _disk_path(key)
+    if not path.exists():
+        return _load_legacy_disk(key)
+    try:
+        recipe = _read_disk_file(path)
+    except Exception as e:  # noqa: BLE001 - a corrupt cache must never be fatal
+        get_logger().warning(f"manim_svg_cache: failed to load {path.name}: {e}")
+        return None
+    # Touch so the LRU cap treats this as recently used.
+    with contextlib.suppress(OSError):
+        os.utime(path, None)
+    return recipe
+
+
+def _load_legacy_disk(key: str):
+    """Read ``key``'s ``data1`` entry, if it has one, and carry it over.
+
+    The same plain data as ``data2``, so it is read the way it always was
+    (``weights_only=True``, every class checked) and saved again in the
+    current format: a cache filled before the format changed is not re-parsed
+    glyph by glyph, which for a code-heavy video is minutes. The old file is
+    left where it is, for an older Algan sharing the directory, and ages out
+    under the cap once nothing reads it.
+    """
+    path = _legacy_disk_path(key)
     if not path.exists():
         return None
     try:
@@ -527,9 +752,7 @@ def _load_disk(key: str):
     except Exception as e:  # noqa: BLE001 - a corrupt cache must never be fatal
         get_logger().warning(f"manim_svg_cache: failed to load {path.name}: {e}")
         return None
-    # Touch so the LRU cap treats this as recently used.
-    with contextlib.suppress(OSError):
-        os.utime(path, None)
+    _save_disk(key, recipe)
     return recipe
 
 
@@ -545,7 +768,7 @@ def _enforce_cap() -> None:
     try:
         entries = []
         total = 0
-        for f in d.glob("*.pt"):
+        for f in (*d.glob("*.pt"), *d.glob(f"*{_DISK_SUFFIX}")):
             try:
                 st = f.stat()
             except OSError:
@@ -568,12 +791,6 @@ def _enforce_cap() -> None:
 
 
 def _save_disk(key: str, recipe: tuple) -> None:
-    try:
-        encoded = _encode(recipe)
-    except _NotPlainData as e:
-        # Kept in memory, just not shared through the disk.
-        get_logger().debug(f"manim_svg_cache: not saving {key[:12]}: {e}")
-        return
     d = _cache_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = _disk_path(key)
@@ -582,7 +799,11 @@ def _save_disk(key: str, recipe: tuple) -> None:
         # to be fixed per process, so two threads saving one key (a Text built
         # in an updater on the batch-prep worker, say) wrote the same file.
         with building(path) as partial:
-            torch.save(encoded, partial)
+            _write_disk_file(partial, recipe)
+    except _NotPlainData as e:
+        # Kept in memory, just not shared through the disk.
+        get_logger().debug(f"manim_svg_cache: not saving {key[:12]}: {e}")
+        return
     except Exception as e:  # noqa: BLE001
         get_logger().warning(f"manim_svg_cache: failed to save {path.name}: {e}")
         return
@@ -790,6 +1011,7 @@ def install() -> None:
         pass
 
     _svg.SVGMobject.init_svg_mobject = _patched_init_svg_mobject
+    _svg.SVGMobject.id_to_vgroup_dict = _LAZY_GROUP_MAP
     _installed = True
 
 

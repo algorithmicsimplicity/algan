@@ -100,6 +100,75 @@ def test_restore_survives_a_replaced_storage():
         color.WHITE.glow = 1
 
 
+@pytest.mark.parametrize(
+    "restore", [False, True], ids=("before_restore", "after_restore")
+)
+def test_memory_a_constant_has_left_is_not_shared(restore):
+    """REGRESSION. The registry was a grow-only set of storage addresses, so
+    the address ``WHITE`` was defined at stayed "shared" after ``WHITE`` had
+    been given another storage. Once that memory was freed the allocator handed
+    the address to an unrelated tensor, and its channel setters refused it: a
+    fresh ``Color`` inside ``set_opacity`` raised "Cannot assign opacity on a
+    named palette color", once in a blue moon and only in a long process.
+
+    The alias pins the old storage, so this needs no luck from the allocator:
+    it is memory at a registered address that no constant lives in any more.
+    """
+    alias = color.WHITE.as_subclass(color.Color)
+    left = alias.untyped_storage().data_ptr()
+    assert _shared.is_shared_constant(alias)
+    color.WHITE.data = torch.zeros(5)
+    if restore:
+        _shared.restore_shared_constants()
+        assert left not in _shared._SHARED_STORAGES
+    assert color.WHITE.untyped_storage().data_ptr() != left
+    assert not _shared.is_shared_constant(alias)
+    alias.glow = 2
+    alias.opacity = 0.25
+    alias.rgb = (0.1, 0.2, 0.3)
+    # The constant itself is still refused, wherever restore put it.
+    _shared.restore_shared_constants()
+    assert torch.equal(color.WHITE, color.Color("#FFFFFF"))
+    with pytest.raises(AlganConfigurationError):
+        color.WHITE.glow = 1
+
+
+def test_a_resized_constant_does_not_leave_its_old_address_shared():
+    """``resize_`` reallocates the storage in place: the old address is freed
+    there and then, with nothing left to pin it -- so restore may well put a
+    constant straight back on it. What must hold is that the registry names
+    exactly the addresses the constants live at, and no other.
+    """
+    left = color.WHITE.untyped_storage().data_ptr()
+    color.WHITE.resize_(4096)
+    assert color.WHITE.untyped_storage().data_ptr() != left
+    _shared.restore_shared_constants()
+    assert set(_shared._SHARED_STORAGES) == {
+        live.untyped_storage().data_ptr() for live, _ in _shared._PRISTINE
+    }
+    assert torch.equal(color.WHITE, color.Color("#FFFFFF"))
+    with pytest.raises(AlganConfigurationError):
+        color.WHITE.glow = 1
+
+
+def test_restore_separates_a_constant_pointed_at_another_constants_storage():
+    """``WHITE.data = BLUE`` puts WHITE in memory that *is* shared -- BLUE's.
+    Restoring WHITE in place there would write white into BLUE.
+    """
+    white, blue = color.WHITE.clone(), color.BLUE.clone()
+    color.WHITE.data = color.BLUE
+    _shared.restore_shared_constants()
+    assert torch.equal(color.WHITE, white)
+    assert torch.equal(color.BLUE, blue)
+    assert (
+        color.WHITE.untyped_storage().data_ptr()
+        != color.BLUE.untyped_storage().data_ptr()
+    )
+    for constant in (color.WHITE, color.BLUE):
+        with pytest.raises(AlganConfigurationError):
+            constant.glow = 1
+
+
 def test_a_script_does_not_leak_constant_edits_into_the_next_one():
     """What the warm daemon sees: two scripts, one process, restore between."""
     exec(compile(_SCRIPT_A, "script_a", "exec"), {})

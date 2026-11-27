@@ -10,6 +10,7 @@ succeeded and every later one died on ``KeyError: 'root'``.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pathlib
@@ -489,11 +490,85 @@ def test_a_cache_file_is_never_unpickled(isolated_svg_cache, tmp_path):
     svg_cache._cache_dir().mkdir(parents=True, exist_ok=True)
     for path in (
         svg_cache._disk_path("planted"),
+        svg_cache._legacy_disk_path("planted"),
         svg_cache._cache_dir() / "planted.pt",
     ):
         torch.save(payload, path)
         assert svg_cache._load_disk("planted") is None
+        path.unlink()
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "spelling", ["|O", "<U4", "[('a', '<f8')]", "(2,)<f8", "<M8[s]"]
+)
+def test_a_recipe_file_may_carry_only_plain_number_arrays(isolated_svg_cache, spelling):
+    # np.frombuffer over an object dtype would read raw bytes as pointers.
+    path = svg_cache._disk_path("planted")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = json.dumps(
+        {"tree": ["ndarray", 0], "arrays": [[spelling, [2], "C", 0, 16]]}
+    ).encode()
+    start = len(svg_cache._DISK_MAGIC) + 8 + len(header)
+    path.write_bytes(
+        svg_cache._DISK_MAGIC
+        + len(header).to_bytes(8, "little")
+        + header
+        + b"\x00" * (-start % svg_cache._ARRAY_ALIGNMENT)
+        + b"\x01" * 16
+    )
+    assert svg_cache._load_disk("planted") is None
+
+
+def test_a_replayed_group_map_is_built_when_read_and_matches_the_parse(
+    isolated_svg_cache,
+):
+    def groups(text):
+        index = {id(glyph): i for i, glyph in enumerate(text.submobjects)}
+        return {
+            name: [index.get(id(m)) for m in group.submobjects]
+            for name, group in text.id_to_vgroup_dict.items()
+        }
+
+    parsed = mn.Text("group map", use_svg_cache=True)
+    svg_cache._MEM_CACHE.clear()
+    replayed = mn.Text("group map", use_svg_cache=True)
+    assert type(vars(replayed)["id_to_vgroup_dict"]) is svg_cache._PendingGroupMap
+    assert groups(replayed) == groups(parsed)
+    assert type(vars(replayed)["id_to_vgroup_dict"]) is dict
+    replayed.id_to_vgroup_dict = {}
+    assert replayed.id_to_vgroup_dict == {}
+
+
+def test_a_data1_entry_is_carried_over_with_the_same_arrays(isolated_svg_cache):
+    # A cache filled before data2 must not be re-parsed glyph by glyph.
+    text = mn.Text("carried over", use_svg_cache=True)
+    [path] = sorted(svg_cache._cache_dir().glob(f"*{svg_cache._DISK_SUFFIX}"))
+    key = path.name.split(".")[0]
+    recipe = svg_cache._read_disk_file(path)
+    path.unlink()
+
+    # The data1 encoding: the same tree, every array a tensor.
+    def as_data1(value):
+        if type(value) is list and value and value[0] == "ndarray":
+            return ["ndarray", torch.from_numpy(arrays[value[1]])]
+        if type(value) is list:
+            return [as_data1(item) for item in value]
+        return value
+
+    arrays = []
+    tree = svg_cache._encode(recipe, arrays)
+    torch.save(as_data1(tree), svg_cache._legacy_disk_path(key))
+
+    svg_cache._MEM_CACHE.clear()
+    again = mn.Text("carried over", use_svg_cache=True)
+    assert path.exists()  # saved again in the current format
+    for before, after in zip(
+        text.family_members_with_points(), again.family_members_with_points()
+    ):
+        assert type(before) is type(after)
+        assert before.points.tobytes() == after.points.tobytes()
+        assert before.fill_rgbas.tobytes() == after.fill_rgbas.tobytes()
 
 
 @pytest.mark.parametrize(
@@ -514,9 +589,11 @@ def test_recipes_are_saved_as_plain_data_and_rebuild_the_same_glyphs(
     isolated_svg_cache,
 ):
     text = mn.Text("plain data", use_svg_cache=True)
-    [path] = sorted(svg_cache._cache_dir().glob("*.pt"))
-    assert path.name.endswith(f".{svg_cache._DISK_FORMAT}.pt")
-    torch.load(path, weights_only=True)  # constructs nothing but containers
+    [path] = sorted(svg_cache._cache_dir().glob(f"*{svg_cache._DISK_SUFFIX}"))
+    assert path.name.endswith(f".{svg_cache._DISK_FORMAT}{svg_cache._DISK_SUFFIX}")
+    # JSON and raw array bytes: no pickle anywhere in the file.
+    assert path.read_bytes().startswith(svg_cache._DISK_MAGIC)
+    assert b"\x80\x02" not in path.read_bytes()[: len(svg_cache._DISK_MAGIC) + 8]
 
     svg_cache._MEM_CACHE.clear()
     again = mn.Text("plain data", use_svg_cache=True)
@@ -534,13 +611,13 @@ def test_two_saves_of_one_key_write_through_different_temporary_files(
     # The temporary name was ``{key}.pt.{pid}.tmp``, shared by every thread of
     # a process saving the same key.
     written = []
-    original_save = torch.save
+    original_write = svg_cache._write_disk_file
 
-    def watching_save(obj, f, *args, **kwargs):
-        written.append(os.fspath(f))
-        return original_save(obj, f, *args, **kwargs)
+    def watching_write(path, recipe):
+        written.append(os.fspath(path))
+        return original_write(path, recipe)
 
-    monkeypatch.setattr(svg_cache.torch, "save", watching_save)
+    monkeypatch.setattr(svg_cache, "_write_disk_file", watching_write)
     svg_cache._save_disk("samekey", (svg_cache._RECIPE_TAG, (), None, ()))
     svg_cache._save_disk("samekey", (svg_cache._RECIPE_TAG, (), None, ()))
 

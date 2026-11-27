@@ -389,6 +389,18 @@ Shortening the camera move is *not* on that list. Framing a subject closer costs
 more, but travelling further does not: geometry that leaves the frame stops being
 tessellated and stops being rasterized.
 
+On Windows, an NVIDIA driver does not refuse memory the card cannot hold: it
+backs it with ordinary system memory ("shared GPU memory" in Task Manager),
+and a render that reaches it runs many times slower without saying why. So
+while it renders, Algan limits PyTorch to a fixed share of the card (0.84),
+which makes a batch that does not fit shrink and retry there too.
+``ALGAN_CUDA_DEDICATED_HOLD=0`` removes the limit, and a value between 0 and 1
+sets another share. A render that starts while the process already holds more
+than an eighth of the card -- a model loaded beside it, say -- is not limited.
+The limit is PyTorch's own per-process limit: a render replaces one you set
+with ``torch.cuda.set_per_process_memory_fraction``, and when it ends the
+limit is the whole card.
+
 Devices
 =======
 
