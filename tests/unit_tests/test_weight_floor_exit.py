@@ -56,9 +56,10 @@ from algan.settings import SETTINGS
 _WEIGHT_FLOOR_EXIT_ARG_INDEX = 47
 # 73 after appending the per-batch ``tri_shell`` table and then the camera's
 # ``cam_proj`` projection rows with their ``projected`` template; 74 with the
-# ``det_sum`` template right after this one. The existing visibility and
+# ``det_sum`` template right after this one; 75 with the split-sum albedo
+# table ``env_lut`` before ``projected``. The existing visibility and
 # one-sided shadow-cull templates retain their positions.
-_EXPECTED_SHADE_ARGS = 74
+_EXPECTED_SHADE_ARGS = 75
 
 
 @pytest.mark.fast

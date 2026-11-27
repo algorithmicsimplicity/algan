@@ -375,6 +375,38 @@ def test_metalness_and_roughness_have_effect():
     print("ok: metalness and roughness change PBR output")
 
 
+def test_a_part_metal_is_the_mix_of_the_dielectric_and_the_metal():
+    """The metalness workflow is ``mix(dielectric, metal, metalness)`` (glTF):
+    a 0.4 metal is 0.6 of the same colour's dielectric plus 0.4 of its metal.
+
+    The diffuse layer was weighed by the Fresnel of the blended lobe, which
+    took the metal's F0 off it on top of the metal fraction, so a part metal
+    came out darker than that mix: a RED one 25/255 darker than the path
+    tracer renders it.
+    """
+    _vloc, _vnrm, _alb, cam, light, lcol = _toy_geometry()
+    vloc1 = torch.tensor([0.0, 0, 0]).view(1, 1, 3)
+    vnrm1 = torch.tensor([0.0, 0, 1]).view(1, 1, 3)
+    alb1 = torch.tensor([0.8, 0.1, 0.1, 0.0]).view(1, 1, 4)
+    # No ambient light: the ambient fill is a stand-in for a reflection, not
+    # part of the mix.
+    args = (None, vloc1, vnrm1, alb1, cam, light, lcol, 1, 0)
+
+    def shade(metalness):
+        return ms.standard_shader(
+            *args,
+            _scalar(0.35),
+            _scalar(metalness),
+            _col(0, 0, 0),
+            _scalar(1),
+            _scalar(1),
+            _scalar(0.0),
+        )[..., :3]
+
+    mix = 0.6 * shade(0.0) + 0.4 * shade(1.0)
+    assert torch.allclose(shade(0.4), mix, atol=1e-5), (shade(0.4), mix)
+
+
 # ---------------------------------------------------------------------------
 # Mob.set_material wiring
 # ---------------------------------------------------------------------------

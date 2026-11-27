@@ -227,7 +227,13 @@ def _render(disabled, budget):
 #: resolve, 20 MB left the tiles 0.3 MB more, the estimate's tiles fit after
 #: one halving, and both arms retried four times. 17, 18 and 19 MB each show
 #: the record saving retries.
-_BUDGET = 18 << 20
+#:
+#: It moved again when the shade arena gained the environment BRDF table
+#: (8.7 KB): at 18 MB the record still saved retries (12 to 6) but did so
+#: without planning a smaller ratio, which the test also asks for. 16, 19 and
+#: 20 MB plan the same ratios with and without the table; 19 MB plans the
+#: smallest and saves retries (12 to 9).
+_BUDGET = 19 << 20
 
 
 def _render_arm(arm, out_path):

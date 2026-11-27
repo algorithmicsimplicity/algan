@@ -1830,8 +1830,13 @@ the reference's apparent 7x is a clipping artifact (its 15 added pixels are
 saturated at 255). Measure the transmissive surface's **own** disc instead; it
 is what the defect is about and it is not diluted.
 
-**Still open: the opaque half.** The same defect throttles an opaque rough
-metal's direct-light highlight the same way. Extending the fix there moves
+**The opaque half, closed 2026-11-26.** The same defect throttled an opaque
+rough metal's direct-light highlight the same way, and the add-back now runs
+for every surface that hands a share to a ray (`tests/fast` moved by up to 21
+channel values, all on its one metallic solid and all brighter). What follows
+is the note as it stood while the extension was deferred.
+
+Extending the fix there moves
 `tests/fast` by 25 channel values, which is the CORRECT restoration and not a
 surprise: the weight in the default split-sum arm is `_material_env_brdf`, the
 lobe's exact directional albedo, and for the fast scene's

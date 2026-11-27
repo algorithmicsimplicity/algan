@@ -28,6 +28,10 @@ from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
 )
+from algan.rendering.raytracing.ggx_albedo import (
+    GGX_COSINE_SIZE,
+    GGX_ROUGHNESS_SIZE,
+)
 from algan.rendering.raytracing.glossy_prefilter_taichi import ACC_GEO as _ACC_GEO
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_ROW_DIST as _GL_ROW_DIST,
@@ -1451,9 +1455,11 @@ def _mirror_share(roughness):
 
 
 @ti.func
-def _env_brdf_approx(f0, n_dot_v, roughness):
-    """Directional albedo of a GGX specular lobe -- the DFG half of the
-    split-sum approximation (Karis 2013), in ``[0, 1]`` per channel.
+def _env_brdf_scale_bias(env_lut: ti.template(), n_dot_v, roughness):
+    """``(A, B)`` of the direct lobe's directional albedo: with Schlick
+    Fresnel a lobe of normal-incidence reflectance ``f0`` reflects
+    ``f0 * A + B`` of the light arriving from ``n.v`` -- the DFG half of the
+    split-sum approximation (Karis 2013).
 
     ``integral L(l) f(l,v) dl`` factors into a prefiltered radiance and a BRDF
     integral that depends on nothing but ``(n.v, roughness)``. This is that
@@ -1466,33 +1472,50 @@ def _env_brdf_approx(f0, n_dot_v, roughness):
     ss4.5). The split-sum asks "how much does this lobe reflect", which is a
     question about the material, and the answer costs no rays at all.
 
-    The analytic fit rather than the usual 2-D LUT: a LUT is another texture to
-    pack, upload and address inside the shade kernel for what is a four-term
-    polynomial (Karis 2014, "Mobile"), whose error against the numerically
-    integrated table is under 1% over the whole ``(n.v, roughness)`` square.
+    ``env_lut`` is ``ggx_albedo.ggx_albedo_table()``, bound through the arena:
+    the integral of the lobe ``shading_taichi`` lights with -- GGX ``D``, the
+    height-correlated Smith ``G2`` of ``_smith_geometry``, Schlick ``F`` on
+    ``v.h``, ``alpha = roughness**2`` -- the same table the path tracer's
+    Turquin compensation reads. Bilinear over roughness and ``sqrt(n.v)``.
+    It replaced Karis's analytic "Mobile" fit, which was made for UE4's
+    separable Schlick-Smith and stopped describing this lobe when
+    ``_smith_geometry`` became height-correlated: it gave a white metal
+    0.835 at roughness 0.3 head-on where this lobe reflects 0.989, and 0.725
+    at 0.5 where it reflects 0.916, so prefiltered metal reflections were
+    15-21% too dark (audit 2026-11-26, wavefront finding 2).
 
-    It degenerates to Schlick as roughness goes to zero -- ``f0`` at normal
-    incidence, 1 at grazing -- which is what lets the mirror path below
-    ``_GLOSSY_MIN_ROUGHNESS`` keep using ``_material_reflectance`` unchanged
-    while the glossy path above it uses this: the two agree across the
-    threshold instead of stepping.
+    At roughness 0 the table row is Schlick at ``n.v`` -- ``f0`` head-on --
+    which is what lets the mirror path below ``_GLOSSY_MIN_ROUGHNESS`` keep
+    using ``_material_reflectance`` while the glossy path above it uses this:
+    the two agree across the threshold instead of stepping. (Within a few
+    degrees of grazing they part: the lobe's masking takes its share even at
+    the smallest roughness, where Schlick goes to 1.)
     """
-    nv = ti.math.clamp(n_dot_v, 0.0, 1.0)
-    r = ti.math.clamp(roughness, 0.0, 1.0)
-    cx = r * -1.0 + 1.0
-    cy = r * -0.0275 + 0.0425
-    cz = r * -0.572 + 1.04
-    cw = r * 0.022 - 0.04
-    # exp2(-9.28 * nv), spelled in ti.exp: Taichi has no exp2 (checked, 1.7.4),
-    # and 9.28 * ln 2 = 6.4324058.
-    a004 = ti.min(cx * cx, ti.exp(-6.4324058 * nv)) * cx + cy
-    term_a = -1.04 * a004 + cz
-    term_b = 1.04 * a004 + cw
-    return ti.math.clamp(f0 * term_a + term_b, 0.0, 1.0)
+    r = ti.math.clamp(roughness, 0.0, 1.0) * (GGX_ROUGHNESS_SIZE - 1)
+    c = ti.sqrt(ti.math.clamp(n_dot_v, 0.0, 1.0)) * (GGX_COSINE_SIZE - 1)
+    ir = ti.min(ti.cast(r, ti.i32), GGX_ROUGHNESS_SIZE - 2)
+    ic = ti.min(ti.cast(c, ti.i32), GGX_COSINE_SIZE - 2)
+    fr, fc = r - ir, c - ic
+    out = ti.math.vec2(0.0, 0.0)
+    for dr, dc in ti.static(ti.ndrange(2, 2)):
+        w = (fr if dr else 1.0 - fr) * (fc if dc else 1.0 - fc)
+        row = (ir + dr) * GGX_COSINE_SIZE + ic + dc
+        out += w * ti.math.vec2(env_lut[row, 0], env_lut[row, 1])
+    return out
 
 
 @ti.func
-def _material_env_brdf(rd, normal, metalness, packed_ior, albedo, roughness):
+def _env_brdf(env_lut: ti.template(), f0, n_dot_v, roughness):
+    """Directional albedo ``f0 * A + B`` of the GGX specular lobe, in
+    ``[0, 1]`` per channel (``_env_brdf_scale_bias``).
+    """
+    ab = _env_brdf_scale_bias(env_lut, n_dot_v, roughness)
+    return ti.math.clamp(f0 * ab[0] + ab[1], 0.0, 1.0)
+
+
+@ti.func
+def _material_env_brdf(env_lut: ti.template(), rd, normal, metalness,
+                       packed_ior, albedo, roughness):
     """Split-sum directional albedo of a Three.js-style material's specular
     lobe -- the drop-in for ``_material_reflectance``'s ``R`` on the
     PREFILTERED glossy route (``DESIGN_glossy_prefilter.md`` ss2.1).
@@ -1516,7 +1539,8 @@ def _material_env_brdf(rd, normal, metalness, packed_ior, albedo, roughness):
     (``F0*A + B``) so the two are algebraically identical wherever both lobes
     exist -- but the index-matched gate has to remove the dielectric lobe
     ENTIRELY, and a blended F0 of zero still carries the ``B`` bias term, i.e.
-    a grazing sheen on a surface that has no interface to reflect from.
+    a grazing sheen on a surface that has no interface to reflect from. Both
+    read the one ``(A, B)`` lookup.
 
     TRANSMISSION IS NOT AN ARGUMENT, deliberately. The caller applies this only
     to the opaque reflective branch: glass keeps Schlick and the side-aware
@@ -1529,14 +1553,15 @@ def _material_env_brdf(rd, normal, metalness, packed_ior, albedo, roughness):
         ior = ti.abs(packed_ior)
         n = normal.normalized()
         nv = ti.abs(rd.dot(n))
+        ab = _env_brdf_scale_bias(env_lut, nv, roughness)
         e_diel = ti.math.vec3(0.0, 0.0, 0.0)
         if ior > 1.0 + 1e-4:
             r0 = (1.0 - ior) / (1.0 + ior)
             f0d = r0 * r0
-            e_diel = _env_brdf_approx(
-                ti.math.vec3(f0d, f0d, f0d), nv, roughness)
-        e_metal = _env_brdf_approx(
-            ti.math.clamp(albedo, 0.0, 1.0), nv, roughness)
+            e_diel = ti.math.vec3(1.0, 1.0, 1.0) * ti.math.clamp(
+                f0d * ab[0] + ab[1], 0.0, 1.0)
+        e_metal = ti.math.clamp(
+            ti.math.clamp(albedo, 0.0, 1.0) * ab[0] + ab[1], 0.0, 1.0)
         result = e_diel * (1.0 - m) + e_metal * m
     return result
 
@@ -2899,6 +2924,8 @@ def wavefront_shade_arena(
     # the depth-independent part of a pixel's world size, and the rest place
     # the camera ray a material stage measures from.
     cam_proj_table = ti.static(ArenaView(arena_f32, aoff[27], (ashp[60], ashp[61])))
+    # The lobe's directional-albedo table (``_env_brdf_scale_bias``).
+    env_lut = ti.static(ArenaView(arena_f32, aoff[28], (ashp[62], ashp[63])))
     cam_proj = ti.static(CameraProjection(cam_proj_table, projected))
     pixels_per_frame = width * height
     # Unpack the layer offset (packed into one ndarray to stay within the
@@ -3672,8 +3699,9 @@ def wavefront_shade_arena(
                             if pix_accum[gl_row, _GL_ROW_SIGMA_SCALE] != 0.0:
                                 gl_take = True
                     if gl_take:
-                        R = _material_env_brdf(rd, normal, reflectivity, ior,
-                                               albedo3, rough)
+                        R = _material_env_brdf(env_lut, rd, normal,
+                                               reflectivity, ior, albedo3,
+                                               rough)
                     else:
                         # This route never spreads a continuation over the GGX
                         # lobe (the glossy fan lives in the raster resolve), so
@@ -3780,9 +3808,14 @@ def wavefront_shade_arena(
                     # bloom channel, and a Fresnel highlight is not authored
                     # emission -- leaving it at zero keeps every existing
                     # bloom pass reading exactly what it read before.
+                    #
+                    # Any surface that hands a share to a ray, opaque or not:
+                    # an opaque metal loses its highlight to ``R`` exactly as
+                    # glass loses it to ``trans_share``. The last test only
+                    # skips the light loop where the weight is zero anyway.
                     if ti.static(direct_spec != 0 and frag_shading != 0) \
                             and (htype == 1) and (reflectivity >= 0.0) \
-                            and (T > 1e-4):
+                            and ((T > 1e-4) or (r_glow > 0.0)):
                         sa = (weight * alpha) * (R + trans_share) \
                             * direct_specular_lobe(
                                 f, prim, ro + t_hit * rd, -rd, normal,
@@ -4399,6 +4432,7 @@ _WAVEFRONT_SHADE_ARENA = (
     ("cam_origin", "f32", 2),
     ("tri_shell", "i32", 2),
     ("cam_proj_table", "f32", 2),
+    ("env_lut", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -4418,7 +4452,7 @@ _WAVEFRONT_SHADE_PARAMS = (
     "tri_mat", "light_pos", "light_col", "num_lights", "time_start", "width", "height",
     "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",
     "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin", "tri_shell",
-    "cam_proj_table", "projected",
+    "cam_proj_table", "env_lut", "projected",
 )
 
 _wavefront_shade_launch = arena_packed(

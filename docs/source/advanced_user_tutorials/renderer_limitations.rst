@@ -917,8 +917,9 @@ Reflection
   default (``glossy_reflection`` and ``glossy_prefilter``, both on) a rough
   reflector uses the **split-sum approximation**, which is what a real-time
   renderer uses to get a wide lobe out of one deterministic ray. The lobe's
-  energy becomes analytic -- the environment-BRDF term, exact and ray-free --
-  and its shape comes from tracing one mirror ray per pixel into a reflection
+  energy is the environment-BRDF term, read from a table of the same lobe the
+  lights are shaded with, integrated in advance and ray-free -- and its shape
+  comes from tracing one mirror ray per pixel into a reflection
   buffer, blurring that buffer by the lobe's screen footprint, and compositing.
   It has three limits of its own:
 

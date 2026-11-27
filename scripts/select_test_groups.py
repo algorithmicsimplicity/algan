@@ -90,6 +90,13 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sheet_resolve_variants.py::test_mode_1_unrolls_no_continuation_fan",
     # Nor, under the glossy prefilter, spreads one over the GGX lobe.
     "tests/unit_tests/test_sheet_resolve_variants.py::test_only_the_tap_fan_modes_spread_a_continuation_over_the_lobe",
+    # The glossy prefilter's split-sum weight is the direct lobe's albedo
+    # table: a rough white metal keeps nearly all its reflection, the
+    # roughness-0 row is Schlick, and no lookup reflects more than arrives.
+    # One small probe kernel, a fraction of a second.
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_beats_the_mirror_share_throttle_on_a_rough_metal",
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_reduces_to_fresnel_at_zero_roughness",
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_never_reflects_more_than_arrives",
     # Its launches name every argument, so none can land in another's place.
     "tests/unit_tests/test_sheet_resolve_variants.py::test_a_resolve_launch_names_every_argument",
     # The sequential oracle's band, claim, residue and NaN rules, which the
@@ -259,6 +266,14 @@ ALWAYS_PRE_PR = (
     # and rough glass with and without the prefilter.
     "tests/unit_tests/test_sheet_resolve_shading.py::",
     "tests/unit_tests/test_glossy_prefilter.py::test_rough_glass_reflects_the_same_with_and_without_the_prefilter",
+    # An opaque metal keeps its direct-light highlight when the render bounces.
+    "tests/unit_tests/test_direct_specular_lobe.py::test_an_opaque_metal_keeps_its_highlight_when_the_render_has_bounces",
+    # The split-sum weight against a brute-force integral of the direct lobe
+    # over a grid (three seconds of quadrature).
+    "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_is_the_albedo_of_the_direct_lobe",
+    # A part metal is the mix of its dielectric and its metal: the diffuse
+    # layer loses the dielectric Fresnel share only. Pure torch, milliseconds.
+    "tests/unit_tests/test_materials.py::test_a_part_metal_is_the_mix_of_the_dielectric_and_the_metal",
     # The closed-shell ceiling's torch arm and its segment order keep their
     # integer gathers exact past MPS's 2**24: a real frame's fragments in a 4K
     # window, and a float32 spend over 2**24 rows.

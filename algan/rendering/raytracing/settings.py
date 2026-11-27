@@ -3077,10 +3077,19 @@ solid_shell_alpha = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 # 1.108) at g/r 1.03, against the reference's g/r 1.07. The opaque control and
 # the transmission-0.5 sphere move by 0.06% and 0.2%.
 #
+# Every surface that hands a share to a ray takes it, opaque or transmissive.
+# It was first limited to transmissive ones, which left an opaque metal with
+# only the remainder of its own highlight (a roughness-0.3 metal sphere under
+# one point light showed half the light with the default bounces that it did
+# with ``max_bounces=0``, and a mirror almost none). Where the display-
+# referred resolve clamps a sheet's local shading to its claim
+# (``display_cap``), the add-back is clamped with it: it is local shading.
+#
 # Scope: the built-in material arm of both primary routes (the sheet resolve
 # and the classic wavefront bounce loop). A custom fragment scatter owns its
 # own transport and a bezier circuit is never material-shaded, so neither has
-# a GGX highlight to restore. OFF restores the previous weighting exactly.
+# a GGX highlight to restore. OFF restores the weighting from before the
+# add-back existed, exactly.
 direct_specular_lobe = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 
 # Retire a bounce-loop ray whose throughput fell under min_weight even when

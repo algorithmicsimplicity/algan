@@ -3767,9 +3767,14 @@ def shade_sparse_raster_coverage(
     layer_offset_triangles,
     max_bounces,
     *,
+    env_lut,
     shadow_tracer=None,
 ):
     """Resolve one compact covered-pixel slice and seed its continuations.
+
+    ``env_lut`` is the arena copy of ``ggx_albedo.ggx_albedo_table()`` that
+    the split-sum glossy weight reads (``raytrace_render_wavefront`` makes it
+    once per batch).
 
     ``shadow_tracer`` traces a shadowed slice's primary events: what
     ``shadow_queue.make_shadow_tracer`` returns for this batch, which depends
@@ -3886,6 +3891,7 @@ def shade_sparse_raster_coverage(
         "light_pos": light_pos,
         "light_col": light_col,
         "num_lights": int(num_lights),
+        "env_lut": env_lut,
         "layer_offsets": layer_offsets,
         "refraction": int(refraction_flag),
         "ior_stack": int(ior_stack_flag),
