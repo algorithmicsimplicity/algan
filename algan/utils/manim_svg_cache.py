@@ -577,14 +577,21 @@ def _read_disk_file(path):
             dtype = dtypes[spelling] = _array_dtype(spelling)
         if (
             type(shape) is not list
-            or any(type(n) is not int or n < 0 for n in shape)
             or order not in ("C", "F")
             or type(offset) is not int
             or type(size) is not int
         ):
             raise _NotPlainData("malformed array entry")
+        # Per entry, not per dimension: a file holds one array per glyph part.
+        # A non-integer or negative dimension makes ``count`` a non-integer or
+        # negative, or (two negatives) fails the reshape below.
         count = math.prod(shape)
-        if count * dtype.itemsize != size or not 0 <= offset <= len(blob) - size:
+        if (
+            type(count) is not int
+            or count < 0
+            or count * dtype.itemsize != size
+            or not 0 <= offset <= len(blob) - size
+        ):
             raise _NotPlainData("array entry does not fit the file")
         if count == 0:
             array = np.empty(shape, dtype=dtype, order=order)
