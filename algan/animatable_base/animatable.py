@@ -93,6 +93,41 @@ _DEEPCOPY_RETURNS_ITSELF = frozenset(
     (type(None), bool, int, float, complex, str, bytes, type, types.FunctionType)
 )
 
+#: The prefixes of the generated per-attribute accessors (``set_<attr>``).
+_ACCESSOR_PREFIXES = frozenset(("set_", "get_"))
+
+#: ``__dict__`` entries ``Animatable.__deepcopy__`` leaves off a clone.
+_CLONE_SKIPPED_KEYS = frozenset(
+    (
+        "id",
+        "animation_manager",
+        "_animation_manager",
+        # Set from the clone policy, not inherited from the source.
+        "_added_to_scene",
+        # Set from the accessors the source holds.
+        "_accessor_attrs",
+        # Version-checked caches; clones rebuild their own lazily.
+        "_attr_inds_cache",
+        "_descendants_cache",
+        "_subtree_spawn_cache",
+        "_member_box_cache",
+        # Keyed on the source's rows (Mob._apply_basis_change), which a clone
+        # does not share.
+        "_rest_shape",
+        "_collapse",
+        # Whom a render stand-in draws for (pass_identity.render_identity): a
+        # clone is a new object, and deep-copying the reference would clone
+        # that other Mob's whole hierarchy besides.
+        "_pass_identity",
+        # The same for the parents a retired become() root resolves through
+        # (mob_morph._keep_pass_parents) and the other identity routes a
+        # become() records.
+        "_pass_parents",
+        "_pass_tag_parents",
+        "_pass_owner_identity",
+    )
+)
+
 
 def _check_updater_signature(update_function, extra_positional):
     """Reject an updater that cannot take ``(mob, t)`` before it is recorded.
@@ -1902,46 +1937,16 @@ class Animatable:
         # over *this* mob, and the clone regenerates its own below. Copying
         # them was two wasted deepcopy dispatches per animatable attribute on
         # every cloned mob -- and a clone that somehow kept one would drive the
-        # original.
-        generated_accessors = frozenset(
-            name
-            for attr in self.animatable_attrs
-            for name in (f"set_{attr}", f"get_{attr}")
-        )
+        # original. A name is one exactly when it is ``set_`` or ``get_``
+        # followed by an animatable attribute.
+        attr_names = set(self.animatable_attrs)
 
         for k, v in self.__dict__.items():
-            if k in generated_accessors:
+            if k[:4] in _ACCESSOR_PREFIXES and k[4:] in attr_names:
                 continue
-            if k in [
-                "id",
-                "animation_manager",
-                "_animation_manager",
-                # Set above from the clone policy, not inherited from the source.
-                "_added_to_scene",
-                # Set below from the accessors the source holds.
-                "_accessor_attrs",
-                # Version-checked caches; clones rebuild their own lazily.
-                "_attr_inds_cache",
-                "_descendants_cache",
-                "_subtree_spawn_cache",
-                "_member_box_cache",
-                # Keyed on the source's rows (Mob._apply_basis_change), which
-                # a clone does not share.
-                "_rest_shape",
-                "_collapse",
-                # Whom a render stand-in draws for (pass_identity.render_identity):
-                # a clone is a new object, and deep-copying the reference would
-                # clone that other Mob's whole hierarchy besides.
-                "_pass_identity",
-                # The same for the parents a retired become() root resolves
-                # through (mob_morph._keep_pass_parents) and the other
-                # identity routes a become() records.
-                "_pass_parents",
-                "_pass_tag_parents",
-                "_pass_owner_identity",
-            ]:
+            if k in _CLONE_SKIPPED_KEYS:
                 continue
-            if k in ["_parents"]:
+            if k == "_parents":
                 object.__setattr__(clone, k, [])
                 continue
             if not clone_data and (
@@ -1971,7 +1976,14 @@ class Animatable:
                 # Fresh rows start at zero: retaining the owner's row offsets
                 # makes property setters index outside a cloned packed view.
                 v = None
-            if type(v) in _DEEPCOPY_RETURNS_ITSELF:
+            if type(v) in _DEEPCOPY_RETURNS_ITSELF or (
+                # A frozenset of such values -- the attribute names a Mob had
+                # when built (``_ctor_names``), an exclusion set -- cannot
+                # change, so it is shared. Deep-copying one rebuilt it name by
+                # name, a sixth of what a glyph view cost.
+                type(v) is frozenset
+                and all(type(item) in _DEEPCOPY_RETURNS_ITSELF for item in v)
+            ):
                 object.__setattr__(clone, k, v)
                 continue
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
