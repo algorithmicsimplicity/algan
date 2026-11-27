@@ -177,6 +177,57 @@ def _grid_could_explain(exc: Exception) -> bool:
     ) and not is_out_of_memory(exc)
 
 
+def _coord_function_name(function) -> str:
+    """How an error names a surface's coordinate function."""
+    inner = getattr(function, "__func__", function)
+    name = getattr(inner, "__qualname__", None)
+    return name or repr(function)
+
+
+def _check_coord_function_output(function, uv, points):
+    """Raise unless ``points`` are finite world positions, one per ``(u, v)``.
+
+    ``uv`` is the ``[W, H, 2]`` grid ``function`` was given. A function that
+    returns the wrong shape or a NaN/inf used to be read as "this grid is
+    not fine enough": the resolution search climbed to
+    ``max_grid_resolution``, warned that the tolerance could not be met, and
+    the real fault surfaced later as an error that did not mention the
+    function at all -- or, for a result flattened to ``[N, 3]``, never.
+    """
+    name = _coord_function_name(function)
+    try:
+        points = torch.as_tensor(points)
+    except Exception:
+        raise AlganConfigurationError(
+            f"the surface's coordinate function {name} returned a "
+            f"{type(points).__name__}, not a tensor of points"
+        ) from None
+    expected = (*uv.shape[:-1], 3)
+    if points.dim() < len(expected) or tuple(points.shape[-len(expected) :]) != (
+        expected
+    ):
+        raise AlganConfigurationError(
+            f"the surface's coordinate function {name} returned shape "
+            f"{list(points.shape)} for (u, v) of shape {list(uv.shape)}; it "
+            f"must return one 3-D point per (u, v), shape {list(expected)} "
+            "(the input's shape with its last axis 3)"
+        )
+    if not points.is_floating_point():
+        return
+    bad = ~torch.isfinite(points).all(-1)
+    while bad.dim() > len(expected) - 1:
+        bad = bad.any(0)
+    if bool(bad.any()):
+        index = tuple(int(i) for i in bad.nonzero()[0])
+        u, v = (float(x) for x in uv[index])
+        value = points.reshape(-1, *expected)[(0, *index)].tolist()
+        raise AlganConfigurationError(
+            f"the surface's coordinate function {name} returned a non-finite "
+            f"point {value} at (u, v) = ({u:g}, {v:g}); every point must be "
+            "finite (a 0/0 at the edge of the domain is the usual cause)"
+        )
+
+
 def _resolution_cache_callable_key(function):
     """Return a stable in-process identity for a geometry callable."""
     function = getattr(function, "__func__", function)
@@ -1277,6 +1328,7 @@ class Surface(Mob):
         # measured against the surface's construction-time world geometry;
         # later transforms and deformations never rewrite this topology.
         if self._geometry_auto_resolution_enabled:
+            self._probe_coord_function(coord_function)
             initial_location = self.location.clone()
 
             def initial_surface_function(uv):
@@ -1325,7 +1377,9 @@ class Surface(Mob):
             kwargs["glow"] = self._bake_texture_to_grid(glow_texture)
 
         base_grid = self.get_base_grid()
-        grid_points = squish(coord_function(base_grid), -3, -2) + self.location
+        grid_points = coord_function(base_grid)
+        _check_coord_function_output(coord_function, base_grid, grid_points)
+        grid_points = squish(grid_points, -3, -2) + self.location
 
         # ``geometry_tolerance`` bounds a world-space distance measured on
         # exactly this geometry, so remember it as a fraction of how big the
@@ -1513,19 +1567,22 @@ class Surface(Mob):
         ):
             mob = cls(*args, **kwargs)
 
-        points_per_grid = mob.grid_width * mob.grid_height
-        # Rebuilt from the same expression __init__ uses, rather than by
-        # subtracting the representative's centre back off its grid, so member
-        # i's rows are bit-identical to a separately constructed member's.
-        relative_grid = squish(
-            mob.coord_function_active(mob.get_base_grid().clone()), -3, -2
-        )
-        grid_overrides = {
-            "location": (relative_grid.unsqueeze(-3) + centers.unsqueeze(-2)).reshape(
-                1, count * points_per_grid, 3
+        parts = mob._packed_parts()
+        stray = [
+            child
+            for child in mob.get_children(include_components=False)
+            if isinstance(child, Surface) and not any(child is p for p in parts)
+        ]
+        if stray:
+            # A Surface child the class does not declare would stay one member
+            # at the first centre while the body is packed -- the way a capped
+            # Cylinder's discs used to, leaving every other member an open
+            # tube that still claimed a closed shell.
+            raise AlganConfigurationError(
+                f"{cls.__name__}.from_batches cannot pack the "
+                f"{type(stray[0]).__name__} this {cls.__name__} owns as a child; "
+                "build the members separately and pack them with batch_mobs"
             )
-        }
-        surface_overrides = {"location": centers.unsqueeze(0)}
 
         if colors is not None:
             if mob._has_color_texture:
@@ -1534,7 +1591,72 @@ class Surface(Mob):
                     "color_texture, which the whole pack shares"
                 )
             member_colors = _as_member_colors(colors, count)
-            grid_color = mob.grid.get_animated_attribute("color")
+        else:
+            member_colors = None
+
+        representative = mob.location.reshape(1, 3)
+        with Off(
+            record_funcs=False,
+            record_attr_modifications=False,
+            animation_manager=mob.animation_manager,
+        ):
+            # The parts first: each is placed by its offset from the body's
+            # centre, which is only the representative's before the body packs.
+            for part in parts:
+                offset = part.location.reshape(1, 3) - representative
+                part._pack_at(
+                    centers + offset, member_colors, part._grid_about_location()
+                )
+            mob._pack_at(centers, member_colors, mob._relative_grid_for_packing())
+        return mob
+
+    def _packed_parts(self) -> list[Surface]:
+        """The Surfaces this one owns that ``from_batches`` packs beside it.
+
+        A capped solid's end discs are separate Surfaces, so a pack has to
+        give each member its own. None by default.
+        """
+        return []
+
+    def _grid_about_location(self) -> torch.Tensor:
+        """This surface's vertex grid as offsets from its location, ``[P, 3]``."""
+        return (self.grid.location - self.location.reshape(1, 1, 3)).reshape(-1, 3)
+
+    def _relative_grid_for_packing(self) -> torch.Tensor:
+        """The member grid ``from_batches`` repeats at every centre, ``[P, 3]``.
+
+        Rebuilt from the same expression __init__ uses, rather than by
+        subtracting the representative's centre back off its grid, so member
+        i's rows are bit-identical to a separately constructed member's --
+        unless the constructor transformed the grid after building it (a
+        Cone turns its unrotated grid to face ``direction``), which that
+        expression does not know about. The grid the representative actually
+        has is then the only faithful copy.
+        """
+        rebuilt = squish(
+            self.coord_function_active(self.get_base_grid().clone()), -3, -2
+        ).reshape(-1, 3)
+        actual = self._grid_about_location()
+        if rebuilt.shape == actual.shape:
+            # Rounding from subtracting the centre back off is far below
+            # this; a construction-time transform is far above it.
+            scale = 1.0 + float(actual.abs().amax())
+            if torch.allclose(rebuilt, actual, rtol=0, atol=1e-5 * scale):
+                return rebuilt
+        return actual
+
+    def _pack_at(self, centers, member_colors, relative_grid):
+        """Pack this surface and its grid as one member per row of ``centers``."""
+        count = len(centers)
+        points_per_grid = self.grid_width * self.grid_height
+        grid_overrides = {
+            "location": (relative_grid.unsqueeze(-3) + centers.unsqueeze(-2)).reshape(
+                1, count * points_per_grid, 3
+            )
+        }
+        surface_overrides = {"location": centers.unsqueeze(0)}
+        if member_colors is not None:
+            grid_color = self.grid.get_animated_attribute("color")
             packed = (
                 grid_color.repeat(1, count, 1)
                 .contiguous()
@@ -1545,15 +1667,8 @@ class Surface(Mob):
             packed[:] = member_colors.view(1, count, 1, -1)
             grid_overrides["color"] = packed.view(1, count * points_per_grid, -1)
             surface_overrides["color"] = member_colors.unsqueeze(0)
-
-        with Off(
-            record_funcs=False,
-            record_attr_modifications=False,
-            animation_manager=mob.animation_manager,
-        ):
-            pack_member_rows(mob.grid, count, points_per_grid, overrides=grid_overrides)
-            pack_animatable_rows(mob, count, overrides=surface_overrides)
-        return mob
+        pack_member_rows(self.grid, count, points_per_grid, overrides=grid_overrides)
+        pack_animatable_rows(self, count, overrides=surface_overrides)
 
     @property
     def geometry_tolerance(self) -> float:
@@ -2493,6 +2608,26 @@ class Surface(Mob):
                 lower = lower[unresolved]
                 upper = upper[unresolved]
         return result
+
+    def _probe_coord_function(self, coord_function):
+        """Check the coordinate function once, on a coarse grid, before the
+        resolution search reads every bad result as a grid too coarse.
+
+        Edges included, which is where a 0/0 usually sits. A function that
+        raises here is left to the search, which already tells an error no
+        grid could cause from one a finer grid might fix.
+        """
+        device = self.location.device
+        dtype = self.location.dtype
+        size = min(max(self._min_grid_resolution, 5), self._max_grid_resolution)
+        axis = torch.linspace(0, 1, size, device=device, dtype=dtype)
+        grid_u, grid_v = torch.meshgrid(axis, axis, indexing="ij")
+        uv = torch.stack((grid_u, grid_v), dim=-1)
+        try:
+            points = coord_function(uv.clone())
+        except Exception:
+            return
+        _check_coord_function_output(coord_function, uv, points)
 
     def _find_geometry_resolution(self, surface_function):
         """Choose the stable construction-time logical PN grid dimensions."""

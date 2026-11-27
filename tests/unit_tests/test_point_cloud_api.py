@@ -377,3 +377,56 @@ def test_true_dot_is_one_point_at_its_center(scene):
     with Off():
         dot = TrueDot(center=UP)
     assert dot.get_points().tolist() == [[0.0, 1.0, 0.0]]
+
+
+# --- Incremental building -----------------------------------------------------
+
+
+def test_building_a_cloud_point_by_point_packs_the_spheres_once(scene, monkeypatch):
+    """REGRESSION. Every ``add_points`` repacked every sphere so far, so the
+    Manim idiom ``for p in pts: cloud.add_points([p])`` cost O(N^2) -- 70 s for
+    600 points. A cloud nothing has drawn yet now rebuilds once, when it is
+    next looked at, and ends up exactly as one ``add_points`` call leaves it.
+    """
+    points = torch.arange(36.0).reshape(12, 3)
+    builds = []
+    original = Dot3D.from_batches.__func__
+
+    def counting(cls, *args, **kwargs):
+        builds.append(len(args[0]))
+        return original(cls, *args, **kwargs)
+
+    monkeypatch.setattr(Dot3D, "from_batches", classmethod(counting))
+    cloud = _cloud(points[:2], color=RED)
+    builds.clear()
+    for point in points[2:]:
+        cloud.add_points([point.tolist()], color=BLUE)
+    assert builds == [], "nothing looked at the spheres yet"
+    with Off():
+        cloud.move(UP)
+    assert builds == [len(points)]
+
+    reference = _cloud(points[:2], color=RED)
+    reference.add_points(points[2:], color=BLUE)
+    with Off():
+        reference.move(UP)
+    for attr in ("location", "color"):
+        assert torch.equal(
+            getattr(cloud._point_geometry.grid, attr),
+            getattr(reference._point_geometry.grid, attr),
+        ), attr
+    assert torch.allclose(cloud.points, points + torch.tensor([0.0, 1.0, 0.0]))
+
+
+def test_an_edit_to_a_spawned_cloud_still_rebuilds_at_once(scene):
+    """The deferral is only for a cloud no frame has drawn: a spawned cloud's
+    old spheres must end their lifespan at the edit's own moment.
+    """
+    cloud = _cloud([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    with Off():
+        cloud.spawn()
+    before = cloud.__dict__["_point_geometry_mob"]
+    cloud.add_points([[2.0, 0.0, 0.0]])
+    after = cloud.__dict__["_point_geometry_mob"]
+    assert after is not before
+    assert len(after) == 3

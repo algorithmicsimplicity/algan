@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
+from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import BLACK, WHITE, YELLOW, Color, to_color
 from algan.constants.spatial import ORIGIN
 from algan.errors import AlganConfigurationError
@@ -187,7 +188,7 @@ class PMobject(Group):
         if (points._version, rgbas._version) != self._array_versions:
             self._arrays_pending = True
             return
-        geometry = self.__dict__.get("_point_geometry")
+        geometry = self.__dict__.get("_point_geometry_mob")
         if geometry is None:
             return
         count = len(points)
@@ -231,9 +232,46 @@ class PMobject(Group):
             scene=scene,
         )
 
+    # A cloud no frame has drawn yet defers its rebuild: each edit only updates
+    # the arrays, and the spheres are rebuilt once, the next time anything looks
+    # below the cloud -- spawning it, rendering it, transforming it or walking
+    # its descendants all read ``children`` first. Rebuilding eagerly made
+    # ``for p in pts: cloud.add_points([p])`` repack every sphere so far on
+    # every call, O(N^2) in all (70 s for 600 points). A spawned cloud still
+    # rebuilds on the spot: its old spheres have to end their lifespan at the
+    # moment of the edit, not at whatever moment the rebuild would run.
+    @property
+    def children(self):
+        if self.__dict__.get("_geometry_stale", False):
+            self._rebuild_geometry_now()
+        return self._children
+
+    children = children.setter(Group.children.fset)
+
+    @property
+    def _point_geometry(self):
+        """The packed spheres standing for the cloud now (rebuilt if stale)."""
+        if self.__dict__.get("_geometry_stale", False):
+            self._rebuild_geometry_now()
+        return self.__dict__.get("_point_geometry_mob")
+
+    @_point_geometry.setter
+    def _point_geometry(self, value):
+        self.__dict__["_point_geometry_mob"] = value
+
     def _rebuild_geometry(self):
+        if not self.is_spawned():
+            self._geometry_stale = True
+            # Descendant caches are keyed on the hierarchy version; bumping it
+            # sends the next walk back through ``children``, which rebuilds.
+            bump_hierarchy_version()
+            return self
+        return self._rebuild_geometry_now()
+
+    def _rebuild_geometry_now(self):
+        self._geometry_stale = False
         geometry = self._build_geometry()
-        previous = self._point_geometry
+        previous = self.__dict__.get("_point_geometry_mob")
         self._point_geometry = geometry
         self._arrays_match_geometry()
         if previous is None and geometry is None:

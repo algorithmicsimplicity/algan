@@ -177,8 +177,7 @@ def test_a_model_without_clips_refuses_to_play():
 
 def test_playback_records_a_turn_and_the_shading_turns_with_the_surface():
     """A clip with no ``runtime`` given plays over its own, and a mesh with
-    authored normals has them recomputed from the moving geometry -- the
-    authored ones describe the rest pose only.
+    authored normals has them turned with its node as it moves.
     """
     clip = _spin("spin", 90, axis=(0, 1, 0), runtime=2.0)
     with Scene() as scene:
@@ -205,6 +204,87 @@ def test_playback_records_a_turn_and_the_shading_turns_with_the_surface():
         atol=1e-5,
         rtol=0,
     )
+
+
+def _seam_data(clip):
+    """Two triangles meeting along an edge whose vertices are split -- a UV
+    seam, as a glTF mesh splits them -- with one smooth normal authored on
+    both copies of each seam vertex.
+    """
+    vertices = torch.tensor(
+        [
+            [0.0, 0, 0],
+            [1, 0, 0],
+            [0, 1, 0],
+            [1, 0, 0],  # copy of 1, across the seam
+            [1, 1, 1],
+            [0, 1, 0],  # copy of 2
+        ]
+    )
+    normals = F.normalize(
+        torch.tensor(
+            [
+                [0.0, 0, 1],
+                [0.3, 0.3, 1],
+                [0.3, 0.3, 1],
+                [0.3, 0.3, 1],
+                [-1, -1, 1],
+                [0.3, 0.3, 1],
+            ]
+        ),
+        dim=-1,
+    )
+    mesh = MeshData(
+        vertices=vertices, faces=torch.tensor([[0, 1, 2], [3, 4, 5]]), normals=normals
+    )
+    return (
+        SceneData(
+            meshes=[mesh],
+            nodes=[NodeData(name="root", mesh_indices=[0])],
+            animations=[clip],
+        ),
+        normals,
+    )
+
+
+def test_playback_keeps_the_authored_normals_across_a_uv_seam():
+    """REGRESSION. Playback switched every mesh with authored normals to
+    recomputing them per frame, averaged over vertex indices. A seam's
+    vertices are split, so each copy took only its own face's normal: the
+    seam shaded as a hard crease while the clip played, and the first frame
+    already looked different from the static model.
+    """
+    data, authored = _seam_data(_spin("spin", 90, axis=(0, 1, 0)))
+    with Scene() as scene:
+        model = Model3D(scene_data=data).spawn(False)
+        mesh = model.mesh_mobs[0]
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0]))
+        static = mesh.get_render_primitives().normals.clone()
+        scene.timeline_manager.clear_buffers()
+
+        model.play_animation()
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0, 0.5, 1.0]))
+        normals = mesh.get_render_primitives().normals.clone()
+        scene.timeline_manager.clear_buffers()
+
+    corner_authored = authored[mesh.corner_index]
+    torch.testing.assert_close(static[0], corner_authored, atol=1e-5, rtol=0)
+    for frame, degrees in enumerate((0.0, 45.0, 90.0)):
+        turn = math.radians(degrees)
+        # About +y, as row vectors: +x goes to -z and +z to +x.
+        rotation = torch.tensor(
+            [
+                [math.cos(turn), 0, -math.sin(turn)],
+                [0, 1, 0],
+                [math.sin(turn), 0, math.cos(turn)],
+            ]
+        )
+        torch.testing.assert_close(
+            normals[frame], corner_authored @ rotation, atol=1e-4, rtol=0
+        )
+    # Both copies of a seam vertex shade alike: corners 1 and 3, 2 and 5.
+    torch.testing.assert_close(normals[:, 1], normals[:, 3], atol=1e-5, rtol=0)
+    torch.testing.assert_close(normals[:, 2], normals[:, 5], atol=1e-5, rtol=0)
 
 
 @pytest.mark.parametrize(

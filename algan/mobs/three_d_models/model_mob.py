@@ -28,6 +28,7 @@ import warnings
 from collections.abc import Callable
 
 import torch
+import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
@@ -296,6 +297,13 @@ class Model3D(Mob):
                     # world corners can be re-baked from animated transforms.
                     mob._node_idx = node_idx
                     mob._local_vertices = mesh.vertices.to(device)
+                    # And its authored normals, which play_animation turns
+                    # through each frame's node transform the same way.
+                    mob._local_normals = (
+                        mesh.normals.to(device)
+                        if mob.corner_normals is not None
+                        else None
+                    )
                     self.mesh_mobs.append(mob)
                     self.parts.setdefault(node_name, []).append(mob)
 
@@ -646,19 +654,8 @@ class Model3D(Mob):
         KeyError
             If no clip is called ``name``.
         """
-        clip = self._resolve_clip(name)
+        times, worlds = self._node_worlds(name, times, fps)
         device = self.location.device
-        if times is None:
-            times = _anim.sample_times(clip.runtime, fps, _anim.clip_key_times(clip))
-        times = [float(t) for t in times]
-
-        nodes = self.scene_data.nodes
-        # World transform per node at each sample time.
-        worlds = []
-        for t in times:
-            locals_ = _anim.evaluate_animated_locals(nodes, clip, t, device=device)
-            worlds.append(_anim.compose_world_from_locals(nodes, locals_))
-
         center = self._norm_center.to(device)
         scale = self._norm_scale
         place = self._placement()
@@ -677,6 +674,49 @@ class Model3D(Mob):
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
+    def _node_worlds(self, name, times, fps):
+        """The sample times and, at each, every node's ``[4, 4]`` world matrix."""
+        clip = self._resolve_clip(name)
+        device = self.location.device
+        if times is None:
+            times = _anim.sample_times(clip.runtime, fps, _anim.clip_key_times(clip))
+        times = [float(t) for t in times]
+        nodes = self.scene_data.nodes
+        worlds = []
+        for t in times:
+            locals_ = _anim.evaluate_animated_locals(nodes, clip, t, device=device)
+            worlds.append(_anim.compose_world_from_locals(nodes, locals_))
+        return times, worlds
+
+    def _posed_normals(self, name, times, fps):
+        """Per mesh Mob with authored normals, a ``[T, 3F, 3]`` stack of them
+        turned through each sample's node transform.
+
+        In the frame the loader left ``corner_normals`` in -- the node's world
+        frame at load, before any placement -- because the render turns them
+        by the mesh's basis from there, exactly as it turns the static ones.
+        Normalisation's recentre and uniform scale leave a normal's direction
+        alone, so they do not enter.
+        """
+        times, worlds = self._node_worlds(name, times, fps)
+        device = self.location.device
+        normals = {}
+        for mob in self.mesh_mobs:
+            local = getattr(mob, "_local_normals", None)
+            if local is None or mob.corner_normals is None:
+                continue
+            local_corners = local[mob.corner_index]
+            frames = []
+            for w in worlds:
+                matrix = (
+                    w[mob._node_idx] if 0 <= mob._node_idx < len(w) else _eye4(device)
+                )
+                frames.append(
+                    F.normalize(_transform_normals(local_corners, matrix), p=2, dim=-1)
+                )
+            normals[mob] = torch.stack(frames, dim=0)
+        return normals
+
     def play_animation(
         self,
         name: str | None = None,
@@ -690,9 +730,9 @@ class Model3D(Mob):
         The clip is baked to per-frame world corners (see
         :meth:`precompute_animation`) and each mesh instance's corners are driven
         through those poses, so rigid node motion (a bone/part translating,
-        rotating or scaling, composed down the hierarchy) plays back. Meshes
-        with authored normals are switched to per-frame smooth-normal
-        recomputation so shading stays correct as the geometry moves.
+        rotating or scaling, composed down the hierarchy) plays back. Authored
+        normals are turned through the same node transforms, so a mesh keeps
+        the smoothing its file gave it -- seams included -- while it moves.
 
         Animation
         ---------
@@ -751,11 +791,15 @@ class Model3D(Mob):
         if runtime is None:
             runtime = clip.runtime or float(times[-1]) or 1.0
 
-        # Recompute smooth normals per frame so authored-normal meshes shade
-        # correctly under the deformation.
-        for mob in self.mesh_mobs:
-            if mob.corner_normals is not None:
-                mob.recompute_normals = True
+        # Node animation is rigid per mesh, so the authored normals are turned
+        # with their node rather than recomputed from the posed geometry.
+        # Recomputing them averaged faces over shared vertex indices, and a
+        # glTF mesh splits its vertices at every UV seam and material edge:
+        # each seam shaded as a hard crease for as long as the clip played,
+        # and the file's own smoothing was replaced.
+        normals = self._posed_normals(name, times, fps)
+        for mob in normals:
+            mob._track_posed_normals()
 
         # Frame 0 is set instantly, then the geometry is swept through the
         # remaining baked poses; each Sync step moves every mesh together and
@@ -769,6 +813,8 @@ class Model3D(Mob):
                 with Off(animation_manager=self.animation_manager):
                     for mob in self.mesh_mobs:
                         mob.grid.set_location(corners[mob][0])
+                        if mob in normals:
+                            mob.grid.posed_normals = normals[mob][0].unsqueeze(0)
                 for k in range(1, len(times)):
                     with Sync(
                         runtime=times[k] - times[k - 1],
@@ -776,6 +822,8 @@ class Model3D(Mob):
                     ):
                         for mob in self.mesh_mobs:
                             mob.grid.set_location(corners[mob][k])
+                            if mob in normals:
+                                mob.grid.posed_normals = normals[mob][k].unsqueeze(0)
         return self
 
     def get_default_color(self):

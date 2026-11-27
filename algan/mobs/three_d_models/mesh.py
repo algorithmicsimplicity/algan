@@ -395,6 +395,24 @@ class TriangleMesh(Mob):
         self.num_vertices = target.num_vertices
         return self
 
+    def _track_posed_normals(self):
+        """Give the grid an animatable ``posed_normals`` row per corner.
+
+        What rigid node animation (``Model3D.play_animation``) writes each
+        baked pose's authored normals into, in the frame ``corner_normals``
+        is in, so the render turns them by the basis the same way. Starts at
+        ``corner_normals``, so every frame before the first pose is written
+        shades exactly as the static mesh did. Idempotent.
+        """
+        if self.corner_normals is None or self._has_posed_normals():
+            return self
+        self.grid.register_attrs_as_animatable(["posed_normals"])
+        self.grid._init_default_attr("posed_normals", self.corner_normals.unsqueeze(0))
+        return self
+
+    def _has_posed_normals(self):
+        return "posed_normals" in getattr(self.grid, "animatable_attrs", ())
+
     def _compute_corner_normals(self, corners_flat):
         """World-space per-corner normals for the current (already
         transformed) corner positions ``[T, 3F, 3]``.
@@ -412,7 +430,11 @@ class TriangleMesh(Mob):
             # geometry -- correct under any per-frame deformation.
             return self._smooth_corner_normals(corners_flat)
         if self.corner_normals is not None:
-            n_local = self.corner_normals.unsqueeze(0).expand_as(corners_flat)
+            if self._has_posed_normals():
+                # Animated authored normals, one row per corner per frame.
+                n_local = self.grid.posed_normals.expand_as(corners_flat)
+            else:
+                n_local = self.corner_normals.unsqueeze(0).expand_as(corners_flat)
             world = (
                 map_local_to_global_coords(corners_flat, self.grid.basis, n_local)
                 - corners_flat
@@ -580,6 +602,8 @@ class TriangleMesh(Mob):
         # Source-device location/color plus primitive corners/colors/normals.
         # Final ray-tracing arrays and BVHs are charged by the arena upload.
         num_vars = 16
+        if self._has_posed_normals():
+            num_vars += 3
         for _ in self.grid.get_shader_params().values():
             num_vars += _.shape[-1]
         return n_v * num_vars * 4
