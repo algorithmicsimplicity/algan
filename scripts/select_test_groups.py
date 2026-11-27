@@ -218,6 +218,9 @@ ALWAYS_PRE_PR = (
     # The split-sum weight against a brute-force integral of the direct lobe
     # over a grid (three seconds of quadrature).
     "tests/unit_tests/test_glossy_prefilter.py::test_env_brdf_is_the_albedo_of_the_direct_lobe",
+    # A part metal is the mix of its dielectric and its metal: the diffuse
+    # layer loses the dielectric Fresnel share only. Pure torch, milliseconds.
+    "tests/unit_tests/test_materials.py::test_a_part_metal_is_the_mix_of_the_dielectric_and_the_metal",
     # The closed-shell ceiling's torch arm and its segment order keep their
     # integer gathers exact past MPS's 2**24: a real frame's fragments in a 4K
     # window, and a float32 spend over 2**24 rows.
