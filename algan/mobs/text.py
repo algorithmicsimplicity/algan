@@ -72,6 +72,14 @@ _LATEX_TOOLCHAIN_FOUND = None
 _LATEX_ESCAPES = {char: "\\" + char for char in "#$%&_{}"}
 _LATEX_ESCAPES.update(
     {
+        # Not ``\$``: since the 2020 LaTeX kernel that is ``\textdollar`` from
+        # the TS1 text-companion font (``tcrm``), which a TeX distribution
+        # without cm-super has to build with Metafont -- and where that fails
+        # (a default MiKTeX install) dvisvgm drops the glyph without an error,
+        # so "$5" rendered as "5". Slot 36 of the text font itself is the
+        # dollar, except in the italic face, where it is the pound sign; there
+        # the slanted face stands in, as LaTeX's own OT1 definition does.
+        "$": r"{\ifdim\fontdimen1\font>0pt \slshape\fi\char36 }",
         "\\": r"\textbackslash{}",
         "^": r"\textasciicircum{}",
         "~": r"$\sim$",
