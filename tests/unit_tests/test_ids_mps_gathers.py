@@ -612,6 +612,19 @@ def test_each_closed_solid_keeps_its_own_ceiling_past_the_ceiling(
         pixel_sort=True,
     )
     assert got["num_sheets"] == want["num_sheets"]
-    assert torch.equal(got["sheet_cov"], want["sheet_cov"]), _differ(
-        got["sheet_cov"], want["sheet_cov"], "sheet coverage"
-    )
+    # Bit for bit, except the torch arm on CUDA, whose scatter sums in no
+    # fixed order: 18 of 40 compactions of this same frame, numbered alike,
+    # differed from the first in a sheet's last bit (6e-8), which failed this
+    # test about one run in three. There the coverage is compared within
+    # float32 noise, as ``test_sheet_chain_kernels._assert_same_sheets``
+    # compares it -- five orders of magnitude below what one shared allowance
+    # moved. The kernel arm made the same bits 40 times of 40.
+    cov, cov_want = got["sheet_cov"].cpu(), want["sheet_cov"].cpu()
+    if ceiling_kernel or got["sheet_cov"].device.type != "cuda":
+        assert torch.equal(cov, cov_want), _differ(cov, cov_want, "sheet coverage")
+    else:
+        off = (cov.double() - cov_want.double()).abs()
+        assert not bool((off > 1e-5).any()), (
+            f"sheet coverage: {int((off > 1e-5).sum())} of {off.numel()} differ "
+            f"by up to {float(off.max()):.3g}"
+        )
