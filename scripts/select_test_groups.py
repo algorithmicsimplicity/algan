@@ -425,6 +425,10 @@ ALWAYS_CI = (
     "tests/unit_tests/test_mob_attribute_guards.py::",
     "tests/unit_tests/test_color_input_validation.py::",
     "tests/unit_tests/test_context_keyword_errors.py::",
+    # A viewer frame clears a stale error, the speech cache keys on voice and
+    # rate, an unknown ray-tracing setting gets a suggestion, and `algan
+    # check` follows the encoder's ffmpeg lookup: stand-ins, no render.
+    "tests/unit_tests/test_viewer_and_speech_fixes.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

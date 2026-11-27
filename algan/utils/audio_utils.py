@@ -594,11 +594,24 @@ def get_speech_generator_from_file(audio_file, transcript_file):
 
 
 def get_pyttsx_speech_generator(script):
+    engine = pyttsx3.init()
+
+    def _property(name):
+        try:
+            return str(engine.getProperty(name))
+        except Exception:  # noqa: BLE001 - an engine without it keys on ""
+            return ""
+
+    # The voice and rate change what is spoken, so they are part of the key:
+    # keyed on the text alone, changing either replayed the old recording.
     hasher = hashlib.sha256()
-    hasher.update(script.encode())
+    for part in ("pyttsx3", _property("voice"), _property("rate"), script):
+        hasher.update(part.encode())
+        hasher.update(b"\0")
     hash_bytes = hasher.hexdigest()[:32]
     file = os.path.join(SETTINGS.paths.cache_directory, "audio", f"{hash_bytes}.mp3")
-    if not os.path.exists(file):
+    # A zero-length file is a failed earlier synthesis, so it is a miss.
+    if not (os.path.exists(file) and os.path.getsize(file) > 0):
         Path(file).parent.mkdir(parents=True, exist_ok=True)
         # Synthesise beside the cache entry and publish it whole, as
         # _write_alignment_cache does: the entry's existence is what says it is
@@ -611,10 +624,13 @@ def get_pyttsx_speech_generator(script):
         )
         os.close(descriptor)
         try:
-            engine = pyttsx3.init()
             engine.save_to_file(script, temporary)
             engine.runAndWait()
             engine.stop()
+            # mkstemp made the file, so existence says nothing: an engine that
+            # wrote no audio left it empty, and caching that silences the line.
+            if os.path.getsize(temporary) == 0:
+                raise OSError("pyttsx3 speech synthesis produced no audio")
             os.replace(temporary, file)
         finally:
             with suppress(OSError):

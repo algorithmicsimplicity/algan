@@ -51,12 +51,20 @@ def _ffmpeg_binary() -> tuple[str | None, str]:
     imageio-ffmpeg's bundled build -- which is why a render on a machine with
     an empty ``PATH`` produces a perfectly good mp4 while ``PATH`` alone says
     there is no ffmpeg at all.
+
+    The order is the encoder's (``algan/utils/video_encoding.py``): the pinned
+    setting, then the ``FFMPEG_BINARY`` environment variable, then the bundled
+    build, then ``PATH``. The small lookup is duplicated here because this
+    module must not import ``algan`` at module scope.
     """
     from algan.settings import SETTINGS
 
     pinned = SETTINGS.paths.ffmpeg_binary
     if pinned:
         return str(pinned), "SETTINGS.paths.ffmpeg_binary"
+    from_env = os.environ.get("FFMPEG_BINARY")
+    if from_env and from_env.strip().lower() != "auto":
+        return from_env, "FFMPEG_BINARY environment variable"
     try:
         import imageio_ffmpeg
 
@@ -72,6 +80,7 @@ def _ffmpeg_binary() -> tuple[str | None, str]:
 def _cmd_check(_args: argparse.Namespace) -> int:
     """Check system environment and dependencies."""
     path_errors = False
+    unusable = False  # a missing ffmpeg or typesetter: renders cannot work
     print("=== Algan Environment Health Check ===")
     print(f"Algan: {_version()}")
 
@@ -219,10 +228,11 @@ def _cmd_check(_args: argparse.Namespace) -> int:
     if ffmpeg_path:
         print(f"FFmpeg: [OK] {ffmpeg_path} ({source})")
     else:
+        unusable = True
         print(
             "  [WARNING] No ffmpeg found: none pinned in "
-            "SETTINGS.paths.ffmpeg_binary, none bundled with imageio-ffmpeg, "
-            "and none on PATH. Video export will fail."
+            "SETTINGS.paths.ffmpeg_binary, none in FFMPEG_BINARY, none bundled "
+            "with imageio-ffmpeg, and none on PATH. Video export will fail."
         )
 
     # 5. Text typesetting: Pango and LaTeX.
@@ -255,10 +265,19 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             "unaffected - it renders through Pango."
         )
     else:
+        unusable = True
         print(
             "  [WARNING] Neither Pango nor LaTeX found: no text can be "
             'rendered at all. Install one - `pip install "algan[pango]"` for '
             "prose, a TeX distribution for formulas."
+        )
+
+    if importlib.util.find_spec("typst") is not None:
+        print("Typst: [OK] typst installed")
+    else:
+        print(
+            "  [INFO] Typst not found: Typst text and math are unavailable. "
+            'Install it with `pip install "algan[typst]"`.'
         )
 
     # 6. Paths -- this command's help says it reports them, and "where did my
@@ -320,7 +339,7 @@ def _cmd_check(_args: argparse.Namespace) -> int:
         print(f"  [ERROR] could not check Algan's paths: {exc}")
 
     print("======================================")
-    return 1 if path_errors else 0
+    return 1 if (path_errors or unusable) else 0
 
 
 def _daemon_home() -> str:

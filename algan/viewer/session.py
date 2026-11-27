@@ -861,6 +861,9 @@ class ViewerSession:
         with self._lock:
             if self._closed:
                 return False
+            # A frame rendered, so an earlier failure was transient: without
+            # this the page kept showing that error for the rest of the session.
+            self._error = None
             size = len(png)
             self._frame_bytes_estimate = max(self._frame_bytes_estimate, size)
             if index in self._frame_waiters:

@@ -691,7 +691,7 @@ class RayTracingSettings:
 
     def __setattr__(self, name, value):
         if name not in _field_names():
-            raise AttributeError(name)
+            _unknown(name)
         self.set(**{name: value})
 
     def set(self, source=None, **kwargs):

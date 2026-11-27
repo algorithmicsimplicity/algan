@@ -43,10 +43,17 @@ report when a scene never launches them).
 
 Usage from a benchmark script::
 
+    from algan import PREVIEW, SETTINGS, Scene, Square
     from algan.utils.profiling_utils import profile_scene
 
-    enable_ray_tracing(...)
-    profile_scene(scene_func, video_settings, tag)
+
+    def scene_func():
+        Square().spawn()
+        Scene.wait(1)
+
+
+    SETTINGS.raytracing.set(samples_per_pixel=1)
+    profile_scene(scene_func, PREVIEW, "square")
 
 Env knobs (all optional):
     ALGAN_TI_KERNEL_PROFILER=0   disable the Taichi kernel profiler re-init
