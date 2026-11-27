@@ -93,7 +93,8 @@ in `1.3.3.post3`. On 2026-11-27 it was regenerated against the tree
 `:208`, 0012 having added 92 lines above it) and its pre-image blob id moved.
 All thirteen apply strictly in order onto a pristine `v1.3.3`, **57 files,
 +1306/−98**, and the result is byte-identical to the tree it was regenerated
-in. It is **not yet in a published wheel**: see "0013" below.
+in, and a Windows build of all thirteen passed 0013's gate. It is **not yet
+in a published wheel**: see "0013" below.
 
 Numeric order is the convention rather than a constraint, and it is worth being
 precise about which, because several patches share a file:
@@ -1538,9 +1539,17 @@ the patched `jit_cpu.cpp`, and nothing was published):
   the 9 GB wall, which is the placement that used to strand its read-only data
   in a low hole; the whole object moved with it and linked.
 
-Not verified: the Linux wheels beyond building (0013 changes nothing they
-run), a full Algan test run on the patched wheel, and -- since the renumbering
--- a build of all thirteen. The gate runs with the offline cache off, so it
+**All thirteen**, after the renumbering, built on 2026-11-27 in run
+[`45950071481`](https://github.com/algorithmicsimplicity/algan/actions/runs/45950071481)
+(Windows only, Python 3.11; nothing was published): every patch applied in
+order, the wheel built (sha256 `254643300a709c40...`), and the leg's gate step
+passed -- each kernel's code and read-only data in one block, and a kernel
+linked while only 64 KB holes were free low down.
+
+Not verified: the Linux and macOS wheels of the thirteen (0013 changes nothing
+they run, but they were not built after the renumbering), a run of the gate on
+this machine against the thirteen (the venv is Python 3.13, the wheel cp311),
+and a full Algan test run on the patched wheel. The gate runs with the offline cache off, so it
 links freshly compiled objects only; that an object 0012 loads from
 `cpu_object_cache/` gets the same single block is read from the source (the
 factory serves every `object_layer_.add`), not run. It ships in the next
