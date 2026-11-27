@@ -252,7 +252,7 @@ def _opt_disabled(name):
     gridcross,gridsoup,audiomix,audioprobe,staticbg,margindecay,strokesheets,
     strokepixels,solobands,packedfragsort,binfragsort,fusedbinkeys,hostbackoff,
     writerrepeats,writerview,unrecordedset,rendergc,arenareuse,tilesync,loopsync,
-    bgupload,exactfills,glossfuse,adaptivepool,acceldedup disables individual
+    bgupload,exactfills,glossfuse,adaptivepool,acceldedup,densepricing disables individual
     optimizations (read once, first use). Two more, optixshadow and
     optixgather, keep one half of the OptiX side path
     (SETTINGS.raytracing.experimental.optix) on the software walk.
@@ -2948,6 +2948,13 @@ class AnimationTimeline:
         self._segment_windows = {}
         self._segment_post_cache = {}
         self._segment_edit_cache = {}
+        # Set while the batch sizer prices actors (RenderLoopMixin.
+        # _price_actors_per_timestep): the (attr, mob id) of every color
+        # texture whose estimate read its previous build as cheap, and whether
+        # those estimates should answer for a dense window instead. See
+        # Surface._texture_window_will_be_dense.
+        self._sizing_keys = None
+        self._sizing_dense = False
 
     def set_active_edit_event(self, event):
         """Set the function application that subsequently recorded attribute
@@ -4258,6 +4265,79 @@ class AnimationTimeline:
                 render_bytes += cost
         return animation_bytes, render_bytes
 
+    def dense_window_changes(self, attr_name, mob_id, times):
+        """Whether ``mob_id``'s rows of ``attr_name`` will be materialized
+        over ``times`` as one image per frame *and* change inside the window.
+
+        Asked by the batch sizer, of a window it has not fetched yet. A
+        Surface prices its color texture off its previous primitive build
+        (``Surface._texture_window_collapsed`` / ``_texture_window_lerp``): a
+        window that build found constant, or described as segments, costs one
+        image a batch rather than five a frame. That says nothing about the
+        next window. The first window of a cross-fade this gate declines (an
+        updater depends on the Mob, say) is dense and animated, so nothing
+        downstream collapses it: priced as the still window before it, it was
+        sized two or three times too long, and its per-frame texels, their
+        decode, their mips and the merge's copy of all of them overran the
+        device. A card under WDDM does not fail there, it pages into shared
+        system memory, and each such batch took tens of seconds instead of a
+        fraction of one.
+
+        True only where the recording proves both halves: the window is not
+        described (the gate itself, run as a probe on the frame times the
+        fetch will materialize), and something recorded writes the rows while
+        it lasts -- a function application active in it, or an edit that lands
+        between its first and last frame. Anything else answers False and
+        leaves the previous build's price alone, updater writes included:
+        what an updater will write is not in the recording, and the build's
+        own equality probe is what prices those, one batch late as before.
+        """
+        tl = self.attr_to_timeline.get(attr_name)
+        if tl is None or attr_name not in self._segment_window_attrs:
+            return False
+        rows = tl.mob_id_to_inds.get(mob_id)
+        if rows is None or times.numel() == 0:
+            return False
+        rows = rows.view(-1)
+        self._resolve_replay_windows()
+        functions = self.function_timeline.get_functions_for_times(times)
+        first, last = float(times.min()), float(times.max())
+        changes = any(
+            edit_attr == attr_name and bool(torch.isin(e_inds.view(-1), rows).any())
+            for fev in functions
+            for edit_attr, _mid, _rec, e_inds in fev.recorded_edits
+        )
+        if not changes:
+            # An edit whose step lands strictly after the first frame and no
+            # later than the last one: the window holds both of its states.
+            # Scanned latest first, since the log is in execution order and a
+            # render walks forward through it; an edit of other rows is one
+            # tensor comparison.
+            for ed in reversed(tl.edits):
+                end = float(ed.time.end)
+                if first < end <= last and bool(
+                    torch.isin(ed.indexes.view(-1), rows).any()
+                ):
+                    changes = True
+                    break
+        if not changes:
+            return False
+        if tl.record_end_points or bool((times[1:] < times[:-1]).any()):
+            return True
+        from algan.rendering.raytracing import settings as rt_settings
+
+        if not rt_settings.texture_time_lerp_active():
+            return True
+        updaters = self.function_timeline.get_updaters_for_times(times)
+        if self._active_mob_ids([], functions, updaters) is None:
+            return True
+        return (
+            self._describe_one_segment_window(
+                attr_name, tl, mob_id, times, functions, updaters, probe=True
+            )
+            is None
+        )
+
     def segment_window_for(self, attr_name, mob_id):
         """The current batch's :class:`SegmentWindow` for one mob's rows of
         ``attr_name``, or None when the window was materialized densely.
@@ -4393,10 +4473,16 @@ class AnimationTimeline:
         return cached
 
     def _describe_one_segment_window(
-        self, attr, tl, mob_id, times, functions, updaters
+        self, attr, tl, mob_id, times, functions, updaters, *, probe=False
     ):
         """One (attribute, mob) description; ``(SegmentWindow, claimed
         events)`` or None. See :meth:`_describe_segment_windows`.
+
+        ``probe`` runs the gate alone: it answers ``True`` where a description
+        would be returned and builds none of it (no endpoint image is read or
+        stacked), so the batch sizer can ask what a window it has not
+        materialized yet will turn out to be
+        (:meth:`dense_window_changes`).
         """
         rows = tl.mob_id_to_inds.get(mob_id)
         if rows is None:
@@ -4491,7 +4577,7 @@ class AnimationTimeline:
             if slot is None:
                 slot = len(tensors)
                 emitted[key] = slot
-                tensors.append(build())
+                tensors.append(None if probe else build())
                 key_parts.append(key)
             return slot
 
@@ -4551,6 +4637,8 @@ class AnimationTimeline:
             # More endpoint images than half the window's frames: the dense
             # path is no bigger, so keep its exactness.
             return None
+        if probe:
+            return True
 
         endpoints = torch.stack(tensors)
         seg = SegmentWindow(
