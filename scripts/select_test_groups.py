@@ -414,6 +414,11 @@ ALWAYS_CI = (
     # The angle between two vectors is finite at 0 and 180 degrees, so look()
     # at a target the Mob already faces does not raise: tensors and Squares.
     "tests/unit_tests/test_rotation_between_vectors.py::",
+    # Timeline regressions recorded and materialized without a render: a
+    # failed replay leaves authoring state and names its updater, a spawn
+    # before time zero raises, and an opacity updater ends with its Mob.
+    "tests/unit_tests/test_timeline_error_paths.py::",
+    "tests/unit_tests/test_updater_lifespan.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

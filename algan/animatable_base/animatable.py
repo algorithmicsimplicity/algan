@@ -446,6 +446,23 @@ def _note_animated_call_before_spawn(mob, func):
     calls.setdefault(mob.id, func.__name__)
 
 
+def _spawn_time(animation_manager, mob):
+    """The timestamp a spawn at the cursor is stamped with, which must be >= 0.
+
+    A negative start is indistinguishable from the "never spawned" sentinel, so
+    the Mob would silently be treated as unspawned and never drawn.
+    """
+    stamp = animation_manager.context.get_current_time()
+    if stamp() < 0:
+        raise AlganConfigurationError(
+            f"{type(mob).__name__} was spawned before time zero: the cursor is at "
+            f"{float(stamp()):g} s, which happens after a rewind() past the start "
+            "of the video. A Mob spawned at a negative time counts as never "
+            "spawned, so it would never appear. Spawn it at or after time zero."
+        )
+    return stamp
+
+
 def attr_ranges_for_mob(attr_timeline, mob):
     """One mob's own rows of an attribute buffer, as a :class:`RowRanges`.
 
@@ -2294,9 +2311,7 @@ class Animatable:
                     timeline.modify_attribute(
                         "opacity", rows, torch.zeros_like(targets)
                     )
-                    node.lifespan.start = (
-                        self.animation_manager.context.get_current_time()
-                    )
+                    node.lifespan.start = _spawn_time(self.animation_manager, node)
                     timeline.register_spawn(node, node.lifespan)
                 else:
                     targets, remaining = pending
@@ -2330,9 +2345,7 @@ class Animatable:
                 )
                 if len(fresh) > 1:
                     for node in fresh:
-                        node.lifespan.start = (
-                            node.animation_manager.context.get_current_time()
-                        )
+                        node.lifespan.start = _spawn_time(node.animation_manager, node)
                         node.scene.timeline_manager.register_spawn(node, node.lifespan)
                     self._collated_fade_in(fresh)
                 # Subclass entrances, and anything the pass above left out, run
@@ -2349,7 +2362,7 @@ class Animatable:
         with Sync(animation_manager=self.animation_manager):
             lifespan = self.lifespan
             if lifespan.start() < 0:
-                lifespan.start = self.animation_manager.context.get_current_time()
+                lifespan.start = _spawn_time(self.animation_manager, self)
                 self.scene.timeline_manager.register_spawn(self, lifespan)
                 if animate:
                     self.on_create()

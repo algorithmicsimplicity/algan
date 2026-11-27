@@ -2147,6 +2147,29 @@ class AttributeTimeline:
         self.active_time_inds = slice(None, None, None)
         return self
 
+    def reapply_lifespan_mask(self, times):
+        """Zero the rows of Mobs outside their lifespan, after updaters ran.
+
+        :meth:`rematerialize_state_at_times` masks the base state, but an updater
+        that writes this attribute (``opacity``) then overwrites the zeros, so a
+        despawned Mob would stay visible. The mask is 0 or 1, so applying it
+        again leaves every row inside its lifespan exactly as the updater left it.
+        """
+        if not self.record_end_points or self.active_state is self.current_state:
+            return
+        t = times.view(-1, 1)
+        if self._active_row_map is not None:
+            # Compact buffer: its columns are _mapped_rows, in order, including
+            # rows an updater's dependency trace appended mid-batch.
+            rows = self._mapped_rows
+            if rows is None or not rows.numel():
+                return
+            endpoint = self._end_points[:, rows.to(self._end_points.device)]
+        else:
+            endpoint = self._end_points[:, : self.active_state.shape[1]]
+        mask = ((endpoint[..., 0] <= t) & (t < endpoint[..., 1])).unsqueeze(-1)
+        self.active_state *= mask.to(self.active_state.device)
+
     def set_active_time_inds(self, time_inds):
         self.active_time_inds = time_inds
 
@@ -2448,6 +2471,33 @@ def _describe_updater(event):
         name = getattr(event.function, "__name__", "the update function")
         where = f" ({name}, {os.path.basename(code.co_filename)}:{code.co_firstlineno})"
     return f"the updater on {_describe_mob(event.caller)}{where}"
+
+
+_AMBIGUOUS_TENSOR_BOOL = "Boolean value of Tensor with more than one value is ambiguous"
+
+
+def _annotate_updater_error(exc, event):
+    """Say which updater raised during replay, without changing the exception type."""
+    if getattr(exc, "_algan_updater_noted", False):
+        return
+    note = f"Raised while replaying {_describe_updater(event)}."
+    if _AMBIGUOUS_TENSOR_BOOL in str(exc):
+        note += (
+            " An updater's `t` holds one time per frame of the batch being"
+            " rendered, so `if t > 1:` cannot branch on it; compute both sides"
+            " and select with `torch.where(t > 1, a, b)`."
+        )
+    try:
+        if hasattr(exc, "add_note"):
+            exc.add_note(note)
+        elif len(exc.args) == 1 and isinstance(exc.args[0], str):
+            # Python 3.10 has no exception notes; extend the message in place.
+            exc.args = (f"{exc.args[0]}\n{note}",)
+        else:
+            return
+        exc._algan_updater_noted = True
+    except Exception:  # noqa: BLE001 - annotation must never mask the real error
+        pass
 
 
 class UpdaterSpan:
@@ -4728,6 +4778,14 @@ class AnimationTimeline:
                 timeline.begin_replay_scope()
         try:
             return self._replay_state_to_times_inner(times, active_mobs)
+        except BaseException:
+            # Leave the timeline in authoring state: a half-finished batch
+            # would otherwise keep its times and batched buffers, and later
+            # authoring would record against them.
+            self._materialization_times = None
+            self._materialized_mob_ids = None
+            self.clear_buffers()
+            raise
         finally:
             self._replay_depth -= 1
             if self._replay_depth == 0:
@@ -4898,6 +4956,9 @@ class AnimationTimeline:
 
         for timeline in self.attr_to_timeline.values():
             timeline.set_active_time_inds(slice(None, None, None))
+            if updaters:
+                # An updater writing opacity must not outlive the Mob's lifespan.
+                timeline.reapply_lifespan_mask(times)
         self._materialization_times = None
         self._materialized_mob_ids = None
         return self
@@ -4917,6 +4978,9 @@ class AnimationTimeline:
         self._updater_call_write_count = AttributeTimeline.write_count
         try:
             f.function(caller, elapsed.view(-1, 1, 1), *args, **kwargs)
+        except Exception as exc:
+            _annotate_updater_error(exc, f)
+            raise
         finally:
             self.end_updater_dependency_trace(previous_trace)
 
