@@ -154,6 +154,36 @@ def test_negative_sign_tracks_the_first_visible_integer_digit():
             assert float(_drawn(display.negative_sign)[frame]) > 0.5
 
 
+@pytest.mark.parametrize(
+    ("value", "decimal_places", "expected"),
+    [
+        (-0.001, 2, "0.00"),
+        (-0.004999, 2, "0.00"),
+        (-0.005001, 2, "-0.01"),
+        (-0.4, 0, "0"),
+        (-0.6, 0, "-1"),
+    ],
+)
+def test_a_value_that_rounds_to_zero_has_no_minus_sign(value, decimal_places, expected):
+    # Manim shows 0.00 here, and a counter running from -5 to 5 with no
+    # decimal places showed "-0" for every frame in (-0.5, 0).
+    with Scene():
+        display = DecimalNumber(value, decimal_places=decimal_places).spawn(
+            animate=False
+        )
+        assert _displayed_value(display) == expected
+
+
+def test_a_count_through_zero_never_shows_minus_zero():
+    with Scene() as scene:
+        display = DecimalNumber(-2, decimal_places=0).spawn(animate=False)
+        with Sync(runtime=1, easing=easings.identity):
+            display.value = 2
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.0, 0.3, 0.45, 0.6]))
+        shown = [_displayed_value(display, frame) for frame in range(4)]
+        assert shown == ["-2", "-1", "0", "0"]
+
+
 def _assert_hidden(display, frames):
     # Inspect geometry descendants too: the root's masked opacity alone cannot
     # catch a glyph write that re-enables the renderable rows during replay.
@@ -615,3 +645,57 @@ def test_replayed_growth_says_what_set_the_value(grow):
         with pytest.raises(UnsupportedFeatureError, match=writer) as raised:
             scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
         assert "integer_places=" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "kwargs", "shown"),
+    [
+        (1234567.89, {}, "1234567.88"),
+        (123456789, {"decimal_places": 0}, "123456792"),
+        (123456789.0, {"significant_figures": 9}, "123456792"),
+    ],
+)
+def test_a_value_float32_cannot_show_warns_with_the_digits_drawn(value, kwargs, shown):
+    # A DecimalNumber's value is held on the timeline as a 32-bit float, about
+    # seven significant digits, and showed rounded digits without a word.
+    from algan.errors import ApproximationWarning
+
+    with Scene():
+        with pytest.warns(ApproximationWarning, match="32-bit") as caught:
+            display = DecimalNumber(value, **kwargs).spawn(animate=False)
+        [warning] = [w for w in caught if w.category is ApproximationWarning]
+        assert warning.filename == __file__
+        assert f"shows {shown} for" in str(warning.message)
+        assert _displayed_value(display) == shown
+
+        display = DecimalNumber(0, **kwargs).spawn(animate=False)
+        with pytest.warns(ApproximationWarning, match=f"shows {shown} for"):
+            display.value = value
+
+
+def test_a_value_float32_shows_exactly_does_not_warn():
+    import warnings
+
+    from algan.errors import ApproximationWarning
+
+    with Scene(), warnings.catch_warnings():
+        warnings.simplefilter("error", ApproximationWarning)
+        display = DecimalNumber(123456.78).spawn(animate=False)
+        display.value = 16777216
+        display = DecimalNumber(0.1, significant_figures=7)
+        display.value = torch.tensor([1.5], dtype=torch.float32)
+        # A decimal tie: the double reads "1.11" and the float "1.12", which
+        # is the number as written, not a digit lost to the narrower float.
+        DecimalNumber(1.115)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"significant_figures": 3}])
+def test_a_value_beyond_float32_range_says_so_rather_than_infinite(kwargs):
+    from algan.errors import AlganConfigurationError
+
+    with Scene():
+        with pytest.raises(AlganConfigurationError, match="32-bit float"):
+            DecimalNumber(1e300, **kwargs)
+        display = DecimalNumber(1, **kwargs)
+        with pytest.raises(AlganConfigurationError, match="32-bit float"):
+            display.value = -1e300

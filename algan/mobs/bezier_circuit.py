@@ -945,6 +945,9 @@ class BezierCircuitCubic(Mob):
                 f"in groups of four, P0, P1, P2, P3 per cubic segment; got "
                 f"{control_points.shape[0]} of size {control_points.shape[-1]}"
             )
+        # A NaN or an infinity otherwise surfaced as an IndexError from deep in
+        # the frame derivation (_circuit_frames), naming nothing the caller wrote.
+        reject_non_finite("control_points", control_points)
 
         # A circuit's ``location`` is DERIVED below, from the control points --
         # it is the centroid of the region they enclose, not a free parameter --

@@ -235,6 +235,31 @@ ALWAYS_CI = (
     "tests/unit_tests/test_tilted_circuit_coverage.py::test_a_small_square_keeps_both_walls_at_its_corners",
     "tests/unit_tests/test_tilted_circuit_coverage.py::test_a_corner_on_a_pixel_centre_covers_a_quarter_of_its_pixel",
     "tests/unit_tests/test_tilted_circuit_coverage.py::test_a_stem_and_a_slit_narrower_than_a_pixel_cover_their_areas",
+    # Text and 2D shapes, without a render: a right-to-left line Pango drops,
+    # the SVG recipe cache as plain data that is never unpickled, a private
+    # tessellation RNG and whole cache entries, typesetting that is bounded
+    # and keyed on its compiler, a minus sign only on digits that are not
+    # zero, and degenerate radii, arcs and control points reported by name.
+    "tests/unit_tests/test_text_right_to_left.py::",
+    "tests/unit_tests/test_manim_svg_cache.py::test_the_in_process_recipe_memo_is_bounded",
+    "tests/unit_tests/test_manim_svg_cache.py::test_a_cache_file_is_never_unpickled",
+    "tests/unit_tests/test_manim_svg_cache.py::test_a_recipe_naming_a_class_outside_vendored_manim_is_refused",
+    "tests/unit_tests/test_manim_svg_cache.py::test_recipes_are_saved_as_plain_data_and_rebuild_the_same_glyphs",
+    "tests/unit_tests/test_manim_svg_cache.py::test_two_saves_of_one_key_write_through_different_temporary_files",
+    "tests/unit_tests/test_tessellation_cache.py::test_tessellating_leaves_the_global_rng_alone",
+    "tests/unit_tests/test_tessellation_cache.py::test_an_entry_is_published_whole",
+    "tests/unit_tests/test_typeset_cache.py::test_every_typesetting_run_is_bounded_and_reads_no_stdin",
+    "tests/unit_tests/test_typeset_cache.py::test_a_non_positive_timeout_means_no_limit",
+    "tests/unit_tests/test_typeset_cache.py::test_one_document_under_two_compilers_is_cached_twice",
+    "tests/unit_tests/test_numeric_display.py::test_a_value_that_rounds_to_zero_has_no_minus_sign",
+    "tests/unit_tests/test_numeric_display.py::test_a_count_through_zero_never_shows_minus_zero",
+    "tests/unit_tests/test_numeric_display.py::test_a_value_beyond_float32_range_says_so_rather_than_infinite",
+    "tests/unit_tests/test_shape_accessors.py::test_a_zero_radius_circle_warns_that_it_cannot_grow",
+    "tests/unit_tests/test_shape_accessors.py::test_a_negative_radius_circle_warns_that_it_faces_inward",
+    "tests/unit_tests/test_shape_accessors.py::test_a_positive_radius_circle_does_not_warn",
+    "tests/unit_tests/test_shape_accessors.py::test_a_full_turn_line_arc_is_refused",
+    "tests/unit_tests/test_shape_accessors.py::test_other_line_arcs_still_build_finite_points",
+    "tests/unit_tests/test_shape_accessors.py::test_non_finite_control_points_are_refused_by_name",
     # An extent past int32 takes the torch arm, or is refused, instead of wrapping.
     "tests/unit_tests/test_sheet_stream.py::test_kernel_extents_stop_below_2_31_on_each_extent",
     "tests/unit_tests/test_sheet_stream.py::test_a_chunk_past_the_emissions_int32_extents_is_refused",
@@ -339,6 +364,13 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_frame_local_edges_keep_their_slots_past_the_ceiling",
     "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_the_vertex_parameters_survive_the_mps_repeat_interleave",
     "tests/unit_tests/test_bezier_polyline_mps_repeat.py::test_the_cache_places_every_edge_past_the_ceiling",
+    # A few seconds each: a DecimalNumber says when its 32-bit value shows
+    # other digits than it was given, a truncated tessellation entry is
+    # rebuilt, and a formula that never finishes is stopped (a real LaTeX run).
+    "tests/unit_tests/test_numeric_display.py::test_a_value_float32_cannot_show_warns_with_the_digits_drawn",
+    "tests/unit_tests/test_numeric_display.py::test_a_value_float32_shows_exactly_does_not_warn",
+    "tests/unit_tests/test_tessellation_cache.py::test_a_truncated_entry_is_re_tessellated",
+    "tests/unit_tests/test_typeset_cache.py::test_a_formula_that_never_finishes_is_stopped",
     # And the ids the scene build gathers or repeats past 2**24, each test in
     # a batch past the ceiling: a member's surface, a circuit's edges, gaps,
     # bounds and z bias, a promoted group's triangle and a sampled vertex.

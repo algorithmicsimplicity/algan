@@ -11,6 +11,7 @@ succeeded and every later one died on ``KeyError: 'root'``.
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 
 import manim as mn
@@ -457,3 +458,92 @@ def test_a_replayed_svg_logs_what_its_parse_logged(isolated_svg_cache):
     assert logged_by_import() == parsed, "the replay from memory said nothing"
     svg_cache._MEM_CACHE.clear()
     assert logged_by_import() == parsed, "the replay from disk said nothing"
+
+
+def test_the_in_process_recipe_memo_is_bounded(monkeypatch):
+    # It kept every recipe a process ever parsed: a label built per frame grew
+    # it without limit. Past its size the oldest half goes.
+    monkeypatch.setattr(svg_cache, "_MEM_CACHE", {})
+    monkeypatch.setattr(svg_cache, "_MEM_CACHE_SIZE", 8)
+    for index in range(20):
+        svg_cache._memoize(f"key{index}", ("recipe", index))
+        assert len(svg_cache._MEM_CACHE) <= 8
+    assert "key19" in svg_cache._MEM_CACHE
+    assert "key0" not in svg_cache._MEM_CACHE
+
+
+class _RunsCodeWhenUnpickled:
+    marker = None
+
+    def __reduce__(self):
+        return (pathlib.Path.touch, (pathlib.Path(self.marker),))
+
+
+def test_a_cache_file_is_never_unpickled(isolated_svg_cache, tmp_path):
+    # The disk layer used torch.load(weights_only=False), so anyone who could
+    # write into the cache directory ran code in the next process to typeset
+    # the matching string.
+    marker = tmp_path / "ran"
+    payload = _RunsCodeWhenUnpickled()
+    payload.marker = os.fspath(marker)
+    svg_cache._cache_dir().mkdir(parents=True, exist_ok=True)
+    for path in (
+        svg_cache._disk_path("planted"),
+        svg_cache._cache_dir() / "planted.pt",
+    ):
+        torch.save(payload, path)
+        assert svg_cache._load_disk("planted") is None
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        ["object", "os", "system", ["dict", []]],
+        ["object", "builtins", "object", ["dict", []]],
+        ["object", "manim.utils.file_ops", "Path", ["dict", []]],
+        ["enum", "subprocess", "Popen", 0],
+    ],
+)
+def test_a_recipe_naming_a_class_outside_vendored_manim_is_refused(node):
+    with pytest.raises(svg_cache._NotPlainData):
+        svg_cache._decode(node)
+
+
+def test_recipes_are_saved_as_plain_data_and_rebuild_the_same_glyphs(
+    isolated_svg_cache,
+):
+    text = mn.Text("plain data", use_svg_cache=True)
+    [path] = sorted(svg_cache._cache_dir().glob("*.pt"))
+    assert path.name.endswith(f".{svg_cache._DISK_FORMAT}.pt")
+    torch.load(path, weights_only=True)  # constructs nothing but containers
+
+    svg_cache._MEM_CACHE.clear()
+    again = mn.Text("plain data", use_svg_cache=True)
+    for before, after in zip(
+        text.family_members_with_points(), again.family_members_with_points()
+    ):
+        assert type(before) is type(after)
+        assert before.points.tobytes() == after.points.tobytes()
+        assert before.fill_rgbas.tobytes() == after.fill_rgbas.tobytes()
+
+
+def test_two_saves_of_one_key_write_through_different_temporary_files(
+    isolated_svg_cache, monkeypatch
+):
+    # The temporary name was ``{key}.pt.{pid}.tmp``, shared by every thread of
+    # a process saving the same key.
+    written = []
+    original_save = torch.save
+
+    def watching_save(obj, f, *args, **kwargs):
+        written.append(os.fspath(f))
+        return original_save(obj, f, *args, **kwargs)
+
+    monkeypatch.setattr(svg_cache.torch, "save", watching_save)
+    svg_cache._save_disk("samekey", (svg_cache._RECIPE_TAG, (), None, ()))
+    svg_cache._save_disk("samekey", (svg_cache._RECIPE_TAG, (), None, ()))
+
+    assert len(set(written)) == 2
+    assert os.fspath(svg_cache._disk_path("samekey")) not in written
+    assert svg_cache._load_disk("samekey") == (svg_cache._RECIPE_TAG, (), None, ())

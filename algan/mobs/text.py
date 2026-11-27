@@ -495,6 +495,9 @@ class Tex(Mob):
                 )
             finally:
                 _TYPESETTING.warnings = previous
+            _warn_of_dropped_pango_lines(
+                delimiter.join(self.tex_strings), len(t.submobjects), raised
+            )
 
         if latex:
             if glyphs is None:
@@ -1068,6 +1071,64 @@ def _raise_again(raised):
 
     for category, message in raised:
         warnings.warn(message, category, stacklevel=_user_stacklevel())
+
+
+def _right_to_left_lines(text: str) -> list[str]:
+    """The lines of ``text`` that Pango lays out right to left.
+
+    A paragraph's base direction is that of its first strongly directional
+    character (Unicode's bidi rule P2): a line that opens with Hebrew or
+    Arabic is right to left, whatever follows it.
+    """
+    import unicodedata
+
+    lines = []
+    for line in text.split("\n"):
+        for character in line:
+            direction = unicodedata.bidirectional(character)
+            if direction == "L":
+                break
+            if direction in ("R", "AL"):
+                lines.append(line)
+                break
+    return lines
+
+
+def _warn_of_dropped_pango_lines(text: str, glyph_count: int, raised: list) -> None:
+    """Warn, at the script's line, when Pango drew less of ``text`` than asked.
+
+    Pango right-aligns a right-to-left line inside the layout width Manim
+    gives it, which puts the line past the edge of the surface it is drawn
+    on, and its glyphs are lost with no error: a ``Text`` in Hebrew or
+    Arabic was an invisible Mob. Shaping such text properly is not
+    supported yet, so this says so rather than leaving it silent. Any other
+    text that is not blank but comes back with no glyphs is reported too.
+    The warnings are added to ``raised`` so that a later ``Text`` built from
+    the remembered outlines raises them again.
+    """
+    import warnings
+
+    from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
+
+    dropped = _right_to_left_lines(text)
+    if dropped:
+        shown = ", ".join(repr(line) for line in dropped[:3])
+        more = f" and {len(dropped) - 3} more" if len(dropped) > 3 else ""
+        message = (
+            "Text cannot lay out a line that starts in a right-to-left "
+            f"script yet, and leaves out some or all of {shown}{more}. Start "
+            "each such line with a left-to-right mark, '\\u200e', to have it "
+            "drawn."
+        )
+    elif glyph_count == 0 and text.strip():
+        message = (
+            f"Pango drew no glyphs for {text!r}, so this Text is invisible. "
+            "Check that the font has these characters."
+        )
+    else:
+        return
+    raised.append((UnsupportedFeatureWarning, message))
+    warnings.warn(message, UnsupportedFeatureWarning, stacklevel=_user_stacklevel())
 
 
 def _installed_font(font: str, installed) -> str:

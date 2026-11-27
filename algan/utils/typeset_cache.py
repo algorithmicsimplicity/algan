@@ -20,8 +20,9 @@ beside ``tex_dir``, and only finished files enter the cache, by
 - two processes building the same formula both succeed, and the second rename
   replaces identical bytes.
 
-The layout is unchanged -- ``tex_hash(source) + ".svg"`` beside its ``.tex`` -- so
-SVGs cached by earlier versions are reused, and the build directory is a
+The layout is unchanged -- ``tex_hash(source) + ".svg"`` beside its ``.tex``, the
+hash also covering the compiler when it is not the default ``latex`` -- so SVGs
+cached by earlier versions are reused, and the build directory is a
 *sibling* of ``tex_dir`` rather than inside it, so an older Algan sharing the
 cache, still sweeping ``tex_dir`` after every formula, cannot reach it either.
 
@@ -42,6 +43,18 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+
+from algan.environment import env_float
+from algan.errors import AlganError
+
+#: How long one LaTeX or dvisvgm run may take, in seconds, before it is
+#: stopped, unless ``ALGAN_TEX_TIMEOUT`` says otherwise (0 or less: no limit).
+#: ``-halt-on-error`` stops LaTeX at the first error but not in a macro that
+#: never stops expanding (``\def\x{\x}\x``), which used to hang the script --
+#: and a warm daemon, with every run queued behind it -- forever. Generous,
+#: because a formula is normally typeset in well under a second, and a slow
+#: one (a large TikZ picture on a loaded machine) must not be cut short.
+_DEFAULT_TIMEOUT_SECONDS = 300.0
 
 #: Build directories older than this are leftovers of a process killed
 #: mid-build (no LaTeX run takes this long), and are swept away.
@@ -65,6 +78,39 @@ _TEXT_MODE_COMMAND = re.compile(
 
 _swept_build_dirs: set[str] = set()
 _sweep_lock = threading.Lock()
+
+
+class TypesettingTimeoutError(AlganError, TimeoutError):
+    """A LaTeX or dvisvgm run took longer than ``ALGAN_TEX_TIMEOUT`` allows."""
+
+    code = "ALGAN_TYPESETTING_TIMEOUT"
+
+
+def _timeout_seconds() -> float | None:
+    seconds = env_float("ALGAN_TEX_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
+    return seconds if seconds > 0 else None
+
+
+def _run(command, tool: str, subject: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run one typesetting tool, with no stdin and a bounded running time.
+
+    stdin is closed so that nothing can ever wait on the terminal for input
+    (or on the daemon's socket), and :func:`subprocess.run` kills the tool
+    when the time runs out.
+    """
+    timeout = _timeout_seconds()
+    try:
+        return subprocess.run(
+            command, stdin=subprocess.DEVNULL, timeout=timeout, **kwargs
+        )
+    except subprocess.TimeoutExpired:
+        raise TypesettingTimeoutError(
+            f"{tool} was still running on {subject} after {timeout:g} seconds "
+            "and was stopped. A formula normally takes a second or two; one "
+            "that never finishes is usually a macro that keeps expanding "
+            r"itself (such as \def\x{\x}\x), so check the formula. If it is "
+            "only slow, set ALGAN_TEX_TIMEOUT to more seconds (0 for no limit)."
+        ) from None
 
 
 @contextlib.contextmanager
@@ -157,7 +203,7 @@ def build_tex_svg(expression, environment=None, tex_template=None) -> Path:
         source = tex_template.get_texcode_for_expression(expression)
 
     tex_dir = Path(config.get_dir("tex_dir"))
-    stem = tex_hash(source)
+    stem = tex_hash(source + _toolchain_suffix(tex_template))
     svg_file = tex_dir / f"{stem}.svg"
     if svg_file.exists():
         return svg_file
@@ -174,6 +220,10 @@ def build_tex_svg(expression, environment=None, tex_template=None) -> Path:
         output_format = tex_template.output_format
         try:
             built = _compile(tex_file, tex_template.tex_compiler, output_format, builds)
+        except TypesettingTimeoutError as error:
+            raise TypesettingTimeoutError(
+                f"{error}\nThe formula: {expression}"
+            ) from None
         except ValueError as error:
             hint = _math_mode_dollar_hint(expression, environment)
             if hint is None:
@@ -190,6 +240,23 @@ def build_tex_svg(expression, environment=None, tex_template=None) -> Path:
     return svg_file
 
 
+def _toolchain_suffix(tex_template) -> str:
+    """What the cache name adds to the source for a non-default toolchain.
+
+    Manim names a formula's SVG after its source alone, so two templates with
+    the same document and different compilers (latex and xelatex) shared one
+    file, and whichever built first answered for both. The default
+    toolchain adds nothing, which keeps every SVG cached before this was
+    added a hit.
+    """
+    compiler = tex_template.tex_compiler
+    if not isinstance(compiler, str):
+        compiler = ",".join(compiler)
+    if (compiler, tex_template.output_format) == ("latex", ".dvi"):
+        return ""
+    return f"\n% compiled by {compiler} to {tex_template.output_format}"
+
+
 def _compile(tex_file: Path, tex_compiler, output_format: str, builds: Path) -> Path:
     """Run the template's TeX compiler(s) on ``tex_file``, in its own directory."""
     from manim.utils.tex_file_writing import make_tex_compilation_command
@@ -199,7 +266,9 @@ def _compile(tex_file: Path, tex_compiler, output_format: str, builds: Path) -> 
     for compiler in compilers:
         command = make_tex_compilation_command(compiler, output_format, tex_file, work)
         try:
-            completed = subprocess.run(command, stdout=subprocess.DEVNULL)
+            completed = _run(
+                command, compiler, tex_file.name, stdout=subprocess.DEVNULL
+            )
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"LaTeX typesetting needs `{compiler}`, and it was not found on PATH."
@@ -345,8 +414,10 @@ def _convert_to_svg(built: Path, output_format: str) -> Path:
         built.as_posix(),
     ]
     try:
-        completed = subprocess.run(
+        completed = _run(
             command,
+            "dvisvgm",
+            f"converting {built.name} to SVG",
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             encoding="utf-8",
