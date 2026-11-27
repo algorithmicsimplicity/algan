@@ -98,6 +98,30 @@ def test_the_inductor_cache_lives_in_the_cache_directory(tmp_path):
         text=True,
         check=True,
     )
+    from algan.settings._startup import _host_cpu_tag
+
+    # One directory per CPU model and flag set, inside it.
     assert out.stdout.strip().splitlines()[-1] == str(
-        tmp_path / "cache" / "torchinductor"
+        tmp_path / "cache" / "torchinductor" / (_host_cpu_tag() or "host")
     )
+
+
+def test_the_inductor_cache_is_split_by_cpu_model_and_flags():
+    """Inductor compiles with ``-march=native`` and keys its ``.so`` on the
+    unexpanded command line, so two CPUs of one vector width shared code
+    built for either one's instruction set (SIGILL on the other).
+    """
+    from algan.settings._startup import _host_cpu_tag
+
+    def cpuinfo(model, flags):
+        entry = f"processor\t: {{}}\nmodel name\t: {model}\nflags\t\t: {flags}\n"
+        return "\n".join(entry.format(core) for core in range(4))
+
+    spr = _host_cpu_tag(cpuinfo("Xeon Platinum 8480", "avx512f amx_tile"))
+    skx = _host_cpu_tag(cpuinfo("Xeon Gold 6148", "avx512f"))
+    assert spr != skx
+    assert len(spr) == 16
+    assert spr == _host_cpu_tag(cpuinfo("Xeon Platinum 8480", "avx512f  amx_tile"))
+    arm = "processor\t: 0\nFeatures\t: fp asimd\nCPU implementer\t: 0x41\n"
+    assert _host_cpu_tag(arm) not in ("", spr)
+    assert _host_cpu_tag("nothing useful here") == ""

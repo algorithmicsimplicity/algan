@@ -312,6 +312,45 @@ def test_each_frame_reads_its_own_transform():
     assert (there[:, 2:5] == 1).all()
 
 
+def _kernel_transform(vol_i, vol_f, f, v=0):
+    """The row ``_pt_vol_to_box`` reads for grid ``v`` at kernel frame ``f``."""
+    xo = ((f % int(vol_i[1])) * int(vol_i[0]) + v) * 12
+    return vol_f[xo : xo + 12]
+
+
+@pytest.mark.parametrize("rows", [1, 8], ids=["static", "moving"])
+def test_a_chunk_of_the_window_reads_the_same_transforms_as_the_whole(rows):
+    """The render loop snapshots the transforms for the whole materialized
+    window and renders it in memory-model-sized chunks, each called with the
+    window-relative ``[time_start, time_end)``; the kernel reads row
+    ``time_start + f_rel``. A chunk shorter than the window used to be
+    refused, so any chunked density-grid render crashed.
+    """
+    grid = DensityGrid(torch.ones(2, 2, 2))
+    xforms = IDENTITY.repeat(rows, 1)
+    xforms[:, 9] = torch.arange(rows, dtype=torch.float32)  # moves along x
+    mat = torch.tensor(_MAT_DEFAULTS).reshape(1, 1, -1).clone()
+    mat[..., _MAT_MEDIUM_CLOSED] = 1
+    mat[..., _MAT_DENSITY_VOLUME] = 7
+    merged = {
+        "tri_mat": mat,
+        "tri_mat_id": torch.full((1, 1), _MID_PHYSICAL, dtype=torch.int32),
+    }
+    snapshot = (((7, grid),), xforms.reshape(rows, 1, 12))
+    whole = build_volume_tables(merged, snapshot, 8, 1)
+    for time_start, time_end in ((0, 4), (4, 8), (3, 5), (7, 8)):
+        chunk = build_volume_tables(merged, snapshot, time_end, 1)
+        for f in range(time_start, time_end):
+            assert torch.equal(
+                _kernel_transform(*chunk, f), _kernel_transform(*whole, f)
+            )
+            assert float(_kernel_transform(*chunk, f)[9]) == (f if rows > 1 else 0)
+    if rows > 1:
+        # Fewer rows than the chunk reaches would wrap onto other frames.
+        with pytest.raises(RuntimeError, match="cover 8 frames"):
+            build_volume_tables(merged, snapshot, 9, 1)
+
+
 def test_a_segment_that_exhausts_the_step_budget_is_absorbed_and_flagged():
     """One hot voxel sets the majorant of a region that is otherwise empty,
     so every tentative collision there is null: far past the budget.

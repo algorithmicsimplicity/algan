@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+import warnings
 from queue import Empty
 from types import SimpleNamespace
 
@@ -285,3 +286,148 @@ def test_an_encoder_that_cannot_start_raises_its_own_error(tmp_path):
             str(tmp_path / "clip.mp4"), (16, 16), "libx264", 2, False,
             ["-crf", 18], None, None,
         )  # fmt: skip
+
+
+def test_a_destination_that_cannot_be_replaced_keeps_the_finished_video(
+    workers, tmp_path, monkeypatch
+):
+    """Windows refuses to replace a video another program has open. Publishing
+    used to delete the old file first and then rename, and the caller's
+    cleanup deleted the temporary, so the finished render was lost.
+    """
+
+    def locked(source, target):
+        raise PermissionError(13, "Access is denied", target)
+
+    monkeypatch.setattr(render_loop.os, "replace", locked)
+    errors, source, target = _render(_Scene(3), _Writer(), tmp_path)
+
+    (error,) = errors
+    assert isinstance(error, PermissionError)
+    assert str(source) in str(error)
+    assert "open" in str(error)
+    assert error.algan_kept_video == str(source)
+    assert source.read_bytes() == b"new video"
+    assert target.read_bytes() == b"existing video"
+
+
+def test_save_video_leaves_a_video_it_could_not_publish_in_place(tmp_path, monkeypatch):
+    from algan import SMOKE_TEST, Square
+    from algan.scene_manager import SceneManager
+
+    scene = SceneManager.instance().current_scene
+    Square().spawn()
+    kept = []
+
+    def render(file_writer, file_path, file_path_out, **_kwargs):
+        file_writer.close()
+        with open(file_path, "wb") as handle:
+            handle.write(b"finished")
+        kept.append(file_path)
+        error = PermissionError("destination is open elsewhere")
+        error.algan_kept_video = file_path
+        raise error
+
+    monkeypatch.setattr(scene, "_render_to_video", render)
+    with pytest.raises(PermissionError, match="open elsewhere"):
+        scene.save_video(tmp_path / "clip.mp4", SMOKE_TEST)
+    (path,) = kept
+    with open(path, "rb") as handle:
+        assert handle.read() == b"finished"
+
+
+def test_an_odd_sized_h264_video_says_it_will_not_play_in_a_browser(
+    tmp_path, monkeypatch
+):
+    """With an odd side moviepy passes libx264 no pixel format, and FFmpeg
+    picks 4:4:4, which browsers and QuickTime refuse; nothing said so.
+    """
+    from algan.errors import UnsupportedFeatureWarning
+    from algan.utils import algan_utils
+
+    monkeypatch.setattr(algan_utils, "_WARNED_ODD_H264", set())
+    params = ["-crf", "17"]
+    with pytest.warns(UnsupportedFeatureWarning, match="34x34"):
+        algan_utils._warn_if_h264_cannot_be_420((33, 33), "libx264", params)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        algan_utils._warn_if_h264_cannot_be_420((33, 33), "libx264", params)
+        algan_utils._warn_if_h264_cannot_be_420((32, 32), "libx264", params)
+        algan_utils._warn_if_h264_cannot_be_420((33, 32), "prores_ks", params)
+        algan_utils._warn_if_h264_cannot_be_420(
+            (35, 32), "libx264", ["-pix_fmt", "yuv444p"]
+        )
+    with pytest.warns(UnsupportedFeatureWarning, match="height"):
+        writer = algan_utils.get_file_writer(
+            str(tmp_path / "odd.mp4"), (48, 31), "libx264", 2, False,
+            params, None, None,
+        )  # fmt: skip
+    writer.close()
+
+
+def test_save_video_temporaries_are_its_own_and_hidden(tmp_path, monkeypatch):
+    """``clip.mp4`` rendered through ``clip_temp.mp4`` and ``clip_temp.wav``
+    and then deleted both, whoever had made them, and two processes rendering
+    one destination wrote the same temporary.
+    """
+    import os
+
+    from algan import SMOKE_TEST, Square
+    from algan.scene_manager import SceneManager
+
+    scene = SceneManager.instance().current_scene
+    Square().spawn()
+    for name in ("clip_temp.mp4", "clip_temp.wav"):
+        (tmp_path / name).write_bytes(b"the user's own")
+    used = []
+
+    def render(file_writer, file_path, file_path_out, **_kwargs):
+        file_writer.close()
+        used.append(file_path)
+        os.replace(file_path, file_path_out)
+
+    monkeypatch.setattr(scene, "_render_to_video", render)
+    scene.save_video(tmp_path / "clip.mp4", SMOKE_TEST)
+    (path,) = used
+    assert os.path.basename(path) == f".clip.{os.getpid()}.tmp.mp4"
+    for name in ("clip_temp.mp4", "clip_temp.wav"):
+        assert (tmp_path / name).read_bytes() == b"the user's own"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "clip.mp4",
+        "clip_temp.mp4",
+        "clip_temp.wav",
+    ]
+
+
+def test_a_dead_renders_temporaries_are_removed_and_a_live_ones_kept(tmp_path):
+    """Temporaries are named for their process, so a render killed outright
+    left a hidden file nothing would overwrite. The next render of the same
+    destination removes those whose process is gone, and only those.
+    """
+    import os
+
+    import psutil
+
+    from algan.utils.algan_utils import _remove_stale_video_temporaries
+
+    dead = 2**22 + 12345
+    while psutil.pid_exists(dead):
+        dead += 1
+    names = {
+        f".clip.{dead}.tmp.mp4": False,
+        f".clip.{dead}.tmp.wav": False,
+        f".clip.{os.getppid()}.tmp.mp4": True,  # another live process
+        f".clip.{os.getpid()}.tmp.wav": True,  # this one
+        f".clip.{dead}.tmp.mov": True,  # another destination's container
+        f".clip.extra.{dead}.tmp.mp4": True,  # another stem
+        f".clip.{dead}x.tmp.mp4": True,
+        f".clip.{dead}.tmp.mp4.bak": True,
+        ".clip.config": True,  # the user's own dotfile
+        "clip.mp4": True,
+    }
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+    _remove_stale_video_temporaries(tmp_path / "clip.mp4")
+    assert {p.name for p in tmp_path.iterdir()} == {
+        name for name, kept in names.items() if kept
+    }

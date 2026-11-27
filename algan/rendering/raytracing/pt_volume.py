@@ -36,14 +36,22 @@ def _used_keys(merged):
     return sorted(int(k) for k in torch.unique(torch.round(keyed)).tolist())
 
 
-def build_volume_tables(merged, density_volumes, num_frames, media_offset):
+def build_volume_tables(merged, density_volumes, time_end, media_offset):
     """``(vol_i, vol_f)`` CPU tensors in ``pt_volume_taichi``'s layout.
 
     ``density_volumes`` is the render loop's snapshot, ``(entries, xforms)``
-    (``density_grid._density_volume_snapshot``), or None. Only the grids the
-    batch's triangles name are packed. A batch that names none -- or has no
-    medium walk (``media_offset == 0``) -- gets the empty table ``[0, 1]``,
-    which every lookup misses.
+    (``density_grid._density_volume_snapshot``), or None. Its transforms hold
+    one row per frame of the whole materialized window (or one row in all),
+    while the call renders only ``[time_start, time_end)`` of it: the render
+    loop hands every memory-sized chunk the window's snapshot, and the tracer
+    halves a chunk again on an OOM. The kernel reads row ``f % rows`` with the
+    window-relative ``f = time_start + f_rel``, as it reads every other
+    per-frame table, so the rows must reach ``time_end``, not match the
+    chunk's length.
+
+    Only the grids the batch's triangles name are packed. A batch that names
+    none -- or has no medium walk (``media_offset == 0``) -- gets the empty
+    table ``[0, 1]``, which every lookup misses.
 
     Raises :class:`~algan.errors.AlganConfigurationError` when a triangle names
     a grid the snapshot does not hold: its owner -- the Mob the material was
@@ -73,9 +81,10 @@ def build_volume_tables(merged, density_volumes, num_frames, media_offset):
     xforms = torch.as_tensor(xforms, dtype=torch.float32).detach().cpu()
     picked = xforms[:, [column[key][0] for key in used]]
     rows = int(picked.shape[0])
-    if rows not in (1, int(num_frames)):
+    if rows != 1 and rows < int(time_end):
         raise RuntimeError(
-            f"density grid transforms cover {rows} frames, the batch {int(num_frames)}"
+            f"density grid transforms cover {rows} frames, the batch reaches "
+            f"frame {int(time_end)}"
         )
     words = [len(used), rows]
     floats = [picked.reshape(-1)]
@@ -95,13 +104,11 @@ def build_volume_tables(merged, density_volumes, num_frames, media_offset):
     return vol_i, torch.cat(floats).to(torch.float32).contiguous()
 
 
-def prepare_volumes(memory, merged, density_volumes, num_frames, media_offset):
+def prepare_volumes(memory, merged, density_volumes, time_end, media_offset):
     """Upload :func:`build_volume_tables` into the render arena."""
     from algan.rendering.raytracing.tracer import _arena_copy
 
-    vol_i, vol_f = build_volume_tables(
-        merged, density_volumes, num_frames, media_offset
-    )
+    vol_i, vol_f = build_volume_tables(merged, density_volumes, time_end, media_offset)
     with memory.scope("pt_volumes", values=int(vol_f.numel())):
         vol_i = _arena_copy(memory, vol_i)
         vol_f = _arena_copy(memory, vol_f)

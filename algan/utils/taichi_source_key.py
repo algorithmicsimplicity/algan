@@ -146,6 +146,7 @@ import types
 import warnings
 
 from algan.environment import env_flag, env_str
+from algan.utils import taichi_early_return
 
 #: Bumped whenever what this module puts in the key, or how it renders a
 #: component, changes -- an entry written by an older rule set must miss.
@@ -1614,6 +1615,11 @@ def compute_key(kernel, args):
         # changes among them) does.
         out.append(f"distribution:{backend_distribution()}")
         out.append(f"schema:{fast_caching._CACHE_VALUE_SCHEMA_VERSION}")
+        # The one Algan-side transform that changes a func's IR: a rewritten
+        # body is keyed by its source, so the rewrite's own revision has to be
+        # keyed beside it (``taichi_early_return.REWRITE_REVISION``).
+        if taichi_early_return.REWRITE_REVISION:
+            out.append(f"early-return:{taichi_early_return.REWRITE_REVISION}")
         out.append(f"autodiff:{kernel.autodiff_mode}")
         # Decorator flags the transformer branches on (`@qd.kernel(graph=,
         # checkpoints=)`), and whether the first parameter is a class `self`.
@@ -1692,6 +1698,95 @@ def _warn_poisoned(kernel, reason):
     )
 
 
+#: One entry once a kernel cache the index could not use has been reported.
+#: A list rather than a flag so a test can reset it with ``monkeypatch``.
+_WARNED_UNWRITABLE = []
+
+
+def _warn_cache_unusable(error):
+    """Report, once per process, that the index met a cache it cannot use.
+
+    Quadrants' index touches an entry's access time on every hit and writes
+    each new entry through ``mkstemp``, and neither catches an ``OSError``: on
+    a read-only cache (a shared or read-only mount, one ``sudo algan warmup``
+    made) or a full disk, both raised out of the kernel launch. The index only
+    saves time, so the hooks treat such a failure as a miss and a skipped
+    store, which is what the same cache costs with the index off.
+    """
+    if _WARNED_UNWRITABLE:
+        return
+    _WARNED_UNWRITABLE.append(True)
+    where = getattr(error, "filename", None) or "the kernel cache"
+    warnings.warn(
+        f"taichi_source_key: cannot use {where} ({error.strerror or error}); "
+        "kernels compile as if the cache were empty and nothing new is saved. "
+        "Make the cache directory writable, or set ALGAN_CACHE_DIR to a "
+        "directory you can write.",
+        RuntimeWarning,
+        stacklevel=4,
+    )
+
+
+#: A lower bound on when any program of this process read the offline cache's
+#: index (it does so at its first use of the cache, never before import).
+_PROCESS_START = time.time()
+#: Kernels :func:`_warn_lost_artifact` has reported.
+_WARNED_LOST = set()
+
+
+def _warn_lost_artifact(name, cpp_key, cache_directory):
+    """Warn once for ``name`` when the C++ cache lists ``cpp_key`` but cannot load it.
+
+    Quadrants' exit dump writes only kernels its index does not already list,
+    so a listed ``.qdc`` that is missing or damaged (a partial copy of the
+    cache, a deleted file) is never written again: every later process
+    recompiles that kernel, with nothing but its usual progress line to show
+    for it. Two cases look the same from here and heal on their own, so they
+    stay silent: an artifact the index does not list yet (a process killed
+    before its exit dump stored only the source-key entry; this process's dump
+    writes it), and one written after this process read the index (another
+    process compiled it; the next program loads it). The index is read as
+    bytes and searched for the key, which is stored there as text; anything
+    that goes wrong reading it says nothing.
+    """
+    if name in _WARNED_LOST:
+        return
+    try:
+        directory = os.path.join(cache_directory, "kernel_compilation_manager")
+        with open(os.path.join(directory, "qdcache.qdb"), "rb") as index:
+            listed = cpp_key.encode() in index.read()
+        artifact = os.path.join(directory, f"{cpp_key}.qdc")
+        written_since = (
+            os.path.exists(artifact) and os.path.getmtime(artifact) >= _PROCESS_START
+        )
+    except (OSError, TypeError, AttributeError):
+        return
+    if not listed or written_since:
+        return
+    _WARNED_LOST.add(name)
+    warnings.warn(
+        f"taichi_source_key: the kernel cache lists {name}'s compiled artifact "
+        f"({cpp_key}.qdc) but it is missing or damaged, so the kernel compiles "
+        "again, in this and every later process: the cache never rewrites an "
+        "artifact its index lists. Call algan.clear_cached_kernels() once to "
+        "rebuild the cache.",
+        RuntimeWarning,
+        stacklevel=5,
+    )
+
+
+def _report_index_miss():
+    """Tell the render's progress account the frontend is about to run.
+
+    Its header ("Preparing render kernels ...") is meant to come with the
+    first miss of a render; nothing called it, so a cold render printed it
+    only with its first finished compile or the 20 s heartbeat.
+    """
+    from algan.rendering import kernel_progress
+
+    kernel_progress.index_missed()
+
+
 def _restore_from_cache_value(self, key, cache_value, kernel_module, src_hasher):
     """What Quadrants' ``_try_load_fastcache`` does on a validated hit, verbatim in effect.
 
@@ -1712,6 +1807,11 @@ def _restore_from_cache_value(self, key, cache_value, kernel_module, src_hasher)
     )
     if not data:
         self.compiled_kernel_data_by_key.pop(key, None)
+        _warn_lost_artifact(
+            kernel_qualname(self),
+            cache_value.frontend_cache_key,
+            getattr(prog.config(), "offline_cache_file_path", None),
+        )
         return None
     self.compiled_kernel_data_by_key[key] = data
     self.src_ll_cache_observations.cache_loaded = True
@@ -1831,9 +1931,14 @@ def _build_hooks(
         self._algan_source_keyed = True
         self.fast_checksum = fast_key
         self.src_ll_cache_observations.cache_key_generated = True
-        cache_value = src_hasher.load(fast_key)
+        try:
+            cache_value = src_hasher.load(fast_key)
+        except OSError as error:
+            _warn_cache_unusable(error)
+            cache_value = None
         if cache_value is None:
             STATS["misses"] += 1
+            _report_index_miss()
             return None
         self.src_ll_cache_observations.cache_validated = True
         if env_flag("ALGAN_TAICHI_SOURCE_KEY_VERIFY", False):
@@ -1846,6 +1951,7 @@ def _build_hooks(
         )
         if used is None:
             STATS["misses"] += 1
+            _report_index_miss()
             return None
         STATS["hits"] += 1
         return used
@@ -1860,7 +1966,12 @@ def _build_hooks(
                     f"{fast_cache_key} to C++ key {expected}, but a full transform "
                     f"produced {frontend_cache_key}. The key is missing an input."
                 )
-        return original_store(frontend_cache_key, fast_cache_key, *args, **kwargs)
+        try:
+            return original_store(frontend_cache_key, fast_cache_key, *args, **kwargs)
+        except OSError as error:
+            # The kernel has compiled and runs; only its index entry is lost.
+            _warn_cache_unusable(error)
+            return None
 
     _try_load_fastcache._algan_original = original_try_load
     _store._algan_original = original_store

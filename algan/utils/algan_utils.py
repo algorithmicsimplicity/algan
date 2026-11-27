@@ -81,6 +81,77 @@ def algan_scene(function=None, *, name=None):
 from algan.utils.memory_utils import release_torch_memory
 from algan.utils.python_utils import callable_signature
 
+#: Odd frame sizes :func:`_warn_if_h264_cannot_be_420` has reported.
+_WARNED_ODD_H264 = set()
+
+
+def _warn_if_h264_cannot_be_420(size, codec, ffmpeg_params):
+    """Warn once per size when H.264 output will be 4:4:4 because a side is odd.
+
+    moviepy asks libx264 for 4:2:0 only when both sides are even, and 4:2:0
+    cannot hold an odd side at all, so FFmpeg falls back to ``yuv444p`` and
+    the High 4:4:4 profile: a file VLC and ffplay play but browsers, QuickTime
+    and most phones do not. The frames are left exactly as rendered (padding
+    would change the picture, refusing would break renders that work); the
+    user is told why and what to change. An explicit ``-pix_fmt`` is a choice
+    already made and is left alone.
+    """
+    width, height = int(size[0]), int(size[1])
+    if codec != "libx264" or not (width % 2 or height % 2):
+        return
+    if "-pix_fmt" in [str(p) for p in (ffmpeg_params or ())]:
+        return
+    if (width, height) in _WARNED_ODD_H264:
+        return
+    _WARNED_ODD_H264.add((width, height))
+    warnings.warn(
+        f"The video is {width}x{height}: H.264 cannot store an odd width or "
+        "height in the 4:2:0 format browsers, QuickTime and most phones play, "
+        "so it is encoded as 4:4:4 (High 4:4:4 Predictive), which plays in "
+        "VLC or ffplay but not in a browser. Render at an even size, such as "
+        f"{width + width % 2}x{height + height % 2}, for a file that plays "
+        "everywhere; to keep this size and format, pass ffmpeg_params with an "
+        'explicit "-pix_fmt", "yuv444p".',
+        UnsupportedFeatureWarning,
+        stacklevel=_user_stacklevel(),
+    )
+
+
+def _remove_stale_video_temporaries(destination):
+    """Delete the temporaries a dead render of ``destination`` left behind.
+
+    A render's temporaries are named for its process
+    (``.{stem}.{pid}.tmp{suffix}`` and ``.{stem}.{pid}.tmp.wav``), so one
+    killed outright (SIGKILL, a crash) leaves a hidden, possibly
+    multi-hundred-megabyte file that no later render overwrites. Before
+    writing its own, a render removes those of this destination whose process
+    no longer exists. A live process's are left alone: it may be rendering
+    the same destination right now. The match is exact, so no other file can
+    be taken for one, and a file that cannot be deleted (locked on Windows)
+    is left for the next render.
+    """
+    import psutil
+
+    pattern = re.compile(
+        rf"\.{re.escape(destination.stem)}\.([0-9]+)\.tmp"
+        rf"(?:{re.escape(destination.suffix)}|\.wav)"
+    )
+    try:
+        siblings = list(destination.parent.iterdir())
+    except OSError:
+        return
+    for sibling in siblings:
+        match = pattern.fullmatch(sibling.name)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        if pid == os.getpid() or psutil.pid_exists(pid):
+            continue
+        try:
+            sibling.unlink()
+        except OSError:
+            logger.debug("Could not remove stale temporary %s", sibling, exc_info=True)
+
 
 def get_file_writer(
     temp_file_path,
@@ -96,6 +167,7 @@ def get_file_writer(
         FFMPEG_VideoWriter,  # deferred: ~0.3 s of import algan
     )
 
+    _warn_if_h264_cannot_be_420(video_settings_resolution, codec, ffmpeg_params)
     return FFMPEG_VideoWriter(
         filename=temp_file_path,
         size=video_settings_resolution,
@@ -487,6 +559,9 @@ def _render_scene_to_file(
     pass_job = None
     render_started = False
     scene_finalized = False
+    # The finished video, when publishing it failed and the error says it is
+    # kept (``RenderLoopMixin._render_to_video_impl``).
+    kept_video = None
 
     try:
         scene.set_video_settings(video_settings)
@@ -633,10 +708,16 @@ def _render_scene_to_file(
 
         logger.info(f"Encoding video with {codec}")
 
-        temp_file_path = destination.with_name(
-            f"{destination.stem}_temp{destination.suffix}"
-        )
-        audio_file_path = destination.with_name(f"{destination.stem}_temp.wav")
+        # Hidden, and named for this process, as a still's temporary is
+        # (``_still_frames._save_image``): ``intro_temp.mp4`` could be a file
+        # of the user's, which FFmpeg's ``-y`` overwrote and the cleanup below
+        # then deleted, and two processes rendering one destination at once (a
+        # daemon run beside a direct one) wrote the same file. The suffix is
+        # kept: FFmpeg picks the container from it.
+        _remove_stale_video_temporaries(destination)
+        hidden = f".{destination.stem}.{os.getpid()}.tmp"
+        temp_file_path = destination.with_name(f"{hidden}{destination.suffix}")
+        audio_file_path = destination.with_name(f"{hidden}.wav")
         script_file_path = destination.with_name(f"{destination.stem}_script.txt")
 
         logger.info(f"Began rendering {destination}")
@@ -705,6 +786,9 @@ def _render_scene_to_file(
             plan,
             passes=dict(pass_job.directories) if pass_job is not None else {},
         )
+    except OSError as error:
+        kept_video = getattr(error, "algan_kept_video", None)
+        raise
     finally:
         if pass_job is not None:
             # A no-op after a successful publish; after a failure it removes
@@ -716,7 +800,9 @@ def _render_scene_to_file(
             except Exception:
                 logger.debug("Video writer cleanup failed", exc_info=True)
         for temporary in (temp_file_path, audio_file_path):
-            if temporary is None:
+            if temporary is None or (
+                kept_video is not None and str(temporary) == str(kept_video)
+            ):
                 continue
             try:
                 temporary.unlink(missing_ok=True)

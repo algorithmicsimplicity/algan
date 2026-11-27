@@ -579,6 +579,25 @@ def test_a_miss_sets_the_checksum_so_the_compile_is_indexed(hooks, monkeypatch):
     assert sk.STATS["keyed"] == 1
 
 
+def test_a_miss_tells_the_progress_account(hooks, monkeypatch):
+    """A cold render's header is meant to come with its first index miss."""
+    from algan.rendering import kernel_progress
+
+    try_load, _store, hasher = hooks
+    monkeypatch.setattr(sk, "compute_key", lambda kernel, args: ("KEY", None))
+    missed = []
+    monkeypatch.setattr(kernel_progress, "index_missed", lambda: missed.append(1))
+    assert try_load(_StubKernel(), (), ("k",)) is None
+    assert missed == [1]
+    hasher.value = _CacheValue("CPP")
+    monkeypatch.setattr(sk, "_restore_from_cache_value", lambda *args: None)
+    assert try_load(_StubKernel(), (), ("k",)) is None
+    assert missed == [1, 1], "an artifact that will not load is a miss too"
+    monkeypatch.setattr(sk, "_restore_from_cache_value", lambda *args: {"used"})
+    assert try_load(_StubKernel(), (), ("k",)) == {"used"}
+    assert missed == [1, 1]
+
+
 def test_a_hit_restores_and_returns_the_used_set(hooks, monkeypatch):
     try_load, _store, hasher = hooks
     hasher.value = _CacheValue("CPP")
@@ -606,6 +625,72 @@ def test_a_hit_whose_artifact_is_gone_counts_as_a_miss(hooks, monkeypatch):
     assert try_load(_StubKernel(), (), ("k",)) is None
     assert sk.STATS["misses"] == 1
     assert sk.STATS["hits"] == 0
+
+
+def test_an_indexed_artifact_that_will_not_load_is_reported_once(tmp_path, monkeypatch):
+    """The C++ index lists a kernel whose ``.qdc`` is gone or damaged: the
+    kernel recompiles, and the exit dump never rewrites an artifact its index
+    already lists, so every later process recompiles it too. That is worth one
+    line naming the remedy. An artifact another process wrote after this one
+    read the index (a long-lived daemon), or one the index does not list (a
+    process killed before its exit dump), heals or loads in the next program
+    and is left silent.
+    """
+    monkeypatch.setattr(sk, "_WARNED_LOST", set())
+    monkeypatch.setattr(sk, "_PROCESS_START", 1000.0)
+    directory = tmp_path / "kernel_compilation_manager"
+    directory.mkdir()
+    (directory / "qdcache.qdb").write_bytes(b"\x00\x02Tlisted\x00\x01")
+
+    def warned(name, key):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sk._warn_lost_artifact(name, key, str(tmp_path))
+        return [str(w.message) for w in caught]
+
+    assert warned("mod.unlisted", "Tunlisted") == []
+    artifact = directory / "Tlisted.qdc"
+    artifact.write_bytes(b"half")
+    os.utime(artifact, (2000.0, 2000.0))
+    assert warned("mod.fresh", "Tlisted") == [], "written after the index was read"
+    os.utime(artifact, (500.0, 500.0))
+    (message,) = warned("mod.damaged", "Tlisted")
+    assert "mod.damaged" in message
+    assert "clear_cached_kernels" in message
+    artifact.unlink()
+    (message,) = warned("mod.gone", "Tlisted")
+    assert "mod.gone" in message
+    assert warned("mod.gone", "Tlisted") == [], "once per kernel"
+
+
+def test_an_index_that_cannot_be_written_is_a_miss_not_a_crash(hooks, monkeypatch):
+    """A read-only kernel cache (a shared mount, one a root container made)
+    makes Quadrants' index raise ``PermissionError``: on a hit from the
+    access-time touch in ``load``, on a miss from ``mkstemp`` in ``store``.
+    Uncaught, it crashed every launch; the index's job is speed, so a cache
+    it cannot use must cost only the compile, as it does with the index off.
+    """
+    try_load, store, hasher = hooks
+    monkeypatch.setattr(sk, "compute_key", lambda kernel, args: ("KEY", None))
+    monkeypatch.setattr(sk, "_WARNED_UNWRITABLE", [])
+
+    def denied(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted", "/cache/x.cache.txt")
+
+    hasher.load = denied
+    kernel = _StubKernel()
+    with pytest.warns(RuntimeWarning, match="/cache/x.cache.txt"):
+        assert try_load(kernel, (), ("k",)) is None
+    assert sk.STATS["misses"] == 1
+
+    _try_load, store, _persist = sk._build_hooks(
+        None, hasher, "NONE", lambda *args: None, denied
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert store("CPP", "KEY", set()) is None
+        assert try_load(kernel, (), ("k",)) is None
+    assert not caught, "an unusable cache must warn once per process"
 
 
 def test_verify_mode_takes_the_full_path_and_compares_the_cpp_key(hooks, monkeypatch):
@@ -955,3 +1040,39 @@ def test_a_square_frame_through_the_index_is_byte_identical_and_verifies(tmp_pat
         "a render served from the index differs from one without it"
     )
     assert verify_bytes == off_bytes
+
+
+@quadrants_only
+def test_the_early_return_rewrite_revision_is_keyed(tmp_path, monkeypatch):
+    """A user func with a nested ``return`` reaches the compiler as
+    ``taichi_early_return``'s rewrite of it, and is keyed by its own source.
+    A release that changed the rewrite would have been served the old IR, so
+    the rewrite's revision is in the key -- from its first bump on, so the
+    keys every cache holds today stay as they are.
+    """
+    import importlib
+
+    import torch
+
+    from algan.rendering.taichi_runtime import init_taichi
+    from algan.taichi_compat import submodule
+    from algan.utils import taichi_early_return
+
+    (tmp_path / "revision_probe_kernels.py").write_text(
+        _PROBE_KERNELS.format(factor=2), encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.import_module("revision_probe_kernels")
+    init_taichi()
+    kernel = next(
+        k
+        for k in submodule("lang.impl").get_runtime().kernels
+        if k.func.__module__ == "revision_probe_kernels" and k.func.__name__ == "scale"
+    )
+    args = (torch.ones(4),)
+    monkeypatch.setattr(taichi_early_return, "REWRITE_REVISION", 0)
+    before, reason = sk.compute_key(kernel, args)
+    assert before is not None, reason
+    assert sk.compute_key(kernel, args)[0] == before
+    monkeypatch.setattr(taichi_early_return, "REWRITE_REVISION", 1)
+    assert sk.compute_key(kernel, args)[0] != before

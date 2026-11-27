@@ -77,13 +77,27 @@ _CPU_MEMORY_SHARE = 0.4
 
 
 def _default_cpu_memory():
-    """Total RAM times :data:`_CPU_MEMORY_SHARE`, or 2 GB if it cannot be read."""
+    """Usable RAM times :data:`_CPU_MEMORY_SHARE`, or 2 GB if it cannot be read.
+
+    Usable RAM is the smaller of the machine's total and this process's
+    cgroup limit. Inside a container ``psutil`` reports the host's RAM, so a
+    4 GiB container on a 64 GiB host was given a 25.6 GB budget; the chunk
+    model fills the arena it is given, and the kernel OOM-killed the render
+    with no Python error.
+    """
     try:
         import psutil
 
         total = int(psutil.virtual_memory().total)
     except Exception:
         return 2 * GIGABYTES
+    # algan.utils.memory_utils imports SETTINGS, which is being built here;
+    # the reader's own module imports nothing from Algan.
+    from algan.utils.cgroup_memory import linux_cgroup_memory_limit
+
+    limit = linux_cgroup_memory_limit()
+    if limit is not None:
+        total = min(total, int(limit))
     return max(2 * GIGABYTES, int(total * _CPU_MEMORY_SHARE))
 
 

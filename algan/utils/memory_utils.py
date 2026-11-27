@@ -25,7 +25,6 @@ import operator
 import sys
 import threading
 from contextlib import contextmanager
-from pathlib import Path
 
 import psutil
 import torch
@@ -34,6 +33,7 @@ from algan.environment import env_float, env_int
 from algan.settings import SETTINGS
 from algan.settings._startup import render_device
 from algan.utils import mps_low_watermark
+from algan.utils.cgroup_memory import _linux_cgroup_memory_usage
 
 
 class InsufficientMemoryException(Exception):
@@ -597,108 +597,6 @@ _CGROUP_MEMORY_PRESSURE_FRACTION = 0.60
 
 #: Outside a hard cgroup, use the ordinary host's available-memory signal.
 _HOST_AVAILABLE_MEMORY_FRACTION = 0.15
-
-
-def _read_positive_int(path):
-    try:
-        raw = Path(path).read_text(encoding="ascii").strip()
-    except (OSError, ValueError):
-        return None
-    if not raw or raw == "max":
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        return None
-    return value if value > 0 else None
-
-
-def _reclaimable_page_cache(stat_path, key):
-    """The cgroup's inactive file cache from its ``memory.stat``, or 0."""
-    try:
-        lines = Path(stat_path).read_text(encoding="ascii").splitlines()
-    except (OSError, ValueError):
-        return 0
-    for line in lines:
-        name, _, value = line.partition(" ")
-        if name == key:
-            try:
-                return max(int(value), 0)
-            except ValueError:
-                return 0
-    return 0
-
-
-def _linux_cgroup_memory_usage():
-    """Return ``(current, limit)`` for this process's finite memory cgroup.
-
-    Supports cgroup v2 and the common v1 memory-controller mount. The direct
-    mount root is tried first because container mount namespaces normally make
-    it the process's own cgroup already; ``/proc/self/cgroup`` supplies the
-    nested path on hosts that expose the hierarchy root instead.
-
-    ``current`` is the working set: usage less the inactive file cache, the
-    figure the kernel reclaims before it would OOM-kill anything (and the one
-    ``kubectl top`` and ``docker stats`` report). Raw usage counts every page
-    of file cache. On a 14.3 GB cloud container that had read a few GB of
-    kernel cache, wheels and test data it stood at 9.4 GB, 5.5 GB of it
-    inactive file cache, so :func:`_host_memory_pressure` reported pressure
-    after every render and reset the Quadrants program each time.
-    """
-    if not sys.platform.startswith("linux"):
-        return None
-
-    candidates = []
-    v2_root = Path("/sys/fs/cgroup")
-    candidates.append(
-        (v2_root / "memory.current", v2_root / "memory.max", "inactive_file")
-    )
-    try:
-        lines = Path("/proc/self/cgroup").read_text(encoding="ascii").splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
-        parts = line.split(":", 2)
-        if len(parts) != 3:
-            continue
-        hierarchy, controllers, rel = parts
-        rel = rel.lstrip("/")
-        if hierarchy == "0" and controllers == "":
-            root = v2_root / rel
-            candidates.append(
-                (root / "memory.current", root / "memory.max", "inactive_file")
-            )
-        elif "memory" in controllers.split(","):
-            root = Path("/sys/fs/cgroup/memory") / rel
-            candidates.append(
-                (
-                    root / "memory.usage_in_bytes",
-                    root / "memory.limit_in_bytes",
-                    # v1's own ``inactive_file`` leaves out child cgroups,
-                    # which its usage counts.
-                    "total_inactive_file",
-                )
-            )
-
-    seen = set()
-    for current_path, limit_path, cache_key in candidates:
-        key = (str(current_path), str(limit_path))
-        if key in seen:
-            continue
-        seen.add(key)
-        current = _read_positive_int(current_path)
-        limit = _read_positive_int(limit_path)
-        if current is None or limit is None:
-            continue
-        # v1 often exposes an enormous sentinel when the controller is
-        # effectively unlimited. Do not mistake that for a useful hard cap.
-        if limit >= (1 << 60):
-            continue
-        cache = _reclaimable_page_cache(
-            current_path.with_name("memory.stat"), cache_key
-        )
-        return max(current - cache, 0), limit
-    return None
 
 
 def _host_memory_pressure(
@@ -1316,16 +1214,6 @@ def auto_record_enabled():
     return _AUTO_RECORD
 
 
-def recorded_nonarena_peaks():
-    """``(name, input_bytes, peak_bytes)`` samples, oldest first."""
-    return list(_NONARENA_PEAKS)
-
-
-def recorded_arenas():
-    """Managed arenas armed by :func:`set_auto_record`, oldest first."""
-    return list(_RECORDED_ARENAS)
-
-
 def clear_recorded_arenas():
     _RECORDED_ARENAS.clear()
     _NONARENA_PEAKS.clear()
@@ -1367,29 +1255,6 @@ def end_cuda_peak(token):
     key = (device.type, device.index)
     _PEAK_FLOOR[key] = max(_PEAK_FLOOR.get(key, 0), saved, peak)
     return max(0, peak - base)
-
-
-@contextmanager
-def cuda_peak_scope(device):
-    """Block form of :func:`begin_cuda_peak`.
-
-    Yields a callable returning the region's peak bytes above entry; it keeps
-    reporting the final value after the block exits.
-    """
-    token = begin_cuda_peak(device)
-    measured = []
-
-    def peak():
-        if measured:
-            return measured[0]
-        if token is None:
-            return 0
-        return max(0, torch.cuda.max_memory_allocated(token[0]) - token[2])
-
-    try:
-        yield peak
-    finally:
-        measured.append(end_cuda_peak(token))
 
 
 def reset_peak_floor():

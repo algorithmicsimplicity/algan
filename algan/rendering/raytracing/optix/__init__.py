@@ -38,14 +38,47 @@ def gather_kbuf():
     return min(int(kbuf), 4)
 
 
+#: Why ``runtime_for`` declined, for the reasons :func:`get_runtime` does not
+#: log itself; each is logged once per process.
+_NOTED = set()
+
+
+def _note_unavailable(reason):
+    if reason in _NOTED:
+        return
+    _NOTED.add(reason)
+    from algan.logging.logger import get_logger
+
+    get_logger(__name__).info(
+        "SETTINGS.raytracing.experimental.optix is on, but %s, so the software "
+        "traversal renders instead.",
+        reason,
+    )
+
+
 def runtime_for(device):
-    """The process's OptiX runtime on ``device``, or ``None`` (logged once)."""
+    """The process's OptiX runtime on ``device``, or ``None`` (logged once).
+
+    A runtime that fails to start says why itself (``runtime.get_runtime``).
+    The two declines here used to say nothing, so a user who had set OptiX up
+    wrongly got the slower path silently: a device that is not CUDA, and a
+    second device in a process whose one runtime lives on the first.
+    """
     device = torch.device(device)
     if device.type != "cuda" or not torch.cuda.is_available():
+        _note_unavailable(f"OptiX needs a CUDA device and this render is on {device}")
         return None
-    from algan.rendering.raytracing.optix.runtime import get_runtime
+    from algan.rendering.raytracing.optix import runtime as runtime_module
     from algan.rendering.raytracing.raytrace_kernels_taichi import (
         TRIANGLE_EDGE_EPSILON,
     )
 
-    return get_runtime(device, gather_kbuf(), TRIANGLE_EDGE_EPSILON)
+    runtime = runtime_module.get_runtime(device, gather_kbuf(), TRIANGLE_EDGE_EPSILON)
+    if runtime is None and runtime_module._RUNTIME is not None:
+        live = runtime_module._RUNTIME
+        _note_unavailable(
+            f"this process's OptiX runtime was built for {live.device} "
+            f"(k-buffer {live.kbuf}) and this render is on {device} "
+            f"(k-buffer {gather_kbuf()}); a process keeps one runtime"
+        )
+    return runtime

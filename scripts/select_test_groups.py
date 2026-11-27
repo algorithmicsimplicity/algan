@@ -251,6 +251,28 @@ ALWAYS_CI = (
     # survives the reset real pressure brings: files and stubs, no kernel.
     "tests/unit_tests/test_manual_memory.py::test_a_cgroup_counts_its_working_set_not_its_page_cache",
     "tests/unit_tests/test_trace_counters.py::test_a_reading_spans_a_program_teardown",
+    # The renderer's infrastructure, on stubs and temporary directories: a
+    # kernel cache that cannot be written or lists what it cannot load, the
+    # early-return rewrite in the source key, what the precompile context and
+    # stamp cover, Inductor's cache per CPU, the cgroup-sized CPU budget, the
+    # arena-prefix bound, a volume chunk's transforms, OptiX said once, and a
+    # video published by rename with temporaries of its own.
+    "tests/unit_tests/test_taichi_source_key.py::test_a_miss_tells_the_progress_account",
+    "tests/unit_tests/test_taichi_source_key.py::test_an_indexed_artifact_that_will_not_load_is_reported_once",
+    "tests/unit_tests/test_taichi_source_key.py::test_an_index_that_cannot_be_written_is_a_miss_not_a_crash",
+    "tests/unit_tests/test_taichi_source_key.py::test_the_early_return_rewrite_revision_is_keyed",
+    "tests/unit_tests/test_kernel_precompile.py::test_the_context_moves_only_with_what_the_source_key_folds_in",
+    "tests/unit_tests/test_kernel_precompile.py::test_the_stamp_covers_what_reaches_a_kernel_and_not_the_authoring_layer",
+    "tests/unit_tests/test_clear_cache.py::test_the_inductor_cache_is_split_by_cpu_model_and_flags",
+    "tests/unit_tests/test_manual_memory.py::test_the_cpu_budget_is_sized_from_the_cgroup_limit_inside_a_container",
+    "tests/unit_tests/test_preflight_overlap.py::test_prefix_search_bounds_projection_by_the_measured_model",
+    "tests/unit_tests/test_pt_volumes.py::test_a_chunk_of_the_window_reads_the_same_transforms_as_the_whole",
+    "tests/unit_tests/test_optix.py::test_a_runtime_optix_cannot_have_is_said_once",
+    "tests/unit_tests/test_video_writer_failures.py::test_a_destination_that_cannot_be_replaced_keeps_the_finished_video",
+    "tests/unit_tests/test_video_writer_failures.py::test_save_video_leaves_a_video_it_could_not_publish_in_place",
+    "tests/unit_tests/test_video_writer_failures.py::test_an_odd_sized_h264_video_says_it_will_not_play_in_a_browser",
+    "tests/unit_tests/test_video_writer_failures.py::test_save_video_temporaries_are_its_own_and_hidden",
+    "tests/unit_tests/test_video_writer_failures.py::test_a_dead_renders_temporaries_are_removed_and_a_live_ones_kept",
     # A render on MPS holds torch's allocator to Metal's working set and gives
     # torch its own limit back after, a failed render too; and import algan
     # starts that allocator with the low watermark the hold relies on, unless

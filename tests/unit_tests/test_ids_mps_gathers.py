@@ -569,3 +569,49 @@ def test_each_member_keeps_its_own_surface_id_past_the_ceiling(
     _round_like_mps(monkeypatch)
     got = _member_ids(cls, EMPTY)
     assert torch.equal(got, want), _differ(got, want, "triangle surface ids")
+
+
+def _with_surface_ids_from(call, base):
+    """``call`` with its surfaces renumbered ``base``, ``base + 1``, ..."""
+    merged = dict(call["merged"])
+    obj = merged["tri_obj"]
+    out = obj.clone().to(torch.int64)
+    for k, sid in enumerate(sorted(set(obj[obj >= 0].unique().tolist()))):
+        out[obj == sid] = base + k
+    merged["tri_obj"] = out.to(obj.dtype)
+    return {**call, "merged": merged}
+
+
+@pytest.fixture(scope="module")
+def closed_cubes():
+    """One frame of two overlapping declared-closed cubes, as compacted."""
+    from tests.unit_tests import test_sheet_chain_kernels as chain
+
+    return chain._captured_compaction(chain._two_overlapping_cubes_and_a_pane)
+
+
+@pytest.mark.parametrize("ceiling_kernel", [True, False], ids=["kernel", "torch"])
+def test_each_closed_solid_keeps_its_own_ceiling_past_the_ceiling(
+    closed_cubes, mps_friendly, monkeypatch, ceiling_kernel
+):
+    """Two declared closed cubes in one pixel are capped one at a time.
+
+    ``compact_sheets``' closed-shell ceiling keys its segments by
+    ``(pixel, surface)``, and gathered the surface ids with ``index_select``.
+    Through the rounding gather two solids with ids 2**24 and 2**24 + 1 got
+    one segment, one allowance was spent across both, and 133 of 3,468 sheets
+    changed coverage by up to 0.83.
+    """
+    from tests.unit_tests import test_sheet_chain_kernels as chain
+
+    want = chain._compact(closed_cubes, ceiling_kernel=ceiling_kernel, pixel_sort=True)
+    round_integer_gathers(monkeypatch)
+    got = chain._compact(
+        _with_surface_ids_from(closed_cubes, EMPTY),
+        ceiling_kernel=ceiling_kernel,
+        pixel_sort=True,
+    )
+    assert got["num_sheets"] == want["num_sheets"]
+    assert torch.equal(got["sheet_cov"], want["sheet_cov"]), _differ(
+        got["sheet_cov"], want["sheet_cov"], "sheet coverage"
+    )

@@ -205,6 +205,67 @@ def test_a_keyed_environment_variable_moves_the_context(monkeypatch):
     assert kp.context_id(kp.current_context()) != before
 
 
+def test_the_context_moves_only_with_what_the_source_key_folds_in(monkeypatch):
+    """The source key leaves out host-only computing fields and the variables
+    that only seed a renderer setting's default; the context kept both, so
+    two runs whose kernels share every key got separate manifest rows, and a
+    pool "for other settings" was stopped although the render would have used
+    every artifact it held.
+    """
+    from algan.settings import SETTINGS
+    from algan.utils import taichi_source_key as sk
+
+    before = kp.context_id(kp.current_context())
+    key_before = sk._environment_fingerprint()
+    seed = sorted(sk._settings_seed_variables())[0]
+    monkeypatch.setenv(seed, kp.env_str(seed, None) or "0")
+    assert sk._environment_fingerprint() == key_before
+    assert seed not in kp.current_context()["env"]
+    assert kp.context_id(kp.current_context()) == before
+
+    fraction = SETTINGS.computing.rendering_memory_fraction
+    try:
+        SETTINGS.computing.set(rendering_memory_fraction=fraction / 2)
+        assert kp.context_id(kp.current_context()) == before
+    finally:
+        SETTINGS.computing.set(rendering_memory_fraction=fraction)
+
+
+def test_the_stamp_covers_what_reaches_a_kernel_and_not_the_authoring_layer():
+    """Editing ``scene.py`` in a source checkout moved the stamp, so the next
+    script re-queued every recorded spec and waited for a pool that found each
+    one cached.
+    """
+    from pathlib import Path
+
+    import algan
+
+    for relpath in (
+        "rendering/raytracing/sheet_compact_taichi.py",
+        "rendering/shaders/fragment_stage_library.py",
+        "rendering/raytracing/settings.py",
+        "settings/raytracing_settings.py",
+        "constants/color.py",
+        "taichi_compat.py",
+        "environment.py",
+        "utils/taichi_source_key.py",
+        "utils/taichi_utils.py",
+    ):
+        assert kp._stamped(relpath), relpath
+    for relpath in (
+        "scene.py",
+        "render_loop.py",
+        "mobs/text.py",
+        "animation_timeline/timeline.py",
+        "utils/algan_utils.py",
+    ):
+        assert not kp._stamped(relpath), relpath
+    # Every kernel or func lives where the stamp looks.
+    root = Path(algan.__file__).parent
+    for path in root.rglob("*_taichi.py"):
+        assert kp._stamped(str(path.relative_to(root))), path
+
+
 def test_the_device_pool_size_is_not_keyed():
     """Workers shrink it; the index must still match (see ``_CONFIG_EXCLUDE_NAMES``)."""
     from algan.utils import taichi_source_key as sk

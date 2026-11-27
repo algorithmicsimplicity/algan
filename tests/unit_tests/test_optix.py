@@ -842,3 +842,40 @@ def test_the_classic_route_gathers_tiles_past_the_first(tmp_path, monkeypatch):
     assert max(offsets) > 0
     _assert_gathers_agree()
     _assert_close(hardware, software)
+
+
+def test_a_runtime_optix_cannot_have_is_said_once(monkeypatch):
+    """With OptiX on, a render on a device it cannot use, or on a second
+    device of a process whose runtime lives on the first, fell back to the
+    software traversal without a word.
+    """
+    from types import SimpleNamespace
+
+    import algan.logging.logger as algan_logger
+    from algan.rendering.raytracing import optix
+    from algan.rendering.raytracing.optix import runtime as runtime_module
+
+    said = []
+    monkeypatch.setattr(
+        algan_logger,
+        "get_logger",
+        lambda name=None: SimpleNamespace(info=lambda *a: said.append(a[0] % a[1:])),
+    )
+    monkeypatch.setattr(optix, "_NOTED", set())
+    assert optix.runtime_for("cpu") is None
+    assert optix.runtime_for("cpu") is None
+    assert len(said) == 1
+    assert "CUDA device" in said[0]
+    assert "cpu" in said[0]
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(runtime_module, "get_runtime", lambda *args: None)
+    monkeypatch.setattr(
+        runtime_module,
+        "_RUNTIME",
+        SimpleNamespace(device=torch.device("cuda", 0), kbuf=4),
+    )
+    assert optix.runtime_for(torch.device("cuda", 1)) is None
+    assert len(said) == 2
+    assert "cuda:0" in said[1]
+    assert "cuda:1" in said[1]
