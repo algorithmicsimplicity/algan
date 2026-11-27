@@ -4215,12 +4215,14 @@ class Surface(Mob):
     def set_shape_to(self, other_surface: Surface) -> Surface:
         """Reshape this surface into the shape of another one.
 
-        Takes ``other_surface``'s
-        :meth:`~algan.mobs.surfaces.surface.Surface.coord_function` and applies
-        it to this surface's own grid, which is how one parametric shape morphs
-        into another. Any grid axis coarser than ``other_surface``'s is refined
-        to match first, so the target shape is not under-sampled. The other
-        surface is left untouched.
+        Takes the shape ``other_surface`` has now -- the function it was built
+        from (its ``coord_function``, or the function a
+        :class:`~algan.mobs.surfaces.surface.Surface` was given), together with
+        any turn or scale applied to it since -- and applies it to this
+        surface's own grid, about this surface's location. That is how one
+        parametric shape morphs into another. Any grid axis coarser than
+        ``other_surface``'s is refined to match first, so the target shape is
+        not under-sampled. The other surface is left untouched.
 
         Animation
         ---------
@@ -4249,10 +4251,37 @@ class Surface(Mob):
             self._change_resolution(grid_width, grid_height)
 
         with Sync(animation_manager=self.animation_manager):
-            self.set_location_by_function(other_surface.coord_function)
+            self.set_location_by_function(other_surface._shape_function())
         # Normals need no transfer: they are recomputed from the grid every
         # render batch, so they follow the new shape on their own.
         return self
+
+    def _shape_function(self):
+        """This surface's shape as it is now, as a function of ``(u, v)``
+        giving offsets from its location (what
+        :meth:`set_location_by_function` takes).
+
+        That is the function it was built from while its grid still is that
+        function about its location. Once the grid has been turned or scaled
+        (a ``Cone`` aimed by ``direction``, which turns the grid and not the
+        function; any surface rotated since), the function no longer describes
+        it, and the shape is that function carried through the fitted
+        transform instead (:meth:`_current_surface_function`).
+        """
+        function = self.coord_function_active
+        location = self.location.reshape(-1, 3)[0]
+        canonical = function(self.get_base_grid().clone()).reshape(-1, 3)
+        current = self.grid.location.reshape(-1, self.grid_width * self.grid_height, 3)
+        current = current[0] - location
+        tolerance = 1e-6 * (1.0 + float(current.abs().max()))
+        if torch.allclose(canonical, current, rtol=0.0, atol=tolerance):
+            return function
+        world = self._current_surface_function()
+
+        def transformed(uv):
+            return world(uv) - location
+
+        return transformed
 
     def set_location_by_function(self, function):
         """Shape the surface by a function of its ``(u, v)`` parameters.

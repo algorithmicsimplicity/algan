@@ -1295,6 +1295,26 @@ class Cylinder(Surface):
             # showed while the flip in _prep_normal covered it; a transparent
             # Line3D showed it plainly.
             forward_b = torch.cross(right_b, up_b, dim=-1)
+            right_row = right_b * self.scale_coefficient[..., :1]
+            forward_row = forward_b * self.scale_coefficient[..., 2:]
+            # Where the two points coincide there is no axis to build a
+            # cross-section about: up_b is zero, so forward_b was too, and
+            # since the scales above are read back from the basis, a zero
+            # forward row stayed zero -- a line grown out of a point, or one
+            # that passed through one, was a flat ribbon from then on. Such a
+            # frame keeps the cross-section it had (and the axis it implies,
+            # for the caps); every other frame is computed exactly as before.
+            # Selected per frame, never branched on, so this costs no device
+            # sync on the per-synapse stretch path updaters hammer; the basis
+            # is read uncopied, as above, since it only feeds torch.where.
+            degenerate = (end - start).norm(p=2, dim=-1, keepdim=True) < 1e-12
+            rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
+            right_row = torch.where(degenerate, rows[..., 0, :], right_row)
+            forward_row = torch.where(degenerate, rows[..., 2, :], forward_row)
+            kept_up = F.normalize(
+                torch.cross(rows[..., 2, :], rows[..., 0, :], dim=-1), p=2, dim=-1
+            )
+            up_b = torch.where(degenerate, kept_up, up_b)
             self.move_to((start + end) * 0.5)
             # The up row over the built height: coord_function multiplies it
             # back, so the side spans ``start`` to ``end`` whatever ``height``
@@ -1303,11 +1323,7 @@ class Cylinder(Surface):
             self._setattr_and_record_modification(
                 "basis",
                 torch.cat(
-                    (
-                        right_b * self.scale_coefficient[..., :1],
-                        (end - start) / self.height,
-                        forward_b * self.scale_coefficient[..., 2:],
-                    ),
+                    (right_row, (end - start) / self.height, forward_row),
                     -1,
                 ),
             )

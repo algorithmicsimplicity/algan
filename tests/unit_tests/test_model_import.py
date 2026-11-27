@@ -364,6 +364,34 @@ def test_recomputed_normals_weight_shared_vertices_by_face_area():
     )
 
 
+@pytest.mark.parametrize("smooth_normals", [True, False])
+def test_a_mirrored_node_is_rewound_so_derived_normals_face_out(smooth_normals):
+    """REGRESSION. A node with a negative determinant reverses its triangles'
+    winding, which glTF requires an importer to undo. The flat normals (and
+    the ones recomputed while a clip plays) are +cross of the winding, so a
+    mirrored part was lit from inside. Authored normals were already right.
+    """
+    data = _model_data(_slide("up", (0, 1, 0)), normals=True)
+    data.nodes[0].transform = torch.diag(torch.tensor([-1.0, 1.0, 1.0, 1.0]))
+    with Scene():
+        model = Model3D(scene_data=data, smooth_normals=smooth_normals)
+        mesh = model.mesh_mobs[0]
+        out = torch.tensor([0.0, 0.0, 1.0]).expand(3, 3)
+        torch.testing.assert_close(_render_normals(mesh), out)
+        # The same face, mirrored: the corners are the authored ones in x.
+        placed = mesh.grid.location[0]
+        assert {tuple(c) for c in placed.tolist()} == {
+            (-1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0),
+        }
+        # Playback recomputes normals from the winding, which still faces out.
+        model.play_animation()
+        torch.testing.assert_close(
+            mesh._compute_corner_normals(mesh.grid.location)[0], out
+        )
+
+
 def test_ignore_normals_hands_the_renderer_zero_normals():
     with Scene():
         mesh = TriangleMesh(_TETRA, _TETRA_FACES, normals=_TETRA, ignore_normals=True)
@@ -744,6 +772,39 @@ def test_gltf_node_matrices_and_scale_keys_compose_down_the_hierarchy(tmp_path):
     torch.testing.assert_close(
         corners[mesh][0], torch.tensor([[5.0, 0, 0], [7, 0, 0], [5, 3, 0]])
     )
+
+
+@pytest.mark.parametrize("names", [("Part", "Part"), ("node_1", None)])
+def test_gltf_channels_bind_to_their_node_by_index_not_by_name(tmp_path, names):
+    """REGRESSION. Channels were bound by node name, so two nodes sharing one
+    (legal in glTF) both played the track authored for the first, and the
+    second lost its own rest translation. An unnamed node was named
+    ``node_<index>``, which a real node could also be called.
+    """
+    gltf = _Gltf()
+    mesh = g.Mesh(primitives=[gltf.triangle()])
+    sampler = gltf.keys([0.0, 1.0], [[-2, 0, 0], [-2, 5, 0]])
+    path = gltf.save(
+        tmp_path / "names.glb",
+        scene=0,
+        scenes=[g.Scene(nodes=[0, 1])],
+        nodes=[
+            g.Node(name=names[0], mesh=0, translation=[-2, 0, 0]),
+            g.Node(name=names[1], mesh=0, translation=[2, 0, 0]),
+        ],
+        meshes=[mesh],
+        animations=[
+            g.Animation(samplers=[sampler], channels=[_channel(0, 0, "translation")])
+        ],
+    )
+    with Scene():
+        model = Model3D(path)
+        _, corners = model.precompute_animation(times=[0.0, 1.0])
+    animated, still = (corners[mob] for mob in model.mesh_mobs)
+    triangle = torch.tensor([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    torch.testing.assert_close(animated[1], triangle + torch.tensor([-2.0, 5, 0]))
+    for frame in still:
+        torch.testing.assert_close(frame, triangle + torch.tensor([2.0, 0, 0]))
 
 
 def test_a_gltf_without_a_default_scene_roots_at_its_parentless_nodes(tmp_path):

@@ -370,3 +370,103 @@ def test_utf8_gltf_loads_under_a_non_utf8_locale(tmp_path):
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip().endswith(ascii("Würfel-の材質"))
+
+
+def _instance_quad(path, copies):
+    """Rewrite the one-quad glTF at ``path`` so ``copies`` separate meshes,
+    each on its own node, share its one primitive's material.
+    """
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    primitive = doc["meshes"][0]["primitives"][0]
+    doc["meshes"] = [
+        {"name": f"quad_{k}", "primitives": [dict(primitive)]} for k in range(copies)
+    ]
+    doc["nodes"] = [
+        {"mesh": k, "name": f"quad_{k}", "translation": [2.0 * k, 0, 0]}
+        for k in range(copies)
+    ]
+    doc["scenes"] = [{"nodes": list(range(copies))}]
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def test_a_material_shared_by_several_primitives_is_decoded_once(tmp_path):
+    texture = np.full((4, 4, 4), 255, np.uint8)
+    texture[0, 0] = (10, 200, 30, 255)
+    normal = np.full((4, 4, 3), 128, np.uint8)
+    normal[..., 2] = 255
+    path = _instance_quad(
+        _write_gltf(
+            tmp_path / "shared.gltf",
+            {
+                "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.5, 1.0, 1.0]},
+                "normalTexture": {"index": 1},
+            },
+            images=[("baseColorTexture", _png(texture)), ("unused", _png(normal))],
+        ),
+        copies=3,
+    )
+    scene = load_scene(str(path))
+    assert len(scene.meshes) == 3
+    assert len(scene.materials) == 1
+    assert {mesh.material_index for mesh in scene.meshes} == {0}
+
+    with Scene():
+        model = Model3D(scene_data=scene)
+        meshes = model.mesh_mobs
+        assert len(meshes) == 3
+        # One map, shared by every mesh, not one expanded copy per mesh.
+        assert len({mesh.texture_map.data_ptr() for mesh in meshes}) == 1
+        assert len({mesh.normal_texture_map.data_ptr() for mesh in meshes}) == 1
+        # And it is the map each would have built on its own.
+        torch.testing.assert_close(
+            meshes[2].texture_map,
+            algan.mobs.three_d_models.mesh.image_to_texture_map(
+                scene.materials[0].diffuse_image
+            ),
+            rtol=0,
+            atol=0,
+        )
+
+
+def test_dark_base_color_factors_keep_their_float_precision(tmp_path):
+    """REGRESSION. The factor was read from trimesh, which stores it as
+    uint8. It is linear, so 1/255 steps crushed the darks: this one came
+    back with no green at all and its red 29% too bright.
+    """
+    factor = [0.003, 0.0015, 0.2, 0.7]
+    material = _material(
+        tmp_path,
+        {
+            "pbrMetallicRoughness": {"baseColorFactor": factor},
+            "alphaMode": "BLEND",
+        },
+    )
+    srgb = linear_to_srgb(torch.tensor(factor[:3], dtype=torch.float64)).tolist()
+    assert material.base_color == pytest.approx((*srgb, 0.7), rel=1e-6, abs=1e-7)
+
+    # The tint a texture is multiplied by is the same exact factor.
+    texture = np.full((1, 1, 4), 255, np.uint8)
+    textured = _material(
+        tmp_path,
+        {"pbrMetallicRoughness": {"baseColorFactor": factor}, "alphaMode": "BLEND"},
+        images=[("baseColorTexture", _png(texture))],
+    )
+    assert textured.diffuse_image[0, 0].tolist() == pytest.approx(
+        [*srgb, 0.7], rel=1e-5, abs=1e-6
+    )
+
+
+def test_float_vertex_colors_beside_a_material_keep_their_precision(tmp_path):
+    colors = np.array(
+        [[0.002, 0.0011, 0.3, 1], [0.0007, 0, 0, 1], [1, 1, 1, 1], [0, 0, 0, 1]],
+        np.float32,
+    )
+    path = _write_gltf(
+        tmp_path / "dark.gltf",
+        {"pbrMetallicRoughness": {"metallicFactor": 0}},
+        colors=colors,
+    )
+    vertex_colors = load_scene(str(path)).meshes[0].vertex_colors
+    expected = linear_to_srgb(torch.tensor(colors[:, :3], dtype=torch.float64))
+    torch.testing.assert_close(vertex_colors[:, :3], expected.float())

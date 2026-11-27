@@ -200,14 +200,28 @@ def evaluate_node_local_transform(node, channel, t, device=None):
 
 def evaluate_animated_locals(nodes, clip, t, device=None):
     """Per-node local ``4x4`` transforms at time ``t`` for every node, applying
-    ``clip``'s channels (matched to nodes by name) over the rest pose.
+    ``clip``'s channels over the rest pose.
+
+    A channel that carries a ``source_index`` (glTF, which targets a node by
+    index) binds to the node with that index and nothing else; one without
+    (assimp, whose convention is the node's name) binds by name. glTF node
+    names need not be unique, so binding its channels by name played one
+    node's track on every node that shared its name.
     """
-    channels = {}
+    by_index, by_name = {}, {}
     if clip is not None:
         for ch in clip.channels:
-            channels[ch.node_name] = ch
+            if ch.source_index >= 0:
+                by_index[ch.source_index] = ch
+            else:
+                by_name[ch.node_name] = ch
+
+    def channel_for(node):
+        channel = by_index.get(node.source_index) if node.source_index >= 0 else None
+        return channel if channel is not None else by_name.get(node.name)
+
     return [
-        evaluate_node_local_transform(node, channels.get(node.name), t, device=device)
+        evaluate_node_local_transform(node, channel_for(node), t, device=device)
         for node in nodes
     ]
 

@@ -219,25 +219,39 @@ def _parse_skin(mesh, num_vertices):
     K = 4  # keep the 4 strongest influences per vertex (standard for LBS)
     names = []
     inv_bind = []
-    # Accumulate (weight, bone) per vertex, then keep the top K.
-    acc = [[] for _ in range(num_vertices)]
+    # Every (vertex, weight, bone) influence, in the order the file gives
+    # them. Nothing reads skins yet (skinning is not supported), so this runs
+    # on every load of a skinned file for no effect: keep the per-weight work
+    # to reading the values, and do the per-vertex top-K in array operations.
+    # It used to sort and write a Python list per vertex, 4.4 s for 50 000
+    # vertices and 30 bones.
+    vids, values, owners = [], [], []
     for b, bone in enumerate(bones):
         names.append(getattr(bone, "name", f"bone_{b}") or f"bone_{b}")
         inv_bind.append(_t(getattr(bone, "offsetmatrix", None)))
         for w in getattr(bone, "weights", []) or []:
-            vid = int(getattr(w, "vertexid", getattr(w, "vertex_id", 0)))
-            if 0 <= vid < num_vertices:
-                acc[vid].append((float(getattr(w, "weight", 0.0)), b))
+            vids.append(int(getattr(w, "vertexid", getattr(w, "vertex_id", 0))))
+            values.append(float(getattr(w, "weight", 0.0)))
+            owners.append(b)
+    vids = np.asarray(vids, dtype=np.int64)
+    values = np.asarray(values, dtype=np.float64)
+    owners = np.asarray(owners, dtype=np.int64)
+    keep = (vids >= 0) & (vids < num_vertices)
+    vids, values, owners = vids[keep], values[keep], owners[keep]
+    # Per vertex, strongest first, ties in file order (the stable sort the
+    # per-vertex lists had); then each influence's rank within its vertex.
+    order = np.lexsort((np.arange(len(vids)), -values, vids))
+    vids, values, owners = vids[order], values[order], owners[order]
+    starts = np.searchsorted(vids, vids, side="left")
+    rank = np.arange(len(vids)) - starts
+    top = rank < K
     bone_indices = torch.zeros((num_vertices, K), dtype=torch.int64)
     weights = torch.zeros((num_vertices, K), dtype=torch.float32)
-    for vid, infl in enumerate(acc):
-        infl.sort(key=lambda x: -x[0])
-        for j, (wgt, bidx) in enumerate(infl[:K]):
-            bone_indices[vid, j] = bidx
-            weights[vid, j] = wgt
-        s = weights[vid].sum()
-        if s > 1e-8:
-            weights[vid] /= s
+    slot = (torch.as_tensor(vids[top]), torch.as_tensor(rank[top]))
+    bone_indices[slot] = torch.as_tensor(owners[top])
+    weights[slot] = torch.as_tensor(values[top], dtype=torch.float32)
+    total = weights.sum(dim=1, keepdim=True)
+    weights = torch.where(total > 1e-8, weights / total, weights)
     inv_bind = [m for m in inv_bind if m is not None]
     inverse_bind = torch.stack(inv_bind) if len(inv_bind) == len(names) else None
     return SkinData(
