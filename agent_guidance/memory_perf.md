@@ -582,6 +582,25 @@ explainer PREVIEW 0.58 vs 0.66 s, graphics PREVIEW 1.78 vs 1.88 s (pinned:
   collections 12 → 8. The recorded timeline is unchanged byte for byte. An
   accessor whose name the class defines (`Mob.set_location`) is still built
   at construction, so it shadows the class method as it always has.
+- **SVG recipes on disk (November 27).** The recipe cache's `data1` format
+  (torch, `weights_only=True`) cost a pure-Python unpickle of every value and
+  one tensor per glyph array: scene 6 spent 18-22 s reading 83 code-page
+  recipes. `data2` is the same tagged tree as JSON plus the arrays' raw bytes
+  (`_write_disk_file`/`_read_disk_file`): no pickle, numeric dtypes only, every
+  class still checked; `data1` entries are read and carried over once. Scene
+  6 reads them in 2.3 s. A replay's `id_to_vgroup_dict` is built on first read
+  (a property installed on `SVGMobject`): a Pango Text has thousands of groups
+  per page that nothing reads, 5.8 s -> 0.3 s.
+- **Circuit frames without temporaries.** `_circuit_centroids` computes its
+  Bezier samples laid out `(B, M, 3, S)` and accumulates in place, writes
+  steps straight into its buffers, skips the centroid the selection discards,
+  and `_halving_sum` no longer materializes padding (it still adds the zero:
+  `-0.0 + 0.0` is `0.0`). Bit-identical; a code page frames 2.1x faster.
+- **Clones share immutable name sets.** `_ctor_names` (every Mob's frozenset of
+  construction-time attribute names) was deep-copied name by name on every
+  clone and view: 135 of a glyph view's 181 deepcopy dispatches. Scene 6
+  under equal load, origin/master -> these four changes: `validate` 68-75 -> 33-39 s,
+  recorded timeline unchanged byte for byte.
 
 All of these memos reproduce the uncached state bit for bit
 (`tests/unit_tests/test_authoring_memos.py`). The daemon keeps them warm
