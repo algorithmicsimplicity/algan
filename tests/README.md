@@ -426,7 +426,9 @@ and why it contains no `Surface` geometry.
 ## Baseline status and renderer changes
 
 `tests/baselines.json` is the current inventory of published heavy-baseline keys,
-asset names and digests. Since the 2026-09-27 CPU rebaseline it points to
+asset names and digests. Since the 2026-11-27 CUDA rebaseline (full renders and
+path-traced, made on an RTX 5080 under Windows) it points to
+`baselines-2026-11-27`, which carries the CPU archives forward unchanged from
 `baselines-2026-09-27`; that tag is provenance, not a recommendation to overwrite
 an existing baseline release.
 
