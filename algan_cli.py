@@ -80,7 +80,7 @@ def _ffmpeg_binary() -> tuple[str | None, str]:
 def _cmd_check(_args: argparse.Namespace) -> int:
     """Check system environment and dependencies."""
     path_errors = False
-    unusable = False  # a missing ffmpeg or typesetter: renders cannot work
+    unusable = False  # no ffmpeg: no video can be written
     print("=== Algan Environment Health Check ===")
     print(f"Algan: {_version()}")
 
@@ -265,7 +265,9 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             "unaffected - it renders through Pango."
         )
     else:
-        unusable = True
+        # A warning, not a failure: geometry still renders without either,
+        # and a bare Linux install has neither until the `pango` extra or a
+        # TeX distribution is added (CI's clean-wheel check runs exactly that).
         print(
             "  [WARNING] Neither Pango nor LaTeX found: no text can be "
             'rendered at all. Install one - `pip install "algan[pango]"` for '

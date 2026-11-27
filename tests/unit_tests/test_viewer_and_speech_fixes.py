@@ -138,3 +138,24 @@ def test_check_exits_non_zero_without_ffmpeg(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_ffmpeg_binary", lambda: (None, ""))
     assert cli._cmd_check(SimpleNamespace()) == 1
     assert "No ffmpeg found" in capsys.readouterr().out
+
+
+def test_check_passes_without_a_text_typesetter(monkeypatch, capsys):
+    # A bare Linux install has neither Pango nor LaTeX and still renders
+    # geometry; CI's clean-wheel job runs `algan check` in exactly that state.
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == "manimpango" else real_find_spec(name, *a),
+    )
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: None if name in ("latex", "dvisvgm") else name
+    )
+    monkeypatch.setattr(cli, "_ffmpeg_binary", lambda: ("/usr/bin/ffmpeg", "PATH"))
+    status = cli._cmd_check(SimpleNamespace())
+    out = capsys.readouterr().out
+    assert "Neither Pango nor LaTeX found" in out
+    assert status == 0 or "[ERROR]" in out
