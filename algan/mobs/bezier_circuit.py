@@ -170,15 +170,24 @@ def _halving_sum(values):
     no such thing; its reduction order moves with the array's shape.
     """
     size = values.shape[1]
-    padded = 1 if size <= 1 else 1 << (size - 1).bit_length()
-    if padded != size:
-        pad = np.zeros(
-            (values.shape[0], padded - size, *values.shape[2:]), values.dtype
-        )
-        values = np.concatenate((values, pad), 1)
-    while padded > 1:
-        padded //= 2
-        values = values[:, :padded] + values[:, padded:]
+    if size <= 1:
+        return values[:, 0]
+    padded = 1 << (size - 1).bit_length()
+    # The first halving, written out so the padding is never materialized: a
+    # term whose partner is padding has that zero added to it, which is not
+    # a no-op (it turns -0.0 into 0.0), so it is added still. Every halving
+    # after that is a power of two and runs in place on one buffer. Each
+    # element is the same IEEE addition of the same two operands as before.
+    half = padded // 2
+    paired = size - half
+    first = values[:, :half].copy()
+    first[:, :paired] += values[:, half:]
+    if paired < half:
+        first[:, paired:] += 0.0
+    values = first
+    while half > 1:
+        half //= 2
+        np.add(values[:, :half], values[:, half : 2 * half], out=values[:, :half])
     return values[:, 0]
 
 
@@ -336,12 +345,24 @@ def _circuit_centroids(points, counts, origins, extents):
     valid = segment_index < segments[:, None]
 
     weights = _bezier_sample_weights(samples)
-    rows = control[:, :, None]
+    # Laid out (B, M, 3, S) while it is computed, so each product runs along
+    # the samples rather than three coordinates at a time; ``curve`` is the
+    # (B, M, S, 3) view of it.
+    rows = control[..., None]
 
-    def term(k):
-        return weights[:, k].reshape(1, 1, samples, 1) * rows[..., k, :]
+    def term(k, out=None):
+        return np.multiply(weights[:, k], rows[:, :, k], out=out)
 
-    curve = ((term(0) + term(1)) + term(2)) + term(3)  # (B, M, S, 3)
+    # ((term(0) + term(1)) + term(2)) + term(3), accumulated in place: the
+    # same products and additions in the same order, without a temporary per
+    # operation.
+    curve = term(0)
+    scratch = term(1)
+    curve += scratch
+    curve += term(2, out=scratch)
+    curve += term(3, out=scratch)
+    del scratch
+    curve = curve.transpose(0, 1, 3, 2)  # (B, M, S, 3)
 
     # Loops: a segment starts one when it is its circuit's first, or when it
     # does not continue the one before it.
@@ -365,18 +386,26 @@ def _circuit_centroids(points, counts, origins, extents):
     # segment's own end point where the loop closes.
     following = np.concatenate((curve[:, 1:, 0], np.zeros_like(curve[:, :1, 0])), 1)
     last_step = np.where(ends[..., None], control[:, :, 3], following)
-    step_end = np.concatenate((curve[:, :, 1:], last_step[:, :, None]), 2)
-    keep = valid[:, :, None, None]
-    step_start = np.where(keep, curve, 0.0).reshape(batch, most * samples, 3)
-    step_end = np.where(keep, step_end, 0.0).reshape(batch, most * samples, 3)
 
     # Then each loop's closing step, from its end point back to where it began,
-    # right after its circuit's own samples.
+    # right after its circuit's own samples. The steps are written straight
+    # into their rows of ``start``/``end``, segments past a circuit's own
+    # left at zero.
     length = most * samples + most
     start = np.zeros((batch, length, 3))
     end = np.zeros((batch, length, 3))
-    start[:, : most * samples] = step_start
-    end[:, : most * samples] = step_end
+    step_start = start[:, : most * samples].reshape(batch, most, samples, 3)
+    step_end = end[:, : most * samples].reshape(batch, most, samples, 3)
+    if not (
+        np.may_share_memory(step_start, start) and np.may_share_memory(step_end, end)
+    ):  # splitting one axis is always a view; never write into a copy
+        raise AssertionError("step rows are not views of the step buffers")
+    unused = ~valid
+    step_start[...] = curve
+    step_start[unused] = 0.0
+    step_end[:, :, :-1] = curve[:, :, 1:]
+    step_end[:, :, -1] = last_step
+    step_end[unused] = 0.0
     wraps = np.zeros((batch, length), dtype=bool)
     closing_row, closing_segment = np.nonzero(ends)
     slot = segments[closing_row] * samples + loop[closing_row, closing_segment]
@@ -394,19 +423,30 @@ def _circuit_centroids(points, counts, origins, extents):
     encloses_area = (segments > 0) & (
         area_size > _DEGENERATE_AREA_FRACTION * extent * np.maximum(magnitude, extent)
     )
+    # Each circuit takes one of the two centroids below, so a batch none (or
+    # all) of whose circuits enclose area skips the other: it would only be
+    # computed to be discarded by the selection after.
+    sums = start + end
     with np.errstate(divide="ignore", invalid="ignore"):
         area_normal = vector_area / np.maximum(area_size, 1e-300)[:, None]
-        twice_areas = _dot3(cross, area_normal[:, None])
-        area_centroid = (
-            _halving_sum((start + end) * twice_areas[..., None])
-            / (3 * _halving_sum(twice_areas))[:, None]
-        )
-        lengths = _norm3(end - start) * (~wraps)
-        total = _halving_sum(lengths)
-        path_centroid = (
-            _halving_sum(((start + end) * 0.5) * lengths[..., None])
-            / np.maximum(total, 1e-300)[:, None]
-        )
+        if encloses_area.any():
+            twice_areas = _dot3(cross, area_normal[:, None])
+            area_centroid = (
+                _halving_sum(sums * twice_areas[..., None])
+                / (3 * _halving_sum(twice_areas))[:, None]
+            )
+        else:
+            area_centroid = np.zeros((batch, 3))
+        if encloses_area.all():
+            total = np.zeros(batch)
+            path_centroid = np.zeros((batch, 3))
+        else:
+            lengths = _norm3(end - start) * (~wraps)
+            total = _halving_sum(lengths)
+            path_centroid = (
+                _halving_sum((sums * 0.5) * lengths[..., None])
+                / np.maximum(total, 1e-300)[:, None]
+            )
     offset = np.where(
         encloses_area[:, None],
         area_centroid,
