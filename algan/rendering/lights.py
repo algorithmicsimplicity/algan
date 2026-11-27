@@ -35,6 +35,7 @@ legacy distance-falloff convention.
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -42,7 +43,7 @@ import torch.nn.functional as F
 from algan.animatable_base.mob import Mob
 from algan.constants.color import WHITE, Color
 from algan.constants.spatial import ORIGIN, UP
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganWarning, _user_stacklevel
 from algan.rendering.raytracing import settings as rt_settings
 from algan.utils.color_space import srgb_to_linear
 from algan.utils.tensor_utils import cast_to_tensor
@@ -70,6 +71,10 @@ LIGHT_ENV_SH = 6.0
 # Number of aux columns following the RGB color in a packed light row
 # (packed row width 18 = 3 color + 15 aux).
 LIGHT_AUX_COLS = 15
+
+# A targeted light closer to its target than this, in world units, is taken to
+# sit on it: its direction is the zero vector, and it emits nothing.
+_COINCIDENT_TARGET_DISTANCE = 1e-6
 
 
 def _finite_number(
@@ -137,6 +142,51 @@ def _positive_sample_count(value):
     if result < 1 or not exact:
         raise AlganConfigurationError("samples must be a positive integer")
     return result
+
+
+def _ground_color(value):
+    """Validate a :class:`HemisphereLight` ``ground_color`` at construction.
+
+    A hex int or a hex string is parsed the way every material color is
+    (``materials._to_color5``): unparsed, ``_build_aux`` used to hand it to
+    ``torch.tensor`` at render time, so ``0x8B4513`` became a one-element
+    radiance of 9127187 on every channel and ``"#8B4513"`` a ``TypeError`` from
+    inside the render loop. Any other value is kept exactly as given -- it is
+    what ``_build_aux`` has always packed -- once it is known to hold three
+    finite, non-negative channels.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise AlganConfigurationError(
+            f"ground_color must be a color, got {value!r}; pass a color such as "
+            "DARK_BROWN, an RGB triple, a hex int or a hex string, or None for black"
+        )
+    if isinstance(value, (int, str)):
+        from algan.rendering.shaders.materials import _to_color5
+
+        try:
+            return _to_color5(value)
+        except ValueError as exc:
+            raise AlganConfigurationError(
+                f"ground_color {value!r} is not a color: {exc}"
+            ) from exc
+    try:
+        channels = torch.as_tensor(value, dtype=torch.float32).reshape(-1)[:3]
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise AlganConfigurationError(
+            f"ground_color must be a color, got {value!r}; pass a color such as "
+            "DARK_BROWN, an RGB triple, a hex int or a hex string, or None for black"
+        ) from exc
+    if channels.numel() < 3:
+        raise AlganConfigurationError(
+            f"ground_color must have three channels (R, G, B), got {value!r}"
+        )
+    if not bool(torch.isfinite(channels).all()) or bool((channels < 0).any()):
+        raise AlganConfigurationError(
+            f"ground_color must hold finite, non-negative channels, got {value!r}"
+        )
+    return value
 
 
 def _as_direction_target(target):
@@ -447,7 +497,7 @@ class _TargetedLight(Light):
         super().__init__(*args, **kwargs)
 
     def set_target(self, target):
-        """Aim the light at a point, swinging its beam.
+        """Aim the light at a point.
 
         The emission direction is recomputed each frame as
         ``normalize(target - location)``, so a light aimed at a point keeps pointing
@@ -455,8 +505,12 @@ class _TargetedLight(Light):
 
         Animation
         ---------
-        Not animated: the new target applies from this point in the timeline onwards.
-        Animate the light's :attr:`~.Mob.location` to swing the beam smoothly.
+        Not animated, and not recorded: the target is one point for the whole
+        render, and every frame -- including frames before this call -- is lit
+        with whichever target was set last before the render. A Mob passed as
+        ``target`` is read for its location once, here; the light does not
+        follow it. To swing the beam over time, animate the light's
+        :attr:`~.Mob.location` instead.
 
         Parameters
         ----------
@@ -473,7 +527,39 @@ class _TargetedLight(Light):
 
     def _directions(self, location):
         """Unit emission direction per frame, ``[T, 3]``."""
-        return F.normalize(self.target.to(location.device) - location, p=2, dim=-1)
+        offset = self.target.to(location.device) - location
+        if not self.__dict__.get("_warned_no_direction", False):
+            self._warn_if_no_direction(offset)
+        return F.normalize(offset, p=2, dim=-1)
+
+    def _warn_if_no_direction(self, offset):
+        """Warn, once per light, when a frame puts the light on its target.
+
+        ``F.normalize`` of a zero offset is the zero vector, which the kernels
+        read as a light facing nowhere: it emits nothing on those frames, and
+        a rect area light also loses its frame. Nothing else would say so, and
+        the defaults make it the first thing a user tries --
+        ``DirectionalLight()`` sits at ``ORIGIN`` aimed at ``ORIGIN``. Checked
+        here, where the per-frame directions are made, rather than at
+        construction or in ``set_target``: a light is routinely placed after it
+        is made (``light.location = UP``), so only the frames being rendered
+        say whether it really coincides with its target.
+        """
+        coincide = offset.norm(dim=-1) < _COINCIDENT_TARGET_DISTANCE
+        if not bool(coincide.any()):
+            return
+        self._warned_no_direction = True
+        frames = int(coincide.sum())
+        warnings.warn(
+            f"{self._describe()} emits no light on {frames} of the "
+            f"{coincide.numel()} frame(s) just packed: its location and its "
+            "target are the same point, so it has no direction to shine in. "
+            "Give it a location or a target away from the other (for example "
+            "location=UP with the default target=ORIGIN, which shines "
+            "straight down).",
+            AlganWarning,
+            stacklevel=_user_stacklevel(),
+        )
 
 
 class DirectionalLight(_TargetedLight):
@@ -492,6 +578,10 @@ class DirectionalLight(_TargetedLight):
     *args, **kwargs
         Passed to :class:`~.Light` -- notably ``location``, which with
         ``target`` sets the direction of the rays, and ``color``.
+        ``location`` defaults to ``ORIGIN``, the same point as the default
+        ``target``: a light left at both defaults has no direction and emits
+        nothing, and the render warns that it does. Give it a ``location``,
+        such as ``UP`` to shine straight down.
 
     Raises
     ------
@@ -567,7 +657,8 @@ class HemisphereLight(Light):
     ----------
     ground_color
         Color of the illumination coming from below, as an RGB triple in
-        ``[0, 1]`` or a color constant such as ``DARK_BROWN``. Defaults to
+        ``[0, 1]``, a color constant such as ``DARK_BROWN``, or a hex int or
+        string as three.js writes it (``0x8B4513``, ``"#8B4513"``). Defaults to
         ``None``, meaning black: no light from below.
     up
         The sky direction, shape ``(3,)``: surfaces facing it receive the full
@@ -576,6 +667,12 @@ class HemisphereLight(Light):
         Passed to :class:`~.Light` -- notably ``color``, the sky's color, and
         ``intensity``. ``location`` has no effect on the lighting and defaults
         to ``ORIGIN``.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``ground_color`` is not a color: a string no color parses, or a
+        value without three finite, non-negative channels.
     """
 
     light_type = LIGHT_HEMISPHERE
@@ -588,7 +685,7 @@ class HemisphereLight(Light):
     def __init__(self, *args, ground_color=None, up=UP, **kwargs):
         if not args and "location" not in kwargs:
             kwargs["location"] = ORIGIN
-        self.ground_color = ground_color
+        self.ground_color = _ground_color(ground_color)
         # ``up`` is the constructor's name for it; the attribute is spelled
         # differently because ``Mob.up`` is the mob's own up direction.
         self.sky_direction = _as_direction_target(up)

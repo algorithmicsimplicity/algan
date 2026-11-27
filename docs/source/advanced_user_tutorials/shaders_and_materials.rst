@@ -297,7 +297,11 @@ by keyword only. It warns about a shader that would be given the wrong
 values: one that puts a fixed parameter in another place, or another
 parameter with a default in a fixed one's, as
 ``def toon(memory, ..., light_intensity, bands=4)`` does by leaving out
-``ambient_light_intensity``.
+``ambient_light_intensity``. It also warns about a material parameter named
+after an attribute the Mob already has, such as ``color``, ``opacity`` or
+``location``: its default would overwrite the Mob's own. That will be an error
+in a later release; the built-in material names (``roughness``, ``emissive``,
+...) are fine.
 Read the source of ``basic_material_shader`` (in
 ``algan/rendering/shaders/material_shaders.py``) and
 :func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader` for

@@ -468,7 +468,9 @@ As built (this section was written before §13–§16; those are the authority):
                                      sub-areas instead of compositing them.
                                      Off only to measure the difference.
   ALGAN_ANALYTIC_AA_SLIVER (drop)    Sample-less-triangle policy: drop | exact |
-                                     exact_occ | area (§16).
+                                     exact_occ | area (§16). Removed
+                                     2026-11-26: the run representation fixes
+                                     it at drop.
   ALGAN_ANALYTIC_AA_SECONDARY (4)    Sub-pixel samples for what coverage cannot
                                      do analytically: continuations per
                                      reflective/refractive hit AND shadow-ray

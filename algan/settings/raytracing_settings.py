@@ -181,7 +181,7 @@ def _is_field(name: str, value) -> bool:
 
     A field is public, lowercase, and holds a scalar. Everything else in those
     modules is a helper (callable), an internal (``_``-prefixed), a genuine
-    constant that is not configuration (``ANALYTIC_AA_SLIVER_MODES``,
+    constant that is not configuration (``KERNEL_COMPILED_IN_FIELDS``,
     ``BEZIER_SPATIAL_CELLS``, the packed-layout offsets -- all still
     UPPER_CASE, as constants are), or an import.
     """
@@ -268,26 +268,12 @@ def _experimental_fields() -> frozenset[str]:
 # writing one is refused with a "do this instead" message rather than silently
 # doing nothing, while reads and snapshot round-trips keep working. A field
 # here is on its way out -- it stays declared only while some code still names
-# it. The two current entries are analytic-AA policies the sheet route settled
-# (their comments in algan/rendering/raytracing/settings.py give the
-# evidence); raster_pipeline still reads both, to the same effect whatever
-# they hold, and they can be deleted once it does not. The physical-mode
-# fields that were here before (``light_intensity``, ``ambient_light``) went
-# with the unwired Monte Carlo kernel that was their only reader.
-_INERT_FIELDS: dict[str, str] = {
-    "analytic_aa_sliver": (
-        "'analytic_aa_sliver' no longer changes anything: the run-corrected "
-        "coverage the sheet route renders with fixes the sample-less-triangle "
-        "policy at 'drop', and that route is the only analytic-coverage path. "
-        "There is nothing to set instead."
-    ),
-    "analytic_aa_run_rule": (
-        "'analytic_aa_run_rule' no longer changes anything: the sheet resolve "
-        "always redistributes the clamped residue ('redistribute', the rule "
-        "the harness chose), and both values compile the same emission. There "
-        "is nothing to set instead."
-    ),
-}
+# it. Empty at the moment: the last two, the analytic-AA policies
+# ``analytic_aa_sliver`` and ``analytic_aa_run_rule`` that the sheet route
+# settled, were deleted with raster_pipeline's read of them. The physical-mode
+# fields before them (``light_intensity``, ``ambient_light``) went with the
+# unwired Monte Carlo kernel that was their only reader.
+_INERT_FIELDS: dict[str, str] = {}
 
 
 #: Fields the renderer freezes when it is imported, and what to set instead.
@@ -388,13 +374,9 @@ _MINIMUMS = {
 
 #: String fields whose accepted values are enumerated in the storage module.
 #: Named by the tuple that holds them so the two cannot drift apart. The other
-#: string fields validate inside their own setter, or not at all. Both of these
-#: are inert (:data:`_INERT_FIELDS`), so only a replayed configuration -- whose
-#: value came from the environment -- still reaches this check.
-_CHOICES = {
-    "analytic_aa_sliver": "ANALYTIC_AA_SLIVER_MODES",
-    "analytic_aa_run_rule": "ANALYTIC_AA_RUN_RULES",
-}
+#: string fields validate inside their own setter, or not at all. Empty since
+#: its two entries, the inert analytic-AA policies, were deleted.
+_CHOICES: dict[str, str] = {}
 
 
 def _check_value(field, value, module):

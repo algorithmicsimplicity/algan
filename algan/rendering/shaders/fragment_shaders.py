@@ -23,8 +23,13 @@ as fragment shaders and compose with custom ones, e.g.
 with a cosine wave and then lights the result with Blinn-Phong.
 """
 
+import inspect
+
+import torch
+
+from algan.errors import AlganConfigurationError
 from algan.rendering.raytracing.raytrace_kernels_taichi import min_alpha
-from algan.rendering.raytracing.settings import _MAT_COLOR_SLOT_NAMES
+from algan.rendering.raytracing.settings import _MAT_COLOR_SLOT_NAMES, _MAT_SLOTS
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     _reflect_frame,
@@ -91,6 +96,17 @@ class FragmentStage:
     exception: their ``emissive``, ``specular``, ``specular_color`` and
     ``sheen_color`` are decoded wherever the stage sits in a pipeline, so they
     mean what they mean on the matching material.
+
+    **Checked when it is made.** A stage the shade kernel could not compile
+    fails here, naming the stage, rather than inside the first render's kernel
+    compile: ``ti_func`` (and ``scatter``) must be ``@ti.func`` functions
+    taking the contract's 16 (15) positional parameters, each width must be a
+    whole number of at least 1 and each default must hold 1 or ``width``
+    values. A parameter must not be named after an attribute every Mob has
+    (``color``, ``opacity``, ``location``, a method such as ``scale``, ...):
+    ``set_fragment_shader`` makes each parameter an attribute of the Mob, so it
+    would overwrite the Mob's own. All of these raise
+    :class:`.AlganConfigurationError`.
     """
 
     #: Parameter names the renderer decodes from display-referred sRGB to
@@ -100,10 +116,139 @@ class FragmentStage:
     _decoded_colors = ()
 
     def __init__(self, ti_func, param_specs=(), scatter=None):
+        label = _stage_label(ti_func)
+        _check_compiler_func(label, "ti_func", ti_func, _STAGE_ARITY)
+        if scatter is not None:
+            _check_compiler_func(label, "scatter", scatter, _SCATTER_ARITY)
         self.ti_func = ti_func
-        self.param_specs = [(str(n), int(w), d) for (n, w, d) in param_specs]
+        self.param_specs = [_checked_param_spec(label, spec) for spec in param_specs]
         self.width = sum(w for _n, w, _d in self.param_specs)
         self.scatter = scatter
+
+
+# The stage and scatter contracts' positional parameter counts (see the stage
+# contract on shading_taichi._stage_phong and the scatter contract in
+# shading_taichi's module docstring). make_pipeline_func and the scatter
+# dispatch call them with exactly these, so a function that cannot take them
+# fails inside the first shade kernel's compile -- tens of seconds into a
+# render, with an error naming neither the Mob nor the stage.
+_STAGE_ARITY = 16
+_SCATTER_ARITY = 15
+
+# Attributes every Mob carries that a stage parameter must not be named after.
+# set_fragment_shader registers each parameter as an animatable attribute and
+# assigns its default through the Mob's own setter, so a parameter named
+# ``color`` repainted the Mob, ``opacity`` made it vanish and ``location``
+# moved it, all in silence. These six are registered by Mob.__init__ itself,
+# which is why they cannot be read off the class before a Mob exists; the
+# rest of what a Mob has is read off the class (_reserved_mob_name).
+_MOB_STATE_ATTRS = frozenset(
+    {"location", "basis", "scale_coefficient", "color", "opacity", "glow"}
+)
+
+
+def _stage_label(ti_func):
+    """The stage as an error message names it: its function's name."""
+    fn = getattr(ti_func, "fn", ti_func)
+    name = getattr(fn, "__name__", None) or getattr(ti_func, "__name__", None)
+    return f"FragmentStage({name})" if name else "FragmentStage"
+
+
+def _check_compiler_func(label, role, func, arity):
+    """Refuse a stage or scatter function the shade kernel cannot inline."""
+    from algan.taichi_compat import is_compiler_func
+
+    if not is_compiler_func(func):
+        raise AlganConfigurationError(
+            f"{label}: {role} must be a function decorated with @ti.func, got "
+            f"{func!r}. The stage runs inside the render kernel, so a plain "
+            "Python function or a @ti.kernel cannot be one."
+        )
+    try:
+        signature = inspect.signature(getattr(func, "fn", func))
+    except (TypeError, ValueError):
+        return
+    try:
+        signature.bind(*range(arity))
+    except TypeError:
+        raise AlganConfigurationError(
+            f"{label}: {role} must take the contract's {arity} positional "
+            f"parameters, but its signature is {signature}. See the "
+            f"{'stage' if role == 'ti_func' else 'scatter'} contract in "
+            "algan.rendering.raytracing.shading_taichi."
+        ) from None
+
+
+def _reserved_mob_name(name, mob_class=None):
+    """Whether a shader parameter ``name`` would overwrite part of every Mob.
+
+    The names a Mob is built with (``_MOB_STATE_ATTRS``) and everything on the
+    ``Mob`` class -- its methods, properties and class attributes -- except the
+    properties earlier ``set_fragment_shader`` / ``set_shader`` calls attached
+    to it for their own parameters, which are what a parameter is meant to
+    become. The built-in material slot names are exempt: the built-in stages
+    and shaders share them with set_material's attributes on purpose.
+    ``mob_class`` (``Mob`` when not given) is the class whose attributes count:
+    ``set_shader``, which knows the Mob, passes its class so a subclass's own
+    methods and properties count too.
+    """
+    if name in _MAT_SLOTS:
+        return False
+    if name in _MOB_STATE_ATTRS:
+        return True
+    if mob_class is None:
+        from algan.animatable_base.mob import Mob
+
+        mob_class = Mob
+    if not hasattr(mob_class, name):
+        return False
+    attribute = inspect.getattr_static(mob_class, name)
+    generated = isinstance(attribute, property) and getattr(
+        attribute.fset, "_forwards_to_set_animated_attribute", False
+    )
+    return not generated
+
+
+def _checked_param_spec(label, spec):
+    """One ``(name, width, default)`` parameter spec, checked and normalized."""
+    try:
+        name, width, default = spec
+    except (TypeError, ValueError):
+        raise AlganConfigurationError(
+            f"{label}: each parameter spec must be (name, width, default), got {spec!r}"
+        ) from None
+    name = str(name)
+    if isinstance(width, bool) or not isinstance(width, (int, float)):
+        bad_width = True
+    else:
+        bad_width = width != int(width) or int(width) < 1
+    if bad_width:
+        raise AlganConfigurationError(
+            f"{label}: parameter {name!r} has width {width!r}; a width is a "
+            "whole number of at least 1 (1 for a scalar, 3 for an RGB triple)"
+        )
+    width = int(width)
+    try:
+        count = torch.as_tensor(default, dtype=torch.float32).numel()
+    except (TypeError, ValueError, RuntimeError):
+        raise AlganConfigurationError(
+            f"{label}: parameter {name!r} has default {default!r}, which is "
+            "not a number or a sequence of numbers"
+        ) from None
+    if count not in (1, width):
+        raise AlganConfigurationError(
+            f"{label}: parameter {name!r} has width {width} but its default "
+            f"{default!r} has {count} value(s); give one value, or {width}"
+        )
+    if _reserved_mob_name(name):
+        raise AlganConfigurationError(
+            f"{label}: parameter {name!r} is named like the Mob attribute "
+            f"Mob.{name}. set_fragment_shader makes each parameter an "
+            "attribute of the Mob and assigns its default there, so this "
+            f"one would overwrite the Mob's own {name}. Rename the parameter "
+            f"(for example to 'stage_{name}')."
+        )
+    return name, width, default
 
 
 # Canonical 12-slot built-in material parameter layout (matches the slot map in

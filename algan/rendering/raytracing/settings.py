@@ -546,11 +546,8 @@ def set_denoise_precision(value):
 # the gain in isolation.
 gate_empty_traversals = True
 
-# Wavefront traversal rollouts. Changes to sibling revalidation and child
-# ordering are enabled by default after parity validation; the opaque paths
-# remain opt-in until their scene classification and shading gates are proven.
-wf_revalidate_pending = env_flag("ALGAN_WF_REVALIDATE_PENDING", False)
-wf_near_first = env_flag("ALGAN_WF_NEAR_FIRST", False)
+# Wavefront traversal rollouts: the opaque paths remain opt-in until their
+# scene classification and shading gates are proven.
 wf_opaque_closest = env_flag("ALGAN_WF_OPAQUE_CLOSEST", False)
 wf_opaque_prepass = env_flag("ALGAN_WF_OPAQUE_PREPASS", False)
 
@@ -1583,11 +1580,6 @@ shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
 # both arms. ALGAN_SHADOW_RAY_BUDGET / ALGAN_SHADOW_BOUNCE_RAYS.
 shadow_ray_budget = max(0, env_int("ALGAN_SHADOW_RAY_BUDGET", 16))
 shadow_bounce_rays = max(0, env_int("ALGAN_SHADOW_BOUNCE_RAYS", 1))
-# Deferred bounce events expose only sample zero and have zero footprints.
-# Hard point lights can use the existing one-sample trace kernel and avoid
-# the full-sized zero offset buffer. Extended lights retain the masked fan.
-# Off: the warm UHD A/B improved this stage but not whole-render time.
-shadow_deferred_single_sample = env_flag("ALGAN_SHADOW_DEFERRED_SINGLE_SAMPLE", False)
 
 # Group primary shadow events by source primitive before their existing gathers.
 # The sheet event-ID map carries the permutation back to visibility lookups.
@@ -2731,41 +2723,10 @@ analytic_aa_tri = env_flag("ALGAN_ANALYTIC_AA_TRI", True)
 # reason to turn it off in a real render.
 analytic_aa_seam = env_flag("ALGAN_ANALYTIC_AA_SEAM", True)
 
-# What to do with a triangle that CONTAINS NO SUB-PIXEL SAMPLE. The exact
-# fixed-point test answers "does this triangle contain this sample"; a triangle
-# narrower than the sample spacing contains none, and a mesh produces a rim of
-# exactly those where it turns edge-on at a silhouette. The four policies:
-#
-#   drop      Contribute nothing, exactly as supersampling does -- a sub-pixel
-#             sample either lands on the geometry or it does not. Sound because
-#             the fill rule PARTITIONS the samples: any sample a narrow triangle
-#             misses is contained by whichever neighbour of the tiling does
-#             contain it, so dropping cannot open a hole in a closed surface.
-#   exact     Claim the nearest sample with the EXACT area of (triangle n pixel
-#             square) as its coverage, but do not occlude it (the sample belongs
-#             to whoever contains it). Keeps sub-sample-width geometry visible.
-#   exact_occ As ``exact``, but the claimed sample is also occluded. NOTE this
-#             now coincides with ``exact``: per-sample transmittance (ss18) has
-#             no separate occlusion set to opt into -- attenuating a sample IS
-#             occluding it -- and an areal fragment attenuates all of them.
-#   area      The pre-exact-area fallback: the continuous product of clamped
-#             edge distances. It is a reconstruction filter that deliberately
-#             spreads coverage half a pixel past the geometry, so a rim of
-#             tiling slivers sums to more than the pixel and dilates every mesh.
-#             Kept only so the parity script can measure against it.
-#
-# See DESIGN_analytic_aa.md ss15/ss16 for the measurements behind the default.
-#
-# INERT (2026-10-30). The policy only ever reached the per-sample
-# representation, and the run-corrected one (analytic_aa_run, below) pins it to
-# ``drop`` (v2 ss4.1). The sheet resolve is the only analytic-coverage path and
-# analytic_aa_run off is one of its route vetoes, so no launchable render reads
-# this value any more: a write is refused (raytracing_settings._INERT_FIELDS)
-# and set_analytic_aa no longer takes ``sliver``. The field stays readable
-# because raster_pipeline still names analytic_aa_sliver_mode() in an arm the
-# route decision vetoes; it goes when that read does.
-ANALYTIC_AA_SLIVER_MODES = ("area", "exact", "drop", "exact_occ")
-analytic_aa_sliver = env_str("ALGAN_ANALYTIC_AA_SLIVER", "drop")
+# The sample-less-triangle policy (DESIGN_analytic_aa.md ss15/ss16) is fixed
+# at ``drop``: the run-corrected representation the sheet route renders with
+# pins it (v2 ss4.1), so the analytic_aa_sliver switch that once chose among
+# raster_taichi's four policies, inert since 2026-10-30, was removed.
 
 # Exact, angle-aware coverage for a circuit's boundary instead of a box filter
 # of its signed distance.
@@ -2865,27 +2826,10 @@ def set_analytic_aa_bez_anisotropic(enabled):
 # renders through the classic supersampled wavefront.
 analytic_aa_run = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 
-# The corr > 1 accounting rule (v2 ss4.4), the design's one open empirical
-# question, decided by harness: "clamp" scales the run's per-sample writes by
-# corr and clamps each at zero (claim exact, leftover keeps a bounded residual
-# of the shed error); "redistribute" additionally pushes the clamped residue
-# onto the run's unowned samples (leftover exact, weirder per-sample
-# semantics). Compile-time template value; both stay byte-identical while
-# analytic_aa_run is off.
-# Measured (v2 ss4.4, decided by harness as designed): redistribute wins --
-# tri L1 0.107 vs clamp's 0.110 with edge levels 620 against the aa=4
-# reference's own 621, seam notches 9 vs 12, trans/thin at parity. Exact
-# leftovers cost two registers and a run-end scale.
-#
-# INERT (2026-10-30). The rule moved into the sheet resolve, which always
-# redistributes (sheet_resolve_taichi calls _run_redistribute unconditionally),
-# and the template value this used to select no longer forks anything: the
-# emission maps the two values to aa_tri 3 and 4, and every reader of aa_tri
-# asks only ``>= 3``. A write is refused (raytracing_settings._INERT_FIELDS)
-# and set_analytic_aa no longer takes ``run_rule``; the field stays readable
-# until raster_pipeline's read of it goes.
-ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
-analytic_aa_run_rule = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
+# The corr > 1 accounting rule (v2 ss4.4) is "redistribute", decided by
+# harness (tri L1 0.107 vs clamp's 0.110, seam notches 9 vs 12). The sheet
+# resolve applies it unconditionally (sheet_resolve_taichi._run_redistribute),
+# so the analytic_aa_run_rule switch, inert since 2026-10-30, was removed.
 
 # Let the RUN rule see FULL-MASK fragments that do not cover the whole pixel
 # (DESIGN_mesh_identity.md ss6.3.2). v2 ss4.2 starts the run lookahead only when
@@ -3496,8 +3440,8 @@ def set_analytic_aa(
 ):
     """Toggle analytic anti-aliasing (see ``analytic_aa``).
 
-    The ``sliver`` and ``run_rule`` keywords are gone with what they chose:
-    ``analytic_aa_sliver`` and ``analytic_aa_run_rule`` are inert.
+    There are no ``sliver`` or ``run_rule`` keywords: the sheet route fixes the
+    sample-less-triangle policy and the run rule.
     """
     global analytic_aa, analytic_aa_bez, analytic_aa_tri, analytic_aa_seam
     global analytic_aa_secondary_samples, analytic_aa_exact
@@ -3576,22 +3520,6 @@ def _warn_secondary_clamped(requested):
         f"because the resolve unrolls ti.static(range(sec_aa)) at five call "
         f"sites."
     )
-
-
-def analytic_aa_sliver_mode():
-    """Index of the live sample-less-triangle policy in the mode tuple.
-
-    Read at call time (never imported by value) and returned as an int, because
-    it reached the kernels as part of the ``aa`` template value: the geometry
-    kernels saw ``1 + mode``, so each policy compiled its own variant and the
-    offline cache could not serve one policy's kernel for another. Its one
-    caller (raster_pipeline) now asks only in an arm the route vetoes, so the
-    policy is inert (see ``analytic_aa_sliver``).
-    """
-    try:
-        return ANALYTIC_AA_SLIVER_MODES.index(analytic_aa_sliver)
-    except ValueError:
-        return ANALYTIC_AA_SLIVER_MODES.index("drop")
 
 
 def analytic_aa_bez_active():

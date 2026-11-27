@@ -142,6 +142,23 @@ ALWAYS_CI = (
     "tests/unit_tests/test_sheet_chain_kernels.py::test_shell_ceiling_clamp_reads_only_its_own_segment",
     "tests/unit_tests/test_stroke_sheets.py::test_stroke_pixel_split_holds_with_a_closed_solid",
     "tests/unit_tests/test_stroke_sheets.py::test_stroke_pixel_split_kernels_match_the_torch_arm",
+    # A material, a light and a fragment stage are checked when they are made:
+    # constructors and one set_material call, no render.
+    "tests/unit_tests/test_material_validation.py::",
+    "tests/unit_tests/test_lights.py::test_hemisphere_ground_color_accepts_hex_like_every_material_color",
+    "tests/unit_tests/test_lights.py::test_hemisphere_ground_color_is_validated_at_construction",
+    "tests/unit_tests/test_lights.py::test_a_light_on_its_own_target_says_it_emits_nothing",
+    "tests/unit_tests/test_lights.py::test_a_light_aimed_at_a_mob_where_it_stands_says_so",
+    "tests/unit_tests/test_lights.py::test_a_light_off_its_target_does_not_warn",
+    "tests/unit_tests/test_fragment_shaders.py::test_a_stage_parameter_named_like_a_mob_attribute_is_refused",
+    "tests/unit_tests/test_fragment_shaders.py::test_the_reserved_state_names_are_the_ones_a_mob_is_built_with",
+    "tests/unit_tests/test_fragment_shaders.py::test_material_slot_names_and_earlier_stage_parameters_stay_legal",
+    "tests/unit_tests/test_fragment_shaders.py::test_a_stage_the_kernel_could_not_compile_fails_when_made",
+    # A vertex shader parameter named like a Mob attribute warns: one
+    # set_shader call on an unspawned Sphere each, no render.
+    "tests/unit_tests/test_custom_shader_signature.py::test_a_material_parameter_named_like_a_mob_attribute_warns",
+    "tests/unit_tests/test_custom_shader_signature.py::test_a_material_parameter_named_like_a_subclass_attribute_warns",
+    "tests/unit_tests/test_custom_shader_signature.py::test_setting_the_same_custom_shader_twice_does_not_warn",
     # A fragment the ceiling does not clip comes back bit for bit, which on an
     # Apple GPU it did not while the kernel divided it by its own area.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_solid_shell_ceiling_returns_what_it_does_not_clip_bit_for_bit",

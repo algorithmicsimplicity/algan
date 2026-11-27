@@ -71,7 +71,11 @@ import math
 import warnings
 
 from algan.constants.color import BLACK, WHITE, Color
-from algan.errors import AlganConfigurationError, _user_stacklevel
+from algan.errors import (
+    AlganConfigurationError,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 from algan.rendering.shaders import material_shaders as ms
 from algan.rendering.shaders.density_grid import DensityGrid
 from algan.utils.tensor_utils import cast_to_tensor
@@ -474,6 +478,70 @@ def _scattering_parameters(sigma_s, g):
     return coefficients.expand(3).clone(), anisotropy
 
 
+def _material_scalar(
+    owner, name, value, *, minimum=None, above=None, top=None, bottom=None
+):
+    """Check one scalar material property when the material is made, and
+    return it unchanged.
+
+    Raises :class:`.AlganConfigurationError` naming the property for a value
+    that is not a finite number (or a tensor of them), that is below
+    ``minimum``, or that is not above ``above``: a negative roughness or
+    emissive intensity has no meaning, and nothing downstream would say so --
+    the kernels clamp some properties and not others, so a typo rendered as
+    negative light. ``top`` and ``bottom`` are the ends of the property's
+    documented range. Outside them the value is still accepted, with a warning
+    rather than an error, because such a value is not always nonsense to its
+    author (a boosted sheen, an imported model's metalness of 1.02, a relative
+    index below 1) and refusing it could stop existing scripts.
+
+    The value is returned exactly as given, so a valid material packs what it
+    always did.
+    """
+    import torch
+
+    not_a_number = AlganConfigurationError(
+        f"{owner}: {name} must be a finite number, got {value!r}"
+    )
+    if torch.is_tensor(value):
+        if value.numel() == 0 or not bool(torch.isfinite(value).all()):
+            raise not_a_number
+        least, most = float(value.min()), float(value.max())
+    else:
+        try:
+            least = most = float(value)
+        except (TypeError, ValueError):
+            raise not_a_number from None
+        if not math.isfinite(least):
+            raise not_a_number
+    if minimum is not None and least < minimum:
+        raise AlganConfigurationError(
+            f"{owner}: {name} must be at least {minimum:g}, got {least:g}"
+        )
+    if above is not None and least <= above:
+        raise AlganConfigurationError(
+            f"{owner}: {name} must be above {above:g}, got {least:g}"
+        )
+    if bottom is not None and least < bottom:
+        warnings.warn(
+            f"{owner}: {name}={least:g} is below {bottom:g}, the bottom of its "
+            f"documented range (three.js and glTF start it at {bottom:g}). "
+            "It is kept as given; check that it is not a typo",
+            UnsupportedFeatureWarning,
+            stacklevel=_user_stacklevel(),
+        )
+    if top is not None and most > top:
+        warnings.warn(
+            f"{owner}: {name}={most:g} is above {top:g}, the top of its "
+            f"documented range. three.js clamps it to {top:g}; Algan's "
+            "renderers clamp some properties and not others, so past it the "
+            "surface may not shade the way the value suggests",
+            UnsupportedFeatureWarning,
+            stacklevel=_user_stacklevel(),
+        )
+    return value
+
+
 def _to_color5(value):
     """Parse a color into a 5-channel :class:`Color` ``[R, G, B, glow, opacity]``.
 
@@ -631,6 +699,40 @@ class Material:
             )
         for m in msgs:
             warnings.warn(f"{type(self).__name__}: {m}", stacklevel=_user_stacklevel())
+        # Accepted so a three.js material transcribes without edits, and read
+        # by nothing in either renderer. Each says what it does not do, once
+        # per set_material call.
+        for m in self._ignored_arguments():
+            warnings.warn(
+                f"{type(self).__name__}: {m}",
+                UnsupportedFeatureWarning,
+                stacklevel=_user_stacklevel(),
+            )
+
+    def _ignored_arguments(self):
+        """Messages for the arguments this material was given that no renderer
+        reads, one per argument.
+        """
+        msgs = []
+        if not self.visible:
+            msgs.append(
+                "visible=False does not hide the Mob: no renderer reads it, so "
+                "the Mob still renders. Despawn the Mob, or set its opacity to "
+                "0, to hide it"
+            )
+        if not self.tone_mapped:
+            msgs.append(
+                "tone_mapped=False does not keep this Mob out of tone mapping: "
+                "the tone curve (SETTINGS.raytracing.tonemapping) applies to "
+                "the whole frame, every Mob alike"
+            )
+        if not self.applies_color and self.color is not None:
+            msgs.append(
+                "color does nothing: this material shades from the surface's "
+                "geometry, not from a base color, so it neither colors the "
+                "surface nor repaints the Mob"
+            )
+        return msgs
 
     def __repr__(self):
         return f"{type(self).__name__}()"
@@ -660,9 +762,14 @@ class DiffuseMaterial(Material):
         **kwargs,
     ):
         super().__init__(color, **kwargs)
+        owner = type(self).__name__
         self.emissive = _to_color5(emissive)
-        self.emissive_intensity = emissive_intensity
-        self.env_map_intensity = env_map_intensity
+        self.emissive_intensity = _material_scalar(
+            owner, "emissive_intensity", emissive_intensity, minimum=0.0
+        )
+        self.env_map_intensity = _material_scalar(
+            owner, "env_map_intensity", env_map_intensity, minimum=0.0
+        )
 
     def get_shader_param_values(self):
         """Get the values this material passes to its shader, by parameter name.
@@ -739,11 +846,16 @@ class SpecularMaterial(Material):
         **kwargs,
     ):
         super().__init__(color, **kwargs)
+        owner = type(self).__name__
         self.emissive = _to_color5(emissive)
-        self.emissive_intensity = emissive_intensity
+        self.emissive_intensity = _material_scalar(
+            owner, "emissive_intensity", emissive_intensity, minimum=0.0
+        )
         self.specular = _to_color5(specular)
-        self.shininess = shininess
-        self.env_map_intensity = env_map_intensity
+        self.shininess = _material_scalar(owner, "shininess", shininess, minimum=0.0)
+        self.env_map_intensity = _material_scalar(
+            owner, "env_map_intensity", env_map_intensity, minimum=0.0
+        )
 
     def get_shader_param_values(self):
         """Get the values this material passes to its shader, by parameter name.
@@ -784,11 +896,20 @@ class PBRMaterial(Material):
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.roughness = roughness
-        self.metalness = metalness
+        owner = type(self).__name__
+        self.roughness = _material_scalar(
+            owner, "roughness", roughness, minimum=0.0, top=1.0
+        )
+        self.metalness = _material_scalar(
+            owner, "metalness", metalness, minimum=0.0, top=1.0
+        )
         self.emissive = _to_color5(emissive)
-        self.emissive_intensity = emissive_intensity
-        self.env_map_intensity = env_map_intensity
+        self.emissive_intensity = _material_scalar(
+            owner, "emissive_intensity", emissive_intensity, minimum=0.0
+        )
+        self.env_map_intensity = _material_scalar(
+            owner, "env_map_intensity", env_map_intensity, minimum=0.0
+        )
 
     def get_shader_param_values(self):
         """Get the values this material passes to its shader, by parameter name.
@@ -815,8 +936,9 @@ MeshStandardMaterial = PBRMaterial
 class AdvancedPBRMaterial(MeshStandardMaterial):
     """Configure a physical surface and, optionally, a scattering interior.
 
-    Extends :class:`MeshStandardMaterial` with clearcoat, sheen, refraction,
-    absorption, and approximate iridescence. ``MeshPhysicalMaterial`` is an
+    Extends :class:`MeshStandardMaterial` with clearcoat, sheen, refraction
+    and absorption. Its iridescence arguments are accepted for parity with
+    three.js and not rendered. ``MeshPhysicalMaterial`` is an
     alias of this class. With path tracing (``samples_per_pixel > 1``), a
     nonzero ``sigma_s`` adds scattering inside a watertight, consistently
     wound triangle shell. Low coefficients describe fog; high coefficients
@@ -888,15 +1010,25 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         ``sigma_s``; with a grid, an absorbing-only interior (no ``sigma_s``)
         is tracked through the grid too.
     iridescence
-        Approximate iridescence strength. Defaults to 0, disabling it.
+        Accepted for parity with three.js and not rendered: neither renderer
+        has a thin-film model, so a non-zero value warns when the material is
+        applied and changes nothing. Defaults to 0.
     iridescence_ior
-        Stored compatibility index for iridescence. Defaults to 1.3.
+        Stored for parity with three.js and not rendered; a value other than
+        the default warns when the material is applied. Defaults to 1.3.
     **kwargs
         Parameters forwarded to :class:`MeshStandardMaterial`, including
         ``roughness`` (default 1), ``metalness`` (default 0), and texture slots.
 
     Raises
     ------
+    :class:`.AlganConfigurationError`
+        If a scalar property is not a finite number, or is negative (the
+        strengths, roughnesses, ``transmission`` and ``thickness``), or if
+        ``ior`` is not above 0. Also if ``reflectivity`` is 2.5 or more,
+        where its map to ``ior`` has no finite value. A strength above 1
+        (other than ``sheen``) and an ``ior`` below 1 are accepted with a
+        warning.
     ValueError
         If scattering coefficients are negative, non-finite, or not scalar/RGB,
         or if anisotropy is non-finite or outside its open interval.
@@ -957,27 +1089,62 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.clearcoat = clearcoat
-        self.clearcoat_roughness = clearcoat_roughness
+        owner = type(self).__name__
+        self.clearcoat = _material_scalar(
+            owner, "clearcoat", clearcoat, minimum=0.0, top=1.0
+        )
+        self.clearcoat_roughness = _material_scalar(
+            owner, "clearcoat_roughness", clearcoat_roughness, minimum=0.0, top=1.0
+        )
         # Three.js exposes ``reflectivity`` as a backwards-compatible alias
         # for dielectric IOR rather than as an independent mirror control.
         # Preserve that API: an explicitly supplied reflectivity updates IOR;
         # otherwise the effective reflectivity is derived from IOR.
         if reflectivity is None:
-            self.ior = ior
+            # ior = -1 used to end in a bare ZeroDivisionError on the line
+            # below, and no index at or below zero means anything. Between 0
+            # and 1 it is accepted with a warning: three.js and glTF start the
+            # range at 1, but an interior less dense than what surrounds it
+            # (an air bubble in water) is a relative index below 1.
+            self.ior = _material_scalar(owner, "ior", ior, above=0.0, bottom=1.0)
             self.reflectivity = 2.5 * (ior - 1.0) / (ior + 1.0)
         else:
+            # The map to ior has a pole at 2.5 and turns negative past it.
+            if isinstance(reflectivity, (int, float)) and reflectivity >= 2.5:
+                raise AlganConfigurationError(
+                    f"{owner}: reflectivity must be below 2.5, got "
+                    f"{reflectivity!r}: it sets ior = (1 + 0.4 * reflectivity) "
+                    "/ (1 - 0.4 * reflectivity), which is infinite at 2.5. "
+                    "three.js's range is 0 to 1; pass ior= for a denser medium"
+                )
+            _material_scalar(owner, "reflectivity", reflectivity, minimum=0.0, top=1.0)
             self.reflectivity = reflectivity
             self.ior = (1.0 + 0.4 * reflectivity) / (1.0 - 0.4 * reflectivity)
-        self.specular_intensity = specular_intensity
+        self.specular_intensity = _material_scalar(
+            owner, "specular_intensity", specular_intensity, minimum=0.0, top=1.0
+        )
         self.specular_color = _to_color5(specular_color)
-        self.sheen = sheen
-        self.sheen_roughness = sheen_roughness
+        # No top: a sheen above 1 is a deliberate boost (the neural-net
+        # shells use 8), and the stage does not clamp it.
+        self.sheen = _material_scalar(owner, "sheen", sheen, minimum=0.0)
+        self.sheen_roughness = _material_scalar(
+            owner, "sheen_roughness", sheen_roughness, minimum=0.0, top=1.0
+        )
         self.sheen_color = _to_color5(sheen_color)
-        self.transmission = transmission
+        self.transmission = _material_scalar(
+            owner, "transmission", transmission, minimum=0.0, top=1.0
+        )
         # Stored for API parity; not used by the per-vertex approximation.
-        self.thickness = thickness
+        self.thickness = _material_scalar(owner, "thickness", thickness, minimum=0.0)
         self.attenuation_color = _to_color5(attenuation_color)
+        # Infinite and non-positive distances are documented as "no
+        # absorption"; only NaN, which _attenuation_sigma would turn into a
+        # NaN coefficient, is refused.
+        if attenuation_distance is not None and math.isnan(float(attenuation_distance)):
+            raise AlganConfigurationError(
+                f"{owner}: attenuation_distance must be a number, got "
+                f"{attenuation_distance!r}; pass math.inf for no absorption"
+            )
         self.attenuation_distance = attenuation_distance
         self.sigma_s, self.g = _scattering_parameters(sigma_s, g)
         if density is not None and not isinstance(density, DensityGrid):
@@ -988,8 +1155,30 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         # it to the Mob (``density_grid._bind_density``) rather than to the
         # shader's animatable attributes.
         self.density = density
-        self.iridescence = iridescence
-        self.iridescence_ior = iridescence_ior
+        self.iridescence = _material_scalar(
+            owner, "iridescence", iridescence, minimum=0.0, top=1.0
+        )
+        self.iridescence_ior = _material_scalar(
+            owner, "iridescence_ior", iridescence_ior
+        )
+
+    def _ignored_arguments(self):
+        """As :meth:`Material._ignored_arguments`, plus the iridescence pair,
+        which is packed but read by no shading stage in either renderer.
+        """
+        msgs = super()._ignored_arguments()
+        if self.iridescence != 0:
+            msgs.append(
+                "iridescence is not rendered: it is accepted for parity with "
+                "three.js, but neither renderer has a thin-film model, so the "
+                "surface looks the same as at iridescence=0"
+            )
+        if self.iridescence_ior != 1.3:
+            msgs.append(
+                "iridescence_ior is not rendered: it is stored for parity with "
+                "three.js and nothing reads it"
+            )
+        return msgs
 
     def get_shader_param_values(self):
         """Get the values this material passes to its shader, by parameter name.
@@ -1035,9 +1224,9 @@ MeshPhysicalMaterial = AdvancedPBRMaterial
 class MeshToonMaterial(Material):
     """Cel-shaded (banded diffuse) material plus emissive.
 
-    Three.js drives the bands with ``gradientMap``; since textures are not
-    sampled, the band count is controlled by the Algan-specific ``bands``
-    argument (default 3).
+    Three.js drives the bands with ``gradientMap``, which Algan has no channel
+    for (it is accepted and ignored, with a warning); the band count is set by
+    the Algan-specific ``bands`` argument instead, at least 1 (default 3).
     """
 
     shader = staticmethod(ms.toon_shader)
@@ -1052,9 +1241,12 @@ class MeshToonMaterial(Material):
         **kwargs,
     ):
         super().__init__(color, **kwargs)
+        owner = type(self).__name__
         self.emissive = _to_color5(emissive)
-        self.emissive_intensity = emissive_intensity
-        self.bands = bands
+        self.emissive_intensity = _material_scalar(
+            owner, "emissive_intensity", emissive_intensity, minimum=0.0
+        )
+        self.bands = _material_scalar(owner, "bands", bands, minimum=1.0)
 
     def get_shader_param_values(self):
         """Get the values this material passes to its shader, by parameter name.
@@ -1115,8 +1307,15 @@ class MeshDepthMaterial(Material):
 
     def __init__(self, color=None, *, near=0.1, far=100.0, **kwargs):
         super().__init__(color, **kwargs)
-        self.near = near
-        self.far = far
+        owner = type(self).__name__
+        self.near = _material_scalar(owner, "near", near)
+        self.far = _material_scalar(owner, "far", far)
+        if not float(near) < float(far):
+            raise AlganConfigurationError(
+                f"{owner}: near must be less than far, got near={near!r}, "
+                f"far={far!r}: the depth ramp runs from near (white) to far "
+                "(black)"
+            )
 
     def get_shader_param_values(self):
         """Get the values this material passes to its shader, by parameter name.

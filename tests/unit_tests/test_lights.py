@@ -1,19 +1,25 @@
 import math
+import warnings
 
 import pytest
 import torch
 
 from algan import (
+    UP,
     WHITE,
     Color,
+    DirectionalLight,
     HemisphereLight,
     Off,
     PointLight,
+    RectAreaLight,
     Scene,
     Seq,
+    SpotLight,
     Sync,
 )
-from algan.errors import AlganConfigurationError
+from algan.animatable_base.mob import Mob
+from algan.errors import AlganConfigurationError, AlganWarning
 from algan.rendering.raytracing import settings as rt_settings
 from algan.utils.color_space import srgb_to_linear
 
@@ -241,3 +247,67 @@ def test_constant_intensity_snapshot_matches_legacy_arithmetic():
         )
 
         assert torch.equal(got, legacy)
+
+
+@pytest.mark.parametrize("hex_color", [0x8B4513, "#8B4513"])
+def test_hemisphere_ground_color_accepts_hex_like_every_material_color(hex_color):
+    # three.js writes ``new HemisphereLight(0x87ceeb, 0x8b4513)``. Unparsed, the
+    # int packed as a one-element radiance of 9127187 on every channel (about
+    # 4.5e16 once decoded), and the string raised a bare TypeError from inside
+    # the render loop.
+    with Scene():
+        from_hex = HemisphereLight(ground_color=hex_color)
+        from_color = HemisphereLight(ground_color=Color("#8B4513"))
+        location = torch.zeros(2, 3)
+        got = from_hex._build_aux(location)[..., 9:12]
+        expected = from_color._build_aux(location)[..., 9:12]
+
+    assert torch.equal(got, expected)
+    assert float(got.max()) < 1.0
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["not a color", (0.5, 0.5), (0.5, float("nan"), 0.5), (0.5, -0.1, 0.5), True],
+)
+def test_hemisphere_ground_color_is_validated_at_construction(bad):
+    with Scene(), pytest.raises(AlganConfigurationError, match="ground_color"):
+        HemisphereLight(ground_color=bad)
+
+
+def test_a_light_on_its_own_target_says_it_emits_nothing():
+    # Both default to ORIGIN, so DirectionalLight() packs a zero direction and
+    # lights nothing; it used to do so in silence.
+    with Scene():
+        light = DirectionalLight(color=WHITE)
+        location = torch.zeros(3, 3)
+        with pytest.warns(AlganWarning, match="DirectionalLight emits no light"):
+            aux = light._build_aux(location)
+        # The packing itself is unchanged: the warning is the whole fix.
+        assert torch.equal(aux[..., 3:6], torch.zeros(3, 1, 3))
+        # Once per light, not once per batch.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            light._build_aux(location)
+
+
+@pytest.mark.parametrize("cls", [SpotLight, RectAreaLight])
+def test_a_light_aimed_at_a_mob_where_it_stands_says_so(cls):
+    with Scene():
+        target = Mob(location=UP)
+        light = cls(location=UP, target=target)
+        with pytest.warns(AlganWarning, match="same point"):
+            light._build_aux(torch.tensor([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]))
+
+
+def test_a_light_off_its_target_does_not_warn():
+    with Scene():
+        lights = [
+            DirectionalLight(location=UP),
+            SpotLight(location=UP),
+            RectAreaLight(location=UP),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            for light in lights:
+                light._build_aux(torch.tensor([[0.0, 1.0, 0.0]] * 2))

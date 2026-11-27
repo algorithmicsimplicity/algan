@@ -247,3 +247,81 @@ def test_a_material_sets_its_shader_without_a_word():
     with Scene(video_settings=SMOKE_TEST) as scene, warnings.catch_warnings():
         warnings.simplefilter("error", AlganWarning)
         Sphere(scene=scene).set_material(MeshStandardMaterial(roughness=0.2))
+
+
+# --------------------------------------------------------------------------
+# A material parameter named like a Mob attribute overwrote that attribute in
+# silence: set_shader assigns each default through the Mob's own setter. It
+# warns for now (a fragment stage raises), since scripts may rely on it.
+# --------------------------------------------------------------------------
+def _shader_with(name, default):
+    def shader(
+        memory,
+        vertex_location,
+        vertex_normal,
+        albedo_color,
+        camera_location,
+        light_origin,
+        light_color,
+        light_intensity,
+        ambient_light_intensity,
+        banding=4.0,
+        **_,
+    ):
+        return albedo_color
+
+    # A tenth positional parameter called ``name``, by signature only.
+    import inspect
+
+    parameters = list(inspect.signature(shader).parameters.values())[:10]
+    parameters.append(
+        inspect.Parameter(
+            name, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default
+        )
+    )
+    shader.__signature__ = inspect.Signature(parameters)
+    shader.__name__ = f"{name}_shader"
+    return shader
+
+
+@pytest.mark.parametrize(
+    ("name", "default"),
+    [("color", (1.0, 0.0, 0.0)), ("opacity", 0.0), ("location", (5.0, 5.0, 5.0))],
+)
+def test_a_material_parameter_named_like_a_mob_attribute_warns(name, default):
+    shader = _shader_with(name, default)
+    with Scene(video_settings=SMOKE_TEST) as scene:
+        sphere = Sphere(scene=scene)
+        with pytest.warns(
+            AlganWarning,
+            match=rf"^{name}_shader: material parameter '{name}' is named like "
+            rf"the Mob attribute '{name}'\. .+ Rename the parameter \(for "
+            rf"example to 'shader_{name}'\)\. This will be an error in a later "
+            r"release\.$",
+        ) as caught:
+            sphere.set_shader(shader)
+    assert [w.filename for w in caught] == [__file__]
+    # Only the clashing name is named, and the shader is still installed.
+    assert len(caught) == 1
+    assert sphere.shader is shader
+
+
+def test_a_material_parameter_named_like_a_subclass_attribute_warns():
+    # The Mob's own class counts, not only Mob: Sphere has coord_function, its surface map.
+    shader = _shader_with("coord_function", 0.0)
+    with (
+        Scene(video_settings=SMOKE_TEST) as scene,
+        pytest.warns(
+            AlganWarning, match=r"named like the Mob attribute 'coord_function'"
+        ),
+    ):
+        Sphere(scene=scene).set_shader(shader)
+
+
+def test_setting_the_same_custom_shader_twice_does_not_warn():
+    # The first call attaches a property for ``banding``; that must not make
+    # the name a Mob attribute the second call warns about.
+    with Scene(video_settings=SMOKE_TEST) as scene, warnings.catch_warnings():
+        warnings.simplefilter("error", AlganWarning)
+        Sphere(scene=scene).set_shader(my_shader)
+        Sphere(scene=scene).set_shader(my_shader)

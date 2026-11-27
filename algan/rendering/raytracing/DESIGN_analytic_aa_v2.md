@@ -613,6 +613,8 @@ the same numbers as geometry.
                                         ALGAN_ANALYTIC_AA / _TRI.
     ALGAN_ANALYTIC_AA_RUN_RULE          "redistribute" (default; rule B) or
                                         "clamp" (rule A) for corr > 1 (§4.4).
+                                        Removed 2026-11-26: the sheet resolve
+                                        always redistributes.
     ALGAN_ANALYTIC_AA_BEZ_WEDGE         Existing flag, re-scoped to the
                                         ORIENTED wedge; default ON per §5.5.
 
