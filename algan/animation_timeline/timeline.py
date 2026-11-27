@@ -2391,6 +2391,10 @@ class FunctionApplicationEvent:
         # is kept here so that split does not have to find them by searching
         # the attribute's entire edit log.
         self.recorded_edit_records = []
+        #: ``(value, include_descendants)`` when the event is the change an
+        #: absolute assignment was turned into (``Mob._note_absolute_target``),
+        #: else ``None``. Read only when an updater's removal re-bases the event.
+        self.absolute_target = None
         # Values a write inside this function's body decided at authoring
         # time and its replay must reuse, keyed by (key, number of edits
         # recorded before it). See AnimationTimeline.keep_for_replay.
@@ -3445,6 +3449,16 @@ class AnimationTimeline:
         # parameters, exactly as a one-frame replay at their end does, taking
         # each edit's new pre-values on the way.
         for event in events:
+            if event.absolute_target is not None:
+                # The line asked for a value, not a change: reach it from the
+                # state the updater left, not from the one the line saw.
+                target, include_descendants = event.absolute_target
+                current = event.caller.get_animated_attribute(
+                    event.kwargs["attr"],
+                    include_descendants=include_descendants,
+                    copy=False,
+                )
+                event.kwargs["change"] = target.to(current.device) - current
             kwargs = dict(event.kwargs.items())
             a = event.easing(torch.ones((1, 1, 1)))
             for k in event.animated_args:

@@ -947,7 +947,10 @@ class MobLayoutMixin:
             value = value[..., indices]
         new_location = self.location.clone()
         new_location[..., indices] = value
-        self.location = new_location
+        # The other axes come from where the Mob is now, so the whole point is
+        # not a destination.
+        with self._writing_a_displacement():
+            self.location = new_location
         return self
 
     def get_coord(

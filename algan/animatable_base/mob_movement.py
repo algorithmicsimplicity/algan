@@ -406,9 +406,12 @@ class MobMovementMixin:
 
             Scene.save_video()
         """
-        self.move_to(
-            self.location + cast_to_direction("displacement", displacement), **kwargs
-        )
+        # A displacement, not a destination.
+        with self._writing_a_displacement():
+            self.move_to(
+                self.location + cast_to_direction("displacement", displacement),
+                **kwargs,
+            )
         return self
 
     def move_next_to(

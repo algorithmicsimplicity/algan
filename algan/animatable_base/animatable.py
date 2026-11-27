@@ -1003,14 +1003,14 @@ class Animatable:
         An animation of the Mob that starts at the same time is run from the
         state the updater left, whichever of the two lines comes first: in
         ``with Sync(): mob.move(UP); mob.remove_updater(i)`` the Mob moves up
-        from where the updater left it. The animation keeps what it recorded, so
-        one aimed at an absolute value worked out from the Mob's state when it
-        was written (``move_to``, assigning an attribute) still travels the
-        change it computed then; write the removal first when that state
-        matters. An animation of the Mob that started earlier and is still
-        running (or one followed in the block by an ``Off()`` write of the same
-        attribute) is cancelled from here on, with an :class:`.AlganWarning`:
-        the Mob holds the updater's state.
+        from where the updater left it. A destination (``move_to``,
+        ``set_location``, assigning an attribute, ``set``) is reached from
+        that state too. A move along an arc and ``set_x`` / ``set_y`` /
+        ``set_z`` keep the change they worked out when the line ran; write
+        the removal first for those. An animation of the Mob that started
+        earlier and is still running (or one followed in the block by an
+        ``Off()`` write of the same attribute) is cancelled from here on, with
+        an :class:`.AlganWarning`: the Mob holds the updater's state.
 
         Parameters
         ----------

@@ -22,6 +22,7 @@ cubic bezier circuits.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import functools
 import inspect
@@ -1718,6 +1719,53 @@ class Mob(
             attr, new_value, include_descendants=recursive
         )
 
+    @contextlib.contextmanager
+    def _writing_a_displacement(self):
+        """Mark the writes inside as relative to the Mob's current state.
+
+        ``move``, a rotation about a point and ``set_x`` go through the same
+        setter as an assignment, but the value they hand it was worked out
+        from where the Mob is now. :meth:`_note_absolute_target` leaves their
+        event alone, so an updater's removal that re-bases it keeps the
+        recorded change.
+        """
+        previous = self.__dict__.get("_writing_displacement", False)
+        self.__dict__["_writing_displacement"] = True
+        try:
+            yield
+        finally:
+            self.__dict__["_writing_displacement"] = previous
+
+    def _note_absolute_target(self, attr, value, change, include_descendants):
+        """Tell the event ``_apply_change`` just recorded that its change was
+        worked out to reach ``value``.
+
+        An assignment is recorded as a change from the state the Mob was in
+        when the line ran. Under a live updater that state is not the one the
+        animation starts from, and
+        :meth:`~algan.animation_timeline.timeline.AnimationTimeline.record_updater_removal`
+        re-bases an animation written just before the removal onto the state
+        the updater left. Knowing the target, it can work the change out again
+        so the animation still ends where the line said. Nothing else reads
+        this, and nothing is noted for a write that records no event.
+        """
+        if self.__dict__.get("_writing_displacement", False):
+            # The line gave a displacement (_writing_a_displacement), and the
+            # recorded change is already it.
+            return
+        scene = getattr(self, "scene", None)
+        timeline = getattr(scene, "timeline_manager", None)
+        event = getattr(timeline, "last_recorded_event", None)
+        if (
+            event is not None
+            and event.caller is self
+            and event.kwargs.get("attr") == attr
+            # The event of this very write: a write that records nothing (one
+            # made inside an updater, say) leaves the last event standing.
+            and event.kwargs.get("change") is change
+        ):
+            event.absolute_target = (value, include_descendants)
+
     def set_animated_attribute(self, attr: str, value, recursive: bool = True) -> Mob:
         """Animate one animatable attribute to a new value, by name.
 
@@ -1806,6 +1854,7 @@ class Mob(
             self._apply_change_immediately(attr, change, current_value, recursive)
         else:
             self._apply_change(attr, change, recursive=recursive)
+            self._note_absolute_target(attr, value, change, recursive)
         return self
 
     def _writes_immediately(self, attr):
@@ -2079,6 +2128,7 @@ class Mob(
         )
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
+        self._note_absolute_target(attr, value, change, False)
         return self
 
     @property

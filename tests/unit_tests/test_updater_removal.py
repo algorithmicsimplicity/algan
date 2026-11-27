@@ -160,6 +160,13 @@ def _move_then_move_on(dot):
         # removal: it is rebuilt from the first one's new end.
         pytest.param(_move_then_move_on, id="Seq"),
         pytest.param(lambda dot: (dot.move(UP), dot.rotate(90, OUT)), id="rotate"),
+        # A destination, not a displacement: it is reached from where the
+        # updater left the dot, not missed by how far the updater had moved it.
+        pytest.param(lambda dot: dot.move_to(RIGHT * 3 + UP * 3), id="move_to"),
+        pytest.param(
+            lambda dot: setattr(dot, "location", RIGHT * 3 + UP * 3), id="assignment"
+        ),
+        pytest.param(lambda dot: dot.set(location=RIGHT * 3 + UP * 3), id="set"),
     ],
 )
 def test_an_animation_written_before_remove_updater_in_a_sync_still_runs(animate):
@@ -193,6 +200,26 @@ def test_the_move_written_before_remove_updater_completes():
     xy = _materialize([1.0, 1.5, 2.0, 2.5], dot)[:, 0, :2]
     assert xy[:, 0].tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0], abs=1e-5)
     assert xy[:, 1].tolist() == pytest.approx([1.0, 1.5, 2.0, 2.0], abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(lambda d: d.move_to(RIGHT * 3 + UP * 3), id="move_to"),
+        pytest.param(lambda d: setattr(d, "location", RIGHT * 3 + UP * 3), id="assign"),
+    ],
+)
+def test_a_destination_written_before_remove_updater_is_reached(write):
+    """``move_to`` records a change from the state the line saw. Under a live
+    updater that state is stale: here the dot is authored at the origin while
+    the updater holds it at (1, 1). Re-based onto the updater's state with the
+    recorded change, the dot ended at (4, 4) instead of (3, 3).
+    """
+    dot = _follow_then_animate(remove_first=False, animate=write)
+    xy = _materialize([1.0, 1.5, 2.0, 2.5], dot)[:, 0, :2]
+    assert xy[:, 0].tolist() == pytest.approx([1.0, 2.0, 3.0, 3.0], abs=1e-5)
+    assert xy[:, 1].tolist() == pytest.approx([1.0, 2.0, 3.0, 3.0], abs=1e-5)
+    assert dot.location.view(-1)[:2].tolist() == pytest.approx([3.0, 3.0], abs=1e-5)
 
 
 def test_removing_an_updater_in_the_middle_of_a_running_animation_warns():

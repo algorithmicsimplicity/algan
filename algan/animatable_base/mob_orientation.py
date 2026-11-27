@@ -249,15 +249,17 @@ class MobOrientationMixin:
         num_degrees = angle if degrees else angle * _RADIANS_TO_DEGREES
         axis = _normalized_axis(axis)
         about = cast_to_direction("about", about)
-        self.location = (
-            rotate_vector_around_axis(
-                self.location - about,
-                num_degrees,
-                axis,
-                dim=-1,
+        # Worked out from where the Mob is now, so not a destination.
+        with self._writing_a_displacement():
+            self.location = (
+                rotate_vector_around_axis(
+                    self.location - about,
+                    num_degrees,
+                    axis,
+                    dim=-1,
+                )
+                + about
             )
-            + about
-        )
         return self
 
     def get_forward_basis(self) -> torch.Tensor:
