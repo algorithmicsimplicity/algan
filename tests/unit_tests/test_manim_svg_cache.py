@@ -520,6 +520,26 @@ def test_a_recipe_file_may_carry_only_plain_number_arrays(isolated_svg_cache, sp
     assert svg_cache._load_disk("planted") is None
 
 
+def test_a_replayed_group_map_is_built_when_read_and_matches_the_parse(
+    isolated_svg_cache,
+):
+    def groups(text):
+        index = {id(glyph): i for i, glyph in enumerate(text.submobjects)}
+        return {
+            name: [index.get(id(m)) for m in group.submobjects]
+            for name, group in text.id_to_vgroup_dict.items()
+        }
+
+    parsed = mn.Text("group map", use_svg_cache=True)
+    svg_cache._MEM_CACHE.clear()
+    replayed = mn.Text("group map", use_svg_cache=True)
+    assert type(vars(replayed)["id_to_vgroup_dict"]) is svg_cache._PendingGroupMap
+    assert groups(replayed) == groups(parsed)
+    assert type(vars(replayed)["id_to_vgroup_dict"]) is dict
+    replayed.id_to_vgroup_dict = {}
+    assert replayed.id_to_vgroup_dict == {}
+
+
 def test_a_data1_entry_is_carried_over_with_the_same_arrays(isolated_svg_cache):
     # A cache filled before data2 must not be re-parsed glyph by glyph.
     text = mn.Text("carried over", use_svg_cache=True)

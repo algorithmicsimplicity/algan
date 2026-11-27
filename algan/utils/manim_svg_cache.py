@@ -606,6 +606,55 @@ def _rebuild_node(node: tuple):
     return mob
 
 
+def _build_group_map(children, member_indices):
+    """``id_to_vgroup_dict``: per group id, a VGroup of its members."""
+    from manim.mobject.types.vectorized_mobject import VGroup
+
+    groups = {}
+    for name, indices in member_indices.items():
+        vgroup = VGroup()
+        if indices:
+            vgroup.add(*(children[i] for i in indices))
+        groups[name] = vgroup
+    return groups
+
+
+class _PendingGroupMap:
+    """A replayed SVG's group map, not built yet (see :data:`_LAZY_GROUP_MAP`)."""
+
+    __slots__ = ("children", "member_indices")
+
+    def __init__(self, children, member_indices):
+        self.children = children
+        self.member_indices = member_indices
+
+
+def _get_group_map(svg_mob):
+    state = svg_mob.__dict__
+    try:
+        value = state["id_to_vgroup_dict"]
+    except KeyError:
+        raise AttributeError("id_to_vgroup_dict") from None
+    if type(value) is _PendingGroupMap:
+        value = state["id_to_vgroup_dict"] = _build_group_map(
+            value.children, value.member_indices
+        )
+    return value
+
+
+def _set_group_map(svg_mob, value):
+    svg_mob.__dict__["id_to_vgroup_dict"] = value
+
+
+#: ``SVGMobject.id_to_vgroup_dict``, as installed by :func:`install`: an
+#: ordinary attribute, except that a replayed recipe's map is built the first
+#: time it is read. Building it eagerly made a VGroup per SVG group -- for a
+#: Pango Text, thousands per page of code, each a full VMobject construction
+#: -- that only MathTex and Typst ever read. The VGroups hold the same glyph
+#: objects whenever they are built, and building one changes nothing else.
+_LAZY_GROUP_MAP = property(_get_group_map, _set_group_map)
+
+
 def _rebuild(svg_mob, nodes: tuple, groups: dict[str, list[int]] | None) -> None:
     """Replay a recipe onto ``svg_mob``: glyph tree first, then the group map.
 
@@ -613,21 +662,22 @@ def _rebuild(svg_mob, nodes: tuple, groups: dict[str, list[int]] | None) -> None
     raises part-way leaves ``svg_mob`` untouched for the caller to re-parse.
     """
     children = [_rebuild_node(node) for node in nodes]
-    rebuilt_groups = None
+    member_indices = None
     if groups is not None:
-        from manim.mobject.types.vectorized_mobject import VGroup
-
-        rebuilt_groups = {}
-        for name, indices in groups.items():
-            members = [children[i] for i in indices if 0 <= i < len(children)]
-            vgroup = VGroup()
-            if members:
-                vgroup.add(*members)
-            rebuilt_groups[name] = vgroup
+        count = len(children)
+        member_indices = {
+            name: [i for i in indices if 0 <= i < count]
+            for name, indices in groups.items()
+        }
 
     svg_mob.add(*children)
-    if rebuilt_groups is not None:
-        svg_mob.id_to_vgroup_dict = rebuilt_groups
+    if member_indices is not None:
+        if getattr(type(svg_mob), "id_to_vgroup_dict", None) is _LAZY_GROUP_MAP:
+            # Built when first read (see _lazy_group_map). A Pango Text never
+            # reads it, and a page of code text has thousands of groups.
+            svg_mob.id_to_vgroup_dict = _PendingGroupMap(children, member_indices)
+        else:
+            svg_mob.id_to_vgroup_dict = _build_group_map(children, member_indices)
     # The recipes retain per-path metadata, but these owner-side lists are
     # populated by Typst's parser callbacks only on a cold parse. Reconnect
     # them to the freshly rebuilt paths before Typst scales the imported SVG.
@@ -954,6 +1004,7 @@ def install() -> None:
         pass
 
     _svg.SVGMobject.init_svg_mobject = _patched_init_svg_mobject
+    _svg.SVGMobject.id_to_vgroup_dict = _LAZY_GROUP_MAP
     _installed = True
 
 
