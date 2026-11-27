@@ -14,9 +14,11 @@ by the wrong process or unreachable by the right one:
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import socket
+import struct
 import threading
 
 import pytest
@@ -66,6 +68,14 @@ def _send(port, line):
 # --------------------------------------------------------------------------
 
 
+def _proved(state, verb, argument="", token=None):
+    """Send ``verb`` the way a client does: prove the token, never send it."""
+    payload = dict(state._payload)
+    if token is not None:
+        payload["token"] = token
+    return dc.send_verb(payload, verb, argument, timeout=5)
+
+
 @pytest.mark.parametrize("verb", ["render", "ping", "cancel", "quit"])
 def test_every_verb_needs_the_token(served, verb):
     events, state = served
@@ -73,28 +83,126 @@ def test_every_verb_needs_the_token(served, verb):
     assert events.empty(), "an untokened verb must not reach the daemon"
 
 
-@pytest.mark.parametrize(("verb", "expected"), [("render", "render"), ("quit", "quit")])
-def test_a_tokened_verb_is_queued(served, verb, expected):
+@pytest.mark.parametrize("verb", ["render", "ping", "cancel", "quit"])
+def test_a_verb_that_carries_the_token_itself_is_refused(served, verb):
+    """What protocol 5 sent. Holding the token is proved now, not shown."""
     events, state = served
-    assert _send(state._payload["port"], f"{verb} {state.token}") == "ok"
+    reply = _send(state._payload["port"], f"{verb} {state.token}")
+    assert reply not in ("ok", "pong")
+    assert events.empty()
+
+
+@pytest.mark.parametrize(("verb", "expected"), [("render", "render"), ("quit", "quit")])
+def test_a_proved_verb_is_queued(served, verb, expected):
+    events, state = served
+    assert _proved(state, verb) == "ok"
     assert events.get_nowait()[0] == expected
 
 
-def test_ping_answers_with_the_token(served):
+def test_ping_answers_a_caller_that_proved_the_token(served):
     events, state = served
-    assert _send(state._payload["port"], f"ping {state.token}") == "pong"
+    assert _proved(state, "ping") == "pong"
     assert events.empty()
 
 
-def test_a_wrong_token_is_refused(served):
+def test_a_proved_cancel_reaches_the_cancel_handler(served):
     events, state = served
-    assert "bad token" in _send(state._payload["port"], "quit not-the-token")
+    assert _proved(state, "cancel") == "idle"
     assert events.empty()
+
+
+def test_a_caller_with_the_wrong_token_is_refused(served):
+    """It learns the daemon is not the one it has a token for, and stops."""
+    events, state = served
+    with pytest.raises(dc.DaemonUnreachable):
+        _proved(state, "quit", token="not-the-token")
+    assert events.empty()
+
+
+def test_a_proof_for_one_verb_does_not_authorise_another(served):
+    """The proof covers the verb, so a relayed ``ping`` cannot become ``quit``."""
+    events, state = served
+    port, token = state._payload["port"], state.token
+    with socket.create_connection(("127.0.0.1", port), 5) as sock:
+        stream = sock.makefile("rwb")
+        nonce = "0" * 32
+        stream.write(f"quit {nonce}\n".encode())
+        stream.flush()
+        server_nonce = stream.readline().decode().split()[0]
+        stream.write(
+            (
+                dc.verb_proof(token, "ping", "client", server_nonce, nonce) + "\n"
+            ).encode()
+        )
+        stream.flush()
+        assert "bad token" in stream.readline().decode()
+    assert events.empty()
+
+
+def test_the_daemon_never_sends_or_receives_the_token(served):
+    events, state = served
+    port, token = state._payload["port"], state.token
+    with socket.create_connection(("127.0.0.1", port), 5) as sock:
+        stream = sock.makefile("rwb")
+        stream.write(b"ping " + b"a" * 32 + b"\n")
+        stream.flush()
+        challenge = stream.readline().decode()
+    assert token not in challenge
 
 
 def test_an_unknown_verb_still_says_what_is_accepted(served):
     _, state = served
     assert "expected run" in _send(state._payload["port"], f"frobnicate {state.token}")
+
+
+def _handshake(port, token):
+    """Open a ``run`` connection and check the daemon proves the token."""
+    sock = socket.create_connection(("127.0.0.1", port), 5)
+    stream = sock.makefile("rwb")
+    client_nonce = "ab" * 16
+    stream.write(f"run {client_nonce}\n".encode())
+    stream.flush()
+    server_nonce, proof = stream.readline().decode().split()
+    assert proof == dc.run_proof(token, "daemon", client_nonce, server_nonce)
+    return sock, stream, client_nonce, server_nonce
+
+
+def _refusal(stream):
+    kind, data = dc.read_frame(stream)
+    assert kind == dc.FRAME_REFUSE
+    return data.decode()
+
+
+def test_a_run_is_refused_without_the_clients_proof(served):
+    events, state = served
+    sock, stream, _, _ = _handshake(state._payload["port"], state.token)
+    with sock:
+        # The token itself, as a protocol-4 client sent it, is not a proof.
+        payload = json.dumps({"token": state.token, "proof": state.token}).encode()
+        stream.write(struct.pack("!I", len(payload)) + payload)
+        stream.flush()
+        assert "bad daemon token" in _refusal(stream)
+    assert events.empty()
+
+
+def test_a_run_request_too_large_is_refused_before_it_is_read(served):
+    events, state = served
+    sock, stream, _, _ = _handshake(state._payload["port"], state.token)
+    with sock:
+        stream.write(struct.pack("!I", 0xFFFFFFFF))
+        stream.flush()
+        assert "too large" in _refusal(stream)
+    assert events.empty()
+
+
+def test_a_protocol_4_client_is_told_to_restart_the_daemon(served):
+    _, state = served
+    with socket.create_connection(("127.0.0.1", state._payload["port"]), 5) as sock:
+        stream = sock.makefile("rwb")
+        payload = json.dumps({"token": state.token}).encode()
+        stream.write(b"run\n" + struct.pack("!I", len(payload)) + payload)
+        stream.flush()
+        assert "restart the daemon" in _refusal(stream)
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +228,7 @@ def test_a_held_port_falls_back_to_an_ephemeral_one(state):
             # The state file is how clients find it, so it must carry the port
             # actually bound rather than the one that was wanted.
             assert state._payload["port"] == bound
-            assert _send(bound, f"ping {state.token}") == "pong"
+            assert _proved(state, "ping") == "pong"
         finally:
             server.shutdown()
             server.server_close()
@@ -162,10 +270,38 @@ def test_the_state_file_says_which_algan_this_is(state):
 
 
 def test_the_state_file_is_written_owner_only(state):
-    state.write()
+    assert state.claim()
     assert os.path.isfile(state.path)
     if os.name != "nt":
         assert os.stat(state.path).st_mode & 0o777 == 0o600
+
+
+def test_a_second_daemon_does_not_take_a_live_daemons_registration(served, tmp_path):
+    """The bug: the loser of a spawn race overwrote the state file.
+
+    Both bound a socket (the loser on an ephemeral port), the file named only
+    the second, and the first stayed up -- warm, holding its memory for the
+    idle timeout -- with nothing pointing at it, so nothing could stop it.
+    """
+    _, first = served
+    assert first.claim()
+    second = d._StateFile(_free_port())
+    assert not second.claim(), "a live daemon's registration must stand"
+    assert dc.read_state()["token"] == first.token
+    assert sorted(os.listdir(tmp_path)) == ["daemon.json"], "no temporary left"
+
+
+def test_a_registration_nobody_answers_is_claimed(state, tmp_path):
+    stale = d._StateFile(_free_port())  # registered, but its socket is gone
+    assert stale.claim()
+    assert state.claim()
+    assert dc.read_state()["token"] == state.token
+
+
+def test_an_unreadable_state_file_is_claimed(state, tmp_path):
+    (tmp_path / "daemon.json").write_text("{half a", encoding="utf-8")
+    assert state.claim()
+    assert dc.read_state()["token"] == state.token
 
 
 # --------------------------------------------------------------------------

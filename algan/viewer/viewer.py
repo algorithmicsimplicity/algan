@@ -12,6 +12,13 @@ from algan.viewer.session import ViewerSession
 
 logger = get_logger()
 
+#: Viewers serving on a background thread (``block=False``, or a ``with``
+#: block). In a script's own process they die with it; the warm daemon outlives
+#: the script, so it stops whatever is left here when a run ends
+#: (:func:`stop_background_viewers`).
+_background: set[ViewerHandle] = set()
+_background_lock = threading.Lock()
+
 
 class ViewerHandle:
     """A running viewer, and the means to stop it.
@@ -58,10 +65,14 @@ class ViewerHandle:
                 daemon=True,
             )
             self._thread.start()
+            with _background_lock:
+                _background.add(self)
         return self
 
     def stop(self) -> None:
         """Stop serving and release the port."""
+        with _background_lock:
+            _background.discard(self)
         self._server.shutdown()
         self._server.server_close()
         self._session.close()
@@ -75,6 +86,26 @@ class ViewerHandle:
     def __exit__(self, *_):
         self.stop()
         return False
+
+
+def stop_background_viewers() -> int:
+    """Stop every viewer still serving on a background thread; return how many.
+
+    The daemon calls this when a run ends. Run as its own process, a script
+    that ends with ``Scene.view(block=False)`` takes its viewer with it; in the
+    daemon the HTTP server, its render worker and the whole Scene stayed up,
+    and an open page kept rendering on the shared runtime while the next
+    client's script rendered too. Stopping them here makes the run end the way
+    a process would.
+    """
+    with _background_lock:
+        handles = list(_background)
+    for handle in handles:
+        try:
+            handle.stop()
+        except Exception:  # noqa: BLE001 -- one viewer must not keep the others
+            logger.debug("Could not stop a background viewer", exc_info=True)
+    return len(handles)
 
 
 def _view(

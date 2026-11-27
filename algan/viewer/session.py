@@ -152,7 +152,12 @@ class ViewerSession:
         # which makes the worker stop until new browser demand arrives.
         self._requested_generation: int | None = None
         self._uncacheable_generation: int | None = None
+        #: The worker's last failure, shown by ``/api/state`` until a render
+        #: succeeds or the resolution changes. ``_error_serial`` counts
+        #: failures, so a request fails only on one that happened after it
+        #: registered: an old error must not fail a frame the retry can serve.
         self._error: str | None = None
+        self._error_serial = 0
         self._frame_ready = threading.Condition(self._lock)
         self._scene_free = threading.Condition(self._lock)
         #: Finished inspections, keyed by ``(frame, x, y)``, and the keys of the
@@ -160,6 +165,11 @@ class ViewerSession:
         self._pixels: dict[tuple[int, int, int], dict] = {}
         self._pixel_order: list[tuple[int, int, int]] = []
         self._pixel_jobs: set[tuple[int, int, int]] = set()
+        #: The one inspection waiting for the inspector thread, and whether
+        #: that thread is running. A newer request replaces the waiting one
+        #: rather than queueing behind it (see :meth:`pixel`).
+        self._pixel_next: tuple[tuple[int, int, int], int] | None = None
+        self._pixel_worker_running = False
         self._pixel_ready = threading.Condition(self._lock)
         #: Bumped whenever the render resolution changes. Everything cached
         #: before a bump is of the wrong size, and the page puts it in the frame
@@ -268,6 +278,9 @@ class ViewerSession:
                 self._frame_deliveries.clear()
                 self._pixels.clear()
                 self._pixel_order.clear()
+                # The failure belonged to the old size; a smaller one is the
+                # usual reason for switching after an out-of-memory render.
+                self._error = None
                 self._epoch += 1
                 # Stop the chunk in flight at its next batch: it is drawing the
                 # old size into a cache that no longer wants it.
@@ -386,6 +399,7 @@ class ViewerSession:
             ):
                 self._generation += 1
             self._requested_generation = self._generation
+            errors_seen = self._error_serial
         try:
             self._work.set()
             with self._lock:
@@ -397,7 +411,7 @@ class ViewerSession:
                         if index in self._cache:
                             self._cache.move_to_end(index)
                         return png
-                    if self._error:
+                    if self._error and self._error_serial != errors_seen:
                         raise RuntimeError(self._error)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -472,6 +486,13 @@ class ViewerSession:
         ``{"pending": True}`` for the page to poll on. Results are cached by
         ``(frame, x, y)``, so the poll that finally lands costs nothing and
         re-inspecting a pixel is free.
+
+        At most one inspection runs and one waits. A new request replaces the
+        waiting one: scrubbing with the fragment panel open asks for one per
+        frame, and each used to start a capture render of its own, all queued
+        on the Scene lock ahead of the frame worker although the page had
+        long stopped polling for them. A replaced request reports ``pending``,
+        and is computed if the page asks for it again.
         """
         frame = max(0, min(int(frame), self.total_frames - 1))
         x, y = int(x), int(y)
@@ -479,6 +500,7 @@ class ViewerSession:
             return {"available": False, "reason": "outside the frame"}
         key = (frame, x, y)
         deadline = time.monotonic() + float(wait)
+        queued = False
         with self._lock:
             while True:
                 if self._closed:
@@ -487,17 +509,40 @@ class ViewerSession:
                 if done is not None:
                     return done
                 if key not in self._pixel_jobs:
-                    self._pixel_jobs.add(key)
-                    threading.Thread(
-                        target=self._compute_pixel,
-                        args=(key, self._epoch),
-                        name=f"algan-viewer-pixel-{frame}",
-                        daemon=True,
-                    ).start()
+                    if queued:
+                        # Replaced by a newer request while this one waited.
+                        return {"pending": True, "frame": frame, "x": x, "y": y}
+                    queued = True
+                    self._queue_pixel(key)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or self._closed:
                     return {"pending": True, "frame": frame, "x": x, "y": y}
                 self._pixel_ready.wait(remaining)
+
+    def _queue_pixel(self, key):
+        """Make ``key`` the waiting inspection; called with ``_lock`` held."""
+        if self._pixel_next is not None:
+            replaced = self._pixel_next[0]
+            self._pixel_jobs.discard(replaced)
+            self._pixel_ready.notify_all()
+        self._pixel_jobs.add(key)
+        self._pixel_next = (key, self._epoch)
+        if not self._pixel_worker_running:
+            self._pixel_worker_running = True
+            threading.Thread(
+                target=self._run_pixels, name="algan-viewer-pixel", daemon=True
+            ).start()
+
+    def _run_pixels(self):
+        """Run waiting inspections one at a time until none is left."""
+        while True:
+            with self._lock:
+                job = self._pixel_next
+                self._pixel_next = None
+                if job is None or self._closed:
+                    self._pixel_worker_running = False
+                    return
+            self._compute_pixel(*job)
 
     def _compute_pixel(self, key, epoch):
         """Run one inspection and publish it, whether it works or not.
@@ -621,6 +666,7 @@ class ViewerSession:
                 with self._lock:
                     repeated = message == self._error
                     self._error = message
+                    self._error_serial += 1
                     self._frame_ready.notify_all()
                 # The page shows one line, so the traceback goes to the
                 # terminal: an error from the Scene, say in an updater, is
@@ -692,6 +738,9 @@ class ViewerSession:
             finally:
                 with self._lock:
                     self._rendering = None
+        with self._lock:
+            # The Scene renders again, so the page stops reporting the failure.
+            self._error = None
         return True
 
     def _estimated_frame_bytes(self):

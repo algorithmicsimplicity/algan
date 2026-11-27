@@ -37,15 +37,15 @@ coalesce into at most one queued re-run):
   primary workflow: edit in your editor, save, switch to the daemon, Enter.
 * A **localhost TCP socket** (preferred port 46711; ``--port``, or env
   ``ALGAN_DAEMON_PORT``; ``--no-serve`` disables) accepts the line commands
-  ``render`` / ``ping`` / ``quit``, each of which must carry the token from
-  the state file. If the preferred port is taken the daemon binds an
+  ``render`` / ``ping`` / ``cancel`` / ``quit``, each of which must prove
+  that the caller holds the token from the state file. If the preferred port is taken the daemon binds an
   ephemeral one instead of exiting, and publishes it in the state file --
   which is where clients look anyway. Bind an editor key to::
 
       algan daemon render     # also: algan daemon ping, algan daemon quit
 
   Those subcommands read ``$ALGAN_HOME/daemon.json`` for the port and the
-  token and send the line for you.
+  token and run the handshake for you.
 
 * ``--watch`` re-renders when the scene script or any of its imported helper
   modules change on disk (polled; coalesced; never interrupts).
@@ -127,8 +127,11 @@ Three more limits that are specific to serving other processes:
   ones: stop it if you want one baked with the defaults.
 * **Anything that can reach 127.0.0.1 can ask the daemon to execute a path.**
   Every request -- ``run``, ``cancel``, ``render``, ``ping`` and ``quit``
-  alike -- must carry the token from the state file, which lives in the user's
-  home directory (mode 0600 where the platform honours it). Do not forward the
+  alike -- needs the token from the state file, which lives in the user's home
+  directory (mode 0600 where the platform honours it). Each proves the token
+  in a challenge-response instead of sending it, and the daemon proves it
+  first, so a client never sends its environment, or anything else, to a
+  process that took over the port of a daemon that died. Do not forward the
   port off-host.
 * **The daemon must be the same Algan.** The state file records the
   interpreter, the prefix, the package directory and the version it was
@@ -280,6 +283,33 @@ def _torch_reserved_bytes():
         return None
 
 
+def _end_of_run():
+    """Undo what a finished run left running in the process, before the reset.
+
+    The one place for end-of-run cleanup that is not the generic reset: a run
+    in its own process would have taken these with it when it exited, so the
+    daemon has to end them itself for a run to stay indistinguishable from a
+    cold one. Called by ``release_after_run`` before the Scene reset, whether
+    the run succeeded or not. Each step is guarded on its own, so one that
+    fails cannot skip the others or the reset that follows.
+    """
+    # Only if the run imported the viewer at all; importing it here would
+    # cost every run that never opened one.
+    viewer = sys.modules.get("algan.viewer.viewer")
+    if viewer is not None:
+        try:
+            stopped = viewer.stop_background_viewers()
+        except Exception:  # noqa: BLE001 -- tidying must not kill the daemon
+            traceback.print_exc()
+        else:
+            if stopped:
+                _say(
+                    f"stopped {stopped} viewer(s) the script left running "
+                    "(Scene.view(block=False) ends with the script, as it "
+                    "does in a process of its own)"
+                )
+
+
 def _release_run_memory():
     """Hand a finished run's GPU memory back to the driver.
 
@@ -374,8 +404,7 @@ class _SourceDigest:
     The daemon's loaded modules are frozen at import; if the files on disk no
     longer match them, a run served here would render with code that is not
     what a fresh interpreter would load. :meth:`changed_since` is what the
-    daemon checks at every run launch to refuse exactly that (see
-    ``DESIGN_daemon_lifecycle.md``).
+    daemon checks at every run launch to refuse exactly that.
 
     Content is hashed rather than stat'd, for two reasons. A gate must never
     *miss* an edit, and mtime can be preserved across one. And ``git
@@ -471,16 +500,64 @@ class _StateFile:
         """Record the port actually bound (see :func:`_start_socket`)."""
         self._payload["port"] = port
 
-    def write(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        # Create with owner-only permissions *before* the token reaches the
-        # disk; the file is a capability to execute arbitrary paths.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        fd = os.open(self.path, flags, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(self._payload, fh)
-        with contextlib.suppress(OSError):
-            os.chmod(self.path, 0o600)
+    def claim(self):
+        """Publish the state file unless a live daemon already owns it.
+
+        Returns ``False`` when one does. Two auto-starts racing (``make -j``,
+        two terminals) both bind a socket -- the loser of the preferred port
+        falls back to an ephemeral one -- and the file used to be written
+        unconditionally, so the second overwrote the first's registration,
+        leaving a daemon nobody could reach or stop holding its memory for
+        the whole idle timeout.
+
+        The file is created complete or not at all (a hard link of a finished
+        temporary), so a racer never reads half of it and takes it for stale.
+        A registration whose daemon does not answer is cleared and claimed.
+        """
+        _dc.make_home()
+        for _ in range(3):
+            if self._publish_if_absent():
+                return True
+            current = _dc.read_state()
+            if current is None:
+                # Present but unreadable: not something a live daemon wrote.
+                with contextlib.suppress(OSError):
+                    os.remove(self.path)
+                continue
+            if _dc.is_reachable(current):
+                return False
+            _dc._clear_stale_state(current)
+        return False
+
+    def _publish_if_absent(self):
+        # Created with owner-only permissions *before* the token reaches the
+        # disk; the file is a capability to execute arbitrary paths. The
+        # chmod covers a leftover temporary, which O_CREAT would not re-mode.
+        temporary = f"{self.path}.{os.getpid()}.tmp"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with contextlib.suppress(OSError):
+                os.chmod(temporary, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(self._payload, fh)
+            try:
+                os.link(temporary, self.path)
+                return True
+            except FileExistsError:
+                return False
+            except OSError:
+                # A filesystem without hard links. O_EXCL still settles the
+                # race; only its half-written window comes back.
+                try:
+                    fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                except FileExistsError:
+                    return False
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(self._payload, fh)
+                return True
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(temporary)
 
     def remove(self):
         with contextlib.suppress(OSError):
@@ -941,26 +1018,26 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
             line = self.rfile.readline().decode(errors="replace").strip()
         except OSError:
             return
-        # ``verb [token]``. Every verb needs the token: this socket executes
-        # arbitrary paths and stops the process, and a bare ``quit`` from any
-        # local process used to be enough to stop somebody else's daemon.
-        # ``run`` carries its token inside the JSON request that follows.
-        verb, _, token = line.partition(" ")
+        # ``verb nonce [request id]``. Every verb needs the token, since this
+        # socket executes arbitrary paths and stops the process, and none of
+        # them carries it: the caller sends a nonce, this daemon proves it
+        # holds the token, and the caller proves the same back (``_proven``).
+        # ``run`` does it inside ``_handle_run``, where the proof rides in the
+        # request.
+        verb, _, rest = line.partition(" ")
         command = verb.lower()
-        token = token.strip()
+        nonce, _, argument = rest.strip().partition(" ")
         if command == "run":
-            self._handle_run()
+            self._handle_run(nonce)
             return
-        if command == "cancel":
-            token, _, request_id = token.partition(" ")
-            self._handle_cancel(token, request_id or None)
-            return
-        if command not in ("render", "ping", "quit"):
+        if command not in ("render", "ping", "cancel", "quit"):
             self.wfile.write(b"err: expected run | cancel | render | ping | quit\n")
             return
-        if not self._token_ok(token):
+        if not self._proven(command, nonce, argument):
             return
-        if command == "render":
+        if command == "cancel":
+            self._handle_cancel(argument or None)
+        elif command == "render":
             self.server.events.put(("render", "socket"))
             self.wfile.write(b"ok\n")
         elif command == "quit":
@@ -969,33 +1046,86 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         else:
             self.wfile.write(b"pong\n")
 
-    def _token_ok(self, token):
-        """Whether ``token`` is this daemon's. Answers the caller when not."""
-        if secrets.compare_digest(str(token), self.server.state.token):
+    def _proven(self, verb, client_nonce, argument):
+        """Run the handshake for ``verb``; whether the caller holds the token.
+
+        Answers the caller when not. The daemon's proof goes first, so a
+        caller sends its own only to the daemon it meant to reach
+        (``daemon_client.send_verb``).
+        """
+        if not _dc.is_nonce(client_nonce):
+            # A bare verb, or a protocol-5 client that sent the token itself.
+            _say("rejected a trigger that did not start the token handshake")
+            self.wfile.write(
+                b"err: bad token -- this daemon wants proof of the token from "
+                b"its state file, not the token (algan daemon render | ping | "
+                b"cancel | quit do this for you)\n"
+            )
+            return False
+        token = self.server.state.token
+        server_nonce = secrets.token_hex(16)
+        proof = _dc.verb_proof(
+            token, verb, "daemon", client_nonce, server_nonce, argument
+        )
+        try:
+            self.wfile.write(f"{server_nonce} {proof}\n".encode("ascii"))
+            self.wfile.flush()
+            answer = self.rfile.readline(256).decode("ascii", "replace").strip()
+        except OSError:
+            return False
+        expected = _dc.verb_proof(
+            token, verb, "client", server_nonce, client_nonce, argument
+        )
+        if secrets.compare_digest(answer, expected):
             return True
         _say("rejected a trigger with a bad token")
-        self.wfile.write(
-            b"err: bad token -- pass the one from the daemon state file "
-            b"(algan daemon render | ping | quit do this for you)\n"
-        )
+        with contextlib.suppress(OSError):
+            self.wfile.write(b"err: bad token -- is the state file stale?\n")
         return False
 
-    def _handle_run(self):
-        """Accept a client's script, queue it, and block until it has run."""
+    def _handle_run(self, client_nonce):
+        """Accept a client's script, queue it, and block until it has run.
+
+        First the handshake: this daemon proves it holds the token by
+        answering the client's nonce with an HMAC and a nonce of its own, and
+        the client's request carries the HMAC of that in turn. Neither side
+        sends the token, and the client sends its environment only to a
+        listener that proved itself (``daemon_client._prove_daemon``).
+        """
+        if not _dc.is_nonce(client_nonce):
+            # A protocol-4 client sends ``run`` bare, then its request.
+            _refuse(
+                self.wfile,
+                f"daemon speaks protocol {_dc.PROTOCOL_VERSION} and the client "
+                "an older one -- restart the daemon",
+            )
+            return
+        token = self.server.state.token
+        server_nonce = secrets.token_hex(16)
+        proof = _dc.run_proof(token, "daemon", client_nonce, server_nonce)
         try:
+            self.wfile.write(f"{server_nonce} {proof}\n".encode("ascii"))
             header = self.rfile.read(4)
             if len(header) != 4:
                 return
             (length,) = struct.unpack("!I", header)
+            if length > _dc.MAX_RUN_REQUEST_BYTES:
+                # Refused before reading it: the length comes before any
+                # proof, so an uncapped read let any local process make this
+                # daemon buffer up to 4 GiB.
+                _refuse(self.wfile, f"run request of {length} bytes is too large")
+                return
             request = json.loads(self.rfile.read(length).decode("utf-8"))
         except (OSError, ValueError, struct.error):
             _refuse(self.wfile, "malformed run request")
             return
+        if not isinstance(request, dict):
+            _refuse(self.wfile, "malformed run request")
+            return
 
-        if not secrets.compare_digest(
-            str(request.get("token", "")), self.server.state.token
-        ):
-            _say("rejected a run request with a bad token")
+        expected = _dc.run_proof(token, "client", server_nonce, client_nonce)
+        if not secrets.compare_digest(str(request.get("proof", "")), expected):
+            _say("rejected a run request that did not prove the token")
             _refuse(self.wfile, "bad daemon token -- is the state file stale?")
             return
         if request.get("protocol") != _dc.PROTOCOL_VERSION:
@@ -1063,10 +1193,7 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         # anything else.
         job.done.wait()
 
-    def _handle_cancel(self, token, request_id=None):
-        if not secrets.compare_digest(str(token), self.server.state.token):
-            self.wfile.write(b"err: bad token\n")
-            return
+    def _handle_cancel(self, request_id=None):
         with self.server.cancel_lock:
             if request_id is not None:
                 job = self.server.jobs.get(request_id)
@@ -1085,10 +1212,35 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
                 if not self.server.cancel_pending:
                     self.server.cancel_pending = True
                     _say("cancel requested by a client")
-                    _thread.interrupt_main()
+                    _interrupt_main_thread()
                 self.wfile.write(b"ok\n")
             else:
                 self.wfile.write(b"idle\n")
+
+
+def _interrupt_main_thread():
+    """Raise ``KeyboardInterrupt`` in the running script, as Ctrl-C would.
+
+    ``_thread.interrupt_main`` only marks the signal pending, so it takes
+    effect when the main thread next runs Python code -- after whatever it is
+    blocked in (``time.sleep``, ``Event.wait``, ``Thread.join``, a subprocess)
+    returns, which can be the rest of the render. A plain ``python scene.py``
+    gets a real SIGINT, which interrupts those waits at once on POSIX, so the
+    daemon sends one to its main thread. Only while SIGINT has a Python
+    handler: under ``SIG_DFL`` a real signal would kill the daemon, and under
+    ``SIG_IGN`` it would do nothing, which is what ``interrupt_main`` does
+    then too. Windows has no ``pthread_kill`` and keeps ``interrupt_main``.
+    """
+    import signal
+
+    pthread_kill = getattr(signal, "pthread_kill", None)
+    if pthread_kill is not None and callable(signal.getsignal(signal.SIGINT)):
+        try:
+            pthread_kill(threading.main_thread().ident, signal.SIGINT)
+            return
+        except (OSError, ValueError):
+            pass
+    _thread.interrupt_main()
 
 
 class _TriggerServer(socketserver.ThreadingTCPServer):
@@ -1100,7 +1252,8 @@ class _TriggerServer(socketserver.ThreadingTCPServer):
     algan's sources change, the replacement started by the next run would fail
     to bind and exit -- leaving no daemon at all for the rest of that minute,
     exactly during a burst of library edits. The flag still does not permit two
-    live listeners on one port, so a spawn race keeps its loser.
+    live listeners on one port, but the loser of a spawn race binds an
+    ephemeral one instead; :meth:`_StateFile.claim` is what makes it exit.
 
     Not set on Windows, where SO_REUSEADDR means something else: it lets two
     sockets bind the same address *simultaneously*, which would let two daemons
@@ -1377,7 +1530,17 @@ def main(argv=None):
         _say("no trigger socket and no SCRIPT -- nothing to serve; exiting")
         return 1
     if server is not None:
-        state.write()
+        if not state.claim():
+            # Lost a spawn race, or launched by hand beside a live daemon.
+            # Staying up would hold a warm process, and on a GPU its memory,
+            # that no state file points at: unreachable and unstoppable.
+            _say(
+                f"a daemon is already serving {_dc.algan_home()} (state: "
+                f"{state.path}); exiting. Stop it with `algan daemon quit`."
+            )
+            server.shutdown()
+            server.server_close()
+            return 0
         _say(f"serving any script launched on this machine (state: {state.path})")
         _say("scripts run normally -- `python scene.py` will find this daemon")
     watcher = _Watcher(events) if args.watch else None
@@ -1421,6 +1584,7 @@ def main(argv=None):
             # still warrants recovery before another script uses the compiler.
             clean["interrupted"] = True
         try:
+            _end_of_run()
             reset_state()
             # Before the memory release: on a CUDA context an error left
             # unusable that raises, and this is the write that must not miss.

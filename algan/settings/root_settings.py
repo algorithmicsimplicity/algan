@@ -24,6 +24,32 @@ from algan.settings.style_settings import StyleSettings
 from algan.settings.video_settings import LD, VideoSettings
 
 
+def _same_value(current, captured) -> bool:
+    """Whether a live setting still holds the value a snapshot captured.
+
+    ``==`` alone cannot say: a ``Color`` is a torch tensor, whose ``==`` is
+    elementwise and whose ``bool()`` then raises. A value that cannot be
+    compared counts as changed, which at worst rewrites it with its own copy.
+    """
+    if current is captured:
+        return True
+    if type(current) is not type(captured):
+        return False
+    try:
+        return bool(current == captured)
+    except Exception:  # noqa: BLE001 -- e.g. a tensor of more than one element
+        pass
+    equal = getattr(current, "equal", None)
+    if callable(equal) and getattr(current, "shape", None) == getattr(
+        captured, "shape", None
+    ):
+        try:
+            return bool(equal(captured))
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
 @dataclass(frozen=True)
 class SettingsSnapshot:
     """Immutable snapshot of all public runtime-adjustable settings."""
@@ -131,10 +157,19 @@ class AlganSettings:
             raise AlganConfigurationError(
                 "SETTINGS.restore requires a SettingsSnapshot"
             )
-        self.computing.set(**snapshot.computing.to_dict())
-        self.paths.set(**snapshot.paths.to_dict())
-        self.style.set(**snapshot.style.to_dict())
-        self.video.set(**snapshot.video.to_dict())
+        # Only the fields that differ are written. A snapshot holds deep
+        # copies, so writing every field back would swap each live value --
+        # ``style.background``, say -- for an equal stranger, which is the
+        # identity break ``Settings.set`` takes care to avoid.
+        for name in ("computing", "paths", "style", "video"):
+            section = getattr(self, name)
+            changed = {
+                field: value
+                for field, value in getattr(snapshot, name).to_dict().items()
+                if not _same_value(getattr(section, field), value)
+            }
+            if changed:
+                section.set(**changed)
         self.raytracing._restore(snapshot.raytracing.to_dict())
         return self
 
@@ -149,6 +184,13 @@ class AlganSettings:
                 raytracing={"samples_per_pixel": 4},
             ):
                 Scene.save_video("smooth")
+
+        "Every section" includes the ones the call did not name: the block
+        ends by restoring all of ``SETTINGS`` to what it was on entry, so a
+        ``SETTINGS.paths.set(...)`` written inside the block is undone with
+        the rest. Fields that did not change keep the objects they held. To
+        keep a change made inside a block, use the section's own
+        ``override``, which puts back only the fields it was given.
 
         Parameters
         ----------

@@ -398,3 +398,26 @@ def test_a_rebound_hostname_is_refused(viewer):
     assert _status(viewer.url_for("/api/state"), host="evil.example.com") == 403
     assert _status(f"{origin}/", host="evil.example.com") == 403
     assert _status(f"{origin}/", host="localhost:1234") == 200
+
+
+def test_the_daemon_stops_a_viewer_its_run_left_serving(fresh_scene):
+    """``block=False`` ends with the script, in the daemon as in a process.
+
+    Run cold, the process exits and takes the viewer with it. In the daemon
+    the HTTP server, its render worker and the Scene stayed up after the run
+    ended, and an open page kept rendering on the shared runtime.
+    """
+    from algan import daemon
+    from algan.viewer import viewer as viewer_module
+
+    Square().spawn()
+    handle = Scene.view(TINY, block=False, open_browser=False)
+    assert fetch(handle, "/api/state")["total_frames"] > 0
+
+    daemon._end_of_run()
+
+    assert handle not in viewer_module._background
+    with pytest.raises(urllib.error.URLError):
+        fetch(handle, "/api/state", timeout=5)
+    # A stopped viewer is not stopped twice.
+    assert viewer_module.stop_background_viewers() == 0

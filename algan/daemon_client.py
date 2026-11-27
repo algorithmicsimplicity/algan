@@ -118,7 +118,14 @@ from algan.environment import (
 #: records the interpreter, prefix, package path and version of the daemon.
 #: 4 -- run requests have an ID; Ctrl-C cancels only that request, including
 #: queued jobs. The acceptance frame closes the enqueue/cancel race.
-PROTOCOL_VERSION = 4
+#: 6 -- ``render``/``ping``/``cancel``/``quit`` prove the token in the same
+#: challenge-response as ``run`` instead of carrying it (:func:`send_verb`).
+PROTOCOL_VERSION = 6
+
+#: The first protocol whose trigger verbs prove the token instead of sending
+#: it. A daemon registered under an older one is spoken to the old way, so
+#: that ``algan daemon quit`` can still stop a daemon started before an upgrade.
+_FIRST_PROTOCOL_WITH_PROVEN_VERBS = 6
 
 
 def connect_timeout():
@@ -151,6 +158,26 @@ FRAME_EXIT = b"X"  # payload is a 4-byte big-endian signed exit code
 #: every other variable Algan honors; see also the "Initialization-only
 #: settings" section of ``AGENTS.md``.
 STARTUP_ENV = startup_environment_variables()
+
+#: Variables that CUDA, torch, OpenMP and the kernel compiler read at their own
+#: initialisation, which in a daemon happened at its launch. They are not
+#: Algan's, so they are compared rather than declared or read through
+#: :mod:`algan.environment`. Swapping a client's value into ``os.environ``
+#: cannot move an initialised CUDA context, so ``CUDA_VISIBLE_DEVICES=1 python
+#: scene.py`` on a warm daemon started without it used to render on the
+#: daemon's GPU 0 with no message. Unlike Algan's own, **unset and empty
+#: differ** here: ``CUDA_VISIBLE_DEVICES=`` hides every GPU, unset shows them
+#: all.
+FOREIGN_STARTUP_ENV = (
+    "CUDA_VISIBLE_DEVICES",
+    "CUDA_DEVICE_ORDER",
+    "HIP_VISIBLE_DEVICES",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "TI_ARCH",
+    "QD_ARCH",
+    "PYTORCH_CUDA_ALLOC_CONF",
+)
 
 #: The startup variables a difference in is *not* refused. Their import-time
 #: read only seeds a runtime setting, and the daemon re-applies the client's
@@ -211,14 +238,32 @@ def algan_home():
     return os.path.expanduser(home)
 
 
+def make_home():
+    """Create ``$ALGAN_HOME`` owner-only (0700) if it does not exist yet.
+
+    It holds the daemon's state file and log, and the log carries every run's
+    output. An existing directory keeps its mode: it may be shared on
+    purpose, and the files that matter are created owner-only regardless.
+    """
+    home = algan_home()
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    return home
+
+
 def state_path():
     """Path of the daemon's state file. Its absence means "no daemon"."""
     return os.path.join(algan_home(), "daemon.json")
 
 
 def startup_env():
-    """The subset of the environment that the daemon bakes in at launch."""
-    return {name: env_str(name, "") for name in STARTUP_ENV}
+    """The subset of the environment that the daemon bakes in at launch.
+
+    A foreign variable that is unset is recorded as ``None``, so that it
+    compares unequal to one set empty.
+    """
+    env = {name: env_str(name, "") for name in STARTUP_ENV}
+    env.update({name: os.environ.get(name) for name in FOREIGN_STARTUP_ENV})
+    return env
 
 
 def algan_version():
@@ -287,6 +332,16 @@ def describe_env_mismatch(client_env, daemon_env):
         for name in STARTUP_ENV
         if name not in STARTUP_ENV_ADOPTED
         and client_env.get(name, "") != daemon_env.get(name, "")
+    ]
+
+    def shown(value):
+        return "<unset>" if value is None else repr(value)
+
+    diffs += [
+        f"  {name}: this script wants {shown(client_env.get(name))}, "
+        f"daemon was launched with {shown(daemon_env.get(name))}"
+        for name in FOREIGN_STARTUP_ENV
+        if client_env.get(name) != daemon_env.get(name)
     ]
     if not diffs:
         return None
@@ -817,6 +872,124 @@ def script_may_render(path, search_path=None):
     return False
 
 
+#: Bytes of a ``run`` request the daemon will read. The request is a script
+#: path, its argv and the client's environment -- kilobytes. Without a cap any
+#: local process could announce 4 GiB and have the daemon buffer it.
+MAX_RUN_REQUEST_BYTES = 8 * 1024 * 1024
+
+
+def verb_proof(token, verb, role, first, second, argument=""):
+    """``HMAC-SHA256(token, ...)`` for one side of a verb's handshake.
+
+    Each side proves it holds the state file's token without sending it:
+    ``role`` is ``"daemon"`` or ``"client"`` so neither proof can be replayed
+    as the other, the two nonces make every exchange fresh, and ``verb`` and
+    ``argument`` (a ``cancel``'s request id) are covered so a proof given for
+    one request cannot be spent on another.
+    """
+    import hashlib
+    import hmac
+
+    message = f"algan-daemon-{verb}:{role}:{first}:{second}"
+    if argument:
+        message += f":{argument}"
+    return hmac.new(
+        str(token).encode("utf-8"),
+        message.encode("ascii", "replace"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def run_proof(token, role, first, second):
+    """:func:`verb_proof` for the ``run`` handshake."""
+    return verb_proof(token, "run", role, first, second)
+
+
+def is_nonce(text):
+    """Whether ``text`` is a handshake nonce: 32 lowercase hex digits."""
+    return len(text) == 32 and all(c in "0123456789abcdef" for c in text)
+
+
+def send_verb(state, verb, argument="", timeout=None):
+    """Send ``render``, ``ping``, ``cancel`` or ``quit``; return the reply line.
+
+    Neither side sends the token. The client sends a nonce, the listener
+    answers with its own nonce and an HMAC of both under the token, and only
+    a listener that proved itself is sent the client's HMAC, which is what
+    authorises the verb. So a process that took a dead daemon's port learns
+    nothing it could use, and is not mistaken for the daemon: that raises
+    :class:`DaemonUnreachable`. A connection that fails raises ``OSError``.
+
+    A daemon registered under a protocol older than 6 only understands
+    ``verb token``, so that is what it is sent. That keeps ``algan daemon
+    quit`` able to stop a daemon started before an upgrade, and the token it
+    exposes belongs to that daemon alone.
+    """
+    import hmac
+    import secrets
+
+    token = str(state["token"])
+    port = int(state["port"])
+    suffix = f" {argument}" if argument else ""
+    wait = connect_timeout() if timeout is None else timeout
+    with socket.create_connection(("127.0.0.1", port), wait) as sock:
+        stream = sock.makefile("rwb")
+        proven = state.get("protocol", PROTOCOL_VERSION)
+        if isinstance(proven, int) and proven < _FIRST_PROTOCOL_WITH_PROVEN_VERBS:
+            stream.write(f"{verb} {token}{suffix}\n".encode("ascii", "replace"))
+            stream.flush()
+            return stream.readline(256).decode("utf-8", "replace").strip()
+        client_nonce = secrets.token_hex(16)
+        stream.write(f"{verb} {client_nonce}{suffix}\n".encode("ascii", "replace"))
+        stream.flush()
+        line = stream.readline(256).decode("ascii", "replace").strip()
+        server_nonce, _, proof = line.partition(" ")
+        expected = verb_proof(
+            token, verb, "daemon", client_nonce, server_nonce, argument
+        )
+        if not is_nonce(server_nonce) or not hmac.compare_digest(proof, expected):
+            raise DaemonUnreachable(
+                f"the process listening on 127.0.0.1:{port} did not prove it is "
+                "the daemon that registered there, so nothing was sent to it"
+            )
+        answer = verb_proof(token, verb, "client", server_nonce, client_nonce, argument)
+        stream.write(f"{answer}\n".encode("ascii"))
+        stream.flush()
+        return stream.readline(256).decode("utf-8", "replace").strip()
+
+
+def _prove_daemon(stream, token, port):
+    """Run the client half of the handshake; return the daemon's nonce.
+
+    The state file outlives a daemon that is killed, and once that daemon is
+    gone its port is anybody's: on a shared host another user can bind it and
+    wait. The request that follows carries the client's whole environment --
+    cloud credentials, API keys -- and the reply decides what this terminal
+    prints and the exit code, so nothing is sent until the listener proves it
+    holds the token, which only the daemon that registered there does.
+    """
+    import hmac
+    import secrets
+
+    client_nonce = secrets.token_hex(16)
+    stream.write(f"run {client_nonce}\n".encode("ascii"))
+    stream.flush()
+    try:
+        line = stream.readline(256)
+    except OSError as exc:
+        raise DaemonUnavailable(
+            f"the daemon did not answer the run handshake ({exc})"
+        ) from exc
+    server_nonce, _, proof = line.decode("ascii", "replace").strip().partition(" ")
+    expected = run_proof(token, "daemon", client_nonce, server_nonce)
+    if not server_nonce or not hmac.compare_digest(proof, expected):
+        raise DaemonUnreachable(
+            f"the process listening on 127.0.0.1:{port} did not prove it is the "
+            "daemon that registered there, so nothing was sent to it"
+        )
+    return client_nonce, server_nonce
+
+
 def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
     """Execute ``script`` on the daemon described by ``state``; return its code.
 
@@ -827,10 +1000,17 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
     err = err if err is not None else _binary(sys.stderr)
     import uuid
 
+    if state.get("protocol", PROTOCOL_VERSION) != PROTOCOL_VERSION:
+        # Known before connecting: the handshake below would only time out
+        # against a daemon too old to answer it.
+        raise DaemonUnavailable(
+            f"the running daemon speaks protocol {state.get('protocol')!r} and "
+            f"this client speaks {PROTOCOL_VERSION}; restart it with "
+            "`algan daemon quit`"
+        )
     request = {
         "protocol": PROTOCOL_VERSION,
         "request_id": uuid.uuid4().hex,
-        "token": state["token"],
         "cwd": cwd if cwd is not None else os.getcwd(),
         "script": script,
         "argv": list(argv if argv is not None else sys.argv[1:]),
@@ -838,8 +1018,9 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         # The whole environment, applied by the daemon for the runtime of the
         # run. Without it a script reads the *daemon's* environment, so
         # ``MY_VAR=x python scene.py`` would silently see the daemon's value.
-        # Localhost-only, token-authenticated, and same-user, which is the same
-        # trust boundary the script path itself already crosses.
+        # Localhost-only, and sent only once the listener has proved it holds
+        # the token (``_prove_daemon``), which is the same trust boundary the
+        # script path itself already crosses.
         "env_full": dict(os.environ),
         "isatty_out": _isatty(sys.stdout),
         "isatty_err": _isatty(sys.stderr),
@@ -853,14 +1034,25 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
 
     started = False
     with sock, contextlib.ExitStack() as cleanup:
-        sock.settimeout(None)
         stream = sock.makefile("rwb")
+        # Bounded like the connect: a listener that never answers is not
+        # worth blocking a cold run for.
+        sock.settimeout(connect_timeout())
+        client_nonce, server_nonce = _prove_daemon(
+            stream, state["token"], state["port"]
+        )
+        sock.settimeout(None)
+        # The token itself never goes on the wire, so a listener that read
+        # this request could not replay it to the daemon.
+        request["proof"] = run_proof(
+            state["token"], "client", server_nonce, client_nonce
+        )
         payload = json.dumps(request).encode("utf-8")
         # The request needs no kind byte -- only the daemon's replies are
         # multiplexed -- so it is a bare 4-byte length and that many bytes.
         accepted, restore = _install_cancel_handler(state, request["request_id"])
         cleanup.callback(restore)
-        stream.write(b"run\n" + struct.pack("!I", len(payload)) + payload)
+        stream.write(struct.pack("!I", len(payload)) + payload)
         stream.flush()
         try:
             for kind, data in read_frames(stream):
@@ -913,14 +1105,23 @@ def log_path():
 
 
 def _open_log():
-    """Open the daemon log for append, trimming it if it has grown large."""
+    """Open the daemon log for append, trimming it if it has grown large.
+
+    Owner-only (0600): the daemon tees every client run's stdout and stderr
+    into it, and on a shared host a world-readable log hands other users
+    every script's output.
+    """
     path = log_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    make_home()
     cap = env_int("ALGAN_DAEMON_LOG_MAX_BYTES", 4 * 1024 * 1024)
     with contextlib.suppress(OSError):
         if cap > 0 and os.path.getsize(path) > cap:
             os.replace(path, path + ".old")
-    return open(path, "ab")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with contextlib.suppress(OSError):
+        # A log an older version created keeps its 0644 otherwise.
+        os.chmod(path, 0o600)
+    return os.fdopen(fd, "ab")
 
 
 def _spawn_daemon():
@@ -987,7 +1188,7 @@ def _autostart():
     """
     if not env_flag("ALGAN_AUTO_DAEMON", True):
         return None
-    os.makedirs(algan_home(), exist_ok=True)
+    make_home()
     proc = _spawn_daemon()
     if proc is None:
         return None
@@ -1018,18 +1219,13 @@ def _autostart():
 def is_reachable(state):
     """Whether a daemon is actually answering at ``state``'s address.
 
-    A ``ping`` rather than a bare connect, so a process that merely holds the
-    port does not read as a daemon -- and the token goes with it, as it does
-    with every other verb.
+    A ``ping`` rather than a bare connect, and a ping the listener has to
+    answer with proof that it holds the token (:func:`send_verb`), so a
+    process that merely holds the port does not read as a daemon.
     """
     try:
-        with socket.create_connection(
-            ("127.0.0.1", int(state["port"])), connect_timeout()
-        ) as sock:
-            token = str(state["token"]).encode("ascii", "replace")
-            sock.sendall(b"ping " + token + b"\n")
-            return b"pong" in sock.recv(64)
-    except (OSError, ValueError, KeyError, TypeError):
+        return send_verb(state, "ping") == "pong"
+    except (OSError, DaemonUnavailable, ValueError, KeyError, TypeError):
         return False
 
 
@@ -1169,11 +1365,8 @@ def _install_cancel_handler(state, request_id):
             return
         sent = True
         try:
-            with socket.create_connection(
-                ("127.0.0.1", int(state["port"])), connect_timeout()
-            ) as sock:
-                sock.sendall(f"cancel {state['token']} {request_id}\n".encode("ascii"))
-        except OSError:
+            send_verb(state, "cancel", request_id)
+        except (OSError, DaemonUnavailable):
             raise KeyboardInterrupt from None
 
     def handler(signum, frame):

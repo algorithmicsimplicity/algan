@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from algan import Project, Scene, SceneManager, Speech
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganWarning
 from algan.settings import SETTINGS
 from algan.utils import algan_utils
 from algan.utils.algan_utils import RenderResult, algan_scene
@@ -571,6 +571,127 @@ def test_project_concat_joins_every_scene_in_project_order(tmp_path):
     assert (red[:, 2] < 60).all()
     assert (blue[:, 2] > 200).all()
     assert (blue[:, 0] < 60).all()
+
+
+def _narrated_clip(path, color, size="16x16"):
+    """A one-second clip with a 440 Hz tone in MP3, the codec Algan writes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            _software_ffmpeg_binary(),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color={color}:s={size}:r=2:d=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=44100:duration=1",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "libmp3lame",
+            "-shortest",
+            "-y",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _stream_kinds(path):
+    report = subprocess.run(
+        [_software_ffmpeg_binary(), "-hide_banner", "-i", str(path)],
+        capture_output=True,
+        text=True,
+    ).stderr
+    return [
+        line.split(": ")[1].split(":")[0].strip()
+        for line in report.splitlines()
+        if line.strip().startswith("Stream #")
+    ]
+
+
+def _decoded_audio(path):
+    raw = subprocess.run(
+        [
+            _software_ffmpeg_binary(),
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:a:0",
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+
+
+@pytest.mark.parametrize("reencode", [False, True])
+def test_project_concat_keeps_narration_after_a_silent_first_scene(tmp_path, reencode):
+    # Algan writes no audio stream at all for a scene without sound, and
+    # FFmpeg's concat demuxer takes its stream layout from the first input:
+    # a silent title card used to drop every later scene's narration.
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    _narrated_clip(project.video_directory / "1_café ending.mp4", "blue")
+
+    output = project.concatenate_videos(reencode=reencode)
+
+    assert output == project.file_path.resolve()
+    assert sorted(_stream_kinds(output)) == ["Audio", "Video"]
+    assert len(_mean_frame_colors(output)) == 4
+    audio = _decoded_audio(output)
+    # Silence for the first second, then the second scene's tone: the padding
+    # kept the intro's length, so the narration still starts with its scene.
+    assert 1.8 * 8000 < len(audio) < 2.2 * 8000
+    assert np.abs(audio[: int(0.8 * 8000)]).max() < 50
+    assert np.sqrt(np.mean(audio[int(1.2 * 8000) : int(1.8 * 8000)] ** 2)) > 1000
+    # The padded copy is a temporary, not a file left beside the output.
+    assert not any(
+        p.name.startswith(".algan_concat_") for p in project.file_path.parent.iterdir()
+    )
+
+
+def test_project_concat_refuses_to_stream_copy_different_resolutions(tmp_path):
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    _narrated_clip(project.video_directory / "1_café ending.mp4", "blue", "32x32")
+    project.file_path.write_bytes(b"previous complete export")
+
+    with pytest.raises(AlganConfigurationError, match="different resolutions"):
+        project.concatenate_videos()
+
+    assert project.file_path.read_bytes() == b"previous complete export"
+
+
+def test_project_concat_reencodes_different_resolutions_with_a_warning(tmp_path):
+    # Re-encoding does join them, into the first clip's size, so a launcher
+    # that mixes resolutions on purpose keeps working and is told what it got.
+    project = _two_scene_project_with_awkward_paths(tmp_path)
+    _clip(project.video_directory / "0_O'Brien's intro.mp4", "red")
+    _narrated_clip(project.video_directory / "1_café ending.mp4", "blue", "32x32")
+
+    with pytest.warns(AlganWarning, match="first clip's resolution"):
+        output = project.concatenate_videos(reencode=True)
+
+    assert sorted(_stream_kinds(output)) == ["Audio", "Video"]
+    colors = _mean_frame_colors(output)
+    assert len(colors) == 4
+    assert colors[0][0] > 150
+    assert colors[-1][2] > 150
 
 
 def test_project_run_cli_dispatches_project_actions(monkeypatch, tmp_path):

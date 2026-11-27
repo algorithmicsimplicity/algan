@@ -83,6 +83,21 @@ def test_override_applies_and_restores():
     assert settings.style.buffer == pytest.approx(0.6)
 
 
+def test_root_override_undoes_a_change_made_inside_it_to_another_section():
+    """Documented, and different from a section override on purpose."""
+    settings = AlganSettings()
+    with settings.override(video={"frames_per_second": 12}):
+        settings.style.set(buffer=3.0)
+    assert settings.style.buffer == pytest.approx(0.6)
+
+
+def test_section_override_keeps_a_change_made_inside_it_to_another_field():
+    settings = AlganSettings()
+    with settings.video.override(frames_per_second=12):
+        settings.style.set(buffer=3.0)
+    assert settings.style.buffer == pytest.approx(3.0)
+
+
 def test_override_restores_after_exception():
     settings = AlganSettings()
     with pytest.raises(RuntimeError):
@@ -123,6 +138,48 @@ def test_global_settings_override_is_restored():
     finally:
         SETTINGS.style.set(buffer=before)
     assert SETTINGS.style.buffer == before
+
+
+def test_global_override_keeps_the_identity_of_fields_it_did_not_change():
+    # SETTINGS.override restored from a snapshot, whose values are deep
+    # copies, so every field of every section came back as an equal stranger:
+    # the identity break Settings.set and section override() avoid.
+    from algan.settings import SETTINGS
+
+    background = SETTINGS.style.background
+    fps = SETTINGS.video.frames_per_second
+    with SETTINGS.override(video={"frames_per_second": 60}):
+        assert SETTINGS.video.frames_per_second == 60
+    assert SETTINGS.style.background is background
+    assert SETTINGS.video.frames_per_second == fps
+
+
+def test_restore_rewrites_only_the_fields_that_differ():
+    from algan.settings import SETTINGS
+
+    background = SETTINGS.style.background
+    buffer = SETTINGS.style.buffer
+    snapshot = SETTINGS.snapshot()
+    try:
+        SETTINGS.style.set(buffer=buffer + 1.0)
+        SETTINGS.restore(snapshot)
+        assert SETTINGS.style.buffer == buffer
+        assert SETTINGS.style.background is background
+    finally:
+        SETTINGS.style.set(buffer=buffer)
+
+
+def test_restore_still_puts_back_a_field_changed_in_place():
+    from algan.settings import SETTINGS
+
+    snapshot = SETTINGS.snapshot()
+    original = SETTINGS.style.background.clone()
+    try:
+        SETTINGS.style.background[..., 0] = 1 - SETTINGS.style.background[..., 0]
+        SETTINGS.restore(snapshot)
+        assert bool((SETTINGS.style.background == original).all())
+    finally:
+        SETTINGS.restore(snapshot)
 
 
 def test_style_defaults():

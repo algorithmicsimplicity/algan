@@ -104,3 +104,42 @@ def test_the_entry_point_points_outside_the_package() -> None:
         "module; an `algan.cli:main` entry point runs algan/__init__.py before "
         f"argparse. Found: {scripts.get('algan')!r}"
     )
+
+
+def test_a_daemon_trigger_does_not_import_torch(tmp_path) -> None:
+    """``algan daemon ping`` is what an editor key runs on every press.
+
+    It sends one line over a socket, and used to import the whole package
+    first (about 3 s and 600 MB). It still has to read the state file, so the
+    check runs it against an empty home, where it reports no daemon.
+    """
+    loaded = _probe(
+        "import os, sys; "
+        f"os.environ['ALGAN_HOME'] = {str(tmp_path)!r}; "
+        "import algan_cli; "
+        "status = algan_cli.main(['daemon', 'ping']); "
+        "print(status, sorted({'torch', 'taichi', 'quadrants'} & set(sys.modules)), "
+        "'algan' in sys.modules)"
+    )
+
+    assert loaded.splitlines()[-1] == "1 [] False", loaded
+
+
+def test_launching_a_script_does_not_import_torch(tmp_path) -> None:
+    """A flagless ``algan render`` only starts the script, which the daemon serves.
+
+    The parent used to import the package to spell one environment variable,
+    and held about 600 MB while the child ran.
+    """
+    script = tmp_path / "scene.py"
+    script.write_text("print('ran')\n", encoding="utf-8")
+    loaded = _probe(
+        "import sys, algan_cli; "
+        "seen = []; "
+        "algan_cli.subprocess.call = lambda cmd, env=None, **k: seen.append(env) or 0; "
+        f"status = algan_cli.main(['render', {str(script)!r}, '--no-daemon']); "
+        "print(status, seen[0]['ALGAN_USE_DAEMON'], "
+        "sorted({'torch', 'taichi', 'quadrants'} & set(sys.modules)))"
+    )
+
+    assert loaded.splitlines()[-1] == "0 0 []", loaded

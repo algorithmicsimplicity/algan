@@ -1,9 +1,9 @@
 """What makes the daemon stand down: stale sources, and a run it was not needed for.
 
 The daemon refuses to serve a run once algan's sources on disk no longer match
-the modules it imported, so a render can never come out of stale code (see
-``DESIGN_daemon_lifecycle.md``). These tests pin the detector itself against a
-temporary tree; the refusal it drives is exercised in ``test_daemon_client.py``.
+the modules it imported, so a render can never come out of stale code. These
+tests pin the detector itself against a temporary tree; the refusal it drives
+is exercised in ``test_daemon_client.py``.
 
 An auto-started daemon also exits after the run it was started for, if that
 run finished without rendering anything; the last section pins that rule and

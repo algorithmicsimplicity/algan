@@ -219,5 +219,7 @@ def test_concat_runs_the_ffmpeg_save_video_encodes_with(monkeypatch, tmp_path):
     output = concatenate_videos(folder)
 
     assert output is not None
-    assert log.read_text() == "ran\n"
+    # Once to probe each clip's streams, once to join them: every run is the
+    # pinned binary, since no other FFmpeg can start with this PATH.
+    assert log.read_text() == "ran\n" * 3
     assert len(_frames(output)) == 4

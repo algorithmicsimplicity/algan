@@ -447,3 +447,68 @@ def test_a_failed_render_logs_where_it_was_raised(fresh_scene, monkeypatch):
         session.close()
         algan_logger.removeHandler(capture)
     assert [record.exc_info[0] for record in records if record.exc_info] == [NameError]
+
+
+def test_one_failed_render_does_not_fail_every_later_frame(fresh_scene, monkeypatch):
+    # A render that fails once -- out of memory at UHD, an updater raising on
+    # a transient condition -- used to leave its error in place for good, so
+    # every later uncached frame failed at once with the stale message, even
+    # after a successful render or a change of resolution.
+    monkeypatch.setattr(viewer, "_frame_cache_budget", lambda: 1 << 20)
+    calls = []
+
+    def flaky(self, start, end, *, store, generation=None, yielding=False):
+        calls.append(start)
+        if len(calls) == 1:
+            raise RuntimeError("transient failure")
+        for index in range(start, end):
+            if store and self._store_png(index, b"png%d" % index) is False:
+                return
+
+    monkeypatch.setattr(viewer.ViewerSession, "_render_range", flaky)
+    Scene.wait(2)
+    session = viewer.ViewerSession(Scene.current(), PREVIEW.set(resolution=(4, 4)))
+    try:
+        with pytest.raises(RuntimeError, match="transient failure"):
+            session.frame(0, timeout=5)
+        assert session.frame(7, timeout=5) == b"png7"
+        assert session.state()["error"] is None
+        session.set_resolution("SMOKE_TEST")
+        assert session.frame(3, timeout=5) == b"png3"
+    finally:
+        session.close()
+
+
+def test_a_new_resolution_clears_the_error_of_the_old_one(session):
+    session._error = "RuntimeError: out of memory at UHD"
+    session.set_resolution("SMOKE_TEST")
+    assert session.state()["error"] is None
+
+
+def test_inspections_nobody_waits_for_any_more_are_dropped(session, monkeypatch):
+    # Scrubbing with the fragment panel open asks for one inspection per
+    # frame. Each used to start a capture render of its own, all queued on the
+    # Scene lock ahead of the frame worker, although the page had moved on.
+    started = []
+    release = threading.Event()
+
+    def inspect(frame, x, y):
+        started.append(frame)
+        if frame == 0:
+            release.wait(5)
+        return {"available": True, "frame": frame, "x": x, "y": y}
+
+    monkeypatch.setattr(session, "_inspect_pixel", inspect)
+    session.pixel(0, 1, 1, wait=0)
+    deadline = time.monotonic() + 3
+    while not started and time.monotonic() < deadline:
+        time.sleep(0.005)
+    # Asked for while frame 0's capture render holds the inspector.
+    for frame in range(1, 5):
+        session.pixel(frame, 1, 1, wait=0)
+    release.set()
+    # The newest request is answered; the ones it superseded never render.
+    assert session.pixel(4, 1, 1, wait=5)["frame"] == 4
+    assert started == [0, 4]
+    # A superseded key is computed if the page asks for it again.
+    assert session.pixel(2, 1, 1, wait=5)["frame"] == 2

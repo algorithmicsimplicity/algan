@@ -452,7 +452,7 @@ def test_malformed_state_file_is_treated_as_no_daemon(tmp_path, monkeypatch):
 
 
 def test_matching_startup_env_is_no_mismatch():
-    env = dict.fromkeys(dc.STARTUP_ENV, "x")
+    env = dict.fromkeys((*dc.STARTUP_ENV, *dc.FOREIGN_STARTUP_ENV), "x")
     assert dc.describe_env_mismatch(env, env) is None
 
 
@@ -469,6 +469,27 @@ def test_animation_device_mismatch_is_reported():
     assert "'cpu'" in report
     assert "'cuda'" in report
     assert "ALGAN_USE_DAEMON=0" in report, "the report must say how to proceed"
+
+
+@pytest.mark.parametrize(
+    ("client", "daemon"), [("1", None), ("", None), ("0", "1"), (None, "")]
+)
+def test_a_cuda_visible_devices_mismatch_is_refused(monkeypatch, client, daemon):
+    """The daemon's CUDA context was made with its own value and cannot move.
+
+    ``CUDA_VISIBLE_DEVICES= python scene.py``, the usual way to force the CPU,
+    sets it *empty*, which is not the same as leaving it unset.
+    """
+    if client is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", client)
+    client_env = dc.startup_env()
+    daemon_env = {**client_env, "CUDA_VISIBLE_DEVICES": daemon}
+    report = dc.describe_env_mismatch(client_env, daemon_env)
+    assert report is not None
+    assert "CUDA_VISIBLE_DEVICES" in report
+    assert "ALGAN_USE_DAEMON=0" in report
 
 
 def test_a_render_device_mismatch_is_adopted_rather_than_refused():
@@ -589,11 +610,18 @@ def test_truncated_frame_reads_as_eof(tmp_path):
 
 
 class _FakeDaemon:
-    """Accepts one connection and replies with a scripted frame sequence."""
+    """Accepts one connection and replies with a scripted frame sequence.
 
-    def __init__(self, reply):
+    It answers the ``run`` handshake as the daemon does, proving it holds the
+    token; ``prove=False`` makes it a listener that does not.
+    """
+
+    def __init__(self, reply, prove=True):
         self._reply = reply
+        self._prove = prove
         self.request = None
+        self.received = b""
+        self.server_nonce = "0" * 32
         self._sock = socket.socket()
         self._sock.bind(("127.0.0.1", 0))
         self._sock.listen(1)
@@ -609,11 +637,26 @@ class _FakeDaemon:
         conn, _ = self._sock.accept()
         with conn:
             stream = conn.makefile("rwb")
-            stream.readline()  # the "run" command line
-            (length,) = struct.unpack("!I", stream.read(4))
-            self.request = json.loads(stream.read(length).decode("utf-8"))
-            self._reply(stream)
+            line = stream.readline()  # "run <client nonce>"
+            self.received = line
+            client_nonce = line.decode().split()[1]
+            proof = (
+                dc.run_proof(self.token, "daemon", client_nonce, self.server_nonce)
+                if self._prove
+                else "not-a-proof"
+            )
+            stream.write(f"{self.server_nonce} {proof}\n".encode())
             stream.flush()
+            header = stream.read(4)
+            self.received += header
+            if len(header) == 4:
+                (length,) = struct.unpack("!I", header)
+                body = stream.read(length)
+                self.received += body
+                self.request = json.loads(body.decode("utf-8"))
+                self.client_nonce = client_nonce
+                self._reply(stream)
+                stream.flush()
         self._sock.close()
 
     def join(self):
@@ -654,9 +697,14 @@ def test_run_remote_streams_output_and_returns_the_exit_code(tmp_path):
     assert b"100%\n" in err.data
     assert daemon.request["script"].endswith("s.py")
     assert daemon.request["argv"] == ["--flag"]
-    assert daemon.request["token"] == "t0ken"
+    # The token never goes on the wire; the request proves it instead.
+    assert "token" not in daemon.request
+    assert b"t0ken" not in daemon.received
+    assert daemon.request["proof"] == dc.run_proof(
+        "t0ken", "client", daemon.server_nonce, daemon.client_nonce
+    )
     assert daemon.request["protocol"] == dc.PROTOCOL_VERSION
-    assert set(daemon.request["env"]) == set(dc.STARTUP_ENV)
+    assert set(daemon.request["env"]) == {*dc.STARTUP_ENV, *dc.FOREIGN_STARTUP_ENV}
 
 
 def test_refusal_before_start_is_recoverable(tmp_path):
@@ -733,6 +781,36 @@ def test_a_connection_reset_before_start_still_falls_back(tmp_path, monkeypatch)
     with pytest.raises(ConnectionResetError):
         dc.run_remote(daemon.state(), str(tmp_path / "s.py"), out=_Sink(), err=_Sink())
     daemon.join()
+
+
+def test_nothing_is_sent_to_a_listener_that_cannot_prove_the_token(
+    tmp_path, monkeypatch
+):
+    """The bug: a stale registration's port taken by another local user.
+
+    The client sent the token, the script path and its whole environment on
+    connect, and printed whatever the listener replied, with its exit code.
+    """
+    monkeypatch.setenv("ALGAN_TEST_PROBE_VAR", "sk-live-secret")
+    daemon = _FakeDaemon(lambda stream: pytest.fail("must not get here"), prove=False)
+    with pytest.raises(dc.DaemonUnreachable, match="did not prove"):
+        dc.run_remote(daemon.state(), str(tmp_path / "s.py"), out=_Sink(), err=_Sink())
+    daemon.join()
+    assert daemon.request is None
+    assert daemon.received.startswith(b"run ")
+    assert b"sk-live-secret" not in daemon.received
+    assert b"t0ken" not in daemon.received
+    assert b"s.py" not in daemon.received
+
+
+def test_a_daemon_of_another_protocol_is_not_contacted(tmp_path):
+    with pytest.raises(dc.DaemonUnavailable, match="protocol 4"):
+        dc.run_remote(
+            {"port": 1, "token": "x", "protocol": 4},
+            str(tmp_path / "s.py"),
+            out=_Sink(),
+            err=_Sink(),
+        )
 
 
 def test_death_before_start_falls_back(tmp_path):
@@ -894,7 +972,7 @@ def test_a_mismatched_interpreter_names_both(monkeypatch):
 
 def test_a_live_daemon_from_another_virtualenv_is_not_used(home, monkeypatch):
     """It would execute this script against the wrong site-packages."""
-    daemon = _PingableDaemon()
+    daemon = _PingableDaemon(token="t")
     (home / "daemon.json").write_text(
         json.dumps(_identity_state(daemon.port, python="/other/venv/bin/python")),
         encoding="utf-8",
@@ -928,14 +1006,22 @@ def test_a_dead_registration_from_another_virtualenv_is_replaced(home, monkeypat
 
 
 class _PingableDaemon:
-    """A socket that answers one ``ping <token>`` with ``pong``."""
+    """A socket that serves one verb the way the daemon does, and records it.
 
-    def __init__(self):
+    It proves ``token`` and checks the caller's proof, so a test that gets a
+    reply has shown the client proved the token without sending it.
+    """
+
+    reply = b"pong\n"
+
+    def __init__(self, token="tok"):
+        self.token = token
         self.server = socket.socket()
         self.server.bind(("127.0.0.1", 0))
         self.server.listen(1)
         self.port = self.server.getsockname()[1]
         self.received = None
+        self.proved = False
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -945,21 +1031,44 @@ class _PingableDaemon:
         except OSError:
             return
         with conn:
-            self.received = conn.recv(128)
-            conn.sendall(b"pong\n")
+            stream = conn.makefile("rwb")
+            self.received = stream.readline()
+            verb, nonce, *rest = self.received.decode().split()
+            argument = rest[0] if rest else ""
+            mine = "1" * 32
+            proof = dc.verb_proof(self.token, verb, "daemon", nonce, mine, argument)
+            stream.write(f"{mine} {proof}\n".encode())
+            stream.flush()
+            answer = stream.readline().decode().strip()
+            self.proved = answer == dc.verb_proof(
+                self.token, verb, "client", mine, nonce, argument
+            )
+            stream.write(self.reply if self.proved else b"err: bad token\n")
+            stream.flush()
 
     def close(self):
         self.thread.join(timeout=5)
         self.server.close()
 
 
-def test_reachability_is_a_token_carrying_ping(home):
+def test_reachability_is_a_ping_that_proves_the_token(home):
     daemon = _PingableDaemon()
     try:
         assert dc.is_reachable({"port": daemon.port, "token": "tok"})
     finally:
         daemon.close()
-    assert daemon.received == b"ping tok\n"
+    assert daemon.proved
+    assert b"tok" not in daemon.received
+
+
+def test_a_listener_that_cannot_prove_the_token_is_not_reachable(home):
+    """A process that took a dead daemon's port is not the daemon."""
+    daemon = _PingableDaemon(token="somebody-else's")
+    try:
+        assert not dc.is_reachable({"port": daemon.port, "token": "tok"})
+    finally:
+        daemon.close()
+    assert not daemon.proved
 
 
 def test_nothing_listening_is_not_reachable():
@@ -988,3 +1097,21 @@ def test_the_daemon_log_is_trimmed_when_it_grows(home, monkeypatch):
         handle.write(b"fresh\n")
     assert log.read_bytes() == b"fresh\n"
     assert (home / "daemon.log.old").read_bytes() == b"x" * 500
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_daemon_home_and_log_are_owner_only(tmp_path, monkeypatch):
+    """The log receives every run's output; 0644 handed it to other users."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("ALGAN_HOME", str(home))
+    with dc._open_log() as log:
+        log.write(b"a run's output\n")
+    assert os.stat(home).st_mode & 0o777 == 0o700
+    assert os.stat(dc.log_path()).st_mode & 0o777 == 0o600
+    # A log an older version left world-readable is tightened when reopened.
+    os.chmod(dc.log_path(), 0o644)
+    with dc._open_log():
+        pass
+    assert os.stat(dc.log_path()).st_mode & 0o777 == 0o600
+    with open(dc.log_path(), "rb") as fh:
+        assert fh.read() == b"a run's output\n"

@@ -1106,6 +1106,27 @@ class Project:
         if arguments.concatenate_videos:
             self.concatenate_videos()
             return True
+        # Unknown arguments are ignored so launchers can add their own, but
+        # one spelled like an action is almost certainly a typo for it
+        # (``--render_video``), and ignoring it renders nothing in silence.
+        near_misses = [
+            argument
+            for argument in _unknown
+            if argument.startswith("--")
+            and argument.split("=")[0]
+            .lower()
+            .replace("_", "-")
+            .startswith(
+                ("--render", "--concat", "--validate", "--profile", "--estimate")
+            )
+        ]
+        if near_misses:
+            logger.warning(
+                f"Project.run_cli ran no project action: it does not recognise "
+                f"{', '.join(repr(_) for _ in near_misses)}. The actions are "
+                "--render-screenshots, --render-video, --validate, --profile, "
+                "--estimate-render-time and --concatenate-videos; see --help."
+            )
         return False
 
     @staticmethod
@@ -1773,7 +1794,12 @@ class Project:
         )
 
     def concatenate_videos(self, *, threads: int | None = None, reencode=False):
-        """Concatenate the project's scene videos into ``file_path``."""
+        """Concatenate the project's scene videos into ``file_path``.
+
+        The scenes must share a resolution and frame rate unless ``reencode``
+        is set, and a silent scene is given a silent track so the narration of
+        the others is kept; see :func:`algan.concatenate_videos`.
+        """
         from algan.utils.algan_utils import concatenate_videos
 
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
