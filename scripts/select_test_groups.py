@@ -183,6 +183,12 @@ ALWAYS_CI = (
     "tests/unit_tests/test_mob_set_guards.py::test_detaching_or_morphing_an_unspawned_mob_leaves_it_unspawned",
     "tests/unit_tests/test_scene_side_outputs.py::test_show_frame_renders_at_the_settings_save_frame_would_use",
     "tests/unit_tests/test_scene_side_outputs.py::test_show_frame_without_matplotlib_says_how_to_get_it",
+    # A Group grown by adds is the Group built at once, and an add costs the
+    # same however large the Group is (counted, not timed).
+    "tests/unit_tests/test_group_add.py::",
+    # A Mob scaled to nothing grows back to its size, shape and orientation,
+    # and a shrink to nothing still ends a video.
+    "tests/unit_tests/test_scale_to_zero.py::",
     # More of the same, and the ops MPS gets wrong around it, emulated on the
     # CPU and, on an Apple machine, run through the real op: a BVH level's
     # ranges and the sliver strips, the depth-order scan's owners, the depth

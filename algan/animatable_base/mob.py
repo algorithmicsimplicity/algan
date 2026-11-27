@@ -67,6 +67,7 @@ from algan.constants.color import Color, _channel_count_error, _is_channel, to_c
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError, AlganWarning, _in_algan
 from algan.geometry.geometry import (
+    get_orthonormal_vector,
     get_rotation_between_bases,
     invert_row_basis,
     map_global_to_local_coords,
@@ -287,6 +288,14 @@ _REST_SHAPE_ROUNDINGS = 4
 #: thinner along one axis than the others misses by about a thousandth.
 _BASIS_CHANGE_TOLERANCE = 1e-4
 
+#: Bumped whenever ``exclude_from_boundary`` changes on a Mob a Group has
+#: measured (``_boundary_measured``), so a cache of which rows a Group measures
+#: (``Group._member_box``) can tell it still holds without reading the flag of
+#: every Mob in it. A Mob no Group has measured is in no such cache, which is
+#: what keeps the flags set on helper geometry at construction from dropping
+#: them all.
+_BOUNDARY_FLAG_VERSION = [0]
+
 
 #: ``(default dtype, default device, target device) -> interpolation``: the
 #: unit interpolation :func:`animated_function` casts for an unrecorded
@@ -334,6 +343,81 @@ def _local_coordinate_rounding(pivot_loc, pivot_basis, child_loc):
     )
     inverse = invert_row_basis(unsquish(pivot_basis, -1, 3))
     return eps * magnitude * inverse.norm(p=2, dim=-2)
+
+
+def _degenerate_bases(basis):
+    """Which of a batch of flattened bases ``(*, 9)`` were scaled to nothing, ``(*,)``.
+
+    A basis with no inverse (the test
+    :func:`~algan.geometry.geometry.invert_row_basis` makes: rows coplanar, a
+    zero row among them), or with a row so much shorter than the longest that
+    only rounding is left of it: ``scale`` by a factor with a zero in it can
+    leave a row at 1e-17 rather than 0 (the basis setter's float64 change),
+    which inverts. A drained Mob -- a ten-millionth of its width -- is far
+    from either.
+    """
+    rows = unsquish(basis, -1, 3)
+    lengths = rows.norm(p=2, dim=-1)
+    r0, r1, r2 = rows.unbind(-2)
+    determinant = (r0 * torch.linalg.cross(r1, r2, dim=-1)).sum(-1)
+    volume = lengths.prod(-1)
+    vanished = (lengths <= 1e-12 * lengths.amax(-1, keepdim=True)).any(-1)
+    return vanished | ~(determinant.abs() > 1e-9 * volume)
+
+
+def _frame_from(first, second):
+    """An orthonormal row frame whose first row is along ``first``, second in their plane."""
+    e0 = F.normalize(first, p=2, dim=-1)
+    e1 = F.normalize(second - (second * e0).sum(-1, keepdim=True) * e0, p=2, dim=-1)
+    return torch.stack((e0, e1, torch.linalg.cross(e0, e1, dim=-1)), -2)
+
+
+def _regrown_directions(rows, directions, rest_basis):
+    """Directions to scale ``rows`` along, with the zero rows given one back.
+
+    A row scaled to zero has no direction left, so ``scale`` and
+    ``set_scale`` multiplied zero by their factor. Each zero row takes the
+    direction it had before the collapse, from ``rest_basis``, turned by
+    however far the rows that survived have turned since: the rotation that
+    carries their old directions onto their new ones, which two surviving rows
+    fix exactly and one fixes only up to a turn about itself (the smallest turn
+    is used). A Mob turned while it had no extent along any axis keeps no trace
+    of the turn, and regrows as it was before. ``rows`` is a single basis,
+    shape ``(1, ..., 3, 3)``.
+    """
+    rest = unsquish(rest_basis, -1, 3).to(directions.device, directions.dtype)
+    # Zero, or as near it as a regrowing write's float round trip leaves it.
+    lost = rows.norm(p=2, dim=-1) <= 1e-6 * rest.norm(p=2, dim=-1)
+    lost = lost.reshape(-1, 3)[0].tolist()
+    if not any(lost):
+        return directions
+    rest = F.normalize(rest, p=2, dim=-1)
+    kept = [axis for axis in range(3) if not lost[axis]]
+    turned = any(
+        not torch.allclose(directions[..., axis, :], rest[..., axis, :], atol=1e-6)
+        for axis in kept
+    )
+    turn = None
+    if turned and len(kept) >= 2:
+        turn = _frame_from(*(rest[..., axis, :] for axis in kept[:2])).transpose(
+            -1, -2
+        ) @ _frame_from(*(directions[..., axis, :] for axis in kept[:2]))
+    elif turned:
+        before, after = rest[..., kept[0], :], directions[..., kept[0], :]
+        axis = torch.linalg.cross(before, after, dim=-1)
+        if bool((axis.norm(p=2, dim=-1) < 1e-6).all()):
+            axis = get_orthonormal_vector(before)
+        turn = _frame_from(before, axis).transpose(-1, -2) @ _frame_from(after, axis)
+    out = directions.clone()
+    for axis in range(3):
+        if lost[axis]:
+            direction = rest[..., axis, :]
+            if turn is not None:
+                direction = F.normalize(
+                    (direction.unsqueeze(-2) @ turn).squeeze(-2), p=2, dim=-1
+                )
+            out[..., axis, :] = direction
+    return out
 
 
 def _restore_rest_shape(local_coords, rest_local, pivot_loc, pivot_basis, child_loc):
@@ -2173,6 +2257,25 @@ class Mob(
         return self
 
     @property
+    def exclude_from_boundary(self) -> bool:
+        """Whether boundary and layout queries leave this Mob out. Defaults to False.
+
+        Set on helper geometry that sits away from what the viewer sees -- a
+        Bezier circuit's texture grids, a retired point-cloud sphere -- so that
+        edge points, bounding boxes and a Group's centre measure the shape and
+        not its helpers. A plain attribute: setting it records nothing.
+        """
+        return self.__dict__.get("_exclude_from_boundary", False)
+
+    @exclude_from_boundary.setter
+    def exclude_from_boundary(self, value):
+        if self.__dict__.get("_boundary_measured") and value != self.__dict__.get(
+            "_exclude_from_boundary", False
+        ):
+            _BOUNDARY_FLAG_VERSION[0] += 1
+        self.__dict__["_exclude_from_boundary"] = value
+
+    @property
     def location(self) -> torch.Tensor:
         """The Mob's position in world space, shape ``(*, 3)``.
 
@@ -2253,6 +2356,13 @@ class Mob(
             "basis", include_descendants=False, default=value, copy=False
         )
         recursive = not self._prevent_recursive_sets
+        timeline = self.scene.timeline_manager
+        # A Mob scaled to nothing along an axis has a basis with no inverse,
+        # so a change relative to it is no change at all and the Mob stayed at
+        # zero size for good. Its shape from before the collapse is remembered
+        # (_remember_collapse), and _apply_basis_change regrows it from that
+        # towards ``value`` rather than applying the change.
+        collapsed = self._collapse_for_write(my_basis, recursive)
         change = inverse_relation(my_basis, value)
         # The change is ``inverse(my_basis) @ value``, and a basis much smaller
         # along one axis than the others -- a bar drained to a sliver -- makes
@@ -2286,7 +2396,6 @@ class Mob(
         # inside another recorded function's body is not recorded on its own
         # -- replay runs this setter again -- so there the shape is kept on
         # that function's application instead, for its replay to find.
-        timeline = self.scene.timeline_manager
         replay_key = ("rest_shape", self.id, recursive)
         if timeline.is_replaying():
             rest_local = timeline.kept_for_replay(replay_key)
@@ -2295,7 +2404,83 @@ class Mob(
             if rest_local is not None:
                 timeline.keep_for_replay(replay_key, rest_local)
         self._apply_basis_change(
-            change, default_basis=value, recursive=recursive, rest_local=rest_local
+            change,
+            default_basis=value,
+            recursive=recursive,
+            rest_local=rest_local,
+            collapsed=collapsed,
+        )
+
+    def _collapse_key(self, recursive):
+        """The rows a remembered collapse belongs to, as a comparable key."""
+        ranges = self._get_attr_ranges("basis", include_descendants=recursive)
+        rows = (
+            tuple(tuple(pair) for pair in ranges.pairs)
+            if ranges.pairs is not None
+            else tuple(ranges.tensor().tolist())
+        )
+        return self._rest_shape_key(recursive), rows
+
+    def _collapse_for_write(self, my_basis, recursive):
+        """The remembered collapse a basis write regrows from, or None.
+
+        ``(basis, local_coords, child_basis)``: this Mob's basis before it was
+        scaled to nothing, its subtree's locations in that frame, and the
+        subtree's bases relative to it (:meth:`_remember_collapse`). Used only
+        while the basis is still degenerate and the subtree still has the rows
+        it had then. Like the remembered shape, it is handed to the replay of
+        an enclosing recorded function rather than looked up again there.
+        """
+        timeline = self.scene.timeline_manager
+        replay_key = ("collapse", self.id, recursive)
+        if timeline.is_replaying():
+            return timeline.kept_for_replay(replay_key)
+        remembered = self.__dict__.get("_collapse")
+        if (
+            remembered is None
+            or remembered[0] != self._collapse_key(recursive)
+            or not bool(_degenerate_bases(my_basis).any())
+        ):
+            return None
+        timeline.keep_for_replay(replay_key, remembered[1])
+        return remembered[1]
+
+    def _remember_collapse(
+        self, recursive, my_basis, new_basis, local_coords, child_basis, collapsed
+    ):
+        """Remember what a write that scales this Mob to nothing leaves behind.
+
+        Authoring only, and only for a Mob with one basis row (not a pack).
+        Kept while the basis stays degenerate, so a second shrink, a rotate or
+        a move in between does not overwrite it with nothing; dropped once a
+        write gives the Mob back an inverse.
+        """
+        if self.scene.timeline_manager.is_replaying() or my_basis.shape[-2] != 1:
+            return
+        if not bool(_degenerate_bases(new_basis).any()):
+            self.__dict__.pop("_collapse", None)
+            return
+        if collapsed is not None or bool(_degenerate_bases(my_basis).any()):
+            return
+        inverse = invert_row_basis(unsquish(my_basis, -1, 3))
+        relative = squish(unsquish(child_basis, -1, 3) @ inverse, -2, -1)
+        # Exactly the identity where a row is this basis -- this Mob's own,
+        # and any child's that matches it -- so regrowing writes exactly the
+        # basis it was asked for there, zero rows included, rather than one
+        # rounding away from it (which would invert, and look regrown).
+        identity = squish(
+            torch.eye(3, dtype=relative.dtype, device=relative.device), -2, -1
+        )
+        relative = torch.where(
+            (child_basis == my_basis).all(-1, keepdim=True), identity, relative
+        )
+        self.__dict__["_collapse"] = (
+            self._collapse_key(recursive),
+            (
+                my_basis.detach().clone(),
+                local_coords.detach().clone(),
+                relative.detach().clone(),
+            ),
         )
 
     def _rest_shape_key(self, recursive):
@@ -2356,6 +2541,7 @@ class Mob(
         recursive=True,
         interpolation=1.0,
         rest_local=None,
+        collapsed=None,
     ):
         # Every descendant's location is re-derived here from the float32
         # world-space rows it is stored in: its coordinates in this Mob's frame
@@ -2442,10 +2628,6 @@ class Mob(
         new_child_location = map_local_to_global_coords(
             pivot_loc, pivot_new_basis, local_coords
         )
-        self._update_rest_shape(
-            recursive, local_coords, pivot_loc, pivot_new_basis, new_child_location
-        )
-
         child_basis = self.get_animated_attribute(
             "basis", include_descendants=recursive, copy=False
         )
@@ -2461,9 +2643,69 @@ class Mob(
             ),
             child_basis,
         )
+        if collapsed is not None:
+            # Regrowing from nothing (see the basis setter): the subtree is
+            # rebuilt from the shape remembered from before the collapse. A
+            # row something else has written since is not one the memory
+            # describes, and takes the ordinary result.
+            new_basis, regrown_location, regrown_basis = self._regrow_collapsed(
+                collapsed, my_basis, default_basis, interpolation, pivot_loc
+            )
+            local_coords = collapsed[1].to(local_coords.device, local_coords.dtype)
+            new_child_location = self._where_collapse_holds(
+                regrown_location,
+                new_child_location,
+                map_local_to_global_coords(pivot_loc, my_basis, local_coords),
+                child_loc,
+            )
+            new_child_basis = self._where_collapse_holds(
+                regrown_basis,
+                new_child_basis,
+                relation(
+                    collapsed[2].to(child_basis.device, child_basis.dtype), my_basis
+                ),
+                child_basis,
+            )
+            pivot_new_basis = new_basis
+        self._update_rest_shape(
+            recursive, local_coords, pivot_loc, pivot_new_basis, new_child_location
+        )
+        self._remember_collapse(
+            recursive, my_basis, new_basis, local_coords, child_basis, collapsed
+        )
 
         self._apply_set("location", new_child_location, recursive=recursive)
         self._apply_set("basis", new_child_basis, recursive=recursive)
+
+    def _regrow_collapsed(self, collapsed, my_basis, target, interpolation, pivot_loc):
+        """The basis, subtree locations and bases a regrowing write reaches.
+
+        ``collapsed`` is :meth:`_collapse_for_write`'s memory. The basis runs
+        straight from where it is to ``target``; the subtree's locations and
+        bases are the remembered ones, in the frame of the basis at each step.
+        All three are linear in that basis, so at the start of the write they
+        are where the collapse left them, and at its end exactly ``target``
+        (including any row it leaves at zero).
+        """
+        relation = self.attr_to_relations["basis"][0]
+        _, rest_local, rest_child_basis = (
+            value.to(my_basis.device, my_basis.dtype) for value in collapsed
+        )
+        target = cast_to_tensor(target).to(my_basis.device, my_basis.dtype)
+        if torch.is_tensor(interpolation):
+            interpolation = interpolation.to(my_basis.device, my_basis.dtype)
+        new_basis = torch.lerp(my_basis, target.expand_as(my_basis), interpolation)
+        location = map_local_to_global_coords(pivot_loc, new_basis, rest_local)
+        return new_basis, location, relation(rest_child_basis, new_basis)
+
+    @staticmethod
+    def _where_collapse_holds(regrown, ordinary, predicted, current):
+        """``regrown`` on the rows the remembered collapse still describes, else ``ordinary``."""
+        regrown = regrown.to(ordinary.device, ordinary.dtype)
+        predicted = predicted.to(current.device, current.dtype)
+        tolerance = 1e-5 * (1 + current.abs().amax(-1, keepdim=True))
+        holds = ((predicted - current).abs() <= tolerance).all(-1, keepdim=True)
+        return torch.where(holds, regrown, ordinary)
 
     @property
     def scale_coefficient(self) -> torch.Tensor:
@@ -2507,12 +2749,15 @@ class Mob(
 
         """
         scale_coefficient = cast_to_tensor(scale_coefficient)
-        new_basis = squish(
-            F.normalize(unsquish(self.basis, -1, 3), p=2, dim=-1)
-            * scale_coefficient.unsqueeze(-1),
-            -2,
-            -1,
-        )
+        basis = self.basis
+        rows = unsquish(basis, -1, 3)
+        directions = F.normalize(rows, p=2, dim=-1)
+        # A row scaled to zero has no direction to scale along; take back the
+        # one it had (see the basis setter).
+        collapsed = self._collapse_for_write(basis, not self._prevent_recursive_sets)
+        if collapsed is not None:
+            directions = _regrown_directions(rows, directions, collapsed[0])
+        new_basis = squish(directions * scale_coefficient.unsqueeze(-1), -2, -1)
         self.basis = new_basis
         return self
 
@@ -2596,7 +2841,12 @@ class Mob(
         scale_factor
             Multiplier on the current size: ``2`` for twice as big, ``0.5`` for
             half. A tensor of shape ``(*, 3)`` scales the Mob's right, up and
-            forward axes separately, which is how you stretch a shape.
+            forward axes separately, which is how you stretch a shape. ``0``
+            shrinks the Mob to nothing; a factor cannot grow it back from there
+            (any multiple of nothing is nothing), but
+            :meth:`~.Mob.set_scale`, an assigned
+            :attr:`~.Mob.scale_coefficient` or :attr:`~.Mob.basis` does,
+            restoring its shape and orientation.
         recursive
             Whether descendants scale too, keeping the Mob's proportions.
             Defaults to True; False scales this Mob alone, so a Group's children
