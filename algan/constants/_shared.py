@@ -77,8 +77,9 @@ def is_shared_constant(tensor: torch.Tensor) -> bool:
     if any(_address(live) == address for live in registered):
         return True
     # Every constant registered here has since moved: the address now belongs
-    # to memory that was never a constant's, or no longer is.
-    del _SHARED_STORAGES[address]
+    # to memory that was never a constant's, or no longer is. ``pop``, not
+    # ``del``: a second thread may have dropped the same entry already.
+    _SHARED_STORAGES.pop(address, None)
     return False
 
 

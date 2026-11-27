@@ -135,13 +135,17 @@ def test_memory_a_constant_has_left_is_not_shared(restore):
 
 def test_a_resized_constant_does_not_leave_its_old_address_shared():
     """``resize_`` reallocates the storage in place: the old address is freed
-    there and then, with nothing left to pin it.
+    there and then, with nothing left to pin it -- so restore may well put a
+    constant straight back on it. What must hold is that the registry names
+    exactly the addresses the constants live at, and no other.
     """
     left = color.WHITE.untyped_storage().data_ptr()
     color.WHITE.resize_(4096)
     assert color.WHITE.untyped_storage().data_ptr() != left
     _shared.restore_shared_constants()
-    assert left not in _shared._SHARED_STORAGES
+    assert set(_shared._SHARED_STORAGES) == {
+        live.untyped_storage().data_ptr() for live, _ in _shared._PRISTINE
+    }
     assert torch.equal(color.WHITE, color.Color("#FFFFFF"))
     with pytest.raises(AlganConfigurationError):
         color.WHITE.glow = 1
