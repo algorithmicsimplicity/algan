@@ -83,14 +83,15 @@ only for experiments that intentionally replace that supported dependency.
   BasicTeX plus the packages is ~4 minutes and most measurement scripts never
   touch it. A scene that needs it and did not ask fails minutes later, inside
   the render.
-* **`taichi_wheel_run_id`**. The MPS arm installs a patched Taichi wheel from a
-  `taichi_build.yaml` run (default `33342025517`). **Set it to `"none"` to
-  reproduce what the ordinary gate runs**, which is what a plain `uv sync
+* **`taichi_wheel_run_id`**. Given a `taichi_build.yaml` run id, the MPS arm
+  installs that run's patched Taichi wheel. The default is `"none"` (it used to
+  be `33342025517`, whose artifact has expired). **`"none"` reproduces what the
+  ordinary gate runs**, which is what a plain `uv sync
   --locked` puts on the machine: the published patched `algan-quadrants`,
   which carries `quadrants_patches/0001` and therefore renders on the Apple
-  GPU with no override at all. The default is the historical *Taichi* control
-  arm and it also flips `ALGAN_TAICHI_BACKEND=taichi`, so leaving it alone
-  measures a different compiler from the one CI and users have.
+  GPU with no override at all. A run id selects the historical *Taichi*
+  control arm and also flips `ALGAN_TAICHI_BACKEND=taichi`, so it measures a
+  different compiler from the one CI and users have.
   (The bullet used to say `"none"` meant a silent CPU fallback. That was true
   while the only patched build was a private wheel; since the patched
   Quadrants distribution is the normal dependency it is the other way round,
@@ -107,16 +108,18 @@ only for experiments that intentionally replace that supported dependency.
   `quadrants_patches/README.md` ("Getting a patched wheel") is how one gets
   built: `scripts/build_quadrants_wheels.py` dispatches the build and prints
   the run id.
-* **An MPS test run needs CI's torch, and the harness does not install it.**
-  The harness runs `uv sync --locked`, which gives torch 2.7.1 below Python
-  3.14. Algan's MPS arena needs torch 2.13 or newer to import Metal DLPack
-  storage, so `test.yaml`'s MPS arm installs `torch==2.13.0` /
-  `torchaudio==2.11.0` before pytest. A harness command that runs the suite on
-  `mac-mps` has to do the same first:
-  `uv pip install --python .venv/bin/python "torch==2.13.0" "torchaudio==2.11.0" && ...`.
-  Without it every render fails with "This PyTorch build cannot import Metal
-  DLPack storage". One such run (2026-10-21) then hung until its 150-minute
-  timeout, which read like a compiler regression until the log was checked.
+* **The `mac-mps` arm runs CI's torch, not the locked one.**
+  `uv sync --locked` gives torch 2.7.1 below Python 3.14, and Algan's MPS
+  arena needs torch 2.13 or newer to import Metal DLPack storage. So the
+  harness's MPS arm installs `torch==2.13.0` / `torchaudio==2.11.0` after the
+  sync, as `test.yaml`'s MPS arm does, and sets `UV_NO_SYNC=1` so a later
+  `uv run` does not put the locked torch back. `mps_probe.yaml`'s render job
+  and `torch_compile_ab.yaml` do the same. The CPU arms stay on the lock, so
+  a comparison across arms compares a PyTorch as well as a device. Before the
+  harness did this, every MPS render failed with "This PyTorch build cannot
+  import Metal DLPack storage", and one such run (2026-10-21) hung until its
+  150-minute timeout, which read like a compiler regression until the log was
+  checked.
 * **`arms`**. Each Mac arm consumes a runner slot. Check the account's current
   concurrency and billing limits before fanning out experiments.
 

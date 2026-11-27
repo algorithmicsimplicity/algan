@@ -9,9 +9,11 @@ name: Release
 # moved, a docs deploy re-run, and a GitHub release edited. Everything that can
 # fail should fail before the one step that cannot be taken back.
 #
-# `dry_run` (the default) runs the three read-only jobs -- gate, build, docs --
-# and stops before anything is pushed. Use it to rehearse a release; the wheel
-# and the built HTML land as artifacts you can inspect.
+# `dry_run` (the default) runs the read-only jobs -- gate, build, docs and the
+# full test suite -- and stops before anything is pushed. Use it to rehearse a
+# release; the wheel and the built HTML land as artifacts you can inspect. The
+# suite is the slow one (about 90 minutes an arm, two arms on macOS runners);
+# the other three report within minutes beside it.
 #
 # `docs_only` builds and publishes the documentation and nothing else: no
 # version gate, no wheel, no tag, no PyPI. Two uses. The first is that the Pages
@@ -61,6 +63,11 @@ jobs:
   gate:
     name: Gate ${{ inputs.docs_only && 'docs' || inputs.version }}
     runs-on: ubuntu-latest
+    # `actions: read` is for the Test-run lookup below, which lists workflow
+    # runs; the rest of the gate only reads the tree.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,6 +77,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # A dispatch runs on whatever ref was selected in the Actions tab, and
+      # `promote` fast-forwards stable to that commit and pushes the tag; the
+      # `pypi` environment refusing a non-default branch (quadrants_patches/
+      # PYPI.md) stops only the last job, after stable, the tag, the GitHub
+      # release and the docs have moved. So anything that publishes is
+      # dispatched from master. A dry run publishes nothing and may rehearse
+      # on any branch.
+      - name: A release that publishes is dispatched from master
+        if: ${{ !inputs.dry_run }}
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != refs/heads/master ]; then
+            echo "::error::this run was dispatched on $REF. Merge to master and dispatch from master, or set dry_run to rehearse on a branch."
+            exit 1
+          fi
 
       # `version` cannot be conditionally `required:` in workflow_dispatch, so
       # the requirement lives here instead. Fail on the input rather than three
@@ -113,32 +137,42 @@ jobs:
       # audit's HEAD were red on every matrix leg and were fixed by two "Fixed
       # failing tests" commits. Cut the release from a commit that has its
       # *own* green run -- not from one that merely sits after a green one.
+      #
+      # By workflow, not by check-run name. A check run is named after its
+      # job (`ubuntu-latest / Python 3.10`), never after the workflow, so a
+      # name filter for "Test" matched the arms only through the "test" in
+      # "latest", and would drop any arm moved to a pinned image. And a
+      # commit's check runs span every workflow and every run of each, more
+      # than the 30 an unpaginated call returns. Every Test run on this
+      # commit counts, whatever started it: a weekly or dispatched full run
+      # that failed here blocks the release as a push run would.
       - name: This exact commit has a green Test run
         if: ${{ !inputs.docs_only }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          conclusions=$(gh api \
-            "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs" \
-            --jq '.check_runs[] | select(.name | test("Test|test")) | .conclusion')
-          echo "Test check conclusions for ${{ github.sha }}:"
-          echo "${conclusions:-<none>}"
-          if [ -z "$conclusions" ]; then
-            echo "::error::no Test check run found for this commit. Push it and let CI finish before releasing."
+          runs=$(gh api --paginate \
+            "repos/${{ github.repository }}/actions/workflows/test.yaml/runs?head_sha=${{ github.sha }}&per_page=100" \
+            --jq '.workflow_runs[] | "\(.id) \(.event) \(.status) \(.conclusion)"')
+          echo "Test runs for ${{ github.sha }} (id, event, status, conclusion):"
+          echo "${runs:-<none>}"
+          if [ -z "$runs" ]; then
+            echo "::error::no Test run found for this commit. Push it and let CI finish before releasing."
             exit 1
           fi
-          if echo "$conclusions" | grep -qv '^success$'; then
-            echo "::error::a Test check for this commit is not green."
+          if echo "$runs" | grep -qv ' completed success$'; then
+            echo "::error::a Test run for this commit is not finished and green."
             exit 1
           fi
 
       # tests/full_renders and tests/path_traced baselines are release assets
       # under their own `baselines-<date>` tag rather than committed files
       # (tests/README.md, "Where the heavy baselines live"). A suite that cannot
-      # resolve its baselines *skips*, so a dangling pointer does not fail --
-      # it just quietly stops testing six dense scenes and the path tracer.
-      # Cheap to check here, invisible everywhere else.
+      # resolve its baselines fails, but those suites run only on a machine
+      # with matching baselines, never in CI, so a dangling pointer would ship
+      # unnoticed and break the six dense scenes and the path tracer for
+      # whoever runs them next. Cheap to check here, invisible everywhere else.
       #
       # This downloads and checks each sha256 rather than issuing a HEAD, because
       # HEAD is what let `baselines-2026-09-09.1` through: one asset was absent,
@@ -148,6 +182,33 @@ jobs:
       - name: The baseline pointer resolves to the right files
         if: ${{ !inputs.docs_only }}
         run: python scripts/gate/verify_baseline_pointer.py
+
+  # --------------------------------------------------------------------------
+  # 1b. The whole test suite, on the commit being released.
+  #
+  # The gate's Test-run check above proves only that the CI group passed here,
+  # about a third of the portable tests on two arms. This runs the Test
+  # workflow itself at its full scope -- every unit test and the fast render,
+  # on Linux 3.10 and 3.14 and on macOS CPU and MPS -- and `promote` waits for
+  # it, so nothing is tagged or published from a commit the full suite has not
+  # passed. It needs the gate so that a release that cannot happen (wrong
+  # version, taken tag, red CI) does not spend six runner-hours first.
+  #
+  # The permissions are the most any job of the called workflow asks for: a
+  # nested job may not ask for more than its caller grants, and GitHub checks
+  # that before anything runs, including for the weekly-failure job, which
+  # asks for `issues: write` and never runs from here.
+  # --------------------------------------------------------------------------
+  test:
+    name: Full test suite
+    needs: gate
+    if: ${{ !inputs.docs_only }}
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/test.yaml
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # --------------------------------------------------------------------------
   # 2. Build the distributions.
@@ -259,8 +320,11 @@ jobs:
           videos=$(find docs/build/html -name '*.mp4' | wc -l)
           echo "rendered videos: $videos" >> "$GITHUB_STEP_SUMMARY"
           du -sh docs/build/html >> "$GITHUB_STEP_SUMMARY"
+          # An error, not a warning: as a warning, a videoless site still went
+          # on to publish_docs. skip_docs_examples is the way to ask for one.
           if [ "$videos" -eq 0 ] && [ "${{ inputs.skip_docs_examples }}" != "true" ]; then
-            echo "::warning::the docs build produced no example videos"
+            echo "::error::the docs build produced no example videos; set skip_docs_examples to publish a site without them"
+            exit 1
           fi
 
       - uses: actions/upload-artifact@v4
@@ -274,7 +338,7 @@ jobs:
   # --------------------------------------------------------------------------
   promote:
     name: Promote to stable and tag
-    needs: [gate, build, build_macos, docs]
+    needs: [gate, test, build, build_macos, docs]
     if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     permissions:
@@ -422,6 +486,9 @@ jobs:
 
       # Trusted Publishing, same as quadrants_build.yaml's publish job. No
       # token lives in this repository.
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # By commit, not branch: this job holds `id-token: write`, and a branch
+      # ref runs whatever is pushed to it. 7245906 is v1.14.3, the head of
+      # release/v1 when it was pinned.
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist

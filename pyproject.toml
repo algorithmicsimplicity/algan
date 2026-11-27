@@ -29,8 +29,9 @@ classifiers = [
 
 # Both bounds are the kernel compiler's. `algan-quadrants` publishes cp310-cp314
 # wheels: no cp39 (which is why the floor moved up from 3.9 -- the maintainer
-# confirmed no user is on it, and `algan` is not on PyPI yet, so nobody can
-# have installed it there through the documented channel). Upstream Quadrants
+# confirmed no user is on it; the releases on PyPI, 0.0.0 to 0.0.2, already
+# required Python >=3.10, so nobody can have installed one there through the
+# documented channel). Upstream Quadrants
 # stops at cp313; cp314 is this repository's own addition
 # (`quadrants_patches/0009`), first shipped in `algan-quadrants` 1.3.0.post3
 # and carried by every revision since. Raising the ceiling again waits
@@ -90,7 +91,7 @@ dependencies = [
     "setuptools>=61",
     "scipy>=1.8.0",
     "svgelements>=1.0.0",
-    "torch>=2.0.0",
+    "torch>=2.3",
     # Imported at module scope by algan.mobs.image_compat, used for all image
     # decoding in algan.utils.file_utils / algan.mobs.three_d_models.model_mob,
     # and by the vendored Manim subset's ImageMobject.
@@ -151,6 +152,9 @@ typst = ["typst>=0.14"]
 # Word-level alignment of recorded speech audio to a transcript (used by the
 # Speech/Audio animation contexts when synchronizing to a pre-recorded audio
 # file). The default pyttsx3 text-to-speech path does not need these.
+# soundfile reads the recording; torchaudio only aligns and resamples it, because
+# torchaudio 2.9 removed `info` and its `load` needs torchcodec, which this
+# extra does not install (algan/utils/audio_utils.py).
 audio = [
     "soundfile>=0.14.0",
     "torchaudio>=2.0.0",
@@ -193,6 +197,14 @@ pango = [
 taichi = [
     "taichi>=1.7.4; python_version < '3.14'",
 ]
+
+# Tooling for working on Algan: tests, lint, docs. A dependency group, not an
+# extra, so it is not part of the published metadata (`pip install
+# "algan[dev]"` used to pull ruff and sphinx into a user's environment) and so
+# `uv sync` and `uv sync --dev` install it, which they did not while it was an
+# extra. Needs uv 0.4.27 or newer; CI pins a newer one in
+# `.github/actions/install-uv`.
+[dependency-groups]
 dev = [
     # Tests and benchmarks decode rendered frames and probe video metadata
     # with OpenCV. The library itself no longer imports cv2 (its one image
@@ -217,14 +229,19 @@ dev = [
     "types-pillow>=10.2.0.20240822",
     "types-pygments>=2.19.0.20250107",
     "requests>=2.32.3",
-    # `taichi` is in here as well as in `--all-extras`: a `uv sync --dev` with
-    # no extras still has to be able to run the A/B control arm
-    # (`ALGAN_TAICHI_BACKEND=taichi`), which is half of every backend report.
+    # The extras a development session needs, `taichi` among them: a plain
+    # `uv sync` (which installs this group) still has to be able to run the
+    # A/B control arm (`ALGAN_TAICHI_BACKEND=taichi`), which is half of every
+    # backend report. `pango` is left to `--all-extras`, since it builds from
+    # source on Linux.
     "algan[audio,fbx,taichi,typst]",
 ]
 
 [build-system]
-requires = ["hatchling"]
+# 1.27 is the first hatchling that writes the PEP 639 metadata above
+# (`License-Expression`, `license-files`); an older one, which a downstream
+# packager without build isolation might have, cannot build this.
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.hooks.custom]

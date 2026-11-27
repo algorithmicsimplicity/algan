@@ -28,19 +28,37 @@ on:
   # this file is on the default branch: GitHub reads workflow_dispatch from
   # there, not from the ref being dispatched.
   workflow_dispatch:
+  # Lets the Release workflow run this one as a job of its own, so a release
+  # tests the commit it ships at the full scope instead of trusting that some
+  # earlier run did. A called workflow sees its caller's event, and Release is
+  # dispatched by hand, so `plan` gives it the full matrix with no input.
+  # The secret is optional so that a caller without it still runs the tests;
+  # only the coverage upload needs it.
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: false
   # The weekly full run: the whole suite on every platform and Python, and
   # the cold-compile control besides, since it does not restore compiled
   # kernels (see "Restore compiled kernels"). Mondays, 04:23 UTC.
   schedule:
     - cron: "23 4 * * 1"
 
+# Read-only unless a job asks for more; nothing here writes to the repository.
+permissions:
+  contents: read
+
 # One run per pull request: a new push (or the `full-ci` label) cancels the
 # run in flight, whose answer is about a commit nobody is waiting on any more.
 # Pushes to master and stable, and merge-queue runs, are keyed by run id and so
 # never cancel one another. A label other than `full-ci` gets a group of its
 # own; it starts nothing, and must not cancel the run that is going.
+#
+# The literal `Test`, not `github.workflow`: called from Release, that name is
+# the caller's, and a group shared with the caller's other jobs is not this
+# workflow's to cancel.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
+  group: Test-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -62,6 +80,7 @@ jobs:
   # Python 3.10" by name, so both arms run in every scope.
   plan:
     name: Plan the run
+    timeout-minutes: 5
     # Not on a draft pull request; see `on.pull_request`. Nor for a label
     # other than `full-ci`, which changes nothing about what should run.
     if: >-
@@ -102,6 +121,11 @@ jobs:
     name: ${{ matrix.os }} / Python ${{ matrix.python_version }}${{ matrix.render_device == 'mps' && ' / render=mps' || '' }}
     runs-on: ${{ matrix.os }}
     needs: [plan]
+    # The full scope takes about 90 minutes on a cold arm. Without a limit a
+    # hung arm (the hosted Mac's GPU has hung before; DESIGN_mps_support.md)
+    # holds a runner, one of five macOS slots for the MPS arm, for GitHub's
+    # default six hours.
+    timeout-minutes: 150
     strategy:
       # One platform or render device failing must not cancel the others. The
       # matrix is the portability/release gate, so every arm should report.
@@ -109,9 +133,12 @@ jobs:
       # Keep the supported Python floor on both operating systems and the
       # ceiling on Linux. macOS deliberately has two independent 3.10 arms:
       # CPU preserves the portability check that existed before MPS support;
-      # MPS is the required Apple-GPU regression gate. Keeping the entries
-      # explicit makes the device visible in the PR check name and avoids an
-      # accidental Cartesian product when another device or Python is added.
+      # MPS is the Apple-GPU regression arm. It runs in the full scope only
+      # (weekly, on dispatch, or on a `full-ci` pull request), so an ordinary
+      # pull request does not run it and no MPS check is required to merge.
+      # Keeping the entries explicit makes the device visible in the PR check
+      # name and avoids an accidental Cartesian product when another device or
+      # Python is added.
       #
       # 3.10 is the floor because `algan-quadrants` publishes no cp39 wheel --
       # it moved there from 3.9 when Quadrants became the kernel compiler. Testing the floor is not a formality: it is the version whose
@@ -142,9 +169,9 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     # The two macOS arms are intentionally explicit. The CPU arm keeps macOS
-    # portability coverage. The MPS arm is an ordinary required test arm: the
-    # hosted macOS runner is Apple Silicon and exposes a real Metal device, and
-    # the sanity step below fails before pytest if Algan does not actually
+    # portability coverage. The MPS arm (full scope only) runs on a real GPU:
+    # the hosted macOS runner is Apple Silicon and exposes a real Metal device,
+    # and the sanity step below fails before pytest if Algan does not actually
     # resolve this request to MPS. Both use the normal locked dependency graph,
     # including the published patched `algan-quadrants` wheel; no private
     # compiler artifact is installed here.
@@ -327,7 +354,7 @@ jobs:
           find ~/.algan/cache/quadrants -type f ! -name algan_kernel_specs.json | sort > "$RUNNER_TEMP/kernels-before.txt"
           echo "$(wc -l < "$RUNNER_TEMP/kernels-before.txt" | tr -d ' ') files restored"
 
-      # A required MPS check must not be able to go green after silently running
+      # The MPS arm must not be able to go green after silently running
       # on CPU. Ask Algan's startup resolver -- the same source the renderer
       # uses -- and separately verify that torch sees an MPS device. Printing
       # the distribution version also leaves evidence that this ordinary gate
@@ -420,7 +447,7 @@ jobs:
       # shapes_and_timeline matched exactly. See tests/README.md.
       #
       # The full scope names paths rather than running with --fast on purpose:
-      # --fast runs only the 191 hand-picked tests marked 'fast', while
+      # --fast runs only the hand-picked tests marked 'fast', while
       # everything under these two paths is portable and passes here. That is
       # what the weekly run and a `full-ci` pull request run; everything else
       # runs the CI group (see the `plan` job).
@@ -440,7 +467,7 @@ jobs:
       # defect it is waiting on, and tests/conftest.py applies it ONLY when the
       # resolved render device is MPS. They are strict xfails, so the arm goes
       # red on an XPASS -- a fix cannot leave a stale entry behind -- and the
-      # summary counts them on every run, which is what keeps a required check
+      # summary counts them on every run, which is what keeps the arm
       # from quietly meaning less than it looks like it means.
       # DESIGN_mps_support.md §4 is the scoreboard.
       - name: Run tests
@@ -531,9 +558,41 @@ jobs:
       # matching the OS and Python version here.
       - name: Upload coverage to Codecov
         if: matrix.coverage
-        uses: codecov/codecov-action@v4
+        # By commit, not tag: a moved tag would run other code with the Codecov
+        # token. b9fd7d1 is v4.6.0, what v4 named when it was pinned.
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           fail_ci_if_error: true
           verbose: true
+
+  # The weekly full run is the backstop for everything the CI group leaves
+  # out: about 70% of the portable tests, Python 3.14 and the MPS arm. A red
+  # one used to reach nobody but whoever last edited the cron, by GitHub's
+  # default email. This opens an issue for it, or comments on the one still
+  # open from an earlier week, so a failure stays visible until it is fixed.
+  report_weekly_failure:
+    name: Report a failed weekly run
+    needs: [plan, build]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="The weekly full test run failed"
+          body="The scheduled full run of the Test workflow failed on $GITHUB_SHA: $RUN_URL"
+          number=$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

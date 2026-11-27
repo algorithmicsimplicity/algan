@@ -44,8 +44,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Read-only by default; only `publish` asks for more (`id-token: write`, for
+# PyPI's trusted publishing). The build jobs run upstream's build scripts, so
+# they get no write token, and their checkouts keep no credentials.
+permissions:
+  contents: read
+
 env:
   QUADRANTS_REF: v1.3.3
+  # The commit QUADRANTS_REF named when the published wheels were built
+  # (quadrants_patches/README.md records the same `00423caa9`). A tag can be
+  # moved, and a moved tag would build the next `post` revision from other
+  # source without any diff here; each clone checks it lands on this commit.
+  # Bump both together.
+  QUADRANTS_COMMIT: 00423caa93b620f6f3ebbb5d3f26e74cf56ecf5b
   # The published revision pyproject.toml/uv.lock consume. A new revision bumps
   # this (and rebrand_quadrants_wheel.py) first and the consumer side only
   # after it is on PyPI; quadrants_patches/PYPI.md documents that order.
@@ -83,6 +95,8 @@ jobs:
       summary: ${{ steps.resolve.outputs.summary }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: resolve
         env:
           IN_PLATFORMS: ${{ inputs.platforms }}
@@ -123,6 +137,7 @@ jobs:
       - name: Checkout Algan
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           path: algan
 
       - name: Container facts
@@ -205,6 +220,7 @@ jobs:
       - name: Checkout Algan
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           path: algan
 
       - name: Container facts
@@ -241,6 +257,11 @@ jobs:
           git clone --depth 1 --branch "$QUADRANTS_REF" --recurse-submodules \
             --shallow-submodules https://github.com/Genesis-Embodied-AI/quadrants.git quadrants-src
           git -C quadrants-src log -1 --format='%H %d %s'
+          actual=$(git -C quadrants-src rev-parse HEAD)
+          if [ "$actual" != "$QUADRANTS_COMMIT" ]; then
+            echo "::error::$QUADRANTS_REF is $actual, not the pinned $QUADRANTS_COMMIT. If upstream moved the tag on purpose, review the change and bump QUADRANTS_COMMIT."
+            exit 1
+          fi
 
       - name: Apply the Algan patches
         if: ${{ inputs.apply_patches }}
@@ -557,6 +578,7 @@ jobs:
       - name: Checkout Algan
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           path: algan
 
       - name: Container facts
@@ -593,6 +615,11 @@ jobs:
           git clone --depth 1 --branch "$QUADRANTS_REF" --recurse-submodules \
             --shallow-submodules https://github.com/Genesis-Embodied-AI/quadrants.git quadrants-src
           git -C quadrants-src log -1 --format='%H %d %s'
+          actual=$(git -C quadrants-src rev-parse HEAD)
+          if [ "$actual" != "$QUADRANTS_COMMIT" ]; then
+            echo "::error::$QUADRANTS_REF is $actual, not the pinned $QUADRANTS_COMMIT. If upstream moved the tag on purpose, review the change and bump QUADRANTS_COMMIT."
+            exit 1
+          fi
 
       - name: Apply the Algan patches
         if: ${{ inputs.apply_patches }}
@@ -901,6 +928,7 @@ jobs:
       - name: Checkout Algan
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           path: algan
 
       - name: Confirm this is a genuine glibc 2.34 userspace
@@ -960,6 +988,8 @@ jobs:
     steps:
       - name: Checkout Algan
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Runner facts
         run: |
@@ -1034,6 +1064,7 @@ jobs:
       - name: Checkout Algan
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           path: algan
 
       - name: Runner facts
@@ -1058,6 +1089,11 @@ jobs:
           git clone --depth 1 --branch "$QUADRANTS_REF" --recurse-submodules \
             --shallow-submodules https://github.com/Genesis-Embodied-AI/quadrants.git quadrants-src
           git -C quadrants-src log -1 --format='%H %d %s'
+          actual=$(git -C quadrants-src rev-parse HEAD)
+          if [ "$actual" != "$QUADRANTS_COMMIT" ]; then
+            echo "::error::$QUADRANTS_REF is $actual, not the pinned $QUADRANTS_COMMIT. If upstream moved the tag on purpose, review the change and bump QUADRANTS_COMMIT."
+            exit 1
+          fi
 
       - name: Apply the Algan patches
         if: ${{ inputs.apply_patches }}
@@ -1155,6 +1191,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download all built wheels
         uses: actions/download-artifact@v8
@@ -1172,6 +1210,7 @@ jobs:
           python scripts/validate_quadrants_release.py dist
 
       - name: Publish to PyPI with Trusted Publishing
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # By commit, not branch: see release.yaml's PyPI job.
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist

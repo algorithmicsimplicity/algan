@@ -310,6 +310,45 @@ ALWAYS_CI = (
     # While a render job runs, only its thread drains torch's MPS caches, and a
     # drain the batch-prep worker asks for waits for that thread: stubs, no GPU.
     "tests/unit_tests/test_mps_cache_drains.py::test_a_drain_asked_for_off_the_render_thread_waits_for_the_render_thread",
+    # The repository audits tests/README.md says gate every pull request. They
+    # read source, docs or committed files rather than run Algan, so they cover
+    # no lines and the greedy pass never chose one: the render-coverage and
+    # scene-convention audits, the committed baseline pointer, the static tier
+    # of the doc examples, the two source walks of the environment registry,
+    # and the viewer's JavaScript, which Python coverage cannot see at all.
+    # Each file or test here runs in under three seconds.
+    "tests/unit_tests/test_render_coverage_audit.py::",
+    "tests/unit_tests/test_baseline_store.py::",
+    "tests/unit_tests/test_doc_examples.py::test_doc_example_uses_public_api",
+    "tests/unit_tests/test_environment.py::test_package_reaches_algan_variables_only_through_the_accessors",
+    "tests/unit_tests/test_environment.py::test_import_time_variables_match_where_the_code_reads_them",
+    "tests/unit_tests/test_viewer_client.py::",
+    # Files added after the groups were last measured (2026-10-23), so the
+    # greedy pass has never seen them; pinned until the next regeneration
+    # measures them. MNEE caustics' chain solver and its derivatives, and the
+    # Animatable accessors: about two seconds together on a warm cache.
+    "tests/unit_tests/test_pt_caustics.py::",
+    "tests/unit_tests/test_animatable_accessors.py::",
+    # The torch floor in pyproject.toml admits every torch function algan/
+    # calls: reads the two, well under a second.
+    "tests/unit_tests/test_dependency_floors.py::",
+    # Every algan name a benchmark script imports still exists: an AST walk of
+    # benchmarks/ against the live package, about two seconds.
+    "tests/unit_tests/test_benchmark_imports.py::",
+    # Synthesised narration reaches its cache whole or not at all: a
+    # stand-in engine, no audio.
+    "tests/unit_tests/test_speech_cache.py::",
+    # Where the conftest pipes a run's log, and that a collection writes none.
+    "tests/unit_tests/test_conftest_logs.py::",
+    # Two files the groups had no test of, which other changes now add pinned
+    # tests to: the file leaves NOT_IN_GROUPS (tests/unit_tests/
+    # test_test_groups.py) the moment it has one, so each has one here already.
+    # The CLI's version and entry point, and the direct specular lobe on a
+    # material without one and behind the surface: under a second together.
+    "tests/unit_tests/test_cli_startup.py::test_version_is_read_from_metadata_not_from_the_package",
+    "tests/unit_tests/test_cli_startup.py::test_the_entry_point_points_outside_the_package",
+    "tests/unit_tests/test_direct_specular_lobe.py::test_the_lobe_is_off_for_a_non_pbr_material",
+    "tests/unit_tests/test_direct_specular_lobe.py::test_a_back_facing_hit_does_not_explode",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or
@@ -380,6 +419,37 @@ ALWAYS_PRE_PR = (
     "tests/unit_tests/test_mps_zero_copy.py::test_an_owner_freed_while_the_cache_lock_is_held_is_evicted_without_deadlock",
     # The glossy pyramid's fused finish sums each texel in its launches' order.
     "tests/unit_tests/test_glossy_fused_finish.py::test_the_fused_finish_matches_the_launches_it_replaces",
+    # The rest of the environment audit: how each variable parses, and the
+    # subprocess that checks an unknown ALGAN_ name warns at import. About
+    # eight seconds for the file.
+    "tests/unit_tests/test_environment.py::",
+    # Three more files added after the last measurement (see ALWAYS_CI), too
+    # slow to pin whole: a representative subset of each, about 34 seconds
+    # together on a warm cache against about 370 for the three files whole.
+    # Caustics rendered through a glass plate against geometric optics, and
+    # straight subsurface shadows under delta lights (about 14 s of 151 s).
+    "tests/unit_tests/test_pt_caustics_render.py::test_a_point_light_through_a_glass_plate_lights_the_floor_as_optics_says",
+    "tests/unit_tests/test_pt_caustics_render.py::test_subsurface_delta_lights_leave_glass_shadows_straight",
+    # Volumes: the density field, the majorant and the delta-tracking
+    # estimators against closed forms, and one render through an absorbing
+    # medium; not the scene renders (about 11 s of 124 s).
+    "tests/unit_tests/test_pt_volumes.py::test_majorant_bounds_the_interpolated_density_everywhere",
+    "tests/unit_tests/test_pt_volumes.py::test_absorbing_density_dims_the_environment_by_its_optical_depth",
+    "tests/unit_tests/test_pt_volumes.py::test_spectral_tracking_",
+    "tests/unit_tests/test_pt_volumes.py::test_ratio_tracking_matches_the_optical_depth_per_channel",
+    "tests/unit_tests/test_pt_volumes.py::test_the_box_clips_the_segment_and_the_outside_is_vacuum",
+    "tests/unit_tests/test_pt_volumes.py::test_each_frame_reads_its_own_transform",
+    "tests/unit_tests/test_pt_volumes.py::test_kernel_density_is_cell_centred_trilinear_clamped_to_the_edges",
+    "tests/unit_tests/test_pt_volumes.py::test_a_segment_that_exhausts_the_step_budget_is_absorbed_and_flagged",
+    # Shared Bezier acceleration bins: the cheap checks whole, and one case of
+    # each moving fraction of the 72-case sweep (about 9 s of 99 s).
+    "tests/unit_tests/test_bezier_acceleration_dedup.py::test_unchanged_means_the_same_bits",
+    "tests/unit_tests/test_bezier_acceleration_dedup.py::test_one_frame_and_no_edges_match_the_previous_buffer",
+    "tests/unit_tests/test_bezier_acceleration_dedup.py::test_a_fixed_circuit_reads_its_frame_zero_bins_in_every_frame",
+    "tests/unit_tests/test_bezier_acceleration_dedup.py::test_the_disabled_arm_is_the_previous_buffer[0]",
+    "tests/unit_tests/test_bezier_acceleration_dedup.py::test_shared_bins_answer_every_query_as_before[0-None-40]",
+    "tests/unit_tests/test_bezier_acceleration_dedup.py::test_shared_bins_answer_every_query_as_before[0-0.3-1]",
+    "tests/unit_tests/test_bezier_acceleration_dedup.py::test_shared_bins_answer_every_query_as_before[0-1.0-4194304]",
 )
 
 _DURATION_LINE = re.compile(r"^\s*([\d.]+)s (setup|call|teardown)\s+(\S.*?)\s*$")

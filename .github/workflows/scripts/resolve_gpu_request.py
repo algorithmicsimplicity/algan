@@ -37,7 +37,10 @@ DEFAULTS = {
     "arms": "mac-mps",
     "env": "",
     "latex": "false",
-    "wheel": "33342025517",
+    # No Taichi wheel unless asked for: the run measures the locked Quadrants,
+    # which is what CI and users run. The run id that used to be the default
+    # is older than its artifact's 60-day retention.
+    "wheel": "none",
     "quadrants_wheel": "",
     "artifacts": "",
     "timeout": "60",

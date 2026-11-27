@@ -1,15 +1,34 @@
-"""Recorded-speech chunk retries, without downloading a model or reading audio."""
+"""Recorded-speech chunk retries, without downloading a model.
+
+The model, the processor and torchaudio's alignment are stand-ins. The audio is
+not: each test reads a real WAV file through soundfile, so the reading code
+runs as it does for a user, whatever torchaudio is installed. The stand-in
+torchaudio deliberately has no ``info`` or ``load``; torchaudio 2.9 removed the
+first, and the second needs ``torchcodec``, which nothing installs.
+"""
 
 from __future__ import annotations
 
 import sys
+import wave
 from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
 
 from algan.errors import AlganConfigurationError, AudioTranscriptMismatchError
+from algan.utils import audio_utils
 from algan.utils.audio_utils import align_large_audio_torchaudio_robust
+
+
+def _write_wav(path, num_frames, sample_rate, channels=1):
+    """A silent 16-bit PCM WAV file, written with the standard library."""
+    with wave.open(str(path), "wb") as target:
+        target.setnchannels(channels)
+        target.setsampwidth(2)
+        target.setframerate(sample_rate)
+        target.writeframes(bytes(2 * channels * num_frames))
+    return path
 
 
 @pytest.fixture
@@ -50,10 +69,22 @@ def alignment(monkeypatch, tmp_path):
         def __call__(self, _values):
             return SimpleNamespace(logits=torch.zeros((1, 100, 2)))
 
-    def load(_path, *, frame_offset, num_frames):
+    # Spy on the real reader: record each window, then read it for real.
+    read = audio_utils._read_audio_window
+
+    def read_window(path, frame_offset, num_frames):
         state.loads.append((frame_offset, num_frames))
         assert len(state.loads) <= 3, "alignment repeated an audio window"
-        return torch.zeros((1, 32)), 100
+        waveform, sample_rate = read(path, frame_offset, num_frames)
+        assert waveform.dtype == torch.float32
+        assert waveform.shape == (1, num_frames)
+        return waveform, sample_rate
+
+    monkeypatch.setattr(audio_utils, "_read_audio_window", read_window)
+    # The recording at the test's duration, at the processor's 100 Hz.
+    state.audio = lambda: _write_wav(
+        tmp_path / "voice.wav", int(state.duration * 100), 100
+    )
 
     def forced_align(_emissions, tokens, **_kwargs):
         state.calls += 1
@@ -81,10 +112,6 @@ def alignment(monkeypatch, tmp_path):
     functional.merge_tokens = merge_tokens
     torchaudio = ModuleType("torchaudio")
     torchaudio.functional = functional
-    torchaudio.info = lambda _path: SimpleNamespace(
-        num_frames=state.duration * 100, sample_rate=100
-    )
-    torchaudio.load = load
     transformers = ModuleType("transformers")
     transformers.Wav2Vec2ForCTC = Model
     transformers.Wav2Vec2Processor = Processor
@@ -102,7 +129,7 @@ def test_retry_exhaustion_fails_without_reusing_a_previous_chunk(
     with pytest.raises(
         AudioTranscriptMismatchError, match="after 10 attempts"
     ) as caught:
-        align_large_audio_torchaudio_robust("voice.wav", alignment.transcript)
+        align_large_audio_torchaudio_robust(alignment.audio(), alignment.transcript)
 
     assert alignment.calls == 10 + int(after_success)
     assert len(alignment.loads) == 1 + int(after_success)
@@ -116,14 +143,16 @@ def test_retry_exhaustion_fails_without_reusing_a_previous_chunk(
 def test_nonadvancing_alignment_is_rejected_before_another_load(alignment, mode):
     alignment.modes = [mode]
     with pytest.raises(AudioTranscriptMismatchError, match="no forward progress"):
-        align_large_audio_torchaudio_robust("voice.wav", alignment.transcript)
+        align_large_audio_torchaudio_robust(alignment.audio(), alignment.transcript)
     assert alignment.calls == 1
     assert len(alignment.loads) == 1
 
 
 def test_successful_retry_then_next_chunk_keeps_order_and_advances(alignment):
     alignment.modes = ["boundary", "success"]
-    segments = align_large_audio_torchaudio_robust("voice.wav", alignment.transcript)
+    segments = align_large_audio_torchaudio_robust(
+        alignment.audio(), alignment.transcript
+    )
 
     assert len(segments) == 125
     assert alignment.calls == 3
@@ -137,7 +166,9 @@ def test_final_chunk_does_not_drop_its_last_word(alignment):
     alignment.duration = 5
     alignment.transcript.write_text("A A A")
     alignment.modes = ["success"]
-    segments = align_large_audio_torchaudio_robust("voice.wav", alignment.transcript)
+    segments = align_large_audio_torchaudio_robust(
+        alignment.audio(), alignment.transcript
+    )
     assert len(segments) == 3
     assert alignment.calls == 1
     assert segments[-1][-1] == pytest.approx(0.075)
@@ -145,7 +176,10 @@ def test_final_chunk_does_not_drop_its_last_word(alignment):
 
 def test_empty_transcript_returns_without_aligning(alignment):
     alignment.transcript.write_text("")
-    assert align_large_audio_torchaudio_robust("voice.wav", alignment.transcript) == []
+    assert (
+        align_large_audio_torchaudio_robust(alignment.audio(), alignment.transcript)
+        == []
+    )
     assert alignment.loads == []
     assert alignment.calls == 0
 
@@ -156,3 +190,78 @@ def test_invalid_chunk_duration_is_rejected_before_loading_dependencies(duration
         align_large_audio_torchaudio_robust(
             "unused.wav", "unused.txt", chunk_duration_s=duration
         )
+
+
+def test_a_window_of_a_real_recording_reads_without_torchaudio(tmp_path):
+    """The length, rate and samples come from the file, through soundfile.
+
+    torchaudio is no part of it: on torchaudio 2.9 and later ``info`` is gone
+    and ``load`` needs ``torchcodec``, so reading through either crashed every
+    fresh ``algan[audio]`` install.
+    """
+    path = tmp_path / "stereo.wav"
+    left = list(range(0, 2000, 2))
+    right = [-v for v in left]
+    with wave.open(str(path), "wb") as target:
+        target.setnchannels(2)
+        target.setsampwidth(2)
+        target.setframerate(8000)
+        target.writeframes(
+            b"".join(
+                a.to_bytes(2, "little", signed=True)
+                + b.to_bytes(2, "little", signed=True)
+                for a, b in zip(left, right)
+            )
+        )
+
+    assert audio_utils._audio_frames_and_rate(path) == (1000, 8000)
+    waveform, sample_rate = audio_utils._read_audio_window(path, 100, 5)
+    assert sample_rate == 8000
+    assert waveform.dtype == torch.float32
+    expected = torch.tensor([left[100:105], right[100:105]]) / 32768
+    assert torch.equal(waveform, expected)
+
+
+def test_a_file_that_is_not_audio_names_the_formats_alignment_reads(tmp_path):
+    path = tmp_path / "voice.m4a"
+    path.write_bytes(b"not audio at all")
+    with pytest.raises(AlganConfigurationError, match="WAV, FLAC, OGG and MP3"):
+        audio_utils._audio_frames_and_rate(path)
+
+
+def test_a_file_only_an_older_torchaudio_reads_still_aligns(tmp_path, monkeypatch):
+    """soundfile is tried first; where it cannot read a container, a
+    torchaudio that still has ``info`` and ``load`` reads it as before.
+    """
+    import sys
+    import types
+
+    path = tmp_path / "voice.m4a"
+    path.write_bytes(b"a container libsndfile does not read")
+    calls = []
+
+    def info(file):
+        return types.SimpleNamespace(num_frames=300, sample_rate=100)
+
+    def load(file, frame_offset, num_frames):
+        calls.append((frame_offset, num_frames))
+        return torch.zeros(1, num_frames), 100
+
+    legacy = types.SimpleNamespace(info=info, load=load)
+    monkeypatch.setitem(sys.modules, "torchaudio", legacy)
+
+    assert audio_utils._audio_frames_and_rate(path) == (300, 100)
+    waveform, sample_rate = audio_utils._read_audio_window(path, 20, 50)
+    assert (waveform.shape, sample_rate) == ((1, 50), 100)
+    assert calls == [(20, 50)]
+
+
+def test_a_newer_torchaudio_is_not_asked_to_read_a_file(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    path = tmp_path / "voice.m4a"
+    path.write_bytes(b"a container libsndfile does not read")
+    monkeypatch.setitem(sys.modules, "torchaudio", types.SimpleNamespace())
+    with pytest.raises(AlganConfigurationError, match="WAV, FLAC, OGG and MP3"):
+        audio_utils._audio_frames_and_rate(path)

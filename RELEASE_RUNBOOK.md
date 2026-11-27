@@ -1,7 +1,7 @@
 # Releasing Algan
 
 Operational instructions for [`.github/workflows/release.yaml`](.github/workflows/release.yaml),
-checked against source on 2026-09-09. [RELEASE_AUDIT.md](docs/reports/RELEASE_AUDIT.md) is the
+checked against source on 2026-09-09; §1, §3 and §5 re-checked on 2026-11-26. [RELEASE_AUDIT.md](docs/reports/RELEASE_AUDIT.md) is the
 historical pre-release audit, not a list of current blockers.
 
 A source checkout cannot establish whether a PyPI name or version is available,
@@ -16,7 +16,7 @@ commit SHA and use the workflow run's `head_sha` to confirm what it will release
 A green run on an earlier commit is not sufficient.
 
 `pyproject.toml` is the source of the package version. At this document's source
-check it declares `0.0.0`; that is a snapshot, not a standing instruction to
+check it declares `0.0.3`; that is a snapshot, not a standing instruction to
 publish that version. Choose an unused version, update the metadata and lockfile
 as needed in a PR, and let that exact commit complete CI. The workflow does not
 edit package versions or regenerate the lockfile for you.
@@ -25,14 +25,20 @@ The release gate checks that:
 
 - the `version` input exactly matches `project.version`, without a leading `v`;
 - `v<version>` is not already a Git tag;
-- the selected commit has Test check runs and all returned Test conclusions are
+- a run that publishes (anything but `dry_run`) was dispatched from `master`;
+- the selected commit has at least one run of the Test workflow (`test.yaml`),
+  and every Test run on it, whatever event started it, has completed with
   `success`;
 - every archive named by `tests/baselines.json` downloads and matches its recorded
   SHA-256, via `scripts/gate/verify_baseline_pointer.py`.
 
-The Test gate is not a substitute for reviewing the complete CI matrix and its
-skips. It filters check-run names containing `Test` or `test`; inspect code-quality
-and documentation checks as well. See [tests/README.md](tests/README.md) for
+The Test gate is the cheap check, not the release's test run. A push to master
+runs only the CI test group on two arms. The release runs the rest itself: its
+`test` job calls the Test workflow at the full scope (every unit test and the
+fast render, on Linux 3.10 and 3.14 and on macOS CPU and MPS), a rehearsal
+runs it too, and `promote` waits for it. Review its skips as well as its
+conclusion. The gate reads
+only the Test workflow; inspect code-quality and documentation checks as well. See [tests/README.md](tests/README.md) for
 portable tests, GPU coverage and separately hosted render baselines.
 
 Before choosing the commit, check that the built-in kernel list is current:
@@ -81,7 +87,7 @@ trying to replace a published wheel.
 ## 3. Keep compiler publication separate
 
 The current `pyproject.toml` and `uv.lock` consume
-`algan-quadrants==1.3.3.post2`. Its Python import remains `quadrants`.
+`algan-quadrants==1.3.3.post3`. Its Python import remains `quadrants`.
 The compiler build workflow may target a newer version without changing what
 Algan installs. Read [quadrants_patches/PYPI.md](quadrants_patches/PYPI.md) before
 changing that dependency.
@@ -98,8 +104,8 @@ The workflow is manually dispatched. These are its inputs:
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `version` | Empty | Required for a package release; ignored by `docs_only`. |
-| `dry_run` | `true` | Build and validate, but do not publish refs, docs or distributions. |
-| `docs_only` | `false` | Build docs only; skip package-version, tag, Test and baseline gates. |
+| `dry_run` | `true` | Build, test and validate, but do not publish refs, docs or distributions. |
+| `docs_only` | `false` | Build docs only; skip package-version, tag, Test and baseline gates and the full test run. |
 | `skip_docs_examples` | `false` | Omit rendered examples; useful for a structural check, not a complete example-video build. |
 
 For a release rehearsal, select the intended ref, supply its declared version,
@@ -128,11 +134,19 @@ After a successful rehearsal and a fresh prerequisite check, dispatch the same
 release commit and version with `dry_run=false`. The dependency graph is:
 
 ```text
-gate -> build + docs -> promote
-                         |-> publish_docs
-                         |-> github_release (also needs build)
-                         `-> PyPI waits for both publication jobs
+gate -> test + build + build_macos + docs -> promote
+                                       |-> publish_docs
+                                       |-> github_release (also needs build and build_macos)
+                                       `-> PyPI waits for both publication jobs
 ```
+
+`test` is the slow one: about 90 minutes an arm on four arms, two of them on
+hosted Macs. It runs in a rehearsal as well, so a rehearsal is also the
+release's full test run on that commit.
+
+`build_macos` builds the macOS abi3 wheel on a hosted Mac. `promote`,
+`github_release` and PyPI all need it, so a macOS runner failure, or the account's
+macOS slots being busy, blocks or delays the whole release.
 
 `publish_docs` and `github_release` can run independently after promotion;
 this is not a strictly sequential transaction. `promote` first fast-forwards

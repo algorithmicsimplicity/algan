@@ -1,11 +1,12 @@
 name: MPS capability probe
 
-# Diagnostic/measurement companion to the ordinary MPS regression gate in
-# `test.yaml`. The required test matrix now sets `ALGAN_RENDER_DEVICE=mps` on
-# the Apple-silicon hosted runner, asserts that Algan actually resolves `mps`,
-# and runs the portable unit/fast scope with the normal locked published
-# `algan-quadrants` dependency. A regression no longer needs this workflow to
-# make an ordinary PR or release check red.
+# Diagnostic/measurement companion to the MPS regression arm in `test.yaml`.
+# That arm sets `ALGAN_RENDER_DEVICE=mps` on the Apple-silicon hosted runner,
+# asserts that Algan actually resolves `mps`, and runs the portable unit/fast
+# scope with the normal locked published `algan-quadrants` dependency. It runs
+# in the full scope only -- weekly, on dispatch, or on a `full-ci` pull request
+# -- so an ordinary pull request does not run it; a regression turns the next
+# weekly run red without needing this workflow.
 #
 # This workflow remains deliberately separate because its capability, timing,
 # control-arm and custom-wheel sections answer diagnostic questions rather than
@@ -58,11 +59,11 @@ on:
           - speed
           - render
       taichi_wheel_run_id:
-        description: "Run id of a taichi_build.yaml run whose patched wheel to install (blank = stock Taichi)"
+        description: "Run id of a taichi_build.yaml run whose patched Taichi wheel the render job installs and compiles with (blank = the locked Quadrants, as CI and users run)"
         type: string
         default: ""
       quadrants_wheel:
-        description: "Patched Quadrants wheel for the render job: a quadrants_build.yaml run id, or a release-asset URL (blank = the Taichi path above)"
+        description: "Patched Quadrants wheel for the render job: a quadrants_build.yaml run id, or a release-asset URL (blank = none)"
         type: string
         default: ""
       probes_only:
@@ -355,16 +356,15 @@ jobs:
       # not reach, so if that arm ever needs the same treatment it needs a
       # baseline instead.
       ALGAN_ALLOW_UNBASELINED_MACOS: ${{ startsWith(matrix.os, 'macos') && '1' || '0' }}
-      # Pinned to the compiler whose wheel this run installs, and it has to be
-      # pinned since Quadrants became the default compiler. By default this job
-      # is about *Taichi's* Metal path: the wheel it installs below is a
-      # patched `taichi` wheel, and `mps_zero_copy` reaches for
-      # `<compiler>.lang._ndarray.ExternalMetalNdarray`, which only a patched
-      # wheel has. Left on the default, the wheel would be installed and then
-      # never compiled against, and the arm would silently measure something
-      # else. With `quadrants_wheel` set the same job runs the Quadrants port
-      # (`quadrants_patches/`) instead, on a wheel from `quadrants_build.yaml`.
-      ALGAN_TAICHI_BACKEND: ${{ inputs.quadrants_wheel != '' && 'quadrants' || 'taichi' }}
+      # The compiler this run renders with. With no wheel input it is the
+      # locked Quadrants, which is what CI and users run and what renders on
+      # MPS. A `taichi_wheel_run_id` selects the historical patched Taichi
+      # control instead, and has to pin it: `mps_zero_copy` reaches for
+      # `<compiler>.lang._ndarray.ExternalMetalNdarray`, so left on the default
+      # the wheel would be installed and never compiled against. (This used to
+      # default to `taichi` with no wheel, where Algan refuses the MPS device
+      # at import, so a plain dispatch stopped before its first probe.)
+      ALGAN_TAICHI_BACKEND: ${{ (inputs.quadrants_wheel == '' && inputs.taichi_wheel_run_id != '') && 'taichi' || 'quadrants' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -426,11 +426,8 @@ jobs:
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
-      # The forked Taichi, when a build run is named. Without it the macOS arm
-      # runs stock Taichi, where the render device refuses to be MPS at all
-      # (`mps_zero_copy.unavailable_reason`) -- so a blank run id is not a
-      # weaker version of this job, it is a different one: it checks that an
-      # unpatched Mac falls back to the CPU instead of drawing a black frame.
+      # The forked Taichi, when a build run is named: the historical control.
+      # Without it the arm renders with the locked Quadrants.
       #
       # macOS only, and not because Linux merely does not need it: the artifact
       # is an `arm64-macos` wheel, so on the Linux arm `uv pip install` fails
@@ -508,6 +505,33 @@ jobs:
           "
           echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
 
+      # Algan's MPS renderer keeps its arena in native Metal storage, which
+      # PyTorch can import only from 2.13 on, and the lock holds the CPU and
+      # CUDA minimum. These are the versions the required MPS arm in test.yaml
+      # installs, for the same reason; torch_compile_ab.yaml has the run that
+      # found the gap. So the MPS arm runs a newer PyTorch than the CPU arms.
+      #
+      # After the wheel steps, so that the check below imports Algan against
+      # the compiler the arm will render with.
+      #
+      # `UV_NO_SYNC` because later steps go through `uv run`, whose sync would
+      # put the locked PyTorch straight back.
+      - name: Install the PyTorch the MPS renderer needs
+        if: ${{ matrix.device == 'mps' }}
+        run: |
+          uv pip install --python .venv/bin/python \
+            "torch==2.13.0" "torchaudio==2.11.0"
+          .venv/bin/python - <<'PYTHON'
+          import torch
+          from algan.rendering import mps_arena
+          assert torch.__version__.split("+", 1)[0] == "2.13.0", torch.__version__
+          tensor = mps_arena.allocate(4096)
+          tensor.fill_(7)
+          assert tensor[:8].cpu().tolist() == [7] * 8
+          print("MPS arm: native-owned arena; torch", torch.__version__)
+          PYTHON
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+
       # Reports the device Algan resolved and whether LaTeX is on PATH. On the
       # macOS arm this is also the first thing that would fail if `mps` were
       # refused outright, which is a different failure from a render that
@@ -540,7 +564,13 @@ jobs:
       # rather than exceptions, so this survives what the render does not --
       # and it runs first for exactly that reason: a render that aborts leaves
       # nothing behind, and this leaves a table.
+      #
+      # Taichi only. The probe compiles its cases with the literal `taichi`
+      # package and refuses to start under any other backend, so on the
+      # default (Quadrants) it would stop the job here, before the render that
+      # is the point of it. It runs when a patched Taichi wheel was asked for.
       - name: Probe what Metal will compile
+        if: ${{ env.ALGAN_TAICHI_BACKEND == 'taichi' }}
         run: uv run python benchmarks/_mps_metal_codegen_probe.py
 
       # And before that, the torch half. The sheet compaction is almost

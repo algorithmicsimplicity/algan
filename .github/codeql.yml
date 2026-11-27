@@ -1,4 +1,5 @@
-# Configuration for the CodeQL workflow (.github/workflows/codeql.yaml).
+# Configuration for the CodeQL workflow (.github/workflows/codeql.yaml), which
+# names it as its `config-file`; GitHub's default setup does not read this file.
 #
 # The query exclusions below were inherited from Manim and are kept on this
 # first enablement rather than re-derived, so that the initial alert set is

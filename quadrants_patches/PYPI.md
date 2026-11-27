@@ -13,8 +13,8 @@ wheels, cp310-cp314 on four platforms, like `1.3.0.post3` before it, the first
 revision with cp314 wheels (see "Python 3.14" below); the recorded post2
 publication on 2026-09-06 contained sixteen; post1 contained twelve. Check actual PyPI availability before changing the consumer pin or
 attempting a new publication. The
-`post` suffix identifies Algan's patched build of upstream Quadrants v1.3.0
-and keeps it distinct from the upstream `quadrants==1.3.0` release.
+`post` suffix identifies Algan's patched build of upstream Quadrants v1.3.3
+and keeps it distinct from the upstream `quadrants==1.3.3` release.
 
 ## One-time PyPI setup
 
@@ -277,9 +277,10 @@ published all twenty wheels from `master` (merge `1dbdb94d`).
 `uv lock --upgrade-package algan-quadrants --refresh-package algan-quadrants`,
 run with uv 0.7.9 against PyPI, changed one `(name, version)` pair:
 `algan-quadrants` 1.3.3.post1 became 1.3.3.post2. `uv lock --locked` passes
-with uv 0.4.25 (the `install-uv` pin) and 0.7.9. Do not regenerate the lock
-with a much newer uv: 0.13.4 rewrites the file to lock revision 5 and moves
-unrelated markers.
+with uv 0.4.25 (the `install-uv` pin at the time) and 0.7.9. Do not regenerate
+the lock with a much newer uv: 0.13.4 rewrites the file to lock revision 5 and
+moves unrelated markers. (The `install-uv` pin has since moved to 0.7.9, when
+the `dev` tools became a dependency group, which 0.4.25 cannot read.)
 
 The published wheel was checked on the RTX 5080 (Windows, cp313):
 `verify_ptx_cache.py run`, `verify_cuda_patches.py` and

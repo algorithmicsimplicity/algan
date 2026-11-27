@@ -8,8 +8,10 @@ compiler wheel, because synchronization can replace it.
 
 ## MPS arenas and the single-process CI gate
 
-The required MPS arm runs the complete portable suite in **one worker**, using
-Torch 2.13.0 and TorchAudio 2.11.0. CPU CI and the published dependency minimums
+The MPS arm runs the complete portable suite in **one worker**, using
+Torch 2.13.0 and TorchAudio 2.11.0. It runs weekly, on dispatch and on a pull
+request labelled `full-ci`, not on an ordinary pull request, so no MPS check is
+required to merge. CPU CI and the published dependency minimums
 remain unchanged; `uv.lock` is not overridden for CPU/CUDA. Reproduce the MPS
 job after installing the project with the Mac native build hook:
 
@@ -136,7 +138,7 @@ render:
 | `test_taichi_source_key.py` (one test, not the module) | Only `test_the_index_installs_on_this_compiler`, for the same reason as the warm-start row above: the source-keyed cache index (`algan/utils/taichi_source_key.py`) rests on Quadrants internals — `Kernel._try_load_fastcache`, `src_hasher`, `Program.load_fast_cache` — so a compiler bump turns it off from elsewhere, and an index that silently stands down is a warm frontend that quietly went from ~1 s back to ~12 s. The value rules, the closure walk, the hook control flow and the subprocess renders beside it are feature tests and stay out. No Taichi init, no render: it reads the version gate. |
 | `test_taichi_early_return.py` (one test, not the module) | Only `test_the_rewrite_is_live_on_this_compiler`, for the same reason as the two rows above: the early-`return` rewrite for inlined `@ti.func` bodies (`algan/utils/taichi_early_return.py`) wraps one compile-path function per compiler — `FuncBase.get_tree_and_ctx` on Quadrants, `kernel_impl._get_tree_and_ctx` on taichi — and is version-gated to them, so a compiler bump in `pyproject.toml`, a new backend in `taichi_compat`, or an env-var rename turns it off from elsewhere. A silent no-op looks like nothing at all until a shader stage that used to compile fails with the compiler's own "Return inside non-static if/for" message. It reads the gate and compiles one early-return func on the live compiler: about a second, no render. The forty-odd feature tests beside it hold the rewrite against real compilation and stay out. |
 | `test_transparent_output.py` (per test, not the whole module) | That a transparent render's background arrives **premultiplied** by its own alpha. Nothing in one place enforces it: `_prefill_background` writes the value, `wf_composite` adds it as `weight * bg` beside geometry that already carries its own coverage, and the tonemap divides alpha back out before encoding — three modules, no Python connecting them. So the contract breaks from the kernel side (a change to the unpremultiply, to the 5-channel layout, or to the composite arithmetic) and the failure is silent: a half-opaque background stored `encode(color / a) * a` and was simply too bright, wrong by more the more transparent it was, which no error and no opaque baseline can see. Only the premultiply tests are marked, including the one asserting opaque output does not move; the container/codec tests beside them fail only when their own map changes. Tensor assertions, no Taichi, no render: under half a second. |
-| `test_mps_known_failures.py` (one test, not the module) | Only `test_every_entry_names_a_test_that_exists`, and it is in for the same reason the AST walks above are: it trips on a change made **elsewhere**. `mps_known_failures.py` xfails by nodeid across eight other files, and an `xfail` on a nodeid nothing collects is a silent no-op — so renaming or deleting any of those tests takes its entry out of service, and the required MPS arm quietly starts claiming less than it looks like it claims. Reads the list and walks each named file's AST: no Taichi, no render, under a second. The reason-format check beside it moves only when the list itself does and stays out. |
+| `test_mps_known_failures.py` (one test, not the module) | Only `test_every_entry_names_a_test_that_exists`, and it is in for the same reason the AST walks above are: it trips on a change made **elsewhere**. `mps_known_failures.py` xfails by nodeid across eight other files, and an `xfail` on a nodeid nothing collects is a silent no-op — so renaming or deleting any of those tests takes its entry out of service, and the MPS arm quietly starts claiming less than it looks like it claims. Reads the list and walks each named file's AST: no Taichi, no render, under a second. The reason-format check beside it moves only when the list itself does and stays out. |
 | `test_batched_stills.py` (four tests) | Project checkpoints must capture their own authoring cursor and follow final timed-context rescaling before batched rendering. These contracts span Scene exports, Project scene execution, and timeline events; regressions in any of those can silently select the wrong frame. The author-then-render and relative-context-time checks use a stub renderer. `test_stills_of_the_same_mobs_share_batches_and_render_as_alone` renders: stills that share a render batch must each equal its alone render, so a choice made over a whole batch anywhere in projection, the merge or post-processing (chord counts, contour reuse, bounds, bloom) breaks it from outside the still writer. About 3 s warm. `test_a_still_batch_replays_each_frame_as_it_would_alone` holds the timeline's frame-by-frame replay (`replay_frame_by_frame`) to per-frame materialization with a shape-sensitive easing; a change to replay breaks it from outside the still writer. Tensor-only. The other pixel comparisons remain feature tests. |
 | `test_batch_preparation_devices.py` (two tests) | Only the render/encoder cleanup-order checks: `test_render_reclaims_arena_before_deferred_pressure_reset` and `test_video_defers_pressure_cleanup_until_encoder_and_frame_locals_are_gone`. They hold the contract between the render loop, prefetch-worker shutdown, scene GC protection, the memory arena, and deferred compiler resets. Changing any of those can reclaim a still-live buffer or retain an entire render arena. Stub renderers and memory hooks; no real render. |
 | `test_manim_compat_movement.py` (one test, parametrized for Axes and Star) | Only `test_translation_replays_existing_rows_without_a_geometry_morph`. Changes to Mob translation, timeline recording/replay, or timed contexts can desynchronize the Algan geometry and its backing Manim object, or rebuild the hierarchy during a simple move. It checks both representations at several timeline positions and preserves descendant identity; no render. The remaining compatibility feature tests stay out. |
@@ -166,9 +168,9 @@ anyway.
 | Per-feature behaviour: the indication animations, `become`, `wave_color`, `DecimalNumber`, materials, fragment shaders, neural nets, the Manim compatibility layer, glTF/FBX import | Breaks when that feature is worked on, not when anything else is | Its own file, plus `tests/full_renders/` for pixels |
 | Renderer internals: PN tessellation, surface autotune, bezier sampling, BVH refit, wavefront compaction, the frag-pid gate | Same, one subsystem each | Its own file |
 | Batch sizing, the arena, texture memory, post-processing memory | Cheap, but they only move when their own module does; the fast render exercises the real path | `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py`, … |
-| Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the full suite and CI catch before a push | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
+| Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the CI group catches on every pull request (they are pinned into it; see "Test groups") | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
 | The other six render scenes | ~2 minutes each | `tests/full_renders/` |
-| Brute-force tracer references | Taichi specialises a megakernel per test's geometry; tens of seconds each | `tests/unit_tests/test_raytracing_unit.py` |
+| Brute-force tracer references | None at present: the two in `test_raytracing_unit.py` (`test_blended_render_vs_brute_force`, `test_deep_translucent_stack`) skip on every machine, because the megakernel they drove was removed and they were never ported to the wavefront tracer | Nothing yet; `tests/fast` and `tests/full_renders` compare the tracer's pixels against baselines, not against a reference |
 | PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
 | Shadows, refraction, glow, Monte Carlo, glTF, camera moves | Another kernel variant or tracer path each | `tests/full_renders/` |
 
@@ -181,7 +183,7 @@ arms instead: Linux 3.10 and 3.14 with the `auto` render device, plus macOS
 CPU arm preserves the portability check. The MPS arm pins
 `ALGAN_RENDER_DEVICE=mps` and, before pytest, asserts both that torch exposes an
 MPS device and that Algan's own startup resolver returns `mps`; a silent CPU
-fallback therefore makes the required check fail. Both macOS arms use the
+fallback therefore makes the arm fail. Both macOS arms use the
 normal locked dependency graph and published `algan-quadrants` wheel. The
 `algan check` step then prints the resolved device/compiler along with whether
 LaTeX and FFmpeg are on `PATH`.
@@ -220,17 +222,21 @@ newly covered per second until each budget is spent.
 
 | Group | Command | Who runs it | Size |
 | --- | --- | --- | --- |
-| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~1100 tests, about two minutes on a runner, 86% of the lines the whole suite covers |
-| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~2400 tests, about nine minutes, effectively 100% of those lines |
+| CI | `<venv-python> -m pytest -q --group ci -n 1` | Every PR and every push to master, both required arms | ~1,700 tests with the pins and the fast suite (1,673 collected at the time of writing), about two minutes on a runner, 86% of the lines the whole suite covers |
+| Pre-PR | `<venv-python> -m pytest -q --group pre-pr` | You, before opening a pull request (not before every push to a branch) | ~3,200 tests with the pins (3,155 collected at the time of writing), about nine to ten minutes, effectively 100% of those lines |
 
 Each test is charged its measured duration plus a fixed per-test overhead
 (`PER_TEST_OVERHEAD`, what a runner actually spends per test beyond the
-reported time), so a thousand trivial tests are not mistaken for free. The CI
-group always contains the fast suite and a short named list (`ALWAYS_CI` in
-the script) of guards that read the source rather than run it, such as
-`test_every_builtin_spec_still_matches_a_live_kernel`, and of the regression
-tests of fixes: both cover almost no lines of their own, so the greedy pass
-would never choose them, yet they are what trips on a change made elsewhere.
+reported time), so a thousand trivial tests are not mistaken for free. Both
+groups always contain the fast suite: `--group` keeps every test marked
+`fast`, whether a list names it yet or not. The CI group also always contains a
+short named list (`ALWAYS_CI` in the script) of guards that read the source
+rather than run it, such as `test_every_builtin_spec_still_matches_a_live_kernel`
+and the repository audits (render coverage, the baseline pointer, the doc
+examples' static tier, the environment registry's source walks and the viewer's
+JavaScript tests), and of the regression tests of fixes: both cover almost no
+lines of their own, so the greedy pass would never choose them, yet they are
+what trips on a change made elsewhere.
 The pre-PR group always contains the whole CI group, plus `ALWAYS_PRE_PR`:
 regression tests too slow for the CI budget, such as the sheet resolve's
 kernel-against-oracle test. `--group ci` runs every test `ALWAYS_CI` names,
@@ -246,6 +252,12 @@ it costs a fraction of a second, and to `ALWAYS_PRE_PR` otherwise.
 **Regenerate** when a group drifts (a big new test file, a budget overrun),
 not on every change. `test_test_groups.py` fails when a listed test is renamed
 or deleted, and when a pin names no test; dropping that line by hand is fine.
+It also fails when a test file under `tests/unit_tests` or `tests/fast` has no
+test in the pre-PR group (listed, pinned or marked `fast`), so a **new test
+file needs a pin** until the next regeneration measures it: its whole
+`<path>::` in `ALWAYS_CI` if the file runs in a second or two, otherwise a
+representative subset in `ALWAYS_PRE_PR`. The files the last measurement left
+out are frozen in that test's `NOT_IN_GROUPS`, which only shrinks.
 To regenerate, measure on a warm kernel cache:
 
 ```bash
@@ -263,7 +275,9 @@ container comfortably holds.
 tests/fast` on all four arms with a cold kernel cache, plus the Sphinx build
 and the packaging jobs. `tests/full_renders` and `tests/path_traced` are not in
 it: their baselines are per machine (see "Baselines are per machine too"
-below), so they gate locally. A PR labelled `full-ci` gets the same run.
+below), so they gate locally. A PR labelled `full-ci` gets the same run. When
+the scheduled Test run fails, its last job opens an issue titled "The weekly
+full test run failed", or comments on the one still open.
 
 ## The full suite
 
@@ -714,7 +728,11 @@ Organised by subsystem. The files worth knowing about (★ = in the fast suite):
   batch sizing and the arena. Cheap, and they guard a component that silently
   degrades rather than failing — but they only move when their own module does,
   and the fast suite's render exercises the real path.
-- `test_raytracing_unit.py` — brute-force references for the tracer. Expensive.
+- `test_raytracing_unit.py` — the Morton codes and the STBVH's structure. Its two
+  brute-force references for the tracer skip on every machine: the megakernel they
+  drove was removed, and they have not been ported to the wavefront tracer
+  (`algan/rendering/raytracing/tracer.py`), although their oracle,
+  `_reference_blend`, is still there.
 - `test_render_truncations.py` — the instrument on the render path's four fixed
   ceilings: what each reports, that a ceiling warns once per render rather than
   once per batch, and two scenes built to exceed one. A feature test — it breaks

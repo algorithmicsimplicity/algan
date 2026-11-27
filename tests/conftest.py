@@ -139,8 +139,9 @@ _register_dejavu_where_missing()
 # The history is worth knowing. The budget was 120 s, then 150 s, while the fast
 # suite was *everything not marked slow* and grew with every test anyone added.
 # Curating it by hand (only ``fast``-marked tests run) took it from 910 of the
-# 1038 collected tests to 191, of which 190 are behavioural and one is the
-# render.
+# 1038 collected tests to 191 at the time, of which 190 were behavioural and
+# one was the render. It has grown since (742 collected tests from 334 test
+# functions on 2026-11-26).
 # The render is now most of the cost -- it was measured at ~50 s of the old
 # 112-147 s suite on CUDA -- so the budget is set to leave it room to pay a
 # kernel compile. Raising it again is a deliberate trade of loop time for
@@ -306,12 +307,32 @@ def _collected_suite_dirs(items) -> list[Path]:
     return sorted(dirs)
 
 
+def _log_path(config, suite_dir: Path) -> Path | None:
+    """Where this process logs a suite's run, or None for no log.
+
+    ``--collect-only`` runs nothing, and opening the log truncates it, so a
+    collection would wipe the log of the last real run for nothing. Under
+    ``pytest-xdist`` each worker is a process of its own that opens the log
+    with ``"w"``: with more than one, they would truncate each other's, so
+    each gets a file named after it. ``-n 1``, which is how CI and the docs
+    run the suite, keeps the one ``pytest.log``.
+    """
+    if config.option.collectonly:
+        return None
+    worker = getattr(config, "workerinput", None)
+    if worker is not None and worker.get("workercount", 1) > 1:
+        return suite_dir / f"pytest.{worker['workerid']}.log"
+    return suite_dir / "pytest.log"
+
+
 def pytest_collection_finish(session):
     """Open a live log per collected suite, before the first test runs."""
     if _LOG_FILES:
         return
     for suite_dir in _collected_suite_dirs(session.items):
-        _LOG_FILES.append(_setup_log_piping(suite_dir / "pytest.log", session.config))
+        path = _log_path(session.config, suite_dir)
+        if path is not None:
+            _LOG_FILES.append(_setup_log_piping(path, session.config))
     if not _LOG_FILES:
         return
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -431,6 +452,23 @@ def _test_group_pins(name: str) -> tuple[str, ...]:
     return module.ALWAYS_CI + module.ALWAYS_PRE_PR
 
 
+def _test_group_keeps(item, members: set[str], pins: tuple[str, ...]) -> bool:
+    """Whether ``--group`` runs ``item``: listed, pinned, or in the fast suite.
+
+    The fast suite is in every group by definition, and it has to be decided
+    here rather than in the lists. The lists seed it only when they are
+    regenerated, so a test marked ``fast`` since then -- a new parametrized
+    case of an AST walk over the kernel modules, say -- ran on no pull request
+    at all: the greedy pass never picks a test that covers no new lines, and
+    the guards in the fast suite cover almost none.
+    """
+    return (
+        item.nodeid in members
+        or item.nodeid.startswith(pins)
+        or item.get_closest_marker("fast") is not None
+    )
+
+
 def _known_mps_failures():
     """``tests/mps_known_failures.py``'s table, loaded by path.
 
@@ -451,9 +489,10 @@ def _known_mps_failures():
 def _mark_known_mps_failures(items):
     """xfail the tests ``tests/mps_known_failures.py`` names, on MPS only.
 
-    The macOS MPS arm of ``test.yaml`` is a required check and the port is not
-    finished, so the arm needs a way to be honest about what is outstanding
-    without either going red on every PR or hiding it. ``xfail(strict=True)``
+    The macOS MPS arm of ``test.yaml`` (the weekly and ``full-ci`` scope) is a
+    test arm like any other and the port is not finished, so the arm needs a
+    way to be honest about what is outstanding without either going red on
+    every run or hiding it. ``xfail(strict=True)``
     is that way: the listed tests still run and still report, the summary
     counts them, and a fix that makes one pass turns the arm red with
     ``XPASS(strict)`` until its line is removed. The list, and why each entry
@@ -499,7 +538,7 @@ def pytest_collection_modifyitems(config, items):
         pins = _test_group_pins(group)
         selected, deselected = [], []
         for item in items:
-            keep = item.nodeid in members or item.nodeid.startswith(pins)
+            keep = _test_group_keeps(item, members, pins)
             (selected if keep else deselected).append(item)
         if deselected:
             config.hook.pytest_deselected(items=deselected)
