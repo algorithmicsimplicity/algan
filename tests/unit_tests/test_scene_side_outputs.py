@@ -277,6 +277,61 @@ def test_show_frame_takes_a_negative_at_as_an_offset_like_save_frame(
         pyplot.close("all")
 
 
+def _record_show_frame_render(scene, monkeypatch):
+    """Stub the render and the plot; return what ``get_frames`` was asked."""
+    from algan.utils import plotting_utils
+
+    asked = []
+
+    def get_frames(start, end, **kwargs):
+        asked.append((start, scene.video_settings.resolution, scene.frames_per_second))
+        return iter(())
+
+    monkeypatch.setattr(scene, "get_frames", get_frames)
+    monkeypatch.setattr(plotting_utils, "plot_tensor", lambda *a, **k: None)
+    return asked
+
+
+def test_show_frame_renders_at_the_settings_save_frame_would_use(scene, monkeypatch):
+    """REGRESSION. ``show_frame`` rendered at the Scene's construction-time
+    snapshot of ``SETTINGS.video``: after ``SETTINGS.video.set(SMOKE_TEST)``
+    it drew 864x486 frames at 15 fps, and turned ``at=1.0`` into frame 15,
+    where ``save_frame`` drew 32x32 at 2 fps and frame 2.
+    """
+    pytest.importorskip("matplotlib")
+    from algan import SETTINGS
+
+    Square().spawn(animate=False)
+    before = scene.video_settings
+    SETTINGS.video.set(SMOKE_TEST)
+    asked = _record_show_frame_render(scene, monkeypatch)
+
+    scene.show_frame(at=1.0)
+    assert asked == [
+        (
+            round(1.0 * SMOKE_TEST.frames_per_second),
+            SMOKE_TEST.resolution,
+            SMOKE_TEST.frames_per_second,
+        )
+    ]
+    # The Scene's own settings are put back afterwards.
+    assert scene.video_settings == before
+    assert not scene._video_settings_explicit
+
+
+def test_show_frame_without_matplotlib_says_how_to_get_it(scene, monkeypatch):
+    """REGRESSION. matplotlib is not a runtime dependency, and ``show_frame``
+    failed with a bare ``ModuleNotFoundError`` -- after setting up a render.
+    """
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    monkeypatch.setitem(sys.modules, "matplotlib.pyplot", None)
+    Square().spawn(animate=False)
+    asked = _record_show_frame_render(scene, monkeypatch)
+    with pytest.raises(AlganConfigurationError, match="pip install matplotlib"):
+        scene.show_frame()
+    assert asked == []
+
+
 def _write_silence(path, seconds):
     from scipy.io import wavfile
 

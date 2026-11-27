@@ -173,6 +173,16 @@ ALWAYS_CI = (
     "tests/unit_tests/test_bezier_header_mps_gather.py::test_a_point_inside_a_circuit_reads_inside_through_the_mps_integer_gather",
     "tests/unit_tests/test_bezier_header_mps_gather.py::test_the_bin_intervals_survive_the_mps_repeat_interleave",
     "tests/unit_tests/test_mps_friendly.py::test_advanced_indexing_is_exact_above_the_mps_ceiling",
+    # Mob and Scene authoring guards that build nothing heavier than a Square:
+    # the grid's rows, placement arguments, a failed set, the Scene stack and
+    # show_frame's settings.
+    "tests/unit_tests/test_group_layout.py::",
+    "tests/unit_tests/test_mob_layout_validation.py::",
+    "tests/unit_tests/test_scene_stack.py::",
+    "tests/unit_tests/test_mob_set_guards.py::test_a_failed_set_non_recursive_still_lets_transforms_carry_children",
+    "tests/unit_tests/test_mob_set_guards.py::test_detaching_or_morphing_an_unspawned_mob_leaves_it_unspawned",
+    "tests/unit_tests/test_scene_side_outputs.py::test_show_frame_renders_at_the_settings_save_frame_would_use",
+    "tests/unit_tests/test_scene_side_outputs.py::test_show_frame_without_matplotlib_says_how_to_get_it",
     # More of the same, and the ops MPS gets wrong around it, emulated on the
     # CPU and, on an Apple machine, run through the real op: a BVH level's
     # ranges and the sliver strips, the depth-order scan's owners, the depth
@@ -417,6 +427,12 @@ ALWAYS_PRE_PR = (
     # sample keys inside one 4K frame.
     "tests/unit_tests/test_sheet_chain_kernels.py::test_the_compaction_keeps_neighbouring_pixels_apart_past_the_mps_gather_ceiling",
     "tests/unit_tests/test_sheet_chain_kernels.py::test_the_reference_depth_gate_keeps_its_samples_apart_in_a_4k_frame",
+    # Mob guards that build a Sphere or a Cube, whose first construction
+    # compiles: a set() only another Mob could take, shader setup under a
+    # spawned member, and a geometry flag changed after spawn.
+    "tests/unit_tests/test_mob_set_guards.py::test_set_refuses_an_attribute_only_another_mob_has",
+    "tests/unit_tests/test_materials.py::test_shader_setup_on_unspawned_group_with_spawned_members_raises",
+    "tests/unit_tests/test_geometry_declarations.py::",
     # More integer gathers MPS rounds past 2**24, where a test takes a render
     # or a header past 2**24 words: four squares drawn as circuits 65,536 on,
     # a near cut's mask word, the Bezier header's bin offsets, and the

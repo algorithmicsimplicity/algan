@@ -27,6 +27,8 @@ import difflib
 import functools
 import inspect
 import operator
+import sys
+import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable
 
@@ -63,7 +65,7 @@ from algan.animation_timeline.animation_contexts import (
 from algan.animation_timeline.timeline import _opt_disabled
 from algan.constants.color import Color, _channel_count_error, _is_channel, to_color
 from algan.constants.spatial import *
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganWarning, _in_algan
 from algan.geometry.geometry import (
     get_rotation_between_bases,
     invert_row_basis,
@@ -121,6 +123,68 @@ class _GuardedMethod:
 
     def __set__(self, obj, value):
         raise AttributeError(self._message)
+
+
+#: The plain geometry declarations every Mob carries (see the class
+#: attributes of the same names on :class:`Mob`).
+_GEOMETRY_DECLARATIONS = (
+    "two_sided",
+    "closed_shell",
+    "casts_shadows",
+    "receives_shadows",
+    "casts_caustics",
+)
+
+
+class _GeometryDeclaration:
+    """A plain per-Mob flag that warns when a script changes it after spawn.
+
+    The renderer reads these flags when it builds a Mob's render primitives,
+    so the value a flag holds then applies to every frame of the Mob's life,
+    including the frames before the assignment: ``sphere.casts_shadows =
+    False`` written after ``Scene.wait(3)`` reads as "no shadow from here on"
+    and took the shadow away from frame 0, without a word. A data descriptor
+    sees the assignment while reads stay what they were -- the instance's own
+    value, else the class's.
+
+    It warns rather than raises, because a script that sets one after
+    spawning and means the whole video is valid and renders as it always
+    did. Only an assignment written outside Algan is checked: the library
+    sets these on spawned Mobs on purpose (``become`` adopts its target's at
+    the morph's end, and clones copy them), and checking only the caller's
+    file keeps that path, and every read, as cheap as a plain attribute's.
+    """
+
+    __slots__ = ("_name", "_default")
+
+    def __init__(self, name, default):
+        self._name = name
+        self._default = default
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self._default
+        return obj.__dict__.get(self._name, self._default)
+
+    def __set__(self, obj, value):
+        name = self._name
+        if (
+            bool(value) != bool(obj.__dict__.get(name, self._default))
+            and not _in_algan(sys._getframe(1).f_code.co_filename)
+            and obj.is_spawned_in_subtree()
+        ):
+            warnings.warn(
+                f"{obj._describe()}.{name} was changed after the Mob was "
+                f"spawned. {name} is read when the video renders, so the new "
+                "value applies to every frame, including the ones recorded "
+                "before this line. Set it before spawn(); to change it partway "
+                "through, despawn the Mob and spawn a clone made inside "
+                "`with Off(): clone = mob.clone(spawn=False)` that has the new "
+                "value.",
+                AlganWarning,
+                stacklevel=2,
+            )
+        obj.__dict__[name] = value
 
 
 def _validate_opacity(value, *, given=None, cast_from=_NO_SOURCE):
@@ -416,8 +480,9 @@ class Mob(
     ----------
     two_sided, closed_shell, casts_shadows, receives_shadows, casts_caustics
         Plain (non-animatable) geometry declarations, documented individually
-        below. All five are read once when the Mob is spawned, so they must be
-        set before :meth:`~.Animatable.spawn`.
+        below. All five are read when the video renders, so the value each
+        holds then applies to every frame: set them before
+        :meth:`~.Animatable.spawn`. Changing one on a spawned Mob warns.
 
     Examples
     --------
@@ -463,7 +528,7 @@ class Mob(
     #: Set it ``True`` on an instance to get the old two-sided lighting back
     #: (an open ``Cone`` you want lit inside, say); it must be set before the
     #: Mob is spawned, since the render primitive reads it once.
-    two_sided = True
+    two_sided = _GeometryDeclaration("two_sided", True)
 
     #: Whether ``get_render_primitives`` returns geometry belonging to this
     #: Mob's DESCENDANTS as well as its own. Almost nothing does: a
@@ -527,7 +592,7 @@ class Mob(
     #: bounce loop that shades reflections carries no surface identity. The same
     #: is true of any render at ``samples_per_pixel > 1``, which routes to the
     #: Monte Carlo tracer instead.
-    closed_shell = False
+    closed_shell = _GeometryDeclaration("closed_shell", False)
 
     #: Whether this Mob's geometry blocks light on its way from a light source
     #: to another surface -- whether it casts a shadow. ``True`` (the default)
@@ -546,7 +611,7 @@ class Mob(
     #: Like ``two_sided``, set it before the Mob is spawned -- the render
     #: primitive reads it once -- and note that it is a plain attribute, not an
     #: animatable one: it cannot change over the course of a render.
-    casts_shadows = True
+    casts_shadows = _GeometryDeclaration("casts_shadows", True)
 
     #: Whether this Mob's surfaces are darkened by shadows cast onto them.
     #: ``True`` (the default) is what every Mob did before the flag existed.
@@ -573,7 +638,7 @@ class Mob(
     #: belongs to that pipeline's own parameters -- the same reason a custom
     #: pipeline is never asked about ``two_sided``. ``casts_shadows`` has none
     #: of these exceptions: all three still cast.
-    receives_shadows = True
+    receives_shadows = _GeometryDeclaration("receives_shadows", True)
 
     #: Whether this Mob's refracting surfaces focus light into caustics when
     #: the path tracer renders them with shadow caustics on
@@ -594,7 +659,18 @@ class Mob(
     #: opt-out anywhere above applies -- so ``group.casts_caustics = False``
     #: covers a whole group. Set it before the Mob is spawned; it is a plain
     #: attribute, not an animatable one.
-    casts_caustics = True
+    casts_caustics = _GeometryDeclaration("casts_caustics", True)
+
+    def __init_subclass__(cls, **kwargs):
+        # A subclass declares its own default in its body (``two_sided =
+        # False`` on the built-in solids), which as a plain class attribute
+        # would hide the descriptor above it and with it the after-spawn
+        # check. It becomes a descriptor with that default instead.
+        super().__init_subclass__(**kwargs)
+        for name in _GEOMETRY_DECLARATIONS:
+            value = cls.__dict__.get(name)
+            if isinstance(value, bool):
+                setattr(cls, name, _GeometryDeclaration(name, value))
 
     # Backing store for :attr:`pass_index`; ``None`` until a value is set.
     _pass_index = None
@@ -2620,7 +2696,9 @@ class Mob(
         ---------
         Not animated: the swap happens instantly, inside ``Off()``, and the
         viewer sees no discontinuity. Everything recorded afterwards animates
-        from the Mob's state at this moment.
+        from the Mob's state at this moment. A Mob is re-spawned at this
+        moment only if it, or something below it, was spawned; one that was
+        never spawned stays unspawned.
 
         Returns
         -------
@@ -2628,6 +2706,10 @@ class Mob(
             This Mob, so calls can be chained.
         """
         detach_time = self.animation_manager.context.timespan.current_time
+        # Re-spawned below only if something here was on screen: a Mob that
+        # was never spawned has no history to hand over, and spawning it here
+        # put it on screen -- which is what ``become`` on an unspawned Mob did.
+        was_spawned = self.is_spawned_in_subtree()
         with (
             Off(animation_manager=self.animation_manager),
             NoExtra(priority_level=1, animation_manager=self.animation_manager),
@@ -2694,7 +2776,8 @@ class Mob(
                 clone._pass_identity = orig
             clone_mob.despawn(animate=False)
             self.refresh_history()
-            self.spawn(animate=False)
+            if was_spawned:
+                self.spawn(animate=False)
             timeline.register_updater_history_split(descendant_map)
             return self
 
@@ -2838,16 +2921,42 @@ class Mob(
         # ``set`` a set copy of the class's whole settable namespace.
         class_settable = self._class_settable_property_names()
         own = self.animatable_attrs
-        # attr_to_timeline is Scene-wide, so it also accepts an attribute owned
-        # by some other Mob in the Scene (where setting it does nothing). It
-        # gates the check as it always has, but is not advertised in the message.
-        timelines = self.scene.timeline_manager.attr_to_timeline
         for p in property_names:
             # The membership tests first: ``hasattr`` on an animatable
             # attribute runs its getter, a timeline read per name, which every
             # ``set`` paid only to learn what the registry already said.
-            if p in class_settable or p in own or p in timelines or hasattr(self, p):
+            if p in own:
                 continue
+            member = getattr(type(self), p, None) if p in class_settable else None
+            fset = getattr(member, "fset", None)
+            if member is not None and not getattr(
+                fset, "_forwards_to_set_animated_attribute", False
+            ):
+                # A property the class itself defines.
+                continue
+            # What is left is a name some other Mob registered: a generated
+            # property attached to this class by another instance (a material
+            # on one Sphere puts ``roughness`` on every Sphere), or any name
+            # in the Scene-wide timeline registry. Accepting those let
+            # ``square.set(roughness=0.9)`` record a second of nothing once
+            # any Mob in the Scene had a material. A write reaches the Mobs
+            # that animate the name, which is this Mob's subtree unless the
+            # write is non-recursive (then it is this Mob, ``own``, above).
+            if not self._prevent_recursive_sets and any(
+                p in d.animatable_attrs for d in self.get_descendants()
+            ):
+                continue
+            if member is None and hasattr(self, p):
+                continue
+            if member is not None or p in self.scene.timeline_manager.attr_to_timeline:
+                raise AttributeError(
+                    f'"{p}" is not an animatable attribute of {self._describe()}'
+                    + ("" if self._prevent_recursive_sets else " or its members")
+                    + ": another Mob in the Scene has it, registered there by "
+                    "a material, a shader or register_attrs_as_animatable(). "
+                    "Give this Mob the same material or shader before spawning "
+                    "it, or set the attribute on the Mob that has it."
+                )
             settable = self._settable_property_names()
             suggestion = difflib.get_close_matches(p, sorted(settable), n=1)
             hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
@@ -2883,8 +2992,13 @@ class Mob(
         """
         prs = self._prevent_recursive_sets
         self._prevent_recursive_sets = True
-        self.set(**kwargs)
-        self._prevent_recursive_sets = prs
+        # Restored however ``set`` exits: left on after a caught error (a
+        # misspelt name, an out-of-range value), every later transform of
+        # this Mob would silently stop carrying its children.
+        try:
+            self.set(**kwargs)
+        finally:
+            self._prevent_recursive_sets = prs
         return self
 
     def set(self, **kwargs) -> Mob:
@@ -2959,10 +3073,12 @@ class Mob(
         with Seq(animation_manager=self.animation_manager):
             prs = self._prevent_recursive_sets
             self._prevent_recursive_sets = True
-            with Off(animation_manager=self.animation_manager):
-                self.opacity = 0
-            self.opacity = opacity
-            self._prevent_recursive_sets = prs
+            try:
+                with Off(animation_manager=self.animation_manager):
+                    self.opacity = 0
+                self.opacity = opacity
+            finally:
+                self._prevent_recursive_sets = prs
 
     # Spawning a subtree records this entrance once for the whole set rather
     # than once per Mob (Animatable._collated_fade_in). The marker is what

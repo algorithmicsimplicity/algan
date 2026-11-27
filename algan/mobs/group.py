@@ -622,9 +622,11 @@ class Group(Mob):
         Parameters
         ----------
         num_rows
-            Number of rows; columns follow from the member count. Defaults to
-            ``None``, meaning ``ceil(sqrt(len(mobs)))`` -- as square a grid as the
-            count allows.
+            Number of rows; columns follow from the member count. When the
+            count does not fill that many rows (4 members in 3 rows need only
+            2 columns, so fill 2 rows), the grid has, and is centred on, the
+            rows it fills. Defaults to ``None``, meaning
+            ``ceil(sqrt(len(mobs)))`` -- as square a grid as the count allows.
         row_direction
             Non-zero direction along which a row runs; its magnitude is ignored.
             Defaults to ``RIGHT``.
@@ -691,6 +693,10 @@ class Group(Mob):
         num_cols = len(self.children) // num_rows
         if num_rows * num_cols < len(self.children):
             num_cols += 1
+        # The rows that columns of that length actually fill: 4 members asked
+        # for 3 rows take 2 columns, and so 2 rows. Sized and centred for the
+        # 3 asked for, the grid sat half a row off the Group's location.
+        num_rows = math.ceil(len(self.children) / num_cols)
         # Dimensions do not change until the moves below. Query each member
         # once per direction, including when tight cells reuse those lengths.
         row_lengths = [m.get_length_in_direction(row_direction) for m in self.children]

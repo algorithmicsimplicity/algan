@@ -164,18 +164,17 @@ class MobLayoutMixin:
         torch.Tensor
             All boundary points concatenated, shape ``(*, N, 3)``.
         """
-        num_children = len(self.children)
-        if num_children == 0:
+        # Filtered before counting: the one-child shortcut used to measure an
+        # only child even when it was excluded, and a Mob whose children were
+        # all excluded concatenated nothing and raised. With none left, the
+        # Mob is measured by its own points, as a childless one is.
+        children = [c for c in self.children if not c.exclude_from_boundary]
+        if not children:
             return self.get_boundary_points()
-        elif num_children == 1:
-            return self.children[0].get_boundary_points_recursive()
+        elif len(children) == 1:
+            return children[0].get_boundary_points_recursive()
         return torch.cat(
-            [
-                child.get_boundary_points_recursive()
-                for child in self.children
-                if not child.exclude_from_boundary
-            ],
-            -2,
+            [child.get_boundary_points_recursive() for child in children], -2
         )
 
     def _select_in_direction(self, points, direction):
@@ -186,19 +185,16 @@ class MobLayoutMixin:
 
     def _edge_point_recursive(self, direction: torch.Tensor) -> torch.Tensor:
         """The outermost point of this Mob's whole hierarchy along a direction."""
-        num_children = len(self.children)
-        if num_children == 0:
+        # Excluded children are dropped before counting; see
+        # get_boundary_points_recursive.
+        children = [c for c in self.children if not c.exclude_from_boundary]
+        if not children:
             return self._select_in_direction(self.get_boundary_points(), direction)
-        elif num_children == 1:
-            return self.children[0]._edge_point_recursive(direction)
+        elif len(children) == 1:
+            return children[0]._edge_point_recursive(direction)
         return self._select_in_direction(
             torch.cat(
-                [
-                    child._edge_point_recursive(direction)
-                    for child in self.children
-                    if not child.exclude_from_boundary
-                ],
-                -2,
+                [child._edge_point_recursive(direction) for child in children], -2
             ),
             direction,
         )
@@ -325,7 +321,7 @@ class MobLayoutMixin:
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
-        point = cast_to_tensor(point).to(
+        point = cast_to_direction("point", point).to(
             device=self.location.device, dtype=self.location.dtype
         )
         return self.move(point - self.get_center())

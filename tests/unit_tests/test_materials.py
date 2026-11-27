@@ -481,6 +481,42 @@ def test_set_material_after_spawn_raises():
     raise AssertionError("expected ModifiedProtectedAttributeError after spawn")
 
 
+def test_shader_setup_on_unspawned_group_with_spawned_members_raises():
+    # A Group built before its members spawn stays unspawned itself, but it
+    # is on screen through them. Checking only the Group let each spawned
+    # member record its material parameters, colour and opacity as
+    # one-second animations (minutes of added video) while the shader, read
+    # at render time, applied from frame 0 anyway.
+    import pytest
+
+    from algan import Cube, Group, Scene, Sphere
+    from algan.animatable_base.mob import ModifiedProtectedAttributeError
+    from algan.rendering.shaders.fragment_shaders import cosine_color
+
+    with Scene() as scene:
+        a, b = Sphere(), Cube()
+        g = Group(a, b)
+        b.spawn(animate=False)
+        assert not g.is_spawned()
+        end = scene.animation_manager.context.timespan.current_time
+        for call in (
+            lambda: g.set_material(MeshStandardMaterial(metalness=1.0)),
+            lambda: g.set_shader(ms.phong_shader),
+            lambda: g.set_fragment_shader(cosine_color),
+        ):
+            with pytest.raises(ModifiedProtectedAttributeError, match="Cube"):
+                call()
+        assert scene.animation_manager.context.timespan.current_time == end
+        assert a.shader is None
+        assert b.shader is None
+
+        # A wholly unspawned Group is still configurable.
+        c, d = Sphere(), Cube()
+        Group(c, d).set_material(MeshStandardMaterial(metalness=1.0))
+        assert c.material is not None
+        assert d.material is not None
+
+
 # ---------------------------------------------------------------------------
 # Warnings for unsupported properties
 # ---------------------------------------------------------------------------

@@ -98,7 +98,11 @@ class SceneManager(Singleton):
             if self._scene_stack[-1] is scene:
                 return scene
             raise RuntimeError(
-                "Cannot reactivate a Scene covered by another active Scene"
+                "Cannot reactivate a Scene covered by another active Scene. "
+                "Scene() makes itself current on construction, so a Scene "
+                "created after this one sits above it. Create each Scene in "
+                "its own `with Scene() as scene:` block, or enter Scenes in "
+                "the reverse order of their creation."
             )
         self._scene_stack.append(scene)
         scene._terminated = False
@@ -141,6 +145,24 @@ class SceneManager(Singleton):
         self._scene_stack.pop()
         scene._terminated = True
         return scene
+
+    def end_block(self, scene):
+        """Pop ``scene`` at the end of its ``with`` block.
+
+        ``Scene()`` pushes itself on construction, so a Scene built inside the
+        block (a helper making one for its own use) is still above ``scene``
+        when the block ends. Nothing entered it, so nothing else will ever pop
+        it: it is popped here, with ``scene``. A Scene above whose own block
+        is still open is a real ordering mistake, and :meth:`terminate`
+        refuses it as before.
+        """
+        stack = self._scene_stack
+        if scene in stack:
+            above = stack[stack.index(scene) + 1 :]
+            if not any(getattr(item, "_context_depth", 0) for item in above):
+                for item in reversed(above):
+                    self.terminate(item)
+        return self.terminate(scene)
 
     @classmethod
     def reset(cls):

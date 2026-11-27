@@ -439,22 +439,30 @@ class MobOrientationMixin:
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``with_axis`` is not one of the three axis names.
+            If ``with_axis`` is not one of the three axis names, or
+            ``direction`` is zero.
 
         See Also
         --------
         :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
             Aim at a point rather than along a direction.
         """
+        direction = cast_to_direction("direction", direction)
+        # A zero direction gives a zero rotation axis, which rotate() refuses
+        # as "axis must be a non-zero direction" -- an argument the caller of
+        # look() never passed.
+        if bool((direction == 0).all(-1).any()):
+            raise AlganConfigurationError(
+                "look() needs a non-zero direction to face, such as RIGHT or "
+                f"UP + OUT; got {direction.tolist()!r}"
+            )
         # Get the rotation parameters (angle and axis) needed to align the current local axis
         # with the target direction.
         rotation_angle_degrees, rotation_axis = get_rotation_between_3d_vectors(
             unsquish(self.normalized_basis, -1, 3)[
                 ..., self._resolve_axis(with_axis), :
             ],  # Current orientation of specified axis
-            F.normalize(
-                cast_to_direction("direction", direction), p=2, dim=-1
-            ),  # Normalized target direction
+            F.normalize(direction, p=2, dim=-1),  # Normalized target direction
             dim=-1,
         )
         # Apply the rotation
@@ -492,8 +500,14 @@ class MobOrientationMixin:
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``with_axis`` is not one of the three axis names.
+            If ``with_axis`` is not one of the three axis names, or ``point``
+            is the Mob's own location.
         """
         # Calculate the direction vector from the Mob's current location to the target point
         direction_to_look = cast_to_direction("point", point) - self.location
+        if bool((direction_to_look == 0).all(-1).any()):
+            raise AlganConfigurationError(
+                f"look_at() cannot face {self._describe()} at its own location: "
+                "the point to face must be somewhere else"
+            )
         return self.look(direction_to_look, with_axis=with_axis)
