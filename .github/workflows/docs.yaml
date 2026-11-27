@@ -22,9 +22,11 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same PR.
+# Cancel superseded runs on the same PR, or on the same branch for pushes. The
+# schedule, a manual dispatch and merge-queue runs are never cancelled; see
+# test.yaml.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.head_ref || (github.event_name == 'push' && github.ref) || github.run_id }}
   cancel-in-progress: true
 
 jobs:

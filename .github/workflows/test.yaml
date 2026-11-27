@@ -48,17 +48,21 @@ on:
 permissions:
   contents: read
 
-# One run per pull request: a new push (or the `full-ci` label) cancels the
-# run in flight, whose answer is about a commit nobody is waiting on any more.
-# Pushes to master and stable, and merge-queue runs, are keyed by run id and so
-# never cancel one another. A label other than `full-ci` gets a group of its
-# own; it starts nothing, and must not cancel the run that is going.
+# One run per pull request, and one per branch for pushes: a new push (or the
+# `full-ci` label) cancels the run in flight, whose answer is about a commit
+# nobody is waiting on any more. That includes master and stable, where a burst
+# of merges would otherwise run CI once per merge, each run holding one of the
+# account's five macOS slots, when only the last answer is read. The weekly
+# schedule, a manual dispatch, a call from Release and merge-queue runs are
+# keyed by run id, so a push never cancels them and they never cancel one
+# another. A label other than `full-ci` gets a group of its own; it starts
+# nothing, and must not cancel the run that is going.
 #
 # The literal `Test`, not `github.workflow`: called from Release, that name is
 # the caller's, and a group shared with the caller's other jobs is not this
 # workflow's to cancel.
 concurrency:
-  group: Test-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
+  group: Test-${{ github.head_ref || (github.event_name == 'push' && github.ref) || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
