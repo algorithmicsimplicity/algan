@@ -554,10 +554,26 @@ def hold_cuda_allocator_to_dedicated_memory():
         return False
     index = device.index if device.index is not None else torch.cuda.current_device()
     total_bytes = torch.cuda.get_device_properties(index).total_memory
-    if torch.cuda.memory_allocated(index) > _CUDA_HOLD_FOREIGN_SHARE * total_bytes:
+    live_bytes = torch.cuda.memory_allocated(index)
+    from algan.logging.logger import get_logger
+
+    if live_bytes > _CUDA_HOLD_FOREIGN_SHARE * total_bytes:
+        # Said at debug level: a render left unheld is otherwise
+        # indistinguishable from one on a build without the hold.
+        get_logger().debug(
+            "Not holding torch's CUDA allocator for this render: the process "
+            "already holds %.0f MiB of cuda:%d in live tensors.",
+            live_bytes / 2**20,
+            index,
+        )
         return False
     torch.cuda.set_per_process_memory_fraction(fraction, index)
     _CUDA_ALLOCATOR_HELD = (torch.device("cuda", index), fraction)
+    get_logger().debug(
+        "Holding torch's CUDA allocator to %.0f MiB of cuda:%d for this render.",
+        fraction * total_bytes / 2**20,
+        index,
+    )
     return True
 
 
