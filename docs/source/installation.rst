@@ -15,13 +15,13 @@ like any other Python package:
 This will install a working version of Algan for CPU, however
 depending on your operating system it may be missing some
 features such as GPU acceleration, LaTeX type setting, speech synchronization,
-and extra 3-D asset formats. To make sure you installation is fully functional
+and extra 3-D asset formats. To make sure your installation is fully functional
 select the tab for your operating system below and follow the instructions there.
 
 .. dropdown:: Never used Python before? Start here.
    :icon: light-bulb
 
-   The instructions below assume that you are fimiliar with
+   The instructions below assume that you are familiar with
    basic programming terminology, so they are spelled out here:
 
    **Python** is the programming language you will write your animations in,

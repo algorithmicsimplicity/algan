@@ -155,7 +155,8 @@ path-traced final. See [materials and cameras](materials-lights-and-camera.md).
 
 ## Scene ownership
 
-`Scene.current()` gets the active Scene; `Scene.new()` creates another. The
+`Scene.current()` gets the active Scene; `with Scene(video_settings=...) as scene:`
+creates another and makes it active inside the block. The
 class-style public calls such as `Scene.save_video(...)` operate on the active
 Scene; instance calls operate on that instance. A Scene owns its camera, actors,
 timeline, and audio. Do not move Mob instances between independent scenes as a

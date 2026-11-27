@@ -193,8 +193,9 @@ into other shapes:
 Each path in the file becomes its own Mob inside the result, reachable through
 :ref:`children <reference-mob-children>` (the top-level Mob holds a
 :class:`~algan.mobs.group.Group`, whose children are the paths), so you can animate an individual
-piece without disturbing the rest. Unlike a :class:`~algan.mobs.group.Group`, an
-``SVGMob`` is not itself indexable.
+piece without disturbing the rest. An ``SVGMob`` is also indexable the way
+Manim's is: ``logo[0]`` is its first path, the same Mob as the one inside that
+:class:`~algan.mobs.group.Group`, and ``len(logo)`` counts the paths.
 
 The path is resolved by Manim, which looks for it relative to the working
 directory rather than to your script. So unlike :class:`~.ImageMob`, launching
@@ -216,14 +217,14 @@ The two libraries use different conventions, and the boundary is the
 * **Coordinates.** The two agree throughout: ``UP``, ``RIGHT`` and ``OUT`` mean
   the same directions and the same signs on both sides, so an imported point
   keeps the coordinates it was written with.
-* **Sizes.** Manim's default frame is 8 units tall; Algan's visible area at the
-  origin plane is about 7. Imported diagrams usually want a modest
-  :meth:`~algan.animatable_base.mob.Mob.scale` or :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`.
+* **Sizes.** The two agree too: Manim's default frame is 8 units tall, and so
+  is a new Algan Scene's visible area on the plane through the origin, so an
+  imported diagram fills the frame the way it did in Manim.
 
 Matching Manim's framing exactly
 ================================
 
-Rather than rescaling each import, you can point the whole Scene at Manim's own
+To match the rest of Manim's look as well, point the whole Scene at Manim's own
 defaults with :meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>`.
 Call it once, before you build anything, and imported geometry lands on the
 pixels Manim would have put it on: same 8-unit frame height, same perspective,

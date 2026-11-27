@@ -43,12 +43,27 @@ reset the Scene after rendering. An explicitly requested fade-out can append
 animation, and a zero-duration video may need a one-frame timeline guard;
 rendering is not a promise that no recording operation can occur.
 
-## Why didn't my change to `SETTINGS.video` do anything?
+## When does a change to `SETTINGS.video` take effect?
 
-`SETTINGS.video` seeds each Scene when it is created. A Mob can trigger creation
-of the default Scene, but an earlier explicit Scene access can do so too. Set
-defaults before creating the Scene, use `Scene.set_video_settings(...)` to
-change the active Scene, or pass a one-off preset to a render call:
+A Scene that was not given settings of its own renders with `SETTINGS.video` as
+it is when the render starts, so `SETTINGS.video.set(HD)` anywhere before
+`save_video()` sets the output's resolution and frame rate. Two things are
+decided earlier:
+
+* A Scene that was given settings, with `Scene(video_settings=...)` or
+  `Scene.set_video_settings(...)`, keeps them, and later changes to
+  `SETTINGS.video` do not reach it.
+* Screen-relative layout (`fit_to_screen`, `camera.visible_size_at`, and the
+  other helpers that place a Mob by a portion of the screen) is computed while
+  the script runs, against the Scene's resolution at that moment. For the
+  default Scene that is `SETTINGS.video` as it was when the first Mob created
+  the Scene. If you change the aspect ratio, for example to a portrait
+  resolution, do it before creating any Mob, or call
+  `Scene.set_video_settings(...)` before the layout.
+
+`Scene.current().video_settings` reports the settings the Scene was created
+with, not the ones a render will use. For a one-off render at another quality,
+pass a preset to the render call:
 
 ```python
 Scene.save_video("my_video", HD)

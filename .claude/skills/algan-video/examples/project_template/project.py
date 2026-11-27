@@ -36,15 +36,15 @@ from scenes.first import first  # noqa: E402
 from scenes.second import second  # noqa: E402
 
 SCENES = [first, second]
-OUT = os.path.join(HERE, 'renders')
+OUTPUT_DIR = os.path.join(HERE, 'renders')
 
 
 def make_project(settings):
     return Project(SCENES, video_settings=settings,
-                   file_path=os.path.join(OUT, 'video.mp4'),
-                   video_directory=os.path.join(OUT, 'scenes'),
-                   screenshot_directory=os.path.join(OUT, 'stills'),
-                   transcript_directory=os.path.join(OUT, 'transcripts'),
+                   file_path=os.path.join(OUTPUT_DIR, 'video.mp4'),
+                   video_directory=os.path.join(OUTPUT_DIR, 'scenes'),
+                   screenshot_directory=os.path.join(OUTPUT_DIR, 'stills'),
+                   transcript_directory=os.path.join(OUTPUT_DIR, 'transcripts'),
                    post_processes=POST)
 
 

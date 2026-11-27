@@ -11,8 +11,11 @@ account quotas stay fixed:
 | **Kaggle T4** | Kaggle notebook: Measured Tesla T4 (Turing, 16 GB), 4 vCPUs; availability and quota depend on the account | `scripts/kaggle/` + the Kaggle MCP |
 
 Both execute repository commands and return their output. They are opt-in
-measurement harnesses, not substitutes for the ordinary test matrix, which now
-also includes an MPS regression arm.
+measurement harnesses, not substitutes for the ordinary test matrix. That
+matrix has an MPS regression arm only in its full run (the weekly schedule, a
+manual dispatch, or a pull request labelled `full-ci`); the run on an ordinary
+pull request or push has no MPS arm, so a Metal regression can merge before
+the next weekly run sees it.
 
 **Pick by question, not by convenience.** The T4 answers "how fast, and how
 much VRAM" for CUDA. The Mac answers "does this work on Metal, and how does
@@ -75,7 +78,7 @@ between "Metal refused" and "the harness is broken".
 
 Things worth setting deliberately:
 
-The ordinary MPS regression gate needs **neither** wheel input: it uses the
+The test matrix's MPS arm needs **neither** wheel input: it uses the
 locked published `algan-quadrants` distribution. The wheel controls below are
 only for experiments that intentionally replace that supported dependency.
 

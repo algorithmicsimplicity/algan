@@ -154,7 +154,7 @@ Initialization-only settings intentionally have no public mutable Python object.
 - `ALGAN_CACHE_DIR`;
 - `TI_OFFLINE_CACHE_FILE_PATH`;
 - `ALGAN_SOFT_SHADOW_SAMPLES`;
-- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`, `ALGAN_TAICHI_SOURCE_KEY`;
+- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`, `ALGAN_TAICHI_SOURCE_KEY`, `ALGAN_TAICHI_EARLY_RETURN`;
 - `ALGAN_TAICHI_BACKEND`.
 
 `ALGAN_TAICHI_BACKEND` selects which Taichi-language compiler builds the kernels:
@@ -208,7 +208,7 @@ compiled by the chosen backend -- so the daemon refuses a client whose value dif
 - `SETTINGS` sections rather than the old defaults globals;
 - Scene-owned managers rather than singleton managers;
 - `DrawBorderThenFill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand;
-- `import algan.manim as mn` for the compatibility layer — it is not star-imported, and `mn.X` is under Manim's conventions where root `X` is under Algan's (see `AGENTS.md`, "The `algan.manim` boundary");
+- `import algan.manim as mn` for the compatibility layer — it is not star-imported, and `mn.X` is under Manim's conventions where root `X` is under Algan's (see `agent_guidance/manim_compat.md`, "The `algan.manim` boundary");
 - `runtime` rather than `duration` / `run_time`, and `easing` / `easings` rather than `rate_func` / `rate_funcs`;
 - `mob` rather than `mobject`, and `element_to_mob` rather than `element_to_mobject`, on every root callable that takes one; `SVGMob`, `MobMatrix`, `MobTable`, `DashedMob` and `CurvesAsChildren` rather than Manim's `Mobject`-spelled class names. Passing an old spelling at the root raises `AlganConfigurationError` naming the new one — the mechanism is `algan/utils/api_renames.py`, applied by the adapters' generated `__init__` and by the `@_renamed_keywords` decorator on the animations. All of it still works under `algan.manim`, which is Manim's conventions by design;
 - one vocabulary across the revolved solids: `radius`, `u_range` / `v_range`, `closed`, and `direction=UP` on both `Cone` and `Cylinder`. Manim's `base_radius`, `show_base`, `show_ends`, `u_min` and `checkerboard_colors` raise — a checkerboard is a `color_texture` here (`get_checkerboard(...)`, in `algan/mobs/surfaces/procedural_textures.py`), so the pattern's detail comes from the map rather than from the tessellation; `resolution` is the one Manim name kept, because it means something Algan has no other word for (patches, where `grid_width`/`grid_height` count vertices);
@@ -281,13 +281,13 @@ with Scene(video_settings=SMOKE_TEST) as scene:
 
 ## Environment variables
 
-Every `ALGAN_` variable the package honors is declared in `algan/environment.py`, and every read goes through that module's `env_flag` / `env_int` / `env_float` / `env_str` / `env_is_set` accessors, which **reject an undeclared name** — that is what lets `import algan` tell a real option from a misspelled one (it warns about `ALGAN_` variables it does not know).
+Every `ALGAN_` variable the package honors is declared in `algan/environment.py`, and every read goes through that module's `env_flag` / `env_int` / `env_float` / `env_str` / `env_is_set` accessors, which **reject an undeclared name** — that is what lets `import algan` tell a real option from a misspelled one. It warns about an undeclared `ALGAN_` variable only when the name is a close match to a declared one (a typo such as `ALGAN_RENDER_DEVIC`); an unrelated name such as `ALGAN_FOO` is left alone, because other tools keep variables under the same prefix.
 
 Adding a knob is therefore two steps: put the name in the right tuple in `algan/environment.py`, then read it with an accessor at the point of use, where the default lives next to the comment explaining it. Values parse leniently: an unusable one warns and falls back to the caller's default rather than aborting the render. `tests/unit_tests/test_environment.py` enforces the rule that nothing in the package reaches an `ALGAN_` variable through `os` directly.
 
 ### Initialization-only settings
 
-These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES` and the Taichi/warm-start trio. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it.
+These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`, `ALGAN_TAICHI_SOURCE_KEY`, `ALGAN_TAICHI_EARLY_RETURN` and `ALGAN_TAICHI_BACKEND`. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it.
 
 The bar for adding to that tuple is that **no runtime object could own the value** — Taichi is already initialized, the device is already chosen, the constant is already folded into a compiled kernel. "It happens to be read at import" is not the bar: `ALGAN_HDR_BUFFER_F16` sat here for exactly that reason while the dtype it selects is read at buffer allocation, and it is now `SETTINGS.raytracing.experimental.hdr_buffer_f16` with the environment variable seeding the default. `ALGAN_LOG_LEVEL` and `ALGAN_PROGRESS` were import-time for the same non-reason and are now read live, re-applied per run by the daemon (`logger.apply_environment_logging`).
 

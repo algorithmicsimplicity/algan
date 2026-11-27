@@ -13,6 +13,7 @@ Mobs
    ~algan.mobs.traced_path
    ~algan.mobs.image_compat
    ~algan.mobs.manim_compat
+   ~algan.mobs.manim_adapters
    ~algan.mobs.opengl_compat
    ~algan.mobs.bezier_circuit
    ~algan.mobs.triangulated_bezier_circuit
@@ -37,13 +38,16 @@ The Manim Compatibility Layer
 is ``algan.manim``, reached as ``import algan.manim as mn`` and deliberately left out of
 ``from algan import *``: a name in ``mn.`` follows Manim's conventions where the same name at
 the root follows Algan's (degrees vs radians, and Algan's stroke width vs Manim's, which is
-twice it). Where Algan has no native implementation of a Manim class, a curated subset gets a
-root spelling that converts and delegates -- see
-:doc:`/manim_migration_guide` and :doc:`/advanced_user_tutorials/importing_from_manim`.
+twice it). Where Algan has no native implementation of a Manim class, the root spelling is an
+adapter that converts and delegates; those are the classes in ``algan.mobs.manim_adapters``
+(``Arc``, ``Arrow``, ``Axes``, ``SVGMob``, ...), and they are what ``from algan import *`` gives
+you -- see :doc:`/manim_migration_guide` and
+:doc:`/advanced_user_tutorials/importing_from_manim`.
 
-This is also why several class names below appear twice, once under ``manim_compat`` and once
-under a native module: they are two different classes under two conventions, not one class
-documented twice.
+This is also why many class names above appear twice, once under ``manim_compat`` and once
+under ``manim_adapters`` or a native module: they are two different classes under two
+conventions, not one class documented twice. A cross-reference that names only the class,
+such as ``~.Arc``, goes to the root class.
 
 Delegated Manim Methods
 -----------------------

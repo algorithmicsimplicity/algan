@@ -591,14 +591,17 @@ The material classes mirror Three.js's API, and some of that API has no
 implementation behind it. Setting one of these emits a warning and has no
 effect:
 
-* Every image slot on a :class:`~.Material`: ``map``, ``alpha_map``, ``ao_map``,
-  ``env_map``, ``light_map``, ``bump_map``, ``normal_map``,
-  ``displacement_map``, ``roughness_map``, ``metalness_map``, ``emissive_map``,
-  ``specular_map``, ``gradient_map``, ``matcap``, ``clearcoat_map``,
-  ``clearcoat_normal_map``, ``sheen_color_map``, ``transmission_map``,
-  ``thickness_map``, ``iridescence_map``, ``specular_intensity_map``,
-  ``specular_color_map``, ``normal_scale``, ``displacement_scale``,
-  ``displacement_bias``.
+* These image slots on a :class:`~.Material`: ``alpha_map``, ``ao_map``,
+  ``env_map``, ``light_map``, ``bump_map``, ``displacement_map``,
+  ``emissive_map``, ``specular_map``, ``gradient_map``, ``matcap``,
+  ``clearcoat_map``, ``clearcoat_roughness_map``, ``clearcoat_normal_map``,
+  ``sheen_color_map``, ``sheen_roughness_map``, ``transmission_map``,
+  ``thickness_map``, ``iridescence_map``, ``iridescence_thickness_map``,
+  ``specular_intensity_map`` and ``specular_color_map``, and the scalars
+  ``displacement_scale`` and ``displacement_bias``. The other four image slots,
+  ``map``, ``normal_map``, ``roughness_map`` and ``metalness_map``, are
+  forwarded to geometry that carries UVs and sampled there, and
+  ``normal_scale`` scales a forwarded normal map; see `Texture maps`_ below.
 * ``wireframe``, ``vertex_colors``, and any non-default ``side``
   (``BackSide`` / ``DoubleSide``). Algan renders all faces; whether a
   back-facing hit is lit from the viewer's side is decided by the geometry
@@ -770,6 +773,12 @@ Who casts and who receives
   traversed by shadow rays, and a partially transparent occluder attenuates the
   light by its opacity rather than blocking it. Stacked occluders multiply.
   Texture alpha counts.
+* **A translucent closed solid's shadow is darker than the solid looks.**
+  Viewed directly, a closed solid attenuates the light behind it once however
+  many of its faces a ray crosses. The deterministic renderer's shadow ray
+  attenuates once per face it crosses instead, so the light reaching the
+  shadow of a sphere with ``opacity=0.5`` is a quarter, not a half: its shadow
+  ray crosses two faces.
 * **Receivers: fragment-shaded triangle geometry only.** Bezier circuits never
   receive shadows (see :ref:`limits-lit`), and neither do the four per-vertex
   materials or :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`.

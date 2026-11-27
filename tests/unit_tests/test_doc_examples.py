@@ -65,8 +65,11 @@ from __future__ import annotations
 
 import ast
 import builtins
+import inspect
 import os
 import re
+import sys
+import textwrap
 from collections import Counter
 from pathlib import Path
 
@@ -77,6 +80,7 @@ from algan.scene_manager import SceneManager
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS_SOURCE = REPO_ROOT / "docs" / "source"
+SKILL_ROOT = REPO_ROOT / ".claude" / "skills" / "algan-video"
 PACKAGE_ROOT = REPO_ROOT / "algan"
 
 # Written as an reStructuredText comment on the line(s) immediately above a
@@ -165,7 +169,7 @@ class DocExample:
         rejects anything else. A ``code-block`` qualifies when it imports algan
         and renders exactly once.
         """
-        if self.directive == "algan":
+        if self.directive in ("algan", "script"):
             return True
         imports_algan = "from algan import" in self.code or "import algan" in self.code
         saves = len(re.findall(r"\.save_(?:video|frame)\s*\(", self.code))
@@ -222,7 +226,12 @@ def _iter_blocks(path: Path):
 
 
 def _iter_markdown_blocks(path: Path):
-    """Yield ``(line, code)`` per fenced ``python`` block in a Markdown file."""
+    """Yield ``(line, code, opted_out)`` per fenced ``python`` block in a Markdown file.
+
+    A fence indented under a list item is dedented with it. The skip marker is
+    an HTML comment, ``<!-- algan-doc-check: skip -- reason -->``, on a line
+    just above the fence, so it never reaches the rendered page.
+    """
     lines = path.read_text(encoding="utf-8").splitlines()
     i, n = 0, len(lines)
     while i < n:
@@ -233,27 +242,43 @@ def _iter_markdown_blocks(path: Path):
         j = start
         while j < n and lines[j].strip() != "```":
             j += 1
-        code = "\n".join(lines[start:j]).rstrip()
+        code = textwrap.dedent("\n".join(lines[start:j])).rstrip()
         if code:
-            yield start + 1, code
+            preceding = lines[max(0, i - _MARKER_LOOKBACK) : i]
+            opted_out = any(SKIP_MARKER in line for line in preceding)
+            yield start + 1, code, opted_out
         i = j + 1
 
 
-def _collect_markdown_examples() -> list[DocExample]:
-    """The Python in ``README.md``.
+# Markdown that steers users and agents. The README is the front page and the
+# PyPI description; the FAQ is a page of the built docs (parsed by myst); the
+# agent skill, AGENTS.md and agent_guidance/ are what agents writing Algan code
+# are told to trust.
+MARKDOWN_PAGES = (
+    REPO_ROOT / "README.md",
+    DOCS_SOURCE / "faq" / "general.md",
+    REPO_ROOT / "AGENTS.md",
+    *sorted((REPO_ROOT / "agent_guidance").glob("*.md")),
+    *sorted(SKILL_ROOT.rglob("*.md")),
+)
 
-    Nothing checked it, and it drifted: the Quickstart called ``spawn(runtime=)``,
-    ``Sync(runtime=)`` and ``Mob.shift()``, none of which exist -- three
-    failures in the first eight lines of code anyone runs, on the front page and
-    on PyPI. It is an ordinary complete script, so it goes through the same
-    tiers as every other one.
+
+def _collect_markdown_examples() -> list[DocExample]:
+    """The Python in the Markdown pages above.
+
+    Nothing checked the README, and it drifted: the Quickstart called
+    ``spawn(runtime=)``, ``Sync(runtime=)`` and ``Mob.shift()``, none of which
+    exist -- three failures in the first eight lines of code anyone runs, on the
+    front page and on PyPI. The other pages had no check either. Each block goes
+    through the same tiers as every other one: static for all of them, and
+    authoring for the ones that are complete scripts.
     """
     examples = []
-    for page in (REPO_ROOT / "README.md",):
+    for page in MARKDOWN_PAGES:
         if not page.exists():
             continue
-        for line, code in _iter_markdown_blocks(page):
-            examples.append(DocExample(page, line, code, "code-block", False, ""))
+        for line, code, opted_out in _iter_markdown_blocks(page):
+            examples.append(DocExample(page, line, code, "code-block", opted_out, ""))
     return examples
 
 
@@ -287,8 +312,24 @@ def _collect_docstring_directives() -> list[DocExample]:
     return examples
 
 
+def _collect_skill_scripts() -> list[DocExample]:
+    """The agent skill's example scripts, ``.claude/skills/algan-video/examples/*.py``.
+
+    The skill tells agents to start from these, so they are documentation
+    whatever their suffix. Each is a real script whose work happens under
+    ``if __name__ == "__main__":``, so it is run as ``__main__``. The project
+    template in the subdirectory is a multi-file package and is not one of them.
+    """
+    examples = []
+    for script in sorted((SKILL_ROOT / "examples").glob("*.py")):
+        code = script.read_text(encoding="utf-8")
+        examples.append(DocExample(script, 1, code, "script", False, ""))
+    return examples
+
+
 EXAMPLES = _collect_examples()
 COMPLETE = [e for e in EXAMPLES if e.is_complete_script and not e.skipped_by_marker]
+SKILL_SCRIPTS = _collect_skill_scripts()
 
 # Rendered examples live on both surfaces -- documentation pages and docstrings
 # on the API they document -- and the directive treats them identically.
@@ -373,20 +414,42 @@ def test_algan_directive_names_are_unique():
 
 
 class _NameCollector(ast.NodeVisitor):
-    """Free names loaded by a block, and attribute chains rooted at a name."""
+    """Free names, attribute chains and bare-name calls in a block."""
 
     def __init__(self):
         self.loads: list[tuple[str, int]] = []
         self.bound: set[str] = set()
         self.chains: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, list[str], int]] = []
         self.algan_star_import = False
+        # Names imported from algan by name, and names the block binds itself
+        # (which hide an algan name of the same spelling).
+        self.from_algan: set[str] = set()
+        self.rebound: set[str] = set()
 
     def visit_Name(self, node):
         if isinstance(node.ctx, ast.Load):
             self.loads.append((node.id, node.lineno))
         else:
             self.bound.add(node.id)
+            self.rebound.add(node.id)
         self.generic_visit(node)
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name):
+            keywords = [kw.arg for kw in node.keywords if kw.arg is not None]
+            self.calls.append((node.func.id, keywords, node.lineno))
+        self.generic_visit(node)
+
+    def algan_object(self, name: str):
+        """What ``name`` is in algan, if the block got it from algan."""
+        if name in self.rebound:
+            return None
+        if name in self.from_algan or (
+            self.algan_star_import and "*" not in self.bound and name in algan.__all__
+        ):
+            return getattr(algan, name, None)
+        return None
 
     def _bind_args(self, args):
         for arg in args.posonlyargs + args.args + args.kwonlyargs:
@@ -398,6 +461,7 @@ class _NameCollector(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node):
         self.bound.add(node.name)
+        self.rebound.add(node.name)
         self._bind_args(node.args)
         self.generic_visit(node)
 
@@ -409,11 +473,13 @@ class _NameCollector(ast.NodeVisitor):
 
     def visit_ClassDef(self, node):
         self.bound.add(node.name)
+        self.rebound.add(node.name)
         self.generic_visit(node)
 
     def visit_Import(self, node):
         for alias in node.names:
             self.bound.add((alias.asname or alias.name).split(".")[0])
+            self.rebound.add((alias.asname or alias.name).split(".")[0])
 
     def visit_ImportFrom(self, node):
         for alias in node.names:
@@ -428,6 +494,10 @@ class _NameCollector(ast.NodeVisitor):
                     self.bound.add("*")
             else:
                 self.bound.add(alias.asname or alias.name)
+                if node.module == "algan" and alias.asname is None:
+                    self.from_algan.add(alias.name)
+                else:
+                    self.rebound.add(alias.asname or alias.name)
 
     def visit_ExceptHandler(self, node):
         if node.name:
@@ -510,6 +580,28 @@ def test_doc_example_uses_public_api(example: DocExample):
             broken.append(f"{chain} (no {missing})")
     assert not broken, f"{example.id} refers to {broken}, which no longer resolve"
 
+    # A keyword that the callee's signature does not name, where the
+    # signature takes no ``**kwargs`` to absorb it, is a TypeError for the
+    # reader. Constructors that do take ``**kwargs`` check their keywords at
+    # run time, which the authoring tier covers for complete scripts.
+    bad_keywords = []
+    for name, keywords, _ in collector.calls:
+        obj = collector.algan_object(name)
+        if obj is None or not callable(obj):
+            continue
+        try:
+            parameters = inspect.signature(obj).parameters
+        except (TypeError, ValueError):
+            continue
+        if any(p.kind is p.VAR_KEYWORD for p in parameters.values()):
+            continue
+        bad_keywords.extend(
+            f"{name}({keyword}=)" for keyword in keywords if keyword not in parameters
+        )
+    assert not bad_keywords, (
+        f"{example.id} passes {bad_keywords}, which the signature does not take"
+    )
+
 
 # --------------------------------------------------------------------------
 # tiers 2 and 3 -- execution
@@ -521,10 +613,13 @@ def _run_example(example: DocExample, *, render: bool):
 
     Runs with the working directory set to ``docs/source`` so the relative
     asset paths the examples use (``world_map.png``) resolve the way they do
-    during a documentation build.
+    during a documentation build. A skill script runs the way ``python
+    script.py`` runs it instead: as ``__main__``, from its own directory, with
+    no command-line arguments.
     """
     from algan import SETTINGS, SMOKE_TEST
     from algan.scene import Scene
+    from algan.utils.algan_utils import RenderResult
 
     reason = KNOWN_BROKEN.get(example.id)
     if reason is not None:
@@ -540,6 +635,8 @@ def _run_example(example: DocExample, *, render: bool):
     stubbed = ("save_video", "save_frame")
     originals = {name: Scene.__dict__.get(name) for name in stubbed}
     previous_cwd = Path.cwd()
+    previous_argv = sys.argv
+    as_script = example.directive == "script"
 
     unshown = []
 
@@ -550,15 +647,20 @@ def _run_example(example: DocExample, *, render: bool):
         scene = SceneManager.instance().current_scene
         if any(actor.is_spawned() for actor in scene.actors):
             unshown.extend(m._describe() for m in scene._never_spawned_root_mobs())
-        return None
+        # What a skipped render returns, for a script that reads the result.
+        return RenderResult("skipped", Path())
 
     SceneManager.reset()
-    os.chdir(DOCS_SOURCE)
+    os.chdir(example.path.parent if as_script else DOCS_SOURCE)
     try:
         if not render:
             for name in stubbed:
                 setattr(Scene, name, staticmethod(_skip_render))
-        namespace = {"__name__": "__algan_doc_example__"}
+        if as_script:
+            sys.argv = [str(example.path)]
+            namespace = {"__name__": "__main__", "__file__": str(example.path)}
+        else:
+            namespace = {"__name__": "__algan_doc_example__"}
         exec(compile(example.code, example.id, "exec"), namespace)
         assert not unshown, (
             f"{example.id} leaves Mobs it never spawns ({', '.join(sorted(set(unshown)))}), "
@@ -567,6 +669,7 @@ def _run_example(example: DocExample, *, render: bool):
         )
     finally:
         os.chdir(previous_cwd)
+        sys.argv = previous_argv
         if not render:
             for name, original in originals.items():
                 if original is None:
@@ -583,6 +686,18 @@ def test_doc_example_authors_without_error(example: DocExample):
     Rendering is stubbed out, so this covers authoring only: constructor
     arguments, attribute widths, and methods that still exist. A failure here
     means a reader copying the block hits the same exception.
+    """
+    _run_example(example, render=False)
+
+
+@pytest.mark.parametrize("example", SKILL_SCRIPTS, ids=_ids(SKILL_SCRIPTS))
+def test_skill_example_authors_without_error(example: DocExample):
+    """The agent skill's example scripts build their scenes without raising.
+
+    The authoring tier, as above, for the scripts the skill tells agents to
+    start from. They are not in the render tier: each names its own output
+    path and preset, which is right for an agent's project and wrong for a
+    test run.
     """
     _run_example(example, render=False)
 

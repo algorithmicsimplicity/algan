@@ -38,8 +38,11 @@ features together:
   :class:`~algan.rendering.lights.DirectionalLight` along the same direction
   casts the shadows.
 * **The caustics**, the bright net of light on the pool floor, are computed by
-  the script itself, because Algan's renderers do not trace caustics (see
-  :doc:`../advanced_user_tutorials/renderer_limitations`). Every frame it
+  the script itself and baked into the floor's texture, which is fast and gives
+  the same network on every render. The path tracer can also compute them, with
+  ``SETTINGS.raytracing.experimental.set(pt_caustics=True)``, at a cost in
+  render time and with the limits listed under refractive shadow transport in
+  :doc:`../advanced_user_tutorials/renderer_limitations`. Every frame the script
   refracts a dense grid of sun rays through the same wave surface with Snell's
   law, gathers where they land on the floor, and writes the result into the
   floor's :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`. A

@@ -12,8 +12,9 @@ metadata:
     model formats have optional dependencies. Rendering requires a supported CPU/GPU
     backend. Custom compiled shaders must be defined in real Python source files.
   version: "1.3.0"
-  source-checked: "2026-09-24"
-  algan-source-commit: "45c1d6a3fd47f83b09b7a82bb77f5d080f457556 + local changes (Algan 0.0.2)"
+  source-checked: "2026-11-26"
+  algan-source-commit: "423db6f5e0374b04874d1f09820893a6a348d58c"
+  algan-version: "0.0.3"
 ---
 
 # Algan video production
@@ -83,7 +84,7 @@ actual limitation.
    Place named `Scene.save_frame` checkpoints throughout the script. Authoring
    checkpoints does not mean rendering every checkpoint on every iteration.
    ```python
-   Scene.save_frame("important_moment", at=[0.0, 2.5, 5.0])   # check_0.0.png, check_2.5.png, ...
+   Scene.save_frame("important_moment", at=[0.0, 2.5, 5.0])   # important_moment_0.0.png, important_moment_2.5.png, ...
    ```
    `at` is seconds on the timeline; a negative value counts back from the current
    time. Use `at` to get stills before, during, and after key animations.
@@ -181,9 +182,12 @@ arguments; check their signatures rather than generalizing.
 **Use Algan units and names.** Every angle in the root API is in degrees:
 transforms (`rotate`, `look`, camera `fov`) and constructor angles such as
 `RegularPolygon(start_angle=...)`, `Line(path_arc=...)`, `Arc(angle=...)` and
-`Wiggle(rotation_angle=...)`. Only `algan.manim` classes take Manim's radians. A
-root angle that looks like radians (for example `PI / 4`) warns; fix the value
-rather than ignoring the warning.
+`Wiggle(rotation_angle=...)`. Only `algan.manim` classes take Manim's radians.
+Those constructor angles warn when given an angle that looks like radians (a
+non-integer number smaller than a full turn, such as `PI / 4`); fix the value
+rather than ignoring the warning. Do not wait for a warning anywhere else:
+`look`, camera `fov` and `move(arc_angle=...)` never give one, so write every
+angle in degrees yourself.
 `move(v)` is a displacement; `move_to(p)` is an absolute destination. Use
 `easings.identity` for a specified linear interpolation and `easing=` to select
 a requested easing. Do not write Manim's `Scene.play`, `.animate`, or

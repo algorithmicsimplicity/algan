@@ -32,7 +32,9 @@ World axes are `RIGHT` (+x), `UP` (+y), and `OUT` (+z), with opposite constants
 viewer for the default camera, not for every camera pose. Every root angle
 argument is in degrees: rotations, adapted Manim shapes (`Arc(angle=90)`), and
 `RegularPolygon(start_angle=...)`, `Line(path_arc=...)` and
-`Wiggle(rotation_angle=...)`. A root angle that looks like radians warns.
+`Wiggle(rotation_angle=...)`. Those constructor angles warn when given an angle
+that looks like radians (a non-integer number smaller than a full turn, such
+as `PI / 4`); `look`, camera `fov` and `move(arc_angle=...)` never warn.
 
 Use `.move(vector)` for a displacement and `.move_to(point)` for a destination.
 Use `.scale(factor)` or `.scale_to_width(...)` / `.scale_to_height(...)` for size.
@@ -299,9 +301,10 @@ The boundary changes conventions. Root `Arc(angle=90)` takes degrees;
 `mn.Arc(angle=PI / 2)` takes radians.
 
 Several names exported at the root are themselves adapters of Manim geometry
-(on Algan 0.0.2: `RoundedRectangle`, `Star`, `Annulus`, `Arc`, `Arrow`,
-`Ellipse`, `Sector`, `AnnularSector`, `DashedLine`, `Elbow`, `Cross`; check
-`type(obj).__module__` for others). Their constructors take Manim's keywords
+(for example `RoundedRectangle`, `Star`, `Annulus`, `Arc`, `Arrow`,
+`Ellipse`, `Sector`, `AnnularSector`, `DashedLine`, `Elbow`, `Cross`, `Axes`
+and `NumberPlane`). For any of them `type(obj).__module__` is
+`algan.mobs.manim_adapters`. Their constructors take Manim's keywords
 converted to Algan's units (degrees, Algan stroke widths), plus Algan's `opacity`,
 `glow`, `unlit`, `name`, `location` and `basis`, and `fill_opacity` /
 `stroke_opacity`. The corresponding `mn` classes keep Manim's radians and stroke
