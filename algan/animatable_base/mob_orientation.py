@@ -6,6 +6,7 @@ into ``Mob`` and is not useful standalone (``self`` is always a Mob).
 
 from __future__ import annotations
 
+import functools
 import math
 
 import torch
@@ -19,6 +20,7 @@ from algan.geometry.geometry import (
     get_rotation_between_3d_vectors,
     rotate_vector_around_axis,
 )
+from algan.utils.api_renames import _warn_if_angle_looks_like_radians
 from algan.utils.tensor_utils import (
     cast_to_direction,
     cast_to_tensor,
@@ -27,6 +29,28 @@ from algan.utils.tensor_utils import (
 )
 
 _RADIANS_TO_DEGREES = 180.0 / math.pi
+
+
+def _warns_if_angle_looks_like_radians(method):
+    """Give a degree-taking method the constructors' "that looks like radians" warning.
+
+    ``rotate(PI / 2)`` is Manim's quarter turn and Algan's 1.57-degree nudge,
+    and it is legal, so nothing used to say a word; ``Arc(angle=PI / 2)``
+    already warned (``algan/utils/api_renames.py``), and this uses the same rule,
+    so a whole number of degrees never warns. The check is applied outside
+    ``animated_function``, to the value the caller wrote: inside, ``angle`` is
+    an interpolated tensor, and the body is re-run at replay. ``degrees=False``
+    says the value is radians, so it is not checked.
+    """
+
+    @functools.wraps(method)
+    def checked(self, angle, *args, degrees=True, **kwargs):
+        if degrees:
+            _warn_if_angle_looks_like_radians("angle", angle)
+        return method(self, angle, *args, degrees=degrees, **kwargs)
+
+    return checked
+
 
 #: Local axis names accepted by ``look`` / ``look_at``, mapped to the basis row
 #: they select.
@@ -111,6 +135,7 @@ class MobOrientationMixin:
         self.basis = cast_to_tensor(squish(torch.eye(3)))
         return self
 
+    @_warns_if_angle_looks_like_radians
     @animated_function(
         animated_args={"angle": 0},
         unique_args=["axis", "about", "degrees"],
@@ -196,6 +221,7 @@ class MobOrientationMixin:
             self.orbit(num_degrees, axis, cast_to_direction("about", about))
         return self
 
+    @_warns_if_angle_looks_like_radians
     @animated_function(
         animated_args={"angle": 0},
         unique_args=["axis", "about", "degrees"],

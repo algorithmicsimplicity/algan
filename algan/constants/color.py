@@ -14,7 +14,9 @@ expected.
 
 The module then defines the palette exported by ``from algan import *``:
 ``BLACK``, ``WHITE``, the greys, and the ``BLUE``/``RED``/``GREEN``/``YELLOW``
-families with their ``_A`` (lightest) through ``_E`` (darkest) shades. Both
+families with their ``_A`` (lightest) through ``_E`` (darkest) shades, the
+same values as Manim Community's except ``YELLOW`` and ``YELLOW_C``, which are
+pure yellow (``#FFFF00``) here and ``#F7D96F`` in Manim. Both
 British and American spellings of grey are provided. Two special values are worth
 knowing: ``TRANSPARENT`` (invisible, and the background color that produces an
 alpha-channel video) and ``GLOW`` (black with full glow).
@@ -25,7 +27,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from algan.errors import InvalidColorError
+from algan.constants._shared import _register_shared_constants
+from algan.constants._shared import is_shared_constant as _is_shared_constant
+from algan.errors import AlganConfigurationError, InvalidColorError
 from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import (
     broadcast,
@@ -168,6 +172,29 @@ def _channel_count_error(value):
     )
 
 
+def _reject_8bit_channels(value):
+    """Raise for an integer RGB sequence with a channel above 1.
+
+    Algan's channels are in ``[0, 1]``, but ``(255, 128, 0)`` is how Manim,
+    Pillow and CSS's ``rgb()`` write orange, and it used to be stored as it
+    was: a red of 255 that nothing rejected and the renderer clamped, so it
+    drew yellow. Only integers are checked -- a float above 1 can be a
+    deliberate over-bright value, while an integer above 1 has only one
+    plausible meaning.
+    """
+    rgb = value[:3]
+    if all(
+        isinstance(channel, (int, np.integer)) and not isinstance(channel, bool)
+        for channel in rgb
+    ) and any(channel > 1 for channel in rgb):
+        scaled = ", ".join(f"{int(channel) / 255:.3g}" for channel in rgb)
+        hex_code = "#" + "".join(f"{int(channel) & 0xFF:02X}" for channel in rgb)
+        raise InvalidColorError(
+            f"{tuple(value)!r} looks like 0-255 channels, but Algan's color "
+            f"channels are in [0, 1]. Write ({scaled}) or {hex_code!r}."
+        )
+
+
 class Color(torch.Tensor):
     """A color, as five channels: red, green, blue, glow and opacity.
 
@@ -180,7 +207,16 @@ class Color(torch.Tensor):
     travel with the color through ordinary arithmetic: ``BLUE * 0.5`` dims the
     color *and* halves its alpha, and interpolating between two colors
     interpolates their emissive strength too. When you want to change one
-    channel alone, use :meth:`set_opacity` or assign to :attr:`glow`.
+    channel alone, use :meth:`set_opacity`, :meth:`set_glow` or
+    :meth:`set_rgb`, which return a changed copy: ``BLUE.set_glow(2)`` is a
+    glowing blue, and ``BLUE`` itself stays as it was.
+
+    The named palette constants are shared by every Mob and script in the
+    process, so assigning to one's channels -- ``BLUE.glow = 2``, or
+    ``c = BLUE; c.glow = 2``, which is the same object -- raises rather than
+    changing ``BLUE`` everywhere. Assigning to the channels of a color you
+    built yourself (``c = Color(BLUE)``) is fine. In-place arithmetic such as
+    ``c *= 0.5`` cannot be refused, so write ``c = c * 0.5`` on a constant.
 
     A ``Color`` is a :class:`torch.Tensor` subclass, so it takes part in tensor
     arithmetic and can carry batch dimensions -- a ``(*, 5)`` array of them is
@@ -212,17 +248,24 @@ class Color(torch.Tensor):
     Attributes
     ----------
     rgb
-        The first three channels, shape ``(*, 3)``. Assignable.
+        The first three channels, shape ``(*, 3)``. Assignable, except on a
+        named palette constant.
     glow
-        The fourth channel, shape ``(*, 1)``. Assignable.
+        The fourth channel, shape ``(*, 1)``. Assignable, except on a named
+        palette constant.
     opacity
-        The fifth channel, shape ``(*, 1)``, in ``[0, 1]``. Assignable.
+        The fifth channel, shape ``(*, 1)``, in ``[0, 1]``. Assignable, except
+        on a named palette constant.
 
     Raises
     ------
     :class:`.InvalidColorError`
-        If a string is neither a hex code nor a known CSS color name, or an
-        array's final axis does not have three, four or five channels.
+        If a string is neither a hex code nor a known CSS color name, an
+        array's final axis does not have three, four or five channels, or a
+        sequence of integers has a channel above 1 (it is 0-255, not 0-1).
+    :class:`~algan.errors.AlganConfigurationError`
+        On assigning to ``rgb``, ``glow`` or ``opacity`` of a named palette
+        constant such as ``BLUE``.
 
     See Also
     --------
@@ -268,6 +311,7 @@ class Color(torch.Tensor):
             if opacity is None:
                 opacity = extracted_opacity
         elif isinstance(rgb, (tuple, list)):
+            _reject_8bit_channels(rgb)
             if len(rgb) == 4:
                 rgb, carried_opacity = tuple(rgb[:3]), rgb[3]
                 opacity = carried_opacity if opacity is None else opacity
@@ -308,9 +352,22 @@ class Color(torch.Tensor):
 
     def __eq__(self, other):
         eq = super().__eq__(other)
+        if eq is NotImplemented:
+            # A string, ``None`` or anything else a tensor cannot compare
+            # with: hand it back so Python falls through to identity, the way
+            # ``BLUE == None`` and ``"red" in [BLUE]`` expect. Converting it
+            # raised ``AttributeError`` on ``NotImplemented``.
+            return eq
         if self.numel() == 5 and hasattr(other, "numel") and other.numel() == 5:
             eq = eq.all()
         return eq.as_subclass(torch.Tensor)
+
+    # Defining ``__eq__`` sets ``__hash__`` to None, which made a Color
+    # unusable as a dict key or set member where Manim's ``ManimColor`` is
+    # fine. Identity hashing, as for every other tensor: a value hash would
+    # break the moment a color is edited in place, and two equal colors built
+    # separately are still two keys, exactly as two equal tensors are.
+    __hash__ = torch.Tensor.__hash__
 
     @property
     def opacity(self):
@@ -321,6 +378,7 @@ class Color(torch.Tensor):
 
     @opacity.setter
     def opacity(self, value):
+        self._refuse_shared_constant("opacity", "set_opacity")
         self.data[..., -1:] = self._channel_value(value)
 
     @property
@@ -343,6 +401,7 @@ class Color(torch.Tensor):
 
     @glow.setter
     def glow(self, value):
+        self._refuse_shared_constant("glow", "set_glow")
         self.data[..., -2:-1] = self._channel_value(value)
 
     @property
@@ -353,7 +412,27 @@ class Color(torch.Tensor):
 
     @rgb.setter
     def rgb(self, value):
+        self._refuse_shared_constant("rgb", "set_rgb")
         self.data[..., :3] = self._channel_value(value)
+
+    def _refuse_shared_constant(self, channel, setter):
+        """Internal: raise if this color is (a view of) a palette constant.
+
+        A palette constant is one object shared by every Mob and script in the
+        process -- and, on the warm daemon, by every later script -- so writing
+        its channels in place recolors all of them. The setters are the
+        spelling the docs used to recommend (``c = BLUE; c.glow = 2``), so they
+        refuse with the copy-returning method to use instead.
+        """
+        if _is_shared_constant(self):
+            raise AlganConfigurationError(
+                f"Cannot assign {channel} on a named palette color such as "
+                f"BLUE: it is one object shared by every Mob in the process, so "
+                f"the change would recolor all of them. Use "
+                f"{setter}(...), which returns a changed copy "
+                f"(c = BLUE.{setter}(...)), or assign on your own copy "
+                f"(c = Color(BLUE); c.{channel} = ...)."
+            )
 
     def _channel_value(self, value):
         """Internal: ``value`` as a tensor matching this color's dtype and device.
@@ -596,7 +675,9 @@ def to_color(value):
     Raises
     ------
     :class:`~algan.errors.InvalidColorError`
-        If ``value`` is a string that names no color, or a bool.
+        If ``value`` is a string that names no color, a bool, or a sequence
+        of integers with a channel above 1 (``(255, 128, 0)``, which is 0-255
+        rather than Algan's 0-1).
     """
     if value is None:
         return value
@@ -636,6 +717,7 @@ def to_color(value):
         and 3 <= len(value) <= 5
         and all(_is_channel(channel) for channel in value)
     ):
+        _reject_8bit_channels(value)
         return Color(tuple(float(channel) for channel in value))
     return value
 
@@ -697,6 +779,10 @@ GREEN_D = Color("#77B05D")
 GREEN_E = Color("#699C52")
 PURE_GREEN = Color("#00FF00")
 GREEN = Color("#83C167")
+# YELLOW and YELLOW_C are pure yellow, as in 3b1b's manimlib, where Manim
+# Community's are #F7D96F; the rest of the palette is Manim Community's. They
+# are left as they are because every scene that says YELLOW would change
+# colour.
 YELLOW_A = Color("#FFF1B6")
 YELLOW_B = Color("#FFEA94")
 YELLOW_C = Color("#FFFF00")
@@ -737,3 +823,8 @@ GRAY_BROWN = Color("#736357")
 GREY_BROWN = Color("#736357")
 CYAN = Color("#00FFFF")
 MAGENTA = Color("#FF00FF")
+
+# Last, once every palette entry exists: record each as a shared constant, so
+# that the channel setters refuse it and a multi-script process can put it back
+# (see algan/constants/_shared.py).
+_register_shared_constants(globals())

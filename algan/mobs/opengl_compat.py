@@ -292,7 +292,12 @@ class OpenGLSurfaceMesh(Group):
 
             scene = active_scene_for_new_mob()
             kwargs["scene"] = scene
-        lines = self._build_lines(stroke_width=stroke_width, color=color, scene=scene)
+        lines = self._build_lines(
+            stroke_width=stroke_width,
+            color=color,
+            scene=scene,
+            add_to_scene=add_to_scene,
+        )
         super().__init__(*lines, add_to_scene=add_to_scene, **kwargs)
 
     def _sample(self, u, v):
@@ -306,7 +311,11 @@ class OpenGLSurfaceMesh(Group):
             point = self.uv_surface.coord_function_active(uv)
         return point.reshape(3)
 
-    def _build_lines(self, stroke_width, color, scene):
+    def _build_lines(self, stroke_width, color, scene, add_to_scene):
+        # The lines are what draws: a Group has no render primitives of its
+        # own, and the renderer collects them only from ``scene.actors``. Built
+        # with ``add_to_scene=False`` they were never actors, so a spawned mesh
+        # drew nothing at all. They join the Scene exactly when the mesh does.
         nu, nv = self.resolution
         thickness = max(float(stroke_width), 0.1) / 2
         paths = []
@@ -323,7 +332,7 @@ class OpenGLSurfaceMesh(Group):
                     stroke_color=color,
                     color=color,
                     filled=False,
-                    add_to_scene=False,
+                    add_to_scene=add_to_scene,
                 )
                 for a, b in zip(points, points[1:])
             )
@@ -340,7 +349,7 @@ class OpenGLSurfaceMesh(Group):
                     stroke_color=color,
                     color=color,
                     filled=False,
-                    add_to_scene=False,
+                    add_to_scene=add_to_scene,
                 )
                 for a, b in zip(points, points[1:])
             )

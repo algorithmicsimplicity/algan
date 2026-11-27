@@ -11,9 +11,10 @@ under :mod:`algan.manim`. A reader arriving from Manim still writes
 migration problem. Algan states angles in degrees everywhere, so
 ``Arc(angle=PI / 2)`` is a 1.57 degree sliver rather than the quarter arc the
 author meant -- a wrong picture with no error anywhere. A supplied angle that
-is a non-integer float smaller than a full turn is almost certainly radians, so
-it warns and says what the degree spelling would be. Whole numbers never warn:
-``Arc(angle=5)`` is a legitimate five-degree arc.
+is a non-integer float no larger than a full turn (``TAU`` included) is almost
+certainly radians, so it warns and says what the degree spelling would be.
+Whole numbers never warn: ``Arc(angle=5)`` is a legitimate five-degree arc.
+``rotate`` and ``orbit`` run the same check (``mob_orientation.py``).
 """
 
 from __future__ import annotations
@@ -94,16 +95,20 @@ def _renamed_keywords(**renames):
 def _looks_like_radians(value) -> bool:
     """Whether a supplied angle is more plausibly radians than Algan's degrees.
 
-    True for a non-integer float strictly inside one turn. Integers are left
-    alone in both directions: ``5`` is a real five-degree angle, and nobody
-    writes a radian measure as a whole number on purpose.
+    True for a non-integer float within one turn, the full turn included:
+    ``TAU`` and ``2 * PI`` are how Manim writes a whole circle, and as degrees
+    they are a 6.28-degree sliver. Integers are left alone in both directions:
+    ``5`` is a real five-degree angle, and nobody writes a radian measure as a
+    whole number on purpose.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     value = float(value)
     if not math.isfinite(value) or value == 0.0 or value.is_integer():
         return False
-    return abs(value) < _FULL_TURN_RADIANS
+    # A whisker over the full turn, so ``TAU`` still counts when it arrives
+    # by float arithmetic a rounding step above ``2 * math.pi``.
+    return abs(value) <= _FULL_TURN_RADIANS * (1 + 1e-9)
 
 
 def _format_number(value: float) -> str:

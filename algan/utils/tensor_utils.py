@@ -3,10 +3,10 @@
 Algan's animation state is uniformly shaped ``[time, mob, ...]``, and almost
 every operation has to line up operands that disagree about how many batch
 dimensions they carry. This module is the vocabulary for doing that:
-``broadcast*`` for aligning operands, ``unsqueeze_*`` / ``add_dummy_dims_*`` for
-inserting axes on either side, ``squish`` / ``unsquish`` for flattening and
-restoring axis pairs, and ``cast_to_tensor`` for accepting the Python lists,
-floats and tuples a user naturally writes.
+``broadcast*`` for aligning operands, ``unsqueeze_*`` for inserting axes,
+``squish`` / ``unsquish`` for flattening and restoring axis pairs, and
+``cast_to_tensor`` for accepting the Python lists, floats and tuples a user
+naturally writes.
 
 ``interpolate`` is the blend used when materializing an animated attribute
 between two recorded states.
@@ -418,19 +418,6 @@ def make_grid(
             .expand(torch.Size([height, -1])),
         ),
         -1,
-    )
-
-
-def unsqueeze_right(x, y, offset: int = 0):
-    """Return ``x`` viewed with size-1 dims added so its rank matches ``y``.
-
-    ``offset`` size-1 dims go on the left and the rest on the right. A
-    non-tensor ``x`` is returned unchanged.
-    """
-    if not isinstance(x, torch.Tensor):
-        return x
-    return x.view(
-        [1] * offset + list(x.shape) + [1] * (len(y.shape) - (len(x.shape) + offset))
     )
 
 

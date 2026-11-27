@@ -2,16 +2,10 @@
 
 ``traverse`` flattens arbitrarily nested iterables into a flat sequence, which is
 what lets Algan's constructors accept ``Group([a, [b, c], d])`` as readily as a
-flat list. ``downsample_nested_list`` thins such a structure while preserving its
-shape, and ``get_factors`` returns integer factor pairs, used when choosing grid
-dimensions.
+flat list.
 
 ``callable_signature`` reads a function's parameters the way
 ``inspect.signature`` does, without evaluating its annotations.
-
-``arithmetic_operators``, ``binary_operators`` and ``other_operators`` name the
-dunder methods Algan forwards when it makes a wrapper behave like the value it
-wraps.
 """
 
 from __future__ import annotations
@@ -20,7 +14,6 @@ import inspect
 import operator
 import sys
 from collections.abc import Iterable
-from math import isqrt
 
 import torch
 
@@ -90,34 +83,3 @@ def callable_signature(function, *, follow_wrapped=True):
             annotation_format=annotationlib.Format.FORWARDREF,
         )
     return inspect.signature(function, follow_wrapped=follow_wrapped)
-
-
-binary_operators = [
-    "add",
-    "sub",
-    "mul",
-    "matmul",
-    "truediv",
-    "floordiv",
-    "mod",
-    "divmod",
-    "pow",
-    "lshift",
-    "rshift",
-    "and",
-    "or",
-    "xor",
-]
-other_operators = ["neg", "pos", "abs", "invert", "lt", "le", "eq", "ne", "gt", "ge"]
-arithmetic_operators = [f"__{_}__" for _ in binary_operators + other_operators]
-
-
-def downsample_nested_list(lists, factor=2):
-    out = []
-    for i in range(0, len(lists), factor):
-        out.append([lists[i][j] for j in range(0, len(lists[i]), factor)])
-    return out
-
-
-def get_factors(x):
-    return [i for i in range(1, isqrt(x)) if (x % i) == 0]

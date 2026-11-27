@@ -56,7 +56,6 @@ BraceBetweenPoints
 BraceLabel
 BraceText
 BulletedList
-CAMERA_ORIGIN
 CERAMIC
 CHROME
 COPPER

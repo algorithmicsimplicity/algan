@@ -38,7 +38,7 @@ import torch.nn.functional as F
 from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
-from algan.constants.spatial import *  # CAMERA_ORIGIN
+from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import intersect_line_with_plane_colinear
 from algan.rendering.projection import effective_depth

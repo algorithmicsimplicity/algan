@@ -181,6 +181,7 @@ import algan  # noqa: E402, F401  (the whole point: pay the import once, up fron
 from algan import SceneManager
 from algan import daemon_client as _dc
 from algan import scene as scene_module
+from algan.constants._shared import restore_shared_constants
 from algan.environment import env_flag, env_int, env_str
 from algan.logging.logger import apply_environment_logging
 from algan.settings import SETTINGS
@@ -1569,6 +1570,10 @@ def main(argv=None):
             _say("reloading: " + ", ".join(evicted))
         snapshot.restore()
         SceneManager.reset()
+        # ``o = ORIGIN; o += 1.0`` moves ORIGIN itself, and a script in a
+        # process of its own takes that with it when it exits. Here the next
+        # script would start with it.
+        restore_shared_constants()
 
     def release_after_run():
         """Reset for the next run *now*, and give its memory back.

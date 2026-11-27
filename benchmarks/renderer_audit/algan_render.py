@@ -385,13 +385,13 @@ def render(
     spec = _normalize_spec(json.loads(Path(spec_path).read_text()))
 
     from algan import SETTINGS, Camera, Off, Scene, SceneManager, VideoSettings
-    from algan.constants.spatial import CAMERA_ORIGIN
+    from algan.constants.spatial import ORIGIN, OUTWARD
 
     # Algan's default scene initializer spawns a white PointLight beside the
     # camera. The spec says what the lights are, so that freebie has to go or
     # the comparison is against a scene Three.js was never given.
     def _bare_scene(scene):
-        scene.camera = Camera(scene=scene, location=CAMERA_ORIGIN).spawn(animate=False)
+        scene.camera = Camera(scene=scene, location=ORIGIN + OUTWARD * 7).spawn(animate=False)
         scene.light_sources = []
 
     SceneManager.set_scene_class(Scene, _bare_scene)

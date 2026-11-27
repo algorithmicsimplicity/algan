@@ -378,6 +378,25 @@ def test_surface_mesh_draws_its_lattice_on_the_surface(scene, native):
     assert {(round(x, 5), round(y, 5)) for x, y in ends[:, :2].tolist()} == lattice
 
 
+def test_a_mesh_in_the_scene_registers_its_lines_as_actors(scene):
+    """REGRESSION. The lines were built with ``add_to_scene=False``, and the
+    renderer draws only ``scene.actors`` (a Group has no primitives of its
+    own), so a spawned mesh drew nothing.
+    """
+    surface = mn.OpenGLSurface(
+        _saddle, u_range=(-1, 1), v_range=(-1, 1), resolution=(4, 4)
+    )
+    mesh = mn.OpenGLSurfaceMesh(surface, resolution=(3, 3)).spawn()
+    actors = {id(actor) for actor in scene.actors}
+    lines = list(mesh)
+    assert lines
+    assert all(id(line) in actors for line in lines)
+
+    detached = mn.OpenGLSurfaceMesh(surface, resolution=(3, 3), add_to_scene=False)
+    actors = {id(actor) for actor in scene.actors}
+    assert not any(id(line) in actors for line in detached)
+
+
 def test_textured_surface_and_mesh_need_a_surface(scene):
     """Manim refuses anything but an OpenGLSurface; Algan also takes a native
     Surface, and refuses the rest with ``TypeError``.

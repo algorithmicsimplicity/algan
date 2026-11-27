@@ -25,7 +25,11 @@ import numpy as np
 import torch
 
 from algan.animatable_base.animatable import _reports_refused_keywords
-from algan.animatable_base.mob import _MANIM_CONSTRUCTOR_HINTS, Mob
+from algan.animatable_base.mob import (
+    _MANIM_CONSTRUCTOR_HINTS,
+    _MANIM_METHOD_HINTS,
+    Mob,
+)
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUTWARD
@@ -58,9 +62,19 @@ from algan.utils.tensor_utils import cast_to_tensor
 _MANIM_WRAPPER_REGISTRY: dict[str, type[ManimCompatMob]] = {}
 
 
+#: Manim method names a compatibility Mob must not delegate, because Algan's
+#: answer has to win: each gets the native Mob's migration hint instead
+#: (``_MANIM_METHOD_HINTS`` in ``animatable_base/mob.py``).
+_ALGAN_MEANING_WINS = frozenset({"animate"})
+
+
 def _tensor_to_manim(value: torch.Tensor):
     value = value.detach().cpu()
-    if value.ndim == 0:
+    if value.numel() == 1:
+        # A scalar: ``get_width()`` is a ``(1, 1, 1)`` tensor, and Manim tests
+        # some numbers with ``isinstance(value, float)`` -- RoundedRectangle's
+        # ``corner_radius`` took a one-element array for a list of radii and
+        # failed. A point or a direction is never one element.
         return value.item()
     # Algan carries a leading batch dimension that Manim's geometry does not:
     # Manim points are ``(N, 3)`` and single vectors are ``(3,)``.  Drop the
@@ -206,6 +220,39 @@ def _as_manim_color_arg(value):
     ):
         value = value.as_subclass(Color)
     return value
+
+
+def _is_int_rgb(value):
+    """Whether ``value`` is an RGB or RGBA sequence of integers.
+
+    Manim reads integer channels as 0-255 (``ManimColor((255, 128, 0))`` is
+    orange) where Algan's colors are 0-1, so the two libraries disagree about
+    what such a tuple means.
+    """
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) in (3, 4)
+        and all(
+            isinstance(channel, (int, np.integer)) and not isinstance(channel, bool)
+            for channel in value
+        )
+    )
+
+
+def _color_kwarg_to_manim(value, root_conventions):
+    """A color keyword of a compatibility constructor, ready for ``to_manim``.
+
+    Under ``algan.manim`` a name follows Manim's conventions, and Manim reads
+    an integer tuple as 0-255: ``ManimColor((255, 128, 0))`` is orange.
+    Converting it through Algan's :func:`to_color` first kept 255 in a 0-1
+    channel, which ``_color_to_manim`` then clamped to 1, so
+    ``mn.Circle(color=(255, 128, 0))`` drew yellow. It reaches Manim's parser
+    as written instead. The root adapters follow Algan's conventions, so there
+    everything goes through ``to_color``, which refuses such a tuple.
+    """
+    if not root_conventions and _is_int_rgb(value):
+        return _manim.ManimColor(tuple(int(channel) for channel in value))
+    return _as_manim_color_arg(value)
 
 
 def _uniform_color_and_opacity(color, opacity):
@@ -989,6 +1036,11 @@ class ManimCompatMob(ManimMob):
     #: than as a ``FileNotFoundError: 'latex'`` from inside Manim after it has
     #: written a scratch file. Set by :func:`_make_manim_wrapper`.
     _needs_latex = False
+    #: True for the root adapters (``algan.mobs.manim_adapters``), which read
+    #: their arguments under Algan's conventions; False for the ``algan.manim``
+    #: classes, which read them as Manim does. Only color keywords consult it
+    #: here -- the adapters convert angles and stroke widths themselves.
+    _root_conventions = False
     #: The constructor takes Manim's keywords as Manim spells them, so of the
     #: hints for Manim spellings only the ones about what no Mob constructor
     #: takes in either library -- timing, which Algan sets with a context --
@@ -1024,8 +1076,13 @@ class ManimCompatMob(ManimMob):
         # *list of colors* and rejects each element. Everything Algan accepts
         # -- a Color, a hex string, a hex int, an RGB sequence -- becomes one
         # Color here, and to_manim renders that as a value Manim does take.
+        # Except where Manim's own reading differs: see _color_kwarg_to_manim.
         kwargs = {
-            key: (_as_manim_color_arg(value) if "color" in key else value)
+            key: (
+                _color_kwarg_to_manim(value, self._root_conventions)
+                if "color" in key
+                else value
+            )
             for key, value in kwargs.items()
         }
         manim_kwargs = {key: to_manim(value) for key, value in kwargs.items()}
@@ -1654,6 +1711,37 @@ class ManimCompatMob(ManimMob):
             return super().__len__()
         return len(self.manim_mobject)
 
+    def _generated_accessor(self, name):
+        # ``get_color`` is defined below with Manim's meaning. The generic
+        # accessor would otherwise be built into the instance and shadow it
+        # (_generate_animatable_attr_set_get_methods builds the ones a class
+        # defines).
+        if name == "get_color":
+            return None
+        return super()._generated_accessor(name)
+
+    def get_color(self):
+        """Get the color this Mob is drawn in, the way Manim's ``get_color`` does.
+
+        An unfilled shape -- a line, an arc, axes, an unfilled polygon -- is
+        drawn by its stroke alone, so its stroke color is the answer, and the
+        color is returned opaque: Manim's colors carry no opacity, and its
+        ``set_color`` keeps the target's. Algan's generic ``get_color`` returned
+        the fill row instead, whose alpha is the shape's fill opacity of 0, so
+        ``b.set_color(a.get_color())`` -- the usual way to match two Mobs'
+        colors -- made ``b`` invisible.
+
+        Returns
+        -------
+        :class:`~algan.constants.color.Color`
+            The fill color if the fill is at all visible, else the stroke
+            color, with opacity 1 and glow kept, shape ``(*, 5)``.
+        """
+        color = self.color
+        if not bool((color[..., -1] > 1e-5).any()):
+            color = self.stroke_color
+        return Color(color).set_opacity(1)
+
     def __getattr__(self, name):
         # Normal Mob/Animatable attribute lookup gets first chance.  This method
         # is reached only for Manim-specific APIs -- and for an Algan
@@ -1662,6 +1750,19 @@ class ManimCompatMob(ManimMob):
         accessor = self._generated_accessor(name)
         if accessor is not None:
             return accessor
+        if name in _ALGAN_MEANING_WINS:
+            # Manim has these too, but delegating them would do the wrong
+            # thing: ``animate`` returns Manim's ``_AnimationBuilder``, which
+            # the ``@wraps`` below cannot even wrap (``TypeError: __annotations__
+            # must be set to a dict object``), and an animation built that way
+            # would reach no timeline. Native Mobs answer with the migration
+            # hint; so does this.
+            raise AttributeError(
+                f"{self._describe()} has no attribute {name!r}. "
+                f"That is Manim's name for it; in Algan use "
+                f"{_MANIM_METHOD_HINTS[name]}. "
+                f"See the Manim migration guide for the full table."
+            )
         if (
             name.startswith("_")
             or "manim_mobject" not in self.__dict__
@@ -1811,13 +1912,18 @@ arguments work as written -- ``tex_to_color_map`` and ``substrings_to_isolate``
 included -- and Manim methods Algan does not implement are delegated to the
 backing object.
 
+Indexing follows Manim: ``formula[i]`` is the ``i``-th of the
+``tex_strings`` (or of the pieces ``substrings_to_isolate`` and
+``tex_to_color_map`` split off), as the part drawing it on screen, so
+``MathTex("x^2", "+", "y")[0]`` is the ``x^2`` and editing it edits what is
+shown.
+
 Reach for Algan's :class:`~algan.mobs.text.Tex` when you are not porting a
 script. The two produce the same outlines (``MathTex("x^2")`` matches
 ``Tex("x^2", font_size=48)``, because Algan's ``Tex`` also builds at Manim's 48
-and then scales), but this one is a single Mob with no per-glyph views:
-``formula[0]`` raises :class:`TypeError`, and character indexing,
+and then scales), but character indexing,
 :meth:`~algan.mobs.text.Tex.get_segment` and :meth:`~algan.mobs.text.Tex.write`
-all live on ``Tex`` instead.
+live on ``Tex``.
 
 Animation
 ---------
@@ -1894,16 +2000,13 @@ The text is typeset by LaTeX in text mode (so ``Title("Chapter 1")`` reads as
 written, no maths escaping needed) with a horizontal rule beneath it, and the
 whole thing is moved to the top of the frame.
 
-**The frame it moves to the top of is Manim's, not Algan's, and it lands flush
-against the edge.** Manim's frame is 8 world units tall and its ``to_edge``
-leaves a 0.5 gap, so the title's top comes to rest at ``y = 3.5`` -- which is
-exactly where Algan's default camera puts its top border. Nothing is cut off,
-but the text touches the frame edge with no margin at all. Call
-:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` to
-inset it by the usual buffer, or ``.move(DOWN * 1)`` to place it by hand.
+It is placed in Manim's frame, which a new Scene frames the same way: 8 world
+units tall, with Manim's ``to_edge`` gap of 0.5, so the title's top comes to
+rest at ``y = 3.5``, half a unit below the top of the picture, exactly where
+Manim puts it. ``.move(DOWN * 1)`` and the like place it by hand.
 
-The default rule is sized from Manim's frame too, at ``frame_width - 2``, which
-comes out just narrower than Algan's visible width. Pass
+The default rule is sized from Manim's frame too, at ``frame_width - 2``: one
+world unit short of each side of the picture. Pass
 ``match_underline_width_to_text=True`` for a rule the width of the words.
 
 Animation

@@ -102,8 +102,11 @@ class ManimMob(BezierCircuitCubic):
     are ordinary geometry, so shadows, reflections and materials apply to them.
     See :ref:`limits-nonplanar` for what that costs.
 
-    Note that Manim's z axis points opposite to Algan's, so a converted
-    ``Sphere`` has its poles facing the camera until you rotate it.
+    The two libraries share their axes -- ``OUTWARD``, Manim's ``OUT``, is +z
+    and points at the camera in both -- so a converted Mobject keeps the
+    coordinates it was built with. A Manim ``Sphere`` has its poles on the z
+    axis, so it arrives facing the camera pole-on, as it does in Manim, until
+    you rotate it.
 
     Parameters
     ----------

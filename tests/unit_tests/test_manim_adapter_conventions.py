@@ -270,7 +270,9 @@ def test_every_adapter_documents_its_conversions():
         assert "stroke_width" in doc
 
 
-@pytest.mark.parametrize("value", [math.pi / 2, 0.5, -1.25, 3.14159])
+@pytest.mark.parametrize(
+    "value", [math.pi / 2, 0.5, -1.25, 3.14159, math.tau, -math.tau, 2 * math.pi]
+)
 def test_a_radian_looking_angle_warns(value):
     with pytest.warns(ApproximationWarning, match="looks like radians"):
         algan.Arc(angle=value)
@@ -321,3 +323,95 @@ def test_the_mobject_spelled_classes_are_renamed_at_the_root(manim_name, root_na
     assert getattr(algan, root_name).__module__ == _ADAPTER_MODULE
     assert hasattr(mn, manim_name)
     assert root_name in algan.__all__
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda mob, angle: mob.rotate(angle),
+        lambda mob, angle: mob.rotate(angle, algan.UP),
+        lambda mob, angle: mob.orbit(angle, about=algan.RIGHT),
+        lambda mob, angle: algan.Arc(angle=90).rotate(angle),
+    ],
+    ids=["rotate", "rotate about UP", "orbit", "compat rotate"],
+)
+@pytest.mark.parametrize("value", [math.pi / 2, math.tau, -math.pi])
+def test_rotate_and_orbit_warn_like_the_constructors(call, value):
+    """REGRESSION. ``rotate(PI / 2)`` -- Manim's quarter turn -- silently
+    turned 1.57 degrees, while ``Arc(angle=PI / 2)`` already warned.
+    """
+    with pytest.warns(ApproximationWarning, match="looks like radians"):
+        call(algan.Square(), value)
+
+
+@pytest.mark.parametrize("value", [90, 45.0, 7.5 * 2, -180, 400.5, 0.0])
+def test_rotate_takes_ordinary_degrees_in_silence(value):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ApproximationWarning)
+        algan.Square().rotate(value)
+        algan.Square().orbit(value, about=algan.RIGHT)
+
+
+def test_rotate_in_radians_on_purpose_does_not_warn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ApproximationWarning)
+        algan.Square().rotate(math.pi / 2, degrees=False)
+        algan.Square().orbit(math.tau, about=algan.RIGHT, degrees=False)
+
+
+def test_the_rotate_warning_points_at_the_script():
+    with pytest.warns(ApproximationWarning) as caught:
+        algan.Square().rotate(math.pi / 2)
+    assert caught[0].filename == __file__
+
+
+# --------------------------------------------------------------------------
+# Delegated methods that carry an angle or a stroke width convert too.
+# --------------------------------------------------------------------------
+
+
+def test_get_angle_and_set_angle_are_in_degrees_at_the_root():
+    """REGRESSION. Both were delegated to Manim unconverted: ``get_angle()``
+    answered 1.5708 for a vertical line, and ``set_angle(90)`` turned a line
+    through 90 *radians*, leaving its end at (-0.448, 0.894).
+    """
+    assert algan.DashedLine(algan.ORIGIN, algan.UP).get_angle() == pytest.approx(90)
+    line = algan.DashedLine(algan.ORIGIN, algan.RIGHT)
+    line.set_angle(90)
+    np.testing.assert_allclose(line.manim_mobject.get_end(), [0.0, 1.0, 0.0], atol=1e-6)
+    # Manim's own spelling keeps Manim's radians.
+    assert mn.DashedLine(np.zeros(3), np.array([0.0, 1.0, 0.0])).get_angle() == (
+        pytest.approx(math.pi / 2)
+    )
+
+
+def test_rotate_about_origin_is_in_degrees_at_the_root():
+    line = algan.DashedLine(algan.RIGHT, algan.RIGHT * 2)
+    with algan.Off():
+        line.rotate_about_origin(90)
+    np.testing.assert_allclose(
+        line.get_center().reshape(-1)[:3].numpy(), [0.0, 1.5, 0.0], atol=1e-5
+    )
+
+
+def test_set_stroke_width_is_algan_units_at_the_root():
+    """REGRESSION. ``Arc(stroke_width=4)`` stored 4 but ``set_stroke(width=4)``
+    stored 2: the delegated method took Manim's unit.
+    """
+    built = algan.Arc(angle=90, stroke_width=4)
+    restyled = algan.Arc(angle=90)
+    restyled.set_stroke(width=4)
+    assert float(restyled.stroke_width.reshape(-1)[0]) == pytest.approx(
+        float(built.stroke_width.reshape(-1)[0])
+    )
+    assert float(restyled.stroke_width.reshape(-1)[0]) == pytest.approx(4)
+
+
+def test_a_nested_style_dict_stroke_width_is_algan_units_at_the_root():
+    """REGRESSION. ``Axes(axis_config={"stroke_width": 4})`` drew axes of
+    width 2: only a top-level ``stroke_width`` was converted.
+    """
+    axes = algan.Axes(axis_config={"stroke_width": 4})
+    assert float(axes.x_axis.stroke_width.reshape(-1)[0]) == pytest.approx(4)
+    manim_axes = mn.Axes(axis_config={"stroke_width": 8})
+    assert float(manim_axes.x_axis.stroke_width.reshape(-1)[0]) == pytest.approx(4)
