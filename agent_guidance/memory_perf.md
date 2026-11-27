@@ -924,8 +924,17 @@ re-priced, so only windows that were under-priced move. Alone it took scene
 `test_cuda_dedicated_hold.py` hold the two.
 
 Scene 15 is the one clip whose pixels moved (thin edge pixels on a few
-frames, up to 34 levels; its windows changed, and two master renders of it
-already differ by 10 on 6 frames).
+frames, up to 34 levels; its windows changed). It is not a stable fixture
+on either side: two master renders of it differ by 10 levels on 6 frames,
+and two branch renders by up to 31 on 4, where a memory retry lands
+differently. The six full-render scenes, the fast scene and the explainer
+and graphics workloads at PREVIEW and UHD decode identical to master's.
+
+All of the timings above are with lossless software encoding and debug
+logging in both arms, the daemon off. Measured on one 16 GiB card: the
+0.84 share and the amounts it leaves room for are that card's, and the
+path tracer, the denoiser and the OptiX side path were not run
+memory-bound under the hold.
 
 Not done, with what was measured:
 
