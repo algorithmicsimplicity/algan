@@ -26,6 +26,7 @@ import contextlib
 import difflib
 import functools
 import inspect
+import numbers
 import operator
 import sys
 import warnings
@@ -65,7 +66,12 @@ from algan.animation_timeline.animation_contexts import (
 from algan.animation_timeline.timeline import _opt_disabled
 from algan.constants.color import Color, _channel_count_error, _is_channel, to_color
 from algan.constants.spatial import *
-from algan.errors import AlganConfigurationError, AlganWarning, _in_algan
+from algan.errors import (
+    AlganConfigurationError,
+    AlganWarning,
+    InvalidColorError,
+    _in_algan,
+)
 from algan.geometry.geometry import (
     get_orthonormal_vector,
     get_rotation_between_bases,
@@ -124,6 +130,70 @@ class _GuardedMethod:
 
     def __set__(self, obj, value):
         raise AttributeError(self._message)
+
+
+class _GuardedName:
+    """A name that is not an attribute of a Mob, but that users try to assign.
+
+    ``mob.position = ...`` or ``mob.alpha = 0.5`` would otherwise succeed,
+    parking a plain value on the instance that nothing reads. As a data
+    descriptor this takes precedence over the instance dict, so the assignment
+    raises naming the spelling that works. A *read* raises ``AttributeError``
+    from ``__get__``, which Python turns into the ordinary ``__getattr__``
+    fallback, so a read behaves exactly as if the name were absent.
+    """
+
+    def __init__(self, name, message):
+        self._name = name
+        self._message = message
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        raise AttributeError(self._name)
+
+    def __set__(self, obj, value):
+        raise AttributeError(self._message)
+
+
+class _MissingMobAttribute(AttributeError):
+    """``Square has no attribute 'scal'. Did you mean 'scale'?``, worded lazily.
+
+    Library code probes Mobs with ``hasattr`` thousands of times per scene and
+    never reads the message, so the close-match search over the class's names
+    runs only when the error is shown.
+    """
+
+    def __init__(self, message, cls, name):
+        super().__init__(message)
+        self._cls = cls
+        self._missing = name
+        self._worded = None
+
+    def __str__(self):
+        if self._worded is None:
+            self._worded = super().__str__()
+            try:
+                candidates = [
+                    n
+                    for n in dir(self._cls)
+                    if not n.startswith("_")
+                    and not isinstance(
+                        inspect.getattr_static(self._cls, n, None), _GuardedName
+                    )
+                ]
+                close = difflib.get_close_matches(
+                    self._missing, candidates, n=1, cutoff=0.8
+                )
+            except Exception:  # noqa: BLE001 - wording must never mask the error
+                close = []
+            if close:
+                self._worded += f". Did you mean {close[0]!r}?"
+        return self._worded
+
+    def __reduce__(self):
+        # Pickled (a daemon, a worker process) as the plain error it reads as.
+        return AttributeError, (str(self),)
 
 
 #: The plain geometry declarations every Mob carries (see the class
@@ -255,6 +325,16 @@ def _coerce_if_color(attr, value):
     if "color" not in attr:
         return value
     value = to_color(value)
+    if isinstance(value, numbers.Real) and not isinstance(value, numbers.Integral):
+        # ``to_color`` hands a lone float back for callers that give it their
+        # own meaning. On a Mob it used to die on ``reshape`` in a constructor
+        # or paint every channel, glow included, on assignment.
+        raise InvalidColorError(
+            f"Invalid color value for {attr}: {value!r}. A color is a Color "
+            f"such as RED, a hex string ('#ff0000') or CSS name ('red'), a hex "
+            f"int (0xff0000) or an RGB tuple of floats in 0-1; a single number "
+            f"is not one. To hide a Mob, set its opacity instead."
+        )
     if isinstance(value, (tuple, list)) and all(_is_channel(v) for v in value):
         raise _channel_count_error(value)
     if (
@@ -459,7 +539,18 @@ _MANIM_METHOD_HINTS = {
     "copy": "clone()",
     "set_z_index": "set the `z_index` attribute",
     "add": "add_children(...), or Group(...)",
-    "remove": "remove_children(...)",
+    "remove": "remove_child(...)",
+    "get_top": "get_edge_point(UP)",
+    "get_bottom": "get_edge_point(DOWN)",
+    "get_left": "get_edge_point(LEFT)",
+    "get_right": "get_edge_point(RIGHT)",
+    "set_x": "set the `x` attribute",
+    "set_y": "set the `y` attribute",
+    "set_z": "set the `z` attribute",
+    "center": "move_to(ORIGIN)",
+    "align_to": "align_with(mob, direction)",
+    "scale_to_fit_width": "scale_to_width(...)",
+    "scale_to_fit_height": "scale_to_height(...)",
     "arrange": "move_next_to(...) on each Mob, or a Group's layout helpers",
     "animate": (
         "nothing -- Algan records animations from ordinary calls, so write "
@@ -1092,7 +1183,10 @@ class Mob(
             return accessor
         hint = _MANIM_METHOD_HINTS.get(name)
         if hint is None:
-            raise AttributeError(f"{self._describe()} has no attribute {name!r}")
+            message = f"{self._describe()} has no attribute {name!r}"
+            if name.startswith("_"):
+                raise AttributeError(message)
+            raise _MissingMobAttribute(message, type(self), name)
         raise AttributeError(
             f"{self._describe()} has no attribute {name!r}. "
             f"That is Manim's name for it; in Algan use {hint}. "
@@ -1961,9 +2055,23 @@ class Mob(
         """
         if self._prevent_recursive_sets:
             recursive = False
+        if value is None and "color" in attr:
+            # The constructor reads ``color=None`` as "the default color"; an
+            # assignment has no default to fall back on, and casting None wrote
+            # five zero channels -- opacity included -- so the Mob vanished.
+            raise InvalidColorError(
+                f"{attr} cannot be set to None: None means 'use the default "
+                f"color' only in a constructor. Assign a color, or set "
+                f"`opacity = 0` to hide the Mob."
+            )
         value = _coerce_if_color(attr, value)
         given = value
         value = cast_to_tensor(value)
+        if attr == "glow" and bool((value < 0).any()):
+            raise AlganConfigurationError(
+                f"glow must be zero or more; got {given!r}. It is an emission "
+                f"strength, so a negative value has no rendered meaning."
+            )
         # The funnel every animatable write reaches -- assignment, `set`,
         # `scale` -- and the one place a NaN can still be traced back to the
         # line that wrote it. Checked here rather than in `_apply_change`,
@@ -3587,4 +3695,44 @@ _GUARDED_VERB_METHODS = {
 
 for _name, _message in _GUARDED_VERB_METHODS.items():
     setattr(Mob, _name, _GuardedMethod(getattr(Mob, _name), _message))
+del _name, _message
+
+# Names a reader arriving from another engine assigns as if they were Mob
+# attributes. ``width``, ``height`` and ``size`` are deliberately NOT guarded:
+# Cuboid, Cone, Cylinder, Cube, RectAreaLight and others legitimately carry
+# them, and a data descriptor on this class would shadow those subclasses'
+# instance attributes.
+_GUARDED_ATTRIBUTE_NAMES = {
+    "position": (
+        "'position' is not a Mob attribute -- assigning it would set a value "
+        "nothing reads. Use the animatable attribute `location` "
+        "(mob.location = ...), or mob.move_to(...)."
+    ),
+    "pos": (
+        "'pos' is not a Mob attribute -- assigning it would set a value "
+        "nothing reads. Use the animatable attribute `location` "
+        "(mob.location = ...), or mob.move_to(...)."
+    ),
+    "rotation": (
+        "'rotation' is not a Mob attribute -- assigning it would set a value "
+        "nothing reads. Use mob.rotate(angle, axis), or assign the "
+        "animatable attribute `basis`."
+    ),
+    "alpha": (
+        "'alpha' is not a Mob attribute -- assigning it would set a value "
+        "nothing reads. Use the animatable attribute `opacity` "
+        "(mob.opacity = 0.5)."
+    ),
+    "visible": (
+        "'visible' is not a Mob attribute -- assigning it would set a value "
+        "nothing reads. Use mob.spawn() / mob.despawn() to add or remove the "
+        "Mob from the video, or the `opacity` attribute to fade it."
+    ),
+    "colour": (
+        "'colour' is not a Mob attribute -- assigning it would set a value "
+        "nothing reads. Algan spells it `color` (mob.color = BLUE)."
+    ),
+}
+for _name, _message in _GUARDED_ATTRIBUTE_NAMES.items():
+    setattr(Mob, _name, _GuardedName(_name, _message))
 del _name, _message

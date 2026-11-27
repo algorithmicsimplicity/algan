@@ -195,6 +195,53 @@ def _reject_8bit_channels(value):
         )
 
 
+def _reject_8bit_array(value):
+    """:func:`_reject_8bit_channels` for an integer tensor or NumPy array.
+
+    ``np.array([255, 128, 0], dtype=np.uint8)`` is how an image library hands
+    over a color, and it was stored as it was, like the tuple. Only 1-D and 2-D
+    integer buffers with 3 to 5 channels are checked: a 3-D integer tensor is an
+    image, and a float above 1 can be a deliberate over-bright value.
+    """
+    if isinstance(value, np.ndarray):
+        if not np.issubdtype(value.dtype, np.integer):
+            return
+        value = torch.as_tensor(value)
+    elif not torch.is_tensor(value) or (
+        value.is_floating_point() or value.is_complex() or value.dtype == torch.bool
+    ):
+        return
+    if value.dim() not in (1, 2) or value.shape[-1] not in (3, 4, 5):
+        return
+    if not value.numel() or not bool((value[..., :3] > 1).any()):
+        return
+    if value.dim() == 1:
+        _reject_8bit_channels(tuple(int(channel) for channel in value.tolist()))
+    raise InvalidColorError(
+        f"An integer buffer of colors with shape {tuple(value.shape)} has "
+        f"channels above 1, which looks like 0-255, but Algan's color channels "
+        f"are in [0, 1]. Divide it by 255."
+    )
+
+
+def _reject_negative_glow(value):
+    """Raise if ``value`` (a number or tensor) is below 0; glow has no upper bound."""
+    if isinstance(value, np.ndarray):
+        value = torch.as_tensor(value)
+    if torch.is_tensor(value):
+        negative = bool((value < 0).any())
+    elif isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
+        negative = value < 0
+    else:
+        negative = False
+    if negative:
+        raise AlganConfigurationError(
+            f"glow must be zero or more; got {value!r}. It is additive emissive "
+            f"brightness, so a negative value has no rendered meaning; use 0 "
+            f"for no glow."
+        )
+
+
 class Color(torch.Tensor):
     """A color, as five channels: red, green, blue, glow and opacity.
 
@@ -306,6 +353,9 @@ class Color(torch.Tensor):
         # opacity, which on an array is an array and not a truth value.
         glow = None if glow is None else _as_color_scalar(glow)
         opacity = None if opacity is None else _as_color_scalar(opacity)
+        if glow is not None:
+            _reject_negative_glow(glow)
+        _reject_8bit_array(rgb)
         if isinstance(rgb, str):
             rgb, extracted_opacity = _parse_color_string(rgb)
             if opacity is None:
@@ -317,6 +367,7 @@ class Color(torch.Tensor):
                 opacity = carried_opacity if opacity is None else opacity
             elif len(rgb) == 5:
                 rgb, carried_glow, carried_opacity = tuple(rgb[:3]), rgb[3], rgb[4]
+                _reject_negative_glow(carried_glow)
                 glow = carried_glow if glow is None else glow
                 opacity = carried_opacity if opacity is None else opacity
             elif len(rgb) == 3:
@@ -402,6 +453,7 @@ class Color(torch.Tensor):
     @glow.setter
     def glow(self, value):
         self._refuse_shared_constant("glow", "set_glow")
+        _reject_negative_glow(value)
         self.data[..., -2:-1] = self._channel_value(value)
 
     @property
@@ -681,6 +733,7 @@ def to_color(value):
     """
     if value is None:
         return value
+    _reject_8bit_array(value)
     if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.number):
         # The same buffer as a tensor, so it is padded the same way -- left as
         # an array, ``color=np.array([1.0, 0.0, 0.0])`` reached the timeline

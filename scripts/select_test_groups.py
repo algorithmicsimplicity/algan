@@ -419,6 +419,12 @@ ALWAYS_CI = (
     # before time zero raises, and an opacity updater ends with its Mob.
     "tests/unit_tests/test_timeline_error_paths.py::",
     "tests/unit_tests/test_updater_lifespan.py::",
+    # Authoring guards with no render: assigning a name that is not a Mob
+    # attribute, the wording of a missing attribute, color inputs that would
+    # draw the wrong thing, and timing keywords a context cannot take.
+    "tests/unit_tests/test_mob_attribute_guards.py::",
+    "tests/unit_tests/test_color_input_validation.py::",
+    "tests/unit_tests/test_context_keyword_errors.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

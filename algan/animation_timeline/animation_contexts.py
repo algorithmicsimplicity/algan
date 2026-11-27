@@ -1307,6 +1307,15 @@ class Off(AnimationContext):
     def __init__(self, priority_level: float = 1, **kwargs):
         if "record_funcs" not in kwargs:
             kwargs["record_funcs"] = False
+        for name in ("runtime", "run_time", "duration"):
+            if name in kwargs:
+                # Off fixes its own runtime at 0, so the generic "Algan spells
+                # it 'runtime'" hint would point at a spelling that fails too.
+                raise _TimingParameterError(
+                    f"An Off block applies its changes instantly, so it takes "
+                    f"no {name!r}. To animate the changes over a time, use "
+                    f"Seq(runtime=...) or Sync(runtime=...) instead of Off()."
+                )
         super().__init__(
             lag_ratio=1,
             runtime_per_part=0,
@@ -1378,6 +1387,11 @@ class Lag(AnimationContext):
     """
 
     def __init__(self, ratio: float = 0.5, runtime: float | None = None, **kwargs):
+        if "lag_ratio" in kwargs:
+            raise _TimingParameterError(
+                f"'lag_ratio' is not a Lag parameter; Lag spells it 'ratio'. "
+                f"Write:\n\n    with Lag({kwargs['lag_ratio']!r}):\n        ...\n"
+            )
         super().__init__(runtime, lag_ratio=ratio, new_animation=True, **kwargs)
 
 
