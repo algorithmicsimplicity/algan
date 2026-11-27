@@ -411,6 +411,9 @@ ALWAYS_CI = (
     "tests/unit_tests/test_cli_startup.py::test_the_entry_point_points_outside_the_package",
     "tests/unit_tests/test_direct_specular_lobe.py::test_the_lobe_is_off_for_a_non_pbr_material",
     "tests/unit_tests/test_direct_specular_lobe.py::test_a_back_facing_hit_does_not_explode",
+    # The angle between two vectors is finite at 0 and 180 degrees, so look()
+    # at a target the Mob already faces does not raise: tensors and Squares.
+    "tests/unit_tests/test_rotation_between_vectors.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

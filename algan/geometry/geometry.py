@@ -308,15 +308,14 @@ def get_rotation_between_3d_vectors(vector1, vector2, dim=-1):
     # cross(v1, v2) unnegated: the axis that carries v1 to v2 under the
     # right-handed rotation get_rotation_around_axis builds. It was negated
     # while that rotation ran the other way.
-    normal_vector = F.normalize(
-        broadcast_cross_product(vector1, vector2, dim=dim), p=2, dim=dim
-    )
+    cross = broadcast_cross_product(vector1, vector2, dim=dim)
+    normal_vector = F.normalize(cross, p=2, dim=dim)
     normal_vector_r = get_orthonormal_vector(vector1, vector2)
-    radians_to_rotate = (
-        F.cosine_similarity(vector1, vector2, dim=dim, eps=1e-12)
-        .arccos()
-        .unsqueeze(dim)
-    )
+    # atan2(|cross|, dot) stays accurate near 0 and 180 degrees and is never
+    # NaN. arccos of the cosine was: a cosine that rounds to just above 1 (a
+    # Mob already facing its target) made look() and look_at() raise.
+    dot = (vector1 * vector2).sum(dim, keepdim=True)
+    radians_to_rotate = torch.atan2(cross.norm(dim=dim, keepdim=True), dot)
     degrees_to_rotate = radians_to_rotate * RADIANS_TO_DEGREES
     normal_vector = torch.where(
         (degrees_to_rotate.abs() <= 1e-4) | ((degrees_to_rotate - 180).abs() <= 1e-4),
