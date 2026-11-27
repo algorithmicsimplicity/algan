@@ -4520,11 +4520,11 @@ class RenderLoopMixin:
         pass_resources = self.__dict__.get("_camera_view_resources")
         # On Windows, torch must refuse memory the card's dedicated memory
         # cannot hold rather than let the driver page it into shared system
-        # memory; see memory_utils._CUDA_DEDICATED_HOLD. Taken here, after the
-        # job's collection and before its arena, so that what the process
-        # holds besides this render can be told apart from it. A render
-        # without the hold is only slower where it pages, so a failure to
-        # take it is not said.
+        # memory; see memory_utils._CUDA_DEDICATED_HOLD. Taken here, before
+        # the arena: what is live both now and when the job began is what the
+        # process holds besides this render, and a process holding much of
+        # that is left alone. A render without the hold is only slower where
+        # it pages, so a failure to take it is not said.
         with contextlib.suppress(Exception):
             hold_cuda_allocator_to_dedicated_memory()
         if pass_resources is None:

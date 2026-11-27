@@ -892,10 +892,18 @@ path already answers. Four choices in it were measured, not assumed:
   `test_sheet_resolve_variants.py` keeps the arenas of six one-frame renders
   alive; each next arena is sized from what the driver has free, so it fits
   the card, but at 13.3 GiB live the seventh's 458 MiB was refused under the
-  limit. The hold is therefore taken in `_get_frames_impl`, after the job's
-  collection and before its arena, and not at all when the process already
-  holds more than an eighth of the device in live tensors
-  (`_CUDA_HOLD_FOREIGN_SHARE`): that render runs as it did unheld. The one
+  limit. The hold is therefore taken in `_get_frames_impl`, before the arena,
+  and not at all when the process holds more than an eighth of the device in
+  live tensors that are not the render's (`_CUDA_HOLD_FOREIGN_SHARE`): that
+  render runs as it did unheld. "Not the render's" is what was live both
+  when the outermost job began (`note_cuda_memory_before_render_job`, called
+  from `render_job_holding_the_arch`) and at the arena. The arena reading
+  alone is wrong: `_static_frame_runs` moves the timeline's prepared queries
+  to the device before anything is fetched, 2.5 GiB of them for scene 15 at
+  any resolution, and with only that reading scene 15 -- the clip the hold
+  matters most to -- ran unheld (HD render 195 s with torch reserving
+  16.3 GB; beside a second tenant 326 s, master's 348 s). With both readings
+  it is held again: HD 107 s inside 13.6 GB, beside the tenant 149 s. The one
   thing the hold can still take away is a single frame the driver would have
   paged through; `_one_frame_does_not_fit_message` names the switch then.
 - **0.84.** The driver offers a process 15,213 of this card's 16,276 MiB, and

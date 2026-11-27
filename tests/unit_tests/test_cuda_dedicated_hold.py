@@ -53,6 +53,7 @@ def cuda_render(monkeypatch):
         lambda fraction, device=None: calls.append((fraction, device)),
     )
     monkeypatch.setattr(memory_utils, "_CUDA_ALLOCATOR_HELD", None)
+    monkeypatch.setattr(memory_utils, "_CUDA_LIVE_BEFORE_JOB", None)
     return calls
 
 
@@ -90,6 +91,57 @@ def test_a_process_holding_other_memory_is_not_held(cuda_render, monkeypatch):
     )
     assert memory_utils.hold_cuda_allocator_to_dedicated_memory()
     assert memory_utils.cuda_allocator_is_held()
+
+
+def _live(monkeypatch, nbytes):
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda _index=None: nbytes)
+
+
+def test_what_the_render_put_there_before_its_arena_is_its_own(
+    cuda_render, monkeypatch
+):
+    # A video render moves its timeline's prepared queries to the device to
+    # find its static frames before it fetches anything: 2.5 GiB for a clip
+    # whose textures change every frame. Read where the arena is allocated,
+    # that was taken for the process's other memory, and the clip ran unheld.
+    from algan.rendering.taichi_runtime import render_job_holding_the_arch
+
+    over = int(TOTAL * memory_utils._CUDA_HOLD_FOREIGN_SHARE) + 1
+    with render_job_holding_the_arch():
+        _live(monkeypatch, over)
+        # get_frames enters the job again, after that data is on the device;
+        # only the outermost entry says what the process held before.
+        with render_job_holding_the_arch():
+            assert memory_utils.hold_cuda_allocator_to_dedicated_memory()
+        assert memory_utils.cuda_allocator_is_held()
+    assert not memory_utils.cuda_allocator_is_held()
+    assert cuda_render == [(memory_utils._CUDA_DEDICATED_HOLD, 0), (1.0, 0)]
+
+
+def test_what_an_earlier_render_left_and_freed_is_not_counted(cuda_render, monkeypatch):
+    from algan.rendering.taichi_runtime import render_job_holding_the_arch
+
+    _live(monkeypatch, int(TOTAL * memory_utils._CUDA_HOLD_FOREIGN_SHARE) + 1)
+    with render_job_holding_the_arch():
+        _live(monkeypatch, 8 << 20)
+        assert memory_utils.hold_cuda_allocator_to_dedicated_memory()
+
+
+def test_memory_held_before_the_job_and_still_at_its_arena_is_not_the_renders(
+    cuda_render, monkeypatch
+):
+    from algan.rendering.taichi_runtime import render_job_holding_the_arch
+
+    _live(monkeypatch, int(TOTAL * memory_utils._CUDA_HOLD_FOREIGN_SHARE) + 1)
+    with render_job_holding_the_arch():
+        assert not memory_utils.hold_cuda_allocator_to_dedicated_memory()
+    assert cuda_render == []
+
+    # The next job reads its own start, not the last job's.
+    _live(monkeypatch, 8 << 20)
+    with render_job_holding_the_arch():
+        _live(monkeypatch, TOTAL // 2)
+        assert memory_utils.hold_cuda_allocator_to_dedicated_memory()
 
 
 def test_a_frame_that_does_not_fit_names_the_switch_while_held(cuda_render):

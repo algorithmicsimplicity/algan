@@ -498,20 +498,36 @@ def release_mps_allocator_hold():
 #: driver offers; at 0.86 a UHD render ended 47 MiB short of it.
 _CUDA_DEDICATED_HOLD = 0.84
 
-#: Share of the device the process may already hold in live torch tensors
-#: when a render's arena is about to be allocated, above which the render is
-#: not held. The limit presumes the process's CUDA memory is the render's own.
-#: Where it is not -- a model loaded beside the render, or earlier renders'
-#: arenas a caller still references -- the arena is still sized from what the
-#: driver has free, so it fits the card, but the fixed limit no longer leaves
-#: the render its room: six one-frame renders whose arenas a test kept alive
-#: reached 13.3 GiB live, and the seventh's 458 MiB arena was refused under a
-#: 13.35 GiB limit on a card with 1.1 GiB free. Such a render runs as it did
-#: before the hold existed.
+#: Share of the device the process may hold in live torch tensors that are
+#: not this render's, above which the render is not held. The limit presumes
+#: the process's CUDA memory is the render's own. Where it is not -- a model
+#: loaded beside the render, or earlier renders' arenas a caller still
+#: references -- the arena is still sized from what the driver has free, so it
+#: fits the card, but the fixed limit no longer leaves the render its room:
+#: six one-frame renders whose arenas a test kept alive reached 13.3 GiB live,
+#: and the seventh's 458 MiB arena was refused under a 13.35 GiB limit on a
+#: card with 1.1 GiB free. Such a render runs as it did before the hold
+#: existed.
+#:
+#: What is "not this render's" is what was live both when the outermost job
+#: began (:func:`note_cuda_memory_before_render_job`) and where the arena is
+#: allocated. Either reading alone miscounts: the first includes what an
+#: earlier render left that is freed before the arena, and the second
+#: includes what this render has already put on the device -- a video render
+#: moves its timeline's prepared queries there to find its static frames
+#: before it fetches anything, 2.5 GiB of them for a 563-frame clip whose
+#: textures change every frame, and read alone that left the one clip the
+#: hold matters most to unheld. The gap that remains: a job that begins with
+#: more than the share in leftovers it then frees *and* loads more than the
+#: share of its own before the arena reads as foreign, and runs unheld.
 _CUDA_HOLD_FOREIGN_SHARE = 0.125
 
 #: The device torch's CUDA allocator is held on for the running render job.
 _CUDA_ALLOCATOR_HELD = None
+
+#: Live torch bytes on the render device when the outermost render job began,
+#: or None where that was not read.
+_CUDA_LIVE_BEFORE_JOB = None
 
 
 def cuda_dedicated_hold_fraction():
@@ -528,15 +544,44 @@ def cuda_dedicated_hold_fraction():
     return fraction
 
 
+def _held_cuda_device_index():
+    """The index of the CUDA device a Windows render would be held on, or
+    None where there is no hold: another device, another platform, or the
+    switch off.
+    """
+    device = render_device()
+    if device.type != "cuda" or cuda_dedicated_hold_fraction() is None:
+        return None
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
+def note_cuda_memory_before_render_job():
+    """Record what the process holds on the render device as the outermost
+    render job begins, before the job has put anything there.
+
+    :func:`hold_cuda_allocator_to_dedicated_memory` reads it to tell the
+    process's other memory from the render's own
+    (:data:`_CUDA_HOLD_FOREIGN_SHARE`).
+    """
+    global _CUDA_LIVE_BEFORE_JOB
+    # Cleared first: a read that fails must not leave an earlier job's figure.
+    _CUDA_LIVE_BEFORE_JOB = None
+    index = _held_cuda_device_index()
+    if index is not None:
+        _CUDA_LIVE_BEFORE_JOB = torch.cuda.memory_allocated(index)
+
+
 def hold_cuda_allocator_to_dedicated_memory():
     """Hold torch's CUDA allocator inside the card's dedicated memory for a
     render job.
 
     Called where a render job is about to allocate its arena
-    (``RenderLoopMixin._get_frames_impl``), which is after the job's
-    collection has freed what earlier renders left, so the live figure read
-    here is what the process holds *besides* this render
-    (:data:`_CUDA_HOLD_FOREIGN_SHARE`). The outermost job's end calls
+    (``RenderLoopMixin._get_frames_impl``). What is live both there and at
+    the job's start (:func:`note_cuda_memory_before_render_job`) is taken as
+    the process's other memory, and a process holding more of that than
+    :data:`_CUDA_HOLD_FOREIGN_SHARE` is not held. Without the note -- a call
+    outside a render job -- everything live counts. The outermost job's end
+    calls
     :func:`release_cuda_allocator_hold`
     (``taichi_runtime.render_job_holding_the_arch``).
     :data:`_CUDA_DEDICATED_HOLD` says why and what the limit is.
@@ -546,15 +591,14 @@ def hold_cuda_allocator_to_dedicated_memory():
     global _CUDA_ALLOCATOR_HELD
     if _CUDA_ALLOCATOR_HELD is not None:
         return True
-    device = render_device()
-    if device.type != "cuda":
+    index = _held_cuda_device_index()
+    if index is None:
         return False
     fraction = cuda_dedicated_hold_fraction()
-    if fraction is None:
-        return False
-    index = device.index if device.index is not None else torch.cuda.current_device()
     total_bytes = torch.cuda.get_device_properties(index).total_memory
     live_bytes = torch.cuda.memory_allocated(index)
+    if _CUDA_LIVE_BEFORE_JOB is not None:
+        live_bytes = min(live_bytes, _CUDA_LIVE_BEFORE_JOB)
     from algan.logging.logger import get_logger
 
     if live_bytes > _CUDA_HOLD_FOREIGN_SHARE * total_bytes:
@@ -562,7 +606,8 @@ def hold_cuda_allocator_to_dedicated_memory():
         # indistinguishable from one on a build without the hold.
         get_logger().debug(
             "Not holding torch's CUDA allocator for this render: the process "
-            "already holds %.0f MiB of cuda:%d in live tensors.",
+            "holds %.0f MiB of cuda:%d in live tensors that are not the "
+            "render's.",
             live_bytes / 2**20,
             index,
         )
@@ -589,7 +634,8 @@ def release_cuda_allocator_hold():
     its default in every respect but one -- memory past the device's total,
     which only a driver that pages (WDDM) hands out, stays refused.
     """
-    global _CUDA_ALLOCATOR_HELD
+    global _CUDA_ALLOCATOR_HELD, _CUDA_LIVE_BEFORE_JOB
+    _CUDA_LIVE_BEFORE_JOB = None
     held = _CUDA_ALLOCATOR_HELD
     if held is None:
         return

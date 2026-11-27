@@ -1306,6 +1306,15 @@ def render_job_holding_the_arch():
                 "go unreported.",
                 exc,
             )
+        # What the process holds on a CUDA device before this job puts
+        # anything there; the hold a Windows render takes at its arena reads
+        # it (memory_utils._CUDA_HOLD_FOREIGN_SHARE). Outermost entry only: a
+        # video render re-enters through get_frames after it has moved its
+        # timeline's queries to the device.
+        with contextlib.suppress(Exception):
+            from algan.utils.memory_utils import note_cuda_memory_before_render_job
+
+            note_cuda_memory_before_render_job()
         # Optimizations and reporting: nothing here may fail a render, and an
         # exception before the `try` would leave the job count stuck.
         with contextlib.suppress(Exception):
