@@ -160,6 +160,32 @@ class NeverSpawnedMobWarning(AlganWarning):
     code = "ALGAN_NEVER_SPAWNED_MOB"
 
 
+class _UnknownMobAttributeWarning(AlganWarning):
+    """Warns that a name assigned on a Mob is not an Algan attribute.
+
+    ``sq.opactiy = 0.5`` is a plain Python assignment: it records nothing and
+    changes nothing in the video. Issued once per class and name when a render
+    starts, only for names that closely resemble a real attribute.
+
+    Defined with a leading underscore and left out of ``__all__``, so it is not
+    part of the public star-import (which would change the public API
+    snapshot); the public spelling ``UnknownMobAttributeWarning`` is served by
+    the module ``__getattr__`` below, for ``warnings.filterwarnings``.
+    """
+
+    code = "ALGAN_UNKNOWN_MOB_ATTRIBUTE"
+
+
+_UnknownMobAttributeWarning.__name__ = "UnknownMobAttributeWarning"
+_UnknownMobAttributeWarning.__qualname__ = "UnknownMobAttributeWarning"
+
+
+def __getattr__(name):
+    if name == "UnknownMobAttributeWarning":
+        return _UnknownMobAttributeWarning
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 class DespawnedMobWarning(AlganWarning):
     """Warns that an operation on a despawned Mob cannot bring it back."""
 

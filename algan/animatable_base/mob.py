@@ -596,6 +596,40 @@ _MANIM_CONSTRUCTOR_HINTS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Render-time lint: public instance attributes that look like a mistaken
+# attempt to set an Algan attribute (``sq.opactiy = 0.5``).
+#
+# A Mob has no ``__setattr__`` (hot path), so such an assignment lands in the
+# instance ``__dict__`` and does nothing. To tell it from a name the library
+# itself set, the outermost ``__init__`` of every Mob records the names present
+# when construction finished (``_ctor_names``); only names added after that are
+# candidates. The record is a single ``frozenset`` of the instance dict.
+# ---------------------------------------------------------------------------
+
+#: ids of Mobs whose outermost ``__init__`` is running (nested ``super()`` calls
+#: and subclass chains must snapshot once, at the very end).
+_CONSTRUCTING: set[int] = set()
+
+
+def _record_construction_names(init):
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        key = id(self)
+        if key in _CONSTRUCTING:
+            return init(self, *args, **kwargs)
+        _CONSTRUCTING.add(key)
+        try:
+            init(self, *args, **kwargs)
+        finally:
+            _CONSTRUCTING.discard(key)
+        d = self.__dict__
+        d["_ctor_names"] = frozenset(d)
+
+    __init__._records_ctor_names = True
+    return __init__
+
+
 class Mob(
     MobHierarchyMixin,
     MobOrientationMixin,
@@ -846,6 +880,14 @@ class Mob(
             value = cls.__dict__.get(name)
             if isinstance(value, bool):
                 setattr(cls, name, _GeometryDeclaration(name, value))
+        # The __init__ a construction of this class enters first records what
+        # construction set, so the render-time lint can tell a script's later
+        # assignment from it. That is the class's own __init__, or one
+        # inherited from a mixin that is not a Mob: wrapping only Mob's would
+        # take the record before that mixin's __init__ finished.
+        init = cls.__dict__.get("__init__") or cls.__init__
+        if not getattr(init, "_records_ctor_names", False):
+            cls.__init__ = _record_construction_names(init)
 
     # Backing store for :attr:`pass_index`; ``None`` until a value is set.
     _pass_index = None
@@ -3736,3 +3778,156 @@ _GUARDED_ATTRIBUTE_NAMES = {
 for _name, _message in _GUARDED_ATTRIBUTE_NAMES.items():
     setattr(Mob, _name, _GuardedName(_name, _message))
 del _name, _message
+
+
+Mob.__init__ = _record_construction_names(Mob.__init__)
+
+
+# Public names the library itself attaches to a Mob after construction. They are
+# not user typos, whatever they resemble. Derived by linting a broad record-only
+# scene with the near-miss gate off (see the lint tests); keep this short.
+_LIBRARY_SET_ATTRS: frozenset[str] = frozenset(
+    {
+        # MobMaterialsMixin.set_material / set_shader / set_fragment_shader
+        # store these on the instance after construction.
+        "material",
+        "shader_specific_param_names",
+    }
+)
+
+# Wrong spellings with a working alternative. Applied only where the Mob's own
+# class does not define the name, so ``Prism.width`` is never flagged. ``shader``
+# is set by construction on most Mobs, so an assignment overwrites an existing
+# key and is invisible to a names-added-after-construction scan; it is reported
+# only where construction did not set it. ``material`` is library-set (see
+# ``_LIBRARY_SET_ATTRS``) and cannot be told from a user assignment.
+_WRONG_SPELLINGS = {
+    "width": "scale_to_width(...)",
+    "height": "scale_to_height(...)",
+    "size": "scale(...) or set_scale(...)",
+    "fill_color": "`color`",
+    "fill_colour": "`color`",
+    "colour": "`color`",
+    "loc": "`location`",
+    "shader": "set_shader(...) before spawning",
+}
+
+_CLASS_NAMES_CACHE: dict = {}
+
+
+def _class_declared_names(cls):
+    """Every name any class in ``cls``'s MRO declares: class attributes,
+    properties, descriptors, methods and annotations.
+    """
+    names = _CLASS_NAMES_CACHE.get(cls)
+    if names is None:
+        found = set()
+        for klass in cls.__mro__:
+            found.update(vars(klass))
+            found.update(getattr(klass, "__annotations__", None) or ())
+        names = _CLASS_NAMES_CACHE[cls] = frozenset(found)
+    return names
+
+
+def _class_known_targets(cls):
+    """Public names worth suggesting for ``cls``: its attributes and methods,
+    leaving out the guarded names (assigning those raises).
+    """
+    key = (cls, "targets")
+    names = _CLASS_NAMES_CACHE.get(key)
+    if names is None:
+        found = set()
+        for klass in cls.__mro__:
+            for n, v in vars(klass).items():
+                if not n.startswith("_") and not isinstance(v, _GuardedName):
+                    found.add(n)
+        names = _CLASS_NAMES_CACHE[key] = frozenset(found)
+    return names
+
+
+def find_unknown_mob_attributes(mobs, *, gate=True):
+    """Instance attributes on ``mobs`` that look like a mistaken attempt to set
+    an Algan attribute, as ``(class_name, attribute, advice)`` tuples (one per
+    class name and attribute, in discovery order).
+
+    ``gate=False`` drops the near-miss requirement and reports every name set
+    after construction; it exists to audit what the library itself attaches.
+    Never raises.
+    """
+    found = {}
+    for mob in mobs:
+        try:
+            d = mob.__dict__
+            snap = d.get("_ctor_names")
+            if snap is None or len(d) <= len(snap):
+                continue
+            cls = type(mob)
+            accessor_attrs = d.get("_accessor_attrs", ())
+            for name in d:
+                if name in snap or name[:1] == "_" or name in _LIBRARY_SET_ATTRS:
+                    continue
+                kind, _, attr = name.partition("_")
+                if kind in ("set", "get") and attr in accessor_attrs:
+                    # A ``set_<attr>``/``get_<attr>`` built on first use and
+                    # kept on the instance (Animatable._generated_accessor).
+                    continue
+                if (cls.__name__, name) in found:
+                    continue
+                if name in _class_declared_names(cls):
+                    continue
+                advice = _unknown_attribute_advice(mob, cls, name)
+                if advice is None and gate:
+                    continue
+                found[(cls.__name__, name)] = advice or ""
+        except Exception:  # noqa: BLE001 - a diagnostic must never abort a render
+            continue
+    return [(c, n, a) for (c, n), a in found.items()]
+
+
+def _unknown_attribute_advice(mob, cls, name):
+    hint = _WRONG_SPELLINGS.get(name)
+    if hint is not None:
+        return f"Use {hint} instead."
+    if name[-1:].isdigit():
+        return None
+    known = set(_class_known_targets(cls))
+    known.update(a for a in getattr(mob, "animatable_attrs", ()) if a[:1] != "_")
+    known.discard(name)
+    close = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.8)
+    if close:
+        return f"Did you mean `{close[0]}`?"
+    return None
+
+
+def warn_unknown_mob_attributes(scene, stacklevel=None):
+    """Warn once per (class name, attribute) about attributes set on a Scene's
+    Mobs that look like typos of Algan attributes. O(number of Mobs); safe to
+    call on every render job -- pairs already reported for ``scene`` are not
+    repeated. Never raises.
+    """
+    from algan.errors import _UnknownMobAttributeWarning, _user_stacklevel
+
+    try:
+        warned = scene.__dict__.setdefault("_unknown_attr_warned", set())
+        mobs = [
+            getattr(scene, "camera", None),
+            *(getattr(scene, "light_sources", None) or ()),
+            *(getattr(scene, "actors", None) or ()),
+        ]
+        fresh = [
+            item
+            for item in find_unknown_mob_attributes(m for m in mobs if m is not None)
+            if item[:2] not in warned
+        ]
+        level = stacklevel or _user_stacklevel()
+    except Exception:  # noqa: BLE001 - a diagnostic must never abort a render
+        return
+    # Outside the try: a user who escalates warnings to errors asked for that.
+    for cls_name, name, advice in fresh:
+        warned.add((cls_name, name))
+        warnings.warn(
+            f"`{name}` was set on a {cls_name} but is not an Algan "
+            f"attribute, so it changed nothing in the video. {advice}",
+            _UnknownMobAttributeWarning,
+            stacklevel=level,
+        )

@@ -418,6 +418,8 @@ _INTERNAL_EXPORT_NAMES = frozenset(
     {
         # authoring/session plumbing
         "default_scene_initializer",
+        "find_unknown_mob_attributes",
+        "warn_unknown_mob_attributes",
         "get_logger",
         "install_opengl_aliases",
         "active_scene_for_new_mob",

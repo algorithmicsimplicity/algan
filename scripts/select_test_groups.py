@@ -429,6 +429,9 @@ ALWAYS_CI = (
     # rate, an unknown ray-tracing setting gets a suggestion, and `algan
     # check` follows the encoder's ffmpeg lookup: stand-ins, no render.
     "tests/unit_tests/test_viewer_and_speech_fixes.py::",
+    # A render warns about a name set on a Mob that looks like a misspelt
+    # Algan attribute, and about nothing the library itself set: record-only.
+    "tests/unit_tests/test_unknown_mob_attribute_lint.py::",
 )
 
 # The same for regression tests too slow for the CI budget: they render, or

@@ -3133,6 +3133,18 @@ class RenderLoopMixin:
             stacklevel=_user_stacklevel(),
         )
 
+    def _warn_unknown_mob_attributes(self):
+        """Warn about public names set on this Scene's Mobs that look like a
+        typo of an Algan attribute. One O(Mobs) scan per render job; see
+        ``algan.animatable_base.mob.warn_unknown_mob_attributes``. Never
+        raises (stub Scenes in the render-loop tests carry little state).
+        """
+        try:
+            from algan.animatable_base.mob import warn_unknown_mob_attributes
+        except Exception:  # noqa: BLE001 - a diagnostic must never abort a render
+            return
+        warn_unknown_mob_attributes(self)
+
     def _never_spawned_root_mobs(self):
         """Root actors whose whole subtree never spawned but which own geometry.
 
@@ -4222,6 +4234,9 @@ class RenderLoopMixin:
 
             reset_truncations()
             reset_route_veto_log()
+            # Once per render job: names set on a Mob that merely look like a
+            # typo of an Algan attribute (``sq.opactiy = 0.5``) change nothing.
+            self._warn_unknown_mob_attributes()
         # So is the float32 rounding warning's: a camera-view pass finds this
         # job's record already open and adds to it, so the render warns once.
         owns_rounding_job = getattr(self, "_float32_rounding_job", None) is None
