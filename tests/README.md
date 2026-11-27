@@ -475,6 +475,22 @@ A Mac therefore covers kernel compilation, tessellation, LaTeX, the fonts and
 the encoder, but not the pixels. To gate pixels there, render with
 `ALGAN_UPDATE_FAST_BASELINE=1` on the Mac, look at the result, and commit it.
 
+**The committed `cpu` baseline is the Linux runner's, and a Windows machine
+misses it on `Text`.** Measured on November 27 on a Windows machine with an
+RTX 5080: its CPU and CUDA renders of the fast scene agree with each other to
+1 channel value, and both differ from `expected_outputs_cpu/` by up to 10, on
+about 200 pixels a frame, every one of them on the edge of a `Text` glyph
+(the title and the caption). The circuits, the meshes and the `Tex` formula
+match exactly. The font is the vendored face and the installed `manimpango`
+is the locked version, so what differs is the outline Pango hands back on
+each platform; the cause inside Pango was not established. CI has no Windows
+arm, so nothing gates this: `ALGAN_RENDER_DEVICE=cpu pytest tests/fast` fails
+on Windows by that margin, and `expected_outputs_cuda/` -- rendered on that
+Windows machine -- would miss by the same margin on a Linux CUDA machine.
+The `cuda` baseline was regenerated that day; before it, it dated from
+September 26 and had missed ten deliberate renderer changes that re-baselined
+only the CPU.
+
 The fast suite keeps its CPU/CUDA baselines in Git; heavy suites use the
 release manifest. Backend sets are *not* interchangeable. Earlier measurements
 found differences larger than the tolerance:
