@@ -32,6 +32,12 @@ The release gate checks that:
 - every archive named by `tests/baselines.json` downloads and matches its recorded
   SHA-256, via `scripts/gate/verify_baseline_pointer.py`.
 
+A push to master cancels the Test run still in flight for the push before it,
+so when several PRs merge in a row only the last commit's run finishes, and an
+earlier commit's cancelled run fails the Test check. Release the last commit,
+or re-run the cancelled run once master's newer run has finished (a re-run joins
+master's group, and would cancel a run still going there).
+
 The Test gate is the cheap check, not the release's test run. A push to master
 runs only the CI test group on two arms. The release runs the rest itself: its
 `test` job calls the Test workflow at the full scope (every unit test and the

@@ -16,10 +16,12 @@ on:
 permissions:
   contents: read
 
-# One run per pull request; see test.yaml for why another label gets a group
-# of its own.
+# One run per pull request, and one per branch for pushes, so a burst of
+# merges into master runs this once; the schedule and merge-queue runs are
+# never cancelled. See test.yaml for why, and for why another label gets a
+# group of its own.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
+  group: ${{ github.workflow }}-${{ github.head_ref || (github.event_name == 'push' && github.ref) || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 jobs:
   lock_file:

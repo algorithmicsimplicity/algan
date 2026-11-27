@@ -18,8 +18,11 @@ on:
   schedule:
     - cron: "23 4 * * 1"
 
+# Cancel superseded runs on the same PR, or on master for pushes: code
+# scanning keeps the latest analysis of a branch, so an older one that
+# finishes later is spent for nothing. The weekly run is never cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.head_ref || (github.event_name == 'push' && github.ref) || github.run_id }}
   cancel-in-progress: true
 
 permissions:
