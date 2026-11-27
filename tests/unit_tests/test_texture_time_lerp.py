@@ -420,3 +420,20 @@ def test_sub_batch_windows_use_the_animations_own_span():
     assert seg.cache_key is not None, (
         "a mid-animation window is stable across batches and cacheable"
     )
+
+
+def test_a_render_drops_the_segment_window_caches_when_it_ends():
+    """The post-state cache keeps one whole texture image per described edit.
+    Nothing cleared it, so every crossfade a render described kept its image
+    for the Scene's life, on top of the edit's own stored pre-image.
+    """
+    tex_a, tex_b = _tex(8, 8, 1), _tex(8, 8, 2)
+    scene, surface = _crossfade_scene(tex_a, tex_b)
+    timeline = scene.timeline_manager
+    with timeline.preserving_authoring_state():
+        _, seg = _materialize(scene, surface, torch.linspace(0.5, 3.5, 7))
+        assert seg is not None
+        assert timeline._segment_post_cache
+        assert timeline._segment_edit_cache
+    assert not timeline._segment_post_cache
+    assert not timeline._segment_edit_cache

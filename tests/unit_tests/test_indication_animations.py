@@ -35,9 +35,11 @@ from algan import (
     ShowPassingFlash,
     ShowPassingFlashWithThinningStrokeWidth,
     Square,
+    Sync,
     Wiggle,
 )
 from algan.constants.color import BLUE, PURE_GREEN
+from algan.constants.spatial import RIGHT
 
 
 def _elapsed(scene):
@@ -387,3 +389,24 @@ def test_indication_animations_accept_a_group(scene):
     Indicate(group, runtime=0.5)
     ApplyWave(group, runtime=0.5)
     assert _elapsed(scene) - start == pytest.approx(1.0, abs=1e-6)
+
+
+def test_wiggle_composes_with_a_move_running_alongside_it(scene):
+    """``Wiggle`` used to rebuild the Mob from the basis and location it had
+    when it was recorded -- after the move beside it in the ``Sync`` -- and
+    wrote them back on every frame: the square sat at x = 3 from the start
+    and never travelled. Rocking the Mob as each frame finds it lets the move
+    through, as ``Indicate`` does.
+    """
+    with Off():
+        square = Square().spawn()
+    start = _elapsed(scene)
+    with Sync():
+        square.move(RIGHT * 3)
+        Wiggle(square, runtime=1.0)
+    times = [start, start + 0.5, start + 1.0]
+    location, basis, _, _ = _state(square, scene, times)
+    assert location[:, 0, 0].tolist() == pytest.approx([0.0, 1.5, 3.0], abs=1e-4)
+    # And the wiggle still happens: halfway through, the square is at its
+    # largest.
+    assert not torch.allclose(basis[1], basis[0], atol=1e-3)

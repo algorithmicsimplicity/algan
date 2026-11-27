@@ -35,16 +35,22 @@ import copy
 import math
 import os
 import typing
+import warnings
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any
 
 from algan.animation_timeline.timeline import TimelineSpan
 from algan.constants import easings
-from algan.errors import AlganConfigurationError, ContextReuseError
+from algan.errors import (
+    AlganConfigurationError,
+    AlganWarning,
+    ContextReuseError,
+    _user_stacklevel,
+)
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
 from algan.utils.audio_utils import (
@@ -312,6 +318,52 @@ def _guard_context_init(cls):
     return cls
 
 
+def _recording_checkpoint(am):
+    """What a context needs to undo its recording if its body raises: the
+    timeline's :meth:`~.AnimationTimeline.recording_checkpoint` and how far the
+    Scene's audio lists reach.
+    """
+    scene = getattr(am, "scene", None)
+    timeline = getattr(scene, "timeline_manager", None)
+    if timeline is None:
+        return None
+    audio = scene.audio_manager
+    return (
+        timeline.recording_checkpoint(),
+        len(scene.effects),
+        len(audio._speech_blocks),
+        len(audio._subcaptions),
+        len(audio.video_transcript),
+    )
+
+
+def _roll_back_recording(am, checkpoint):
+    """Drop what was recorded since ``checkpoint`` (:func:`_recording_checkpoint`),
+    for a block whose body raised. Warns, and keeps the recording, when the
+    block changed it in a way the timeline cannot take back.
+    """
+    if checkpoint is None:
+        return
+    scene = am.scene
+    timeline_checkpoint, effects, speech_blocks, subcaptions, transcript = checkpoint
+    if not scene.timeline_manager.roll_back_recording(timeline_checkpoint):
+        warnings.warn(
+            "A 'with' block or animated call raised after it had spawned or "
+            "despawned a Mob (or otherwise changed what was recorded before "
+            "it), so what it recorded before the error stays on the timeline "
+            "and plays alongside what comes next. Re-run the script, or "
+            "Scene.reset(), to start from a clean recording.",
+            AlganWarning,
+            stacklevel=_user_stacklevel(),
+        )
+        return
+    audio = scene.audio_manager
+    del scene.effects[effects:]
+    del audio._speech_blocks[speech_blocks:]
+    del audio._subcaptions[subcaptions:]
+    audio.video_transcript = audio.video_transcript[:transcript]
+
+
 class AnimationManager:
     """Per-Scene owner of the active animation-context stack.
 
@@ -483,6 +535,13 @@ class AnimationContext:
     ``runtime`` retroactively rescales all the timestamps recorded inside it, which
     is how you give a whole block a fixed runtime without timing its parts.
 
+    A block whose body raises records nothing: what it recorded before the error
+    is taken back off the timeline, so catching the exception (in a notebook, say)
+    leaves the recording as if the block had not run. Python state the body
+    changed (a Mob it built, a parent it gave one) stays. A block that spawned or
+    despawned a Mob before raising cannot be taken back; it keeps its recording
+    and warns with :class:`.AlganWarning`.
+
     Parameters
     ----------
     runtime
@@ -575,14 +634,17 @@ class AnimationContext:
     combine_easing: bool = False
     record_funcs: bool | None = None
     record_attr_modifications: bool | None = None
-    prev_context: AnimationContext | None = None
+    # Out of the generated repr: these reach the whole context tree, every
+    # Mob made in it and the Scene, so printing one context printed all of
+    # them (megabytes for a real scene, from one debugger hover).
+    prev_context: AnimationContext | None = field(default=None, repr=False)
     spawn_at_end: bool | None = None
     new_animation: bool | None = False
     finished: bool = False
-    new_mobs: list | None = None
-    child_contexts: list | None = None
-    kwargs: Any = None
-    animation_manager: Any = None
+    new_mobs: list | None = field(default=None, repr=False)
+    child_contexts: list | None = field(default=None, repr=False)
+    kwargs: Any = field(default=None, repr=False)
+    animation_manager: Any = field(default=None, repr=False)
 
     def __post_init__(self):
         self.runtime = _reject_invalid_runtime("runtime", self.runtime)
@@ -698,6 +760,7 @@ class AnimationContext:
 
         t = self.prev_context.timespan.current_time
         self.timespan = TimelineSpan(t, t, t)
+        self._recording_checkpoint = _recording_checkpoint(am)
         self._manager_override_token = _ANIMATION_MANAGER_OVERRIDE.set(am)
         return self
 
@@ -761,6 +824,23 @@ class AnimationContext:
             The child :class:`~.AnimationContext`.
         """
         self.child_contexts.append(c)
+
+    def _unlink_from_parent(self):
+        """Internal: drop this exited context from its parent's children.
+
+        Only for a context that recorded nothing and took no time, such as
+        the one frame materialization runs in: nothing then rescales through
+        it, and left linked it would be kept for the Scene's life. Searched
+        from the end by identity, since it is normally the last child, and
+        the generated ``__eq__`` compares every field.
+        """
+        if getattr(self, "ignored", True) or self.prev_context is None:
+            return
+        siblings = self.prev_context.child_contexts
+        for i in range(len(siblings) - 1, -1, -1):
+            if siblings[i] is self:
+                del siblings[i]
+                return
 
     def get_timespan(self):
         """Get this context's timespan object.
@@ -885,6 +965,10 @@ class AnimationContext:
                     and self in self.prev_context.child_contexts
                 ):
                     self.prev_context.child_contexts.remove(self)
+                # Nor may what it recorded before the error: a caught exception
+                # (a notebook, a REPL) would leave half of the block playing
+                # alongside whatever is written next.
+                _roll_back_recording(am, getattr(self, "_recording_checkpoint", None))
                 return False
 
             def rescale(x, b=self.timespan.original_start, s=1):
@@ -1540,6 +1624,12 @@ class Speech(Audio):
         )
         kwargs["animation_manager"] = animation_manager
         audio_manager = animation_manager.scene.audio_manager
+        # Where the transcript stood before this line, so a block that raises
+        # takes its own line back out too (see __enter__).
+        self._audio_before = (
+            len(audio_manager._speech_blocks),
+            len(audio_manager.video_transcript),
+        )
         audio_manager.append_script(transcript)
         super().__init__(
             audio_manager.get_speech(transcript), wait_at_end=wait_at_end, **kwargs
@@ -1550,6 +1640,18 @@ class Speech(Audio):
         context = super().__enter__()
         if self._audio_effect is not None:
             self._speech_block.start_time_func = self._audio_effect.start_time_func
+        checkpoint = getattr(self, "_recording_checkpoint", None)
+        if checkpoint is not None and not self.ignored:
+            # The line was added when the block was built, just before entry.
+            timeline, effects, _, subcaptions, _ = checkpoint
+            speech_blocks, transcript = self._audio_before
+            self._recording_checkpoint = (
+                timeline,
+                effects,
+                speech_blocks,
+                subcaptions,
+                transcript,
+            )
         return context
 
 

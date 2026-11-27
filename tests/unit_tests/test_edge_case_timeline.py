@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from algan import RIGHT, Lag, Square
+from algan import RIGHT, Lag, Square, Sync
 from algan.errors import AlganConfigurationError
 from algan.scene_manager import SceneManager
 
@@ -43,3 +43,18 @@ def test_lag_zero_ratio_still_allowed():
         torch.tensor([0.0], dtype=torch.get_default_dtype())
     )
     torch.testing.assert_close(a.location, b.location)
+
+
+def test_a_context_prints_without_the_tree_it_belongs_to():
+    """The generated ``repr`` printed every field, and the parent, children,
+    Mobs and manager reach the whole tree: one ``print`` of a context in a
+    two-animation script was about 10 KB.
+    """
+    with Sync() as context:
+        _square().move(RIGHT)
+        _square().move(RIGHT)
+    text = repr(context)
+    assert len(text) < 1000
+    for name in ("prev_context", "child_contexts", "new_mobs", "animation_manager"):
+        assert name not in text
+    assert "runtime=" in text

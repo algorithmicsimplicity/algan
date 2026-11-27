@@ -27,7 +27,6 @@ from __future__ import annotations
 import bisect
 import contextlib
 import copy
-import functools
 import inspect
 import math
 import os
@@ -63,11 +62,36 @@ _NUMPY_DTYPES = {
 TIME_PARAMETER_NAME = "time_elapsed"
 
 
-@functools.lru_cache(maxsize=1024)
+#: ``_positional_parameters``'s memo, held weakly. A strong cache (it was an
+#: ``lru_cache``) kept each function alive, and with it its ``__globals__``:
+#: for an ``@animated_function`` defined in a script that is the script's
+#: namespace, which holds its Scene, every Mob and every timeline buffer, so
+#: the warm daemon kept every earlier run's Scene. Keying on ``__code__``
+#: instead would be wrong: ``inspect.signature`` follows ``__wrapped__``,
+#: ``__signature__`` and ``functools.partial``, so two functions with one code
+#: object -- two functions wrapped by one decorator -- can name different
+#: parameters.
+_POSITIONAL_PARAMETERS = weakref.WeakKeyDictionary()
+
+
 def _positional_parameters(function):
     """Name ``function``'s positional parameters after its first, and its
     ``*args`` parameter (``None`` when it has none).
     """
+    try:
+        return _POSITIONAL_PARAMETERS[function]
+    except KeyError:
+        pass
+    except TypeError:
+        # Unhashable, or not weakly referenceable: nothing to key a weak memo
+        # on, so read the signature every time.
+        return _read_positional_parameters(function)
+    result = _read_positional_parameters(function)
+    _POSITIONAL_PARAMETERS[function] = result
+    return result
+
+
+def _read_positional_parameters(function):
     params = list(inspect.signature(function).parameters.values())[1:]
     named = tuple(
         param.name
@@ -117,6 +141,15 @@ def _call_recorded(function, caller, kwargs):
     return function(caller, *leading, *extra_args, **kwargs)
 
 
+def _rows_of(value, keep, row_count):
+    """``value``'s entries for the rows at positions ``keep`` of a write of
+    ``row_count`` rows (a value broadcast over the rows is returned as is).
+    """
+    if torch.is_tensor(value) and value.dim() >= 2 and value.shape[-2] == row_count:
+        return value.index_select(-2, keep.to(value.device))
+    return value
+
+
 #: Sentinel timestamp for "not yet spawned/despawned".
 def _never():
     return -1
@@ -164,6 +197,18 @@ def bump_structure_version():
 
 def bump_spawn_version():
     SPAWN_VERSION[0] += 1
+
+
+#: Bumped whenever recording changes the timeline in place instead of
+#: appending to it: a lifespan stamped (spawn, despawn), a packed member's
+#: pending reveal, a topology split's migrated edits, an updater removal that
+#: re-ran an animation. AnimationTimeline.roll_back_recording undoes only an
+#: appended tail, so it refuses a stretch in which this moved.
+RECORDING_REWRITE_VERSION = [0]
+
+
+def bump_recording_rewrite_version():
+    RECORDING_REWRITE_VERSION[0] += 1
 
 
 def bump_timing_version():
@@ -470,6 +515,7 @@ class Lifespan:
         self._start = value
         bump_spawn_version()
         bump_timing_version()
+        bump_recording_rewrite_version()
 
     @property
     def end(self):
@@ -479,6 +525,7 @@ class Lifespan:
     def end(self, value):
         self._end = value
         bump_timing_version()
+        bump_recording_rewrite_version()
 
 
 class EditRecord:
@@ -2344,6 +2391,10 @@ class FunctionApplicationEvent:
         # is kept here so that split does not have to find them by searching
         # the attribute's entire edit log.
         self.recorded_edit_records = []
+        #: ``(value, include_descendants)`` when the event is the change an
+        #: absolute assignment was turned into (``Mob._note_absolute_target``),
+        #: else ``None``. Read only when an updater's removal re-bases the event.
+        self.absolute_target = None
         # Values a write inside this function's body decided at authoring
         # time and its replay must reuse, keyed by (key, number of edits
         # recorded before it). See AnimationTimeline.keep_for_replay.
@@ -2742,6 +2793,9 @@ class AnimationTimeline:
         # still render.
         self._edits_in_order = []
         self._edit_order_dirty = False
+        # Every UpdaterSpan end_updater closed, in order, so a failed block's
+        # removals can be reopened (roll_back_recording).
+        self._updater_end_log = []
         # Whether any edit was ever inserted out of execution order (a
         # migration, see register_migrated_edit): per-attribute edit lists are
         # then no longer sorted by seq past that point.
@@ -2809,7 +2863,9 @@ class AnimationTimeline:
         # recomputed post-state of an edit (its pre-values plus its event's
         # recorded change; one image add per animated edit, reused across
         # every batch the animation spans) and the per-(attr, mob) list of
-        # that mob's edits, keyed by the log length it was built at.
+        # that mob's edits, keyed by the log length it was built at. Both are
+        # dropped when a render that preserves authoring state ends (see
+        # preserving_authoring_state); a resetting render discards the Scene.
         self._segment_window_attrs = set()
         self._segment_windows = {}
         self._segment_post_cache = {}
@@ -3126,7 +3182,321 @@ class AnimationTimeline:
     def end_updater(self, updater_id, animation_context):
         span = self.function_timeline.updaters[updater_id].time
         span.end_event = animation_context.timespan.get_current_time()
+        self._updater_end_log.append(span)
         return span
+
+    def recording_checkpoint(self):
+        """Where the recording stands: what :meth:`roll_back_recording` needs
+        to take the timeline back here. Cheap; every entered context takes one.
+        """
+        functions = self.function_timeline
+        return (
+            len(self._edits_in_order),
+            self._edit_seq,
+            len(functions.function_applications),
+            len(functions.updaters),
+            len(self._updater_end_log),
+            self.last_recorded_event,
+            RECORDING_REWRITE_VERSION[0],
+        )
+
+    def roll_back_recording(self, checkpoint):
+        """Drop everything recorded since ``checkpoint``
+        (:meth:`recording_checkpoint`): attribute edits, with the authoring
+        state they wrote, function applications, updaters added, and updater
+        removals. A context whose body raised calls this, so a caught
+        exception leaves no half of a block on the timeline.
+
+        Returns False, changing nothing, when something since the checkpoint
+        rewrote the recording in place rather than adding to it (a spawn or
+        despawn, a topology split, a removal that re-ran an animation): those
+        cannot be taken back from the log alone.
+        """
+        (
+            edit_count,
+            edit_seq,
+            function_count,
+            updater_count,
+            end_count,
+            last_event,
+            version,
+        ) = checkpoint
+        functions = self.function_timeline
+        if (
+            len(self._edits_in_order) == edit_count
+            and len(functions.function_applications) == function_count
+            and len(functions.updaters) == updater_count
+            and len(self._updater_end_log) == end_count
+        ):
+            return True
+        if version != RECORDING_REWRITE_VERSION[0]:
+            return False
+        if self._materialization_times is not None:
+            # Frames are being materialized: nothing records then, and the
+            # buffers are windows, not the authoring state.
+            return False
+        # The block's edits are the tail of the execution order (seqs only
+        # grow, and an out-of-order insertion bumps the version above). Undo
+        # them latest first, each writing back what its rows held before it.
+        tail = self._edits_in_order[edit_count:]
+        for _, attr_name, edit in reversed(tail):
+            timeline = self.attr_to_timeline[attr_name]
+            timeline.modify(edit.indexes.view(-1), edit.values)
+            edits = timeline.edits
+            if edits and edits[-1] is edit:
+                edits.pop()
+            else:
+                for k in range(len(edits) - 1, -1, -1):
+                    if edits[k] is edit:
+                        del edits[k]
+                        break
+        del self._edits_in_order[edit_count:]
+        self._edit_seq = edit_seq
+        for event in functions.function_applications[function_count:]:
+            bucket = functions._by_caller.get(id(event.caller))
+            if bucket is None:
+                continue
+            for k in range(len(bucket) - 1, -1, -1):
+                if bucket[k] is event:
+                    del bucket[k]
+                    break
+            if not bucket:
+                del functions._by_caller[id(event.caller)]
+        del functions.function_applications[function_count:]
+        del functions.updaters[updater_count:]
+        for span in self._updater_end_log[end_count:]:
+            span.end_event = None
+        del self._updater_end_log[end_count:]
+        self.last_recorded_event = last_event
+        if self._resolved_prefix_count > edit_count:
+            self._resolved_prefix_count = 0
+            self._resolved_prefix_seq = -1
+            self._resolved_row_ends = {}
+            self._row_ends_capacity = {}
+        replays = self._plain_write_replays
+        while replays and replays[-1][0] > self._resolved_prefix_seq:
+            replays.pop()
+        self._plain_write_window_cache = None
+        self._replay_windows_resolved = False
+        for timeline in self.attr_to_timeline.values():
+            timeline.invalidate_prepared_queries()
+        functions.invalidate_window_cache()
+        return True
+
+    def record_updater_removal(self, writes, mob_id, end_event, removal_time):
+        """Record the state a removed updater left behind (``writes``, as
+        :meth:`begin_updater_write_capture` collected them) at ``end_event``.
+
+        The state is the base every later animation of those rows starts from,
+        including one written *before* the removal that starts at the removal
+        time: ``dot.move(UP)`` then ``dot.remove_updater(...)`` in one ``Sync``
+        moves the dot up from where the updater left it, as the two lines the
+        other way round do. Recorded after such an animation, the write would
+        hold its value over it (an instant write overrides an earlier-executed
+        animation still running on its rows) and cancel it. So for those rows
+        the write goes into execution order just before the animation, the
+        animation's recorded pre-values become the boundary state, and the
+        animation is re-run at its final parameters, as replay runs it, to
+        rebuild the authoring state it leaves.
+
+        That needs everything recorded on those rows since the animation began
+        to be animations that start at the removal time. Rows where something
+        else runs (an animation that started earlier and is still going, an
+        instant write after it) get the write after everything, as before,
+        which holds its value over what is still running. Returns the
+        functions it cancels that way, for the caller to report.
+        """
+        if not writes:
+            return []
+        # The first function application recorded on each written row that is
+        # still running at the removal, and everything recorded after it.
+        by_attr = {}
+        for attr_name, indexes, value in writes:
+            by_attr.setdefault(attr_name, []).append((indexes.view(-1), value))
+        touched = {}
+        for attr_name, entries in by_attr.items():
+            rows = torch.cat([rows for rows, _ in entries])
+            for edit in self.attr_to_timeline[attr_name].edits:
+                event = edit.event
+                if event is None or not (
+                    event.time.start <= removal_time < event.time.end
+                ):
+                    continue
+                if torch.isin(edit.indexes.view(-1), rows).any():
+                    touched[id(event)] = event
+        if not touched:
+            for attr_name, indexes, value in writes:
+                self.modify_attribute_and_record(
+                    attr_name, mob_id, False, indexes, value, end_event
+                )
+            return []
+
+        running = sorted(touched.values(), key=lambda e: e.seq)
+        first_seq = running[0].seq
+        # Every function recorded since the first running one that writes
+        # those rows (or rows of one of them, transitively) is re-run. They
+        # all have to start no earlier than the removal: one that started
+        # before it, or a plain write among them, has a recorded past the
+        # updater's state cannot be put under.
+        involved = {}
+        for attr_name, entries in by_attr.items():
+            involved[attr_name] = torch.cat([rows for rows, _ in entries])
+        events = []
+        event_ids = set()
+        rebase = True
+        tail = sorted(
+            (entry for entry in self._edits_in_order if entry[0] > first_seq),
+            key=lambda entry: entry[0],
+        )
+        for _, attr_name, edit in tail:
+            event = edit.event
+            if event is not None and id(event) in event_ids:
+                continue
+            rows = involved.get(attr_name)
+            if rows is None or not bool(torch.isin(edit.indexes.view(-1), rows).any()):
+                continue
+            if event is None or event.time.start < removal_time - 1e-9:
+                rebase = False
+                break
+            events.append(event)
+            event_ids.add(id(event))
+            own = {}
+            for (attr, *_), record in zip(
+                event.recorded_edits, event.recorded_edit_records
+            ):
+                rows = record.indexes.view(-1)
+                if attr in own and bool(torch.isin(rows, own[attr]).any()):
+                    # Writes the same rows twice: the second write's
+                    # pre-values are the first's result, which the re-run
+                    # below does not take.
+                    rebase = False
+                    break
+                own[attr] = rows if attr not in own else torch.cat([own[attr], rows])
+                held = involved.get(attr)
+                involved[attr] = rows if held is None else torch.cat([held, rows])
+            if not rebase:
+                break
+        if not rebase:
+            for attr_name, indexes, value in writes:
+                self.modify_attribute_and_record(
+                    attr_name, mob_id, False, indexes, value, end_event
+                )
+            return running
+        event_rows = {}
+        for event in events:
+            for (attr_name, *_), edit in zip(
+                event.recorded_edits, event.recorded_edit_records
+            ):
+                event_rows.setdefault(attr_name, []).append(edit.indexes.view(-1))
+        event_rows = {a: torch.cat(r) for a, r in event_rows.items()}
+
+        bump_recording_rewrite_version()
+        # Roll the running functions' rows back to what they held before the
+        # first of them ran (their recorded pre-values, latest first).
+        records = [
+            (attr_name, edit)
+            for event in events
+            for (attr_name, *_), edit in zip(
+                event.recorded_edits, event.recorded_edit_records
+            )
+        ]
+        for attr_name, edit in reversed(records):
+            self.attr_to_timeline[attr_name].modify(edit.indexes.view(-1), edit.values)
+        # The boundary write: rows a running function covers are inserted
+        # before it in execution order, the rest are recorded as usual. The
+        # inserted edit's seq sits between the edits recorded before the first
+        # running function and that function itself (whose place among plain
+        # writes is its seq + 0.5).
+        boundary_seq = first_seq + 0.25
+        for attr_name, entries in by_attr.items():
+            timeline = self.attr_to_timeline[attr_name]
+            covered_rows = event_rows.get(attr_name)
+            for rows, value in entries:
+                covered = (
+                    torch.zeros_like(rows, dtype=torch.bool)
+                    if covered_rows is None
+                    else torch.isin(rows, covered_rows)
+                )
+                if not bool(covered.all()):
+                    keep = (~covered).nonzero().view(-1)
+                    self.modify_attribute_and_record(
+                        attr_name,
+                        mob_id,
+                        False,
+                        rows[keep],
+                        _rows_of(value, keep, rows.numel()),
+                        end_event,
+                    )
+                if not bool(covered.any()):
+                    continue
+                keep = covered.nonzero().view(-1)
+                inserted_rows = rows[keep]
+                edit = EditRecord(
+                    inserted_rows,
+                    timeline.get(inserted_rows),
+                    end_event,
+                    boundary_seq,
+                    None,
+                )
+                timeline.modify(inserted_rows, _rows_of(value, keep, rows.numel()))
+                position = next(
+                    (k for k, e in enumerate(timeline.edits) if e.seq > boundary_seq),
+                    len(timeline.edits),
+                )
+                timeline.edits.insert(position, edit)
+                self._edits_in_order.append((boundary_seq, attr_name, edit))
+        # Re-run the functions from the boundary state at their final
+        # parameters, exactly as a one-frame replay at their end does, taking
+        # each edit's new pre-values on the way.
+        for event in events:
+            if event.absolute_target is not None:
+                # The line asked for a value, not a change: reach it from the
+                # state the updater left, not from the one the line saw.
+                target, include_descendants = event.absolute_target
+                current = event.caller.get_animated_attribute(
+                    event.kwargs["attr"],
+                    include_descendants=include_descendants,
+                    copy=False,
+                )
+                event.kwargs["change"] = target.to(current.device) - current
+            kwargs = dict(event.kwargs.items())
+            a = event.easing(torch.ones((1, 1, 1)))
+            for k in event.animated_args:
+                kwargs[k] = torch.lerp(
+                    cast_to_tensor(event.animated_args[k]), event.kwargs[k], a
+                )
+            if TIME_PARAMETER_NAME in kwargs:
+                kwargs[TIME_PARAMETER_NAME] = cast_to_tensor(
+                    event.time.end - event.time.start
+                ).view(-1, 1, 1)
+            for (attr_name, *_), edit in zip(
+                event.recorded_edits, event.recorded_edit_records
+            ):
+                edit.values = self.attr_to_timeline[attr_name].get(
+                    edit.indexes.view(-1)
+                )
+            previous_event = self._active_replay_event
+            previous_edit_index = self._active_replay_edit_index
+            self._active_replay_event = event
+            self._active_replay_edit_index = 0
+            try:
+                _call_recorded(event.function, event.caller, kwargs)
+            finally:
+                self._active_replay_event = previous_event
+                self._active_replay_edit_index = previous_edit_index
+        # Edits were inserted and earlier pre-values rewritten: what was
+        # prepared or resolved from the log no longer describes it.
+        self._edit_order_dirty = True
+        self._edit_order_dirty_ever = True
+        self._resolved_prefix_count = 0
+        self._resolved_prefix_seq = -1
+        self._resolved_row_ends = {}
+        self._row_ends_capacity = {}
+        self._replay_windows_resolved = False
+        for timeline in self.attr_to_timeline.values():
+            timeline.invalidate_prepared_queries()
+        self.function_timeline.invalidate_window_cache()
+        return []
 
     def note_hierarchy_change(self, parent):
         """Warn if ``parent``'s children just changed underneath a live updater.
@@ -3219,6 +3589,7 @@ class AnimationTimeline:
         it marks the order dirty and invalidates a resolved checkpoint only
         when the changed source lies inside that checkpoint.
         """
+        bump_recording_rewrite_version()
         attr_timeline.edits.append(migrated_edit)
         self._edits_in_order.append((migrated_edit.seq, attr_name, migrated_edit))
         self._edit_order_dirty = True
@@ -3686,6 +4057,12 @@ class AnimationTimeline:
                 # be none) is outside the snapshot, so drop cached windows
                 # rather than trust them.
                 self.function_timeline.invalidate_window_cache()
+            # The segment-window caches live for one render: each post-state
+            # entry is a whole texture image, and nothing else drops them, so
+            # every animated texture edit a render described kept its image
+            # for the Scene's life.
+            self._segment_post_cache = {}
+            self._segment_edit_cache = {}
             for mob_id in [
                 mob_id
                 for mob_id in self.mob_id_to_lifespan
@@ -4141,14 +4518,23 @@ class AnimationTimeline:
                 break
         if manager is None and self._traced_paths:
             manager = next(iter(self._traced_paths.values())).animation_manager
-        with Off(
+        replay_context = Off(
             record_attr_modifications=False,
             record_funcs=False,
             priority_level=math.inf,
             animation_manager=manager,
-        ):
-            self._prepare_traced_paths(times, active_mobs)
-            return self._replay_state_to_times(times, active_mobs)
+        )
+        try:
+            with replay_context:
+                self._prepare_traced_paths(times, active_mobs)
+                return self._replay_state_to_times(times, active_mobs)
+        finally:
+            # Entered outside a render or another replay, the context is
+            # linked into the authoring tree like any block, and stays there:
+            # one more child of the current context per call, for the Scene's
+            # life. It recorded nothing and takes no time, so nothing rescales
+            # through it; unlink it.
+            replay_context._unlink_from_parent()
 
     def _prepare_traced_paths(self, times, active_mobs):
         if (

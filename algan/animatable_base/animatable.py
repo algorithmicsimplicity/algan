@@ -57,10 +57,12 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     _arguments_by_name,
     _call_recorded,
     _opt_disabled,
+    bump_recording_rewrite_version,
 )
 from algan.constants.color import BLACK, Color
 from algan.errors import (
     AlganConfigurationError,
+    AlganWarning,
     AnimatedBeforeSpawnWarning,
     DespawnedMobWarning,
     HierarchyError,
@@ -131,6 +133,31 @@ def _check_updater_signature(update_function, extra_positional):
         f"`t` is the seconds elapsed since the updater was added, as a torch "
         f"tensor, and must appear even when unused:\n\n"
         f"    mob.add_updater(lambda mob, t: mob.set_location(RIGHT * t))\n"
+    )
+
+
+def _warn_removal_cancels(cancelled, mob):
+    """Warn that ``remove_updater`` cancelled the still-running animations
+    ``cancelled`` (from :meth:`AnimationTimeline.record_updater_removal`).
+
+    An animation written just before the removal and starting with it (the
+    two in one ``Sync``) is rebuilt to start from the updater's state. What is
+    left is an animation that started earlier and is still running, or one
+    followed by other writes of the same rows: the removal's write is then
+    recorded after it and holds the updater's state over it
+    (``agent_guidance/timeline.md``, override semantics).
+    """
+    if not cancelled:
+        return
+    name = getattr(cancelled[0].function, "__name__", "an animation")
+    warnings.warn(
+        f"remove_updater() on {mob._describe()} cancels its {name}() "
+        f"animation, which was written before it and is still running at the "
+        f"removal: the Mob holds the state the updater left it in from the "
+        f"removal on. Remove the updater before the animation starts, so that "
+        f"the animation starts from that state.",
+        AlganWarning,
+        stacklevel=_user_stacklevel(),
     )
 
 
@@ -252,6 +279,9 @@ def animated_function(
     object holds by then; Algan warns with
     :class:`~algan.errors.DivergentReplayWarning` when that reaches a Mob made
     after the call.
+
+    A call whose body raises records nothing, as for a ``with`` block that
+    raises (see :class:`~.AnimationContext`).
 
     Parameters
     ----------
@@ -621,7 +651,10 @@ class Animatable:
         if animation_manager is None:
             animation_manager = scene.animation_manager
         self.animation_manager = animation_manager
-        if add_to_scene:
+        # Not while frames are replayed, for the reason Scene.add_actor gives:
+        # a Mob an updater builds on every frame would otherwise be appended to
+        # every enclosing context, the root included, for the Scene's life.
+        if add_to_scene and not self.scene.timeline_manager.is_replaying():
             animation_manager.context.add_mob(self)
         if name is not None or not hasattr(self, "name"):
             self.name = name
@@ -897,7 +930,11 @@ class Animatable:
         current context's runtime. It is applied once immediately at zero elapsed
         time, so the scene reflects it right away. Updaters are applied after
         recorded animations each frame, so an updater writing an attribute wins over
-        an animation of that attribute.
+        an animation of that attribute. Updaters run in the order they were added,
+        and an updater sees nothing an updater added after it writes: add an updater
+        after the updaters whose results it reads. A label following a dot driven by
+        its own updater must be given its updater after the dot's, or it stays
+        where the dot was before the dot's updater moved it.
 
         Parameters
         ----------
@@ -963,6 +1000,18 @@ class Animatable:
         frames before this point and not after. Removing an already-removed updater
         does nothing.
 
+        An animation of the Mob that starts at the same time is run from the
+        state the updater left, whichever of the two lines comes first: in
+        ``with Sync(): mob.move(UP); mob.remove_updater(i)`` the Mob moves up
+        from where the updater left it. A destination (``move_to``,
+        ``set_location``, assigning an attribute, ``set``) is reached from
+        that state too. A move along an arc and ``set_x`` / ``set_y`` /
+        ``set_z`` keep the change they worked out when the line ran; write
+        the removal first for those. An animation of the Mob that started
+        earlier and is still running (or one followed in the block by an
+        ``Off()`` write of the same attribute) is cancelled from here on, with
+        an :class:`.AlganWarning`: the Mob holds the updater's state.
+
         Parameters
         ----------
         updater_id
@@ -991,6 +1040,15 @@ class Animatable:
         if event.time.end_event is not None:
             # Already removed.
             return
+        # Materializing below resolves every edit's replay window into a plain
+        # float. Inside an unfinished block (a ``runtime``, an Audio or Speech
+        # clip) those are the times before the block rescales on exit, and
+        # nothing revisits them afterwards: the block's earlier animations then
+        # replay over the wrong windows. Roll the resolution back, as
+        # Scene.save_frame does, whenever a context other than the root is open.
+        preserve_replay_resolution = (
+            self.animation_manager.context.prev_context is not None
+        )
         # See add_updater: the end event must live on an entered context.
         with Off(
             record_funcs=False, animation_manager=self.animation_manager
@@ -1002,11 +1060,16 @@ class Animatable:
             # hub's stale initial orientation and snap backwards on the last frame.
             previous_capture, writes = timeline.begin_updater_write_capture(event)
             try:
-                with Off(
-                    record_attr_modifications=False,
-                    record_funcs=False,
-                    priority_level=float("inf"),
-                    animation_manager=self.animation_manager,
+                with (
+                    timeline.preserving_authoring_state(
+                        preserve_replay_resolution=preserve_replay_resolution
+                    ),
+                    Off(
+                        record_attr_modifications=False,
+                        record_funcs=False,
+                        priority_level=float("inf"),
+                        animation_manager=self.animation_manager,
+                    ),
                 ):
                     timeline.set_state_to_times(
                         cast_to_tensor(context.timespan.current_time).reshape(1)
@@ -1019,16 +1082,22 @@ class Animatable:
             # Preserve only the removed updater's boundary writes. Other active
             # updaters were materialized so dependency reads were current, but
             # recording their state here would make later frames apply them on
-            # top of an already-advanced base state.
-            for attr_name, indexes, value in writes:
-                timeline.modify_attribute_and_record(
-                    attr_name,
+            # top of an already-advanced base state. An animation of those rows
+            # written just before this line, in the same block, is rebuilt to
+            # start from them; the off context keeps its re-run unrecorded.
+            with Off(
+                record_attr_modifications=False,
+                record_funcs=False,
+                priority_level=float("inf"),
+                animation_manager=self.animation_manager,
+            ):
+                cancelled = timeline.record_updater_removal(
+                    writes,
                     event.caller.id,
-                    False,
-                    indexes,
-                    value,
                     span.end_event,
+                    context.timespan.current_time,
                 )
+            _warn_removal_cancels(cancelled, event.caller)
 
     def remove_all_updaters(self):
         """Remove every updater attached to this Mob.
@@ -2169,6 +2238,8 @@ class Animatable:
         opacity = timeline.attr_to_timeline.get("opacity")
         if opacity is None or not hasattr(self, "_apply_change"):
             return
+        # The pending reveals below are kept in place, outside the edit log.
+        bump_recording_rewrite_version()
         standard_fades = None
         by_id = defaultdict(list)
         for node in self.get_descendants():
@@ -2539,6 +2610,7 @@ class Animatable:
         """
         timeline = self.scene.timeline_manager
         opacity = timeline.attr_to_timeline["opacity"]
+        bump_recording_rewrite_version()
         for mob_id, (nodes, rows) in hidden.items():
             if rows.numel() == 0:
                 continue

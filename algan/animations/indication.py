@@ -141,8 +141,6 @@ def Indicate(mob, scale_factor: float = 1.2, color=YELLOW, runtime: float = 1.0)
 @animated_function(
     animated_args={"t": 0.0},
     unique_args=[
-        "basis_0",
-        "location_0",
         "scale_value",
         "rotation_angle",
         "n_wiggles",
@@ -153,8 +151,6 @@ def Indicate(mob, scale_factor: float = 1.2, color=YELLOW, runtime: float = 1.0)
 def wiggle_step(
     mob,
     t,
-    basis_0,
-    location_0,
     scale_value,
     rotation_angle,
     n_wiggles,
@@ -163,8 +159,10 @@ def wiggle_step(
 ):
     """Internal: place a Mob at one instant of a :func:`Wiggle`.
 
-    Rebuilds the Mob's basis and location from the values it had before the wiggle
-    started, so the effect leaves no drift. Use :func:`Wiggle`.
+    Rocks and scales the Mob's basis and location as the frame finds them, so
+    another animation of the same Mob running alongside (a move in the same
+    :class:`~.Sync`) still shows. Each frame is replayed from the state before
+    the wiggle, so the effect leaves no drift. Use :func:`Wiggle`.
 
     Parameters
     ----------
@@ -172,10 +170,6 @@ def wiggle_step(
         The Mob being wiggled.
     t
         Animation progress, ``0`` to ``1``, supplied per frame.
-    basis_0
-        The Mob's basis before the wiggle began.
-    location_0
-        The Mob's location before the wiggle began.
     scale_value
         Peak scale, as a multiple of the original size.
     rotation_angle
@@ -194,11 +188,15 @@ def wiggle_step(
     R = get_rotation_around_axis(rot_deg, OUTWARD, dim=-1)
     R_basis = R.view(-1, 1, 3, 3)
 
+    # Relative to the state replay hands this frame, not to tensors captured
+    # when the wiggle was recorded: those are the authoring state after every
+    # earlier line of an enclosing Sync, and writing them back each frame
+    # overrode any animation running alongside (a move never travelled).
     new_basis = squish(
-        unsquish(basis_0, -1, 3) @ R_basis * s_val.view(-1, 1, 1, 1), -2, -1
+        unsquish(mob.basis, -1, 3) @ R_basis * s_val.view(-1, 1, 1, 1), -2, -1
     )
 
-    loc = location_0.clone()
+    loc = mob.location.clone()
     if rotate_about_point is not None:
         rp = cast_to_tensor(rotate_about_point)
         R_loc = R.view(-1, 1, 3, 3)
@@ -230,8 +228,9 @@ def Wiggle(
     Animation
     ---------
     Recorded as an animation of ``runtime`` seconds; an enclosing context's
-    ``runtime`` rescales it like any other animation. Position and orientation are rebuilt each frame from the
-    pre-wiggle state, so nothing accumulates.
+    ``runtime`` rescales it like any other animation. The rocking is relative
+    to the Mob's state on each frame, so it composes with other animations of
+    the same Mob in a :class:`~.Sync`, and nothing accumulates.
 
     Parameters
     ----------
@@ -265,13 +264,9 @@ def Wiggle(
     # values can be told apart from Manim's radians (0.02 * pi by default).
     if isinstance(rotation_angle, (int, float)) and abs(rotation_angle) < 1:
         _warn_if_angle_looks_like_radians("rotation_angle", rotation_angle)
-    basis_0 = mob.basis.clone()
-    location_0 = mob.location.clone()
     with Sync(runtime=runtime, animation_manager=animation_manager_for(mob)):
         mob.animate_function(
             wiggle_step,
-            basis_0=basis_0,
-            location_0=location_0,
             scale_value=scale_value,
             rotation_angle=rotation_angle,
             n_wiggles=n_wiggles,
